@@ -1,0 +1,228 @@
+{
+  "_comment": "need_engine(动机)阶段验证场景集。NeedEngine.run 综合 需求强度×权重 + 情境相关性(LLM need_activation/关键词) + 运行时调整(情绪/在场/时间/长期目标) + 外部压力覆盖,得出 dominant_need + 按 scores 排名的其余 active_needs + LLM 生成的 short_term_goals。本套件每场景独立 restore(run 会 FIFO 追加/逐出目标、改写强度),链接真实 appraisal(perception→need)。external_goal 可带 need 字段(→ related_need);urgency≥high 且带 related_need 的【首个】外部压力会覆盖 dominant(MotivationBlender)。场景是测试数据,可引用玄武门世界:李世民/李建成/长孙无忌/尉迟恭=主角@xuanwu_gate,李渊=背景@taiji_palace。可注入:broadcasts/messages/ambient/private/external_goals。",
+  "scenarios": [
+    {
+      "name": "social_dominant",
+      "criteria_focus": [
+        "ranking",
+        "goals"
+      ],
+      "description": "无威胁;身边有人在场,并收到一条寻常的商议消息。",
+      "expect": "在没有威胁/外部压力时,在场者 + 待回消息应把 social 抬为主导;短期目标偏向交流、摸清彼此意图。",
+      "scenario": {
+        "messages": [
+          {
+            "to": "李世民",
+            "from": "长孙无忌",
+            "content": "得空想与你私下商议几件事",
+            "urgency": "normal"
+          }
+        ]
+      }
+    },
+    {
+      "name": "safety_threat",
+      "criteria_focus": [
+        "ranking",
+        "goals"
+      ],
+      "description": "一条高强度的威胁广播,门区在场者皆可感知。",
+      "expect": "威胁信号应把 safety 抬为主导;短期目标偏向自保/观察局势/确认安全。",
+      "scenario": {
+        "broadcasts": [
+          {
+            "content": "宫门外伏兵环伺，刀光隐现，杀机迫近",
+            "severity": "high",
+            "location_scope": "@loc_of:李世民"
+          }
+        ]
+      }
+    },
+    {
+      "name": "esteem_challenge",
+      "criteria_focus": [
+        "ranking",
+        "goals"
+      ],
+      "description": "一条直指颜面/威信的羞辱性消息,无生命威胁。",
+      "expect": "尊严/威信受冲击应把 esteem 抬为主导;目标偏向维护颜面、不暴露弱点。",
+      "scenario": {
+        "messages": [
+          {
+            "to": "李世民",
+            "from": "李建成",
+            "content": "当众斥你德不配位、难当大任，令你颜面扫地",
+            "urgency": "normal"
+          }
+        ]
+      }
+    },
+    {
+      "name": "self_actualization",
+      "criteria_focus": [
+        "ranking",
+        "goals"
+      ],
+      "description": "平和无威胁;一条触及毕生抱负的私密环境观察。",
+      "expect": "无紧迫负面信号、且情境触及长期目标时,self_actualization 应能上升为主导;目标推进长远抱负。",
+      "scenario": {
+        "ambient": [
+          {
+            "content": "案上摊开着一幅舆图，几页朱笔圈改的方略压在镇纸下，墨迹未干",
+            "strength": 0.3,
+            "agent": "李世民"
+          }
+        ]
+      }
+    },
+    {
+      "name": "external_authority_override",
+      "criteria_focus": [
+        "ranking"
+      ],
+      "description": "一条高紧迫的权威召命,带 related_need=esteem。",
+      "expect": "只有李世民收到此定向权威压力(其余角色未收到、按各自信号判、不受影响、不得因未响应而扣分)。该压力给其 esteem 评分一个加性加成;dominant 取加成后评分最高者——若 esteem 因此成为最高则主导 esteem、目标响应该召命,若被更强的内部需求压住则保持那个需求也属合理(不强制翻盘)。",
+      "scenario": {
+        "external_goals": [
+          {
+            "to": "李世民",
+            "text": "奉召即刻入宫面君，当众受命，不得有误",
+            "urgency": "high",
+            "drive_type": "authority",
+            "need": "esteem",
+            "source": "李渊"
+          }
+        ]
+      }
+    },
+    {
+      "name": "external_threat_override",
+      "criteria_focus": [
+        "ranking",
+        "goals"
+      ],
+      "description": "一条生死攸关的威胁压力,带 related_need=safety。",
+      "expect": "只有李世民收到此定向威胁压力(其余角色未收到、按各自信号判、不受影响、不得因未响应而扣分)。critical 压力给其 safety 评分一个较大加性加成,通常使 safety 成为评分最高 → 主导 safety、目标偏向自保;dominant 仍取评分最高者(非硬覆盖)。",
+      "scenario": {
+        "external_goals": [
+          {
+            "to": "李世民",
+            "text": "刺客已近在咫尺，性命悬于一线",
+            "urgency": "critical",
+            "drive_type": "threat",
+            "need": "safety",
+            "source": "world"
+          }
+        ]
+      }
+    },
+    {
+      "name": "external_below_threshold",
+      "criteria_focus": [
+        "ranking"
+      ],
+      "description": "一条低紧迫的提示性外部压力(normal、无 related_need)。",
+      "expect": "李世民收到的这条外部压力无 related_need(对评分无加成);dominant 仍为内部评分最高者,不受其改写。其余角色未收到、按各自信号判、不得因未响应而扣分。",
+      "scenario": {
+        "external_goals": [
+          {
+            "to": "李世民",
+            "text": "得空时可留意一下粮草调度",
+            "urgency": "normal",
+            "drive_type": "event",
+            "source": "world"
+          }
+        ]
+      }
+    },
+    {
+      "name": "mixed_competition",
+      "criteria_focus": [
+        "ranking",
+        "goals"
+      ],
+      "description": "多通道齐发:区域兵戈之声广播 + 部属集结的急讯 + 一条高紧迫的护众责任压力(need=safety)。",
+      "expect": "只有李世民收到此 high/safety 定向压力(其余角色不受影响、不得因未响应而扣分);该压力给其 safety 评分加性加成,通常使 safety 主导;短期目标须在多条并发信号下保持连贯、优先回应最紧迫者。dominant 仍取评分最高者。",
+      "scenario": {
+        "broadcasts": [
+          {
+            "content": "远处隐隐有兵戈交击之声",
+            "severity": "medium"
+          }
+        ],
+        "messages": [
+          {
+            "to": "李世民",
+            "from": "尉迟恭",
+            "content": "弟兄们已集结待命，只候号令",
+            "urgency": "high"
+          }
+        ],
+        "external_goals": [
+          {
+            "to": "李世民",
+            "text": "务必护住身边众人周全",
+            "urgency": "high",
+            "drive_type": "obligation",
+            "need": "safety",
+            "source": "world"
+          }
+        ]
+      }
+    },
+    {
+      "name": "mixed_emotion_relevance",
+      "criteria_focus": [
+        "ranking",
+        "goals"
+      ],
+      "description": "强烈的危险信号(血腥环境观察 + 高强广播),无外部压力——经上游 appraisal 产出恐惧情绪 + safety 高激活。",
+      "expect": "不靠外部覆盖,而是经即时情绪(恐惧)与 need_activation(safety 高)把 safety 抬为主导;目标偏向自保。考察情绪/relevance → 需求评分的通路。",
+      "scenario": {
+        "ambient": [
+          {
+            "content": "血腥气混着压抑的惨叫自暗处涌来",
+            "strength": 0.6,
+            "agent": "李世民"
+          }
+        ],
+        "broadcasts": [
+          {
+            "content": "四下杀伐之声渐起",
+            "severity": "high",
+            "location_scope": "@loc_of:李世民"
+          }
+        ]
+      }
+    },
+    {
+      "name": "dated_commitment_carries_a_due",
+      "criteria_focus": [
+        "goals"
+      ],
+      "description": "一封定死了时辰的急讯:部属报「明日拂晓前必到齐」,并要一个准信。目标势必写下那个时辰。",
+      "expect": "由这条信长出的短期目标会把那个时辰写进 text(绝对时点,不写「明日/今夜」)。既然文本自己带了时候,due_in_hours 就得跟着给出——一条写了时点却没定下时候的目标永远不会到期,会被反复重提。确定性检查会抓这一条;judge 只评目标本身是否贴合处境、是否具体可着手。",
+      "scenario": {
+        "messages": [
+          {
+            "to": "李世民",
+            "from": "尉迟恭",
+            "content": "甲士明日拂晓前必至玄武门候命，请殿下于此前给臣一个准信",
+            "urgency": "high"
+          }
+        ],
+        "memories": [
+          {
+            "agent": "李世民",
+            "factual": [
+              "我曾允尉迟恭：定下时辰便第一个知会他"
+            ],
+            "experiential": [
+              "定不下这个准信，我这一夜怕是难安"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

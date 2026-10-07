@@ -1,0 +1,1 @@
+"""Asamana core package."""

@@ -1,0 +1,189 @@
+{
+  "_comment": "See worlds/templates/CHARACTER_ASSET_SPEC.md. Tang-era commoner dress: theme-neutral (no rank insignia, armour or clerical robes), so any story this map hosts can wear it.",
+  "scale": 0.28,
+  "walk_fps": 8,
+  "bodies": {
+    "male": {
+      "child": "tangCommonerChildMale",
+      "young": "tangCommonerYoungMale",
+      "middle": "tangCommonerMiddleMale",
+      "elder": "tangCommonerElderMale"
+    },
+    "female": {
+      "child": "tangCommonerChildFemale",
+      "young": "tangCommonerYoungFemale",
+      "middle": "tangCommonerMiddleFemale",
+      "elder": "tangCommonerElderFemale"
+    }
+  },
+  "atlases": {
+    "tangCommonerChildMale": {
+      "image": "characters/tangCommonerChildMale.png",
+      "atlas": "characters/tangCommonerChildMale.xml",
+      "portrait": "characters/tangCommonerChildMalePortrait.png"
+    },
+    "tangCommonerYoungMale": {
+      "image": "characters/tangCommonerYoungMale.png",
+      "atlas": "characters/tangCommonerYoungMale.xml",
+      "portrait": "characters/tangCommonerYoungMalePortrait.png"
+    },
+    "tangCommonerMiddleMale": {
+      "image": "characters/tangCommonerMiddleMale.png",
+      "atlas": "characters/tangCommonerMiddleMale.xml",
+      "portrait": "characters/tangCommonerMiddleMalePortrait.png"
+    },
+    "tangCommonerElderMale": {
+      "image": "characters/tangCommonerElderMale.png",
+      "atlas": "characters/tangCommonerElderMale.xml",
+      "portrait": "characters/tangCommonerElderMalePortrait.png"
+    },
+    "tangCommonerChildFemale": {
+      "image": "characters/tangCommonerChildFemale.png",
+      "atlas": "characters/tangCommonerChildFemale.xml",
+      "portrait": "characters/tangCommonerChildFemalePortrait.png"
+    },
+    "tangCommonerYoungFemale": {
+      "image": "characters/tangCommonerYoungFemale.png",
+      "atlas": "characters/tangCommonerYoungFemale.xml",
+      "portrait": "characters/tangCommonerYoungFemalePortrait.png"
+    },
+    "tangCommonerMiddleFemale": {
+      "image": "characters/tangCommonerMiddleFemale.png",
+      "atlas": "characters/tangCommonerMiddleFemale.xml",
+      "portrait": "characters/tangCommonerMiddleFemalePortrait.png"
+    },
+    "tangCommonerElderFemale": {
+      "image": "characters/tangCommonerElderFemale.png",
+      "atlas": "characters/tangCommonerElderFemale.xml",
+      "portrait": "characters/tangCommonerElderFemalePortrait.png"
+    }
+  },
+  "frames": {
+    "idle": {
+      "NE": "idleNE",
+      "SE": "idleSE",
+      "SW": "idleSW",
+      "NW": "idleNW"
+    },
+    "walk": {
+      "NE": [
+        "walkNE0",
+        "walkNE1",
+        "walkNE2",
+        "walkNE3"
+      ],
+      "SE": [
+        "walkSE0",
+        "walkSE1",
+        "walkSE2",
+        "walkSE3"
+      ],
+      "SW": [
+        "walkSW0",
+        "walkSW1",
+        "walkSW2",
+        "walkSW3"
+      ],
+      "NW": [
+        "walkNW0",
+        "walkNW1",
+        "walkNW2",
+        "walkNW3"
+      ]
+    },
+    "down": {
+      "NE": "fallFaceDownNE",
+      "SE": "fallFaceUpSE",
+      "SW": "fallFaceUpSW",
+      "NW": "fallFaceDownNW"
+    },
+    "attack": {
+      "NE": [
+        "swingNE0",
+        "swingNE1",
+        "swingNE2"
+      ],
+      "SE": [
+        "swingSE0",
+        "swingSE1",
+        "swingSE2"
+      ],
+      "SW": [
+        "swingSW0",
+        "swingSW1",
+        "swingSW2"
+      ],
+      "NW": [
+        "swingNW0",
+        "swingNW1",
+        "swingNW2"
+      ]
+    },
+    "hurt": {
+      "NE": "hitNE",
+      "SE": "hitSE",
+      "SW": "hitSW",
+      "NW": "hitNW"
+    },
+    "shove": {
+      "NE": "pushNE",
+      "SE": "pushSE",
+      "SW": "pushSW",
+      "NW": "pushNW"
+    },
+    "duck": {
+      "NE": "duckNE",
+      "SE": "duckSE",
+      "SW": "duckSW",
+      "NW": "duckNW"
+    },
+    "hold": {
+      "NE": "takeNE",
+      "SE": "takeSE",
+      "SW": "takeSW",
+      "NW": "takeNW"
+    },
+    "interact": {
+      "NE": [
+        "operateNE0",
+        "operateNE1"
+      ],
+      "SE": [
+        "operateSE0",
+        "operateSE1"
+      ],
+      "SW": [
+        "operateSW0",
+        "operateSW1"
+      ],
+      "NW": [
+        "operateNW0",
+        "operateNW1"
+      ]
+    },
+    "talk": {
+      "NE": [
+        "talkNEClosed",
+        "talkNEOpen"
+      ],
+      "SE": [
+        "talkSEClosed",
+        "talkSEOpen"
+      ],
+      "SW": [
+        "talkSWClosed",
+        "talkSWOpen"
+      ],
+      "NW": [
+        "talkNWClosed",
+        "talkNWOpen"
+      ]
+    },
+    "show": {
+      "NE": "giveNE",
+      "SE": "giveSE",
+      "SW": "giveSW",
+      "NW": "giveNW"
+    }
+  }
+}

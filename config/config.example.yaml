@@ -1,0 +1,290 @@
+# =============================================================================
+# Asamana configuration reference. This file is documentation, not a config to run as-is.
+#
+# Usage: copy the sections you need into your own config, or run
+#          CONFIG=config/config.example.yaml python3 main.py web
+#      Before running, set the keys listed under "Environment variables" below and check the
+#      model names (vendors rename models often).
+#
+# The other two configs in the repo:
+#   config/config.yaml        default production config (one vendor, minimal comments)
+#   config/config.test.yaml   for tests: all mock / in-memory, needs no keys
+#
+# The CONFIG env var picks which one is used; the default is config/config.yaml.
+# -----------------------------------------------------------------------------
+# Environment variables (key values live only in the environment; this file names the
+# variables only, so it is safe to commit)
+#
+#   LLM_API_KEY         default credential for every LLM scene
+#   EMBEDDING_API_KEY   credential for embedding (a separate axis)
+#
+# These two suffice for a single provider. When connecting two vendors at once, as this file
+# does, each provider must name its own variable via api_key_env (see below), since one
+# variable can't hold two keys. Leaving it out fails loudly at startup instead of turning into
+# an unrecognizable auth failure at runtime.
+# =============================================================================
+
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ llm: two layers, each states only its own differences                     ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+#   providers         where each endpoint is, whose key, default model, endpoint params
+#   default_provider  the vendor for any scene not listed under scenes
+#   scenes            only the scenes that differ from the default
+#
+# There are 15 scenes (see LLMScene in core/interfaces/llm.py); most need nothing written.
+#
+# [Resolution rules] one per field:
+#   provider = scenes[s].provider          else default_provider
+#   model    = scenes[s].model             else providers[provider].model
+#   timeout  = scenes[s].timeout           else providers[provider].timeout   else 60s
+#   params   = providers[provider].params  ⊕  scenes[s].params   (per key, scene wins)
+#
+# "Model follows provider" is deliberate: a scene that only sets provider gets that vendor's
+# own model, rather than carrying another vendor's model name to an endpoint where it doesn't
+# exist.
+#
+# [Adding a vendor] There is no vendor list in code. Any vendor exposing an OpenAI-compatible
+# chat/completions works by giving it a base_url under providers, with no code change. Only a
+# vendor with its own protocol needs a new transport.
+#
+# [Choosing models: two tiers, vendor-agnostic]
+#   runtime (the dozen-odd per-step scenes)      → cheap light model, with thinking OFF
+#   world building (persona / cast / theme)     → the same vendor's strong model
+#
+# A runtime step makes dozens of calls, so a strong model pays off far less there than on the
+# world's foundation. Thinking must be off: thinking tokens share ``max_tokens`` with the answer,
+# runtime budgets are sized for the answer alone (a few hundred tokens), and a truncated answer
+# is unparseable JSON that voids the whole step.
+#
+# How to turn thinking off differs per vendor (only in that provider's own params):
+#   DashScope  enable_thinking: false
+#   DeepSeek   thinking: {type: disabled}
+#   Kimi       thinking: {type: disabled}   (k2.6; k3 can't disable it, only reasoning_effort: low)
+#   MiniMax    thinking: {type: disabled}   (M3 only; M2.x ignores it)
+#   Zhipu      can't disable it, only reasoning_effort: low
+# For vendors that can't disable it, use the lowest effort and make sure each scene's
+# max_tokens fits "thinking + answer".
+
+llm:
+  providers:
+    # ── One provider declaration ────────────────────────────────────────────
+    # The name is yours to pick and denotes an endpoint account, not a model family: dashscope
+    # (Alibaba Cloud Bailian) serves deepseek / kimi / glm / minimax models, so a deepseek-*
+    # model below is not a typo.
+    #
+    #   base_url      required. OpenAI-compatible endpoint URL.
+    #   model         this vendor's default model, used when a scene doesn't name one.
+    #   api_key_env   which env var holds the key (not the key itself). Omitted = LLM_API_KEY.
+    #   timeout       how long to wait for this vendor (seconds). Omitted = transport default 60s.
+    #   params        endpoint params, passed through verbatim into the request body; code
+    #                 interprets none of them.
+    dashscope:
+      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      model: deepseek-v4-flash
+      api_key_env: DASHSCOPE_API_KEY
+      params:
+        # Param keys are vendor-specific. Sent to another vendor they draw a 400, which lands
+        # in some caller's except and masquerades as model flakiness. So params must be scoped
+        # to the provider, never global.
+        enable_thinking: false
+
+    kimi:
+      base_url: https://api.moonshot.cn/v1
+      model: kimi-k2.6
+      api_key_env: MOONSHOT_API_KEY
+
+    # ── Two accounts on one vendor ──────────────────────────────────────────
+    # For separate billing / restricted sub-keys / independent rotation: write two declarations
+    # with the same base_url and different api_key_env, and have scenes name the one they want.
+    # Rate-limit gates are per declaration, so the accounts don't throttle each other.
+    #
+    #   dashscope_bulk:
+    #     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    #     model: deepseek-v4-flash
+    #     api_key_env: DASHSCOPE_BULK_KEY
+
+    # ── Common vendor endpoints ─────────────────────────────────────────────
+    # Copy them in; no code change needed. This is a comment, not an allowlist in code; if a
+    # vendor moves its endpoint, check its own docs.
+    #
+    #   deepseek: https://api.deepseek.com/v1
+    #   minimax:  https://api.minimaxi.com/v1        international: https://api.minimax.io/v1;
+    #                                                keys are tied to the site, not portable
+    #   zhipu:    https://open.bigmodel.cn/api/paas/v4
+    #   openai:   https://api.openai.com/v1
+    #   ark:      https://ark.cn-beijing.volces.com/api/v3     Volcengine Ark / Doubao
+    #
+    # Self-hosted gateways, proxies and any OpenAI-compatible relay are likewise just a base_url.
+
+  # Every scene not listed under scenes uses this vendor.
+  default_provider: dashscope
+
+  scenes:
+    # ── One scene override ─────────────────────────────────────────────────
+    #   provider  required. A scene entry should say which endpoint it uses on its own, without
+    #             looking up the default; this matters most when two vendors are connected.
+    #   model     omitted = the model of that provider's declaration.
+    #   timeout   omitted = that provider's timeout.
+    #   params    scene-only, layered over the provider's params (per key, overriding).
+    #
+    # Keys must be valid scene names; a typo (agent_decison_main) is rejected by the schema.
+
+    # Switching provider: model becomes kimi-k2.6, from the kimi declaration.
+    agent_decision_main:
+      provider: kimi
+
+    # Same provider, different model: main-character personas deserve a stronger model.
+    persona_generation:
+      provider: dashscope
+      model: deepseek-v4-pro
+    cast_design:
+      provider: dashscope
+      model: deepseek-v4-pro
+
+    # Theme analysis: the world's foundation, and the only scene with web search.
+    world_building:
+      provider: dashscope
+      model: deepseek-v4-pro
+      # timeout is how long we wait. It never enters the request body and the endpoint never
+      # sees it, so it's a first-class field rather than a params key. The 60s default can't
+      # cover "thousands of tokens of search results + thousands of thinking and JSON".
+      timeout: 300
+      params:
+        enable_thinking: false
+        enable_search: true    # endpoint injects search results into the prompt; input grows from ~20 to ~5000 tokens
+
+  # ── Offline judge ─────────────────────────────────────────────────────────
+  # Which vendor/model `python -m tuning` (audit / validate / leak / ab) uses for scoring.
+  # Fields are the same as a scene override (provider required; model / timeout / params
+  # optional).
+  #
+  # It is not a scene: a model grading its own output is too lenient, so the judge picks its
+  # model independently of the scenes it scores. Omitting this section falls back to
+  # default_provider, i.e. self-grading. The page can switch the model temporarily (not the
+  # vendor: that would mean switching credentials); the CLI flag is --judge-model.
+  judge:
+    provider: dashscope
+    model: qwen3.7-max
+
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ embedding: an axis fully independent of llm                               ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+#
+# Its own endpoint, key and model; changing one side never affects the other. Running the LLM
+# on DeepSeek and embedding on DashScope is fine.
+#
+# The two axes don't share the providers table, because one vendor's two services have two
+# addresses: DashScope chat is /compatible-mode/v1, while its sparse embedding is the native
+# /api/v1/services/...; one declaration can't hold two base_urls.
+#
+# Available providers:
+#   dashscope      DashScope native endpoint, returns dense + learned sparse. It is the only
+#                  one that gives sparse, which hybrid retrieval needs (the file / in_memory
+#                  vector stores actually use it)
+#   openai_compat  any OpenAI-compatible /embeddings, dense only; hybrid retrieval degrades to
+#                  pure dense (an expected path, not an error). params:
+#                      model: text-embedding-3-large
+#                      dimension: 3072
+#                      base_url: https://api.openai.com/v1
+#   in_memory      for tests, no network
+
+embedding:
+  provider: dashscope
+  params:
+    model: text-embedding-v3
+    dimension: 1024
+    output_type: dense&sparse
+    # Omitted = EMBEDDING_API_KEY. Point it at another variable to use another account; the
+    # rate-limit gate separates with it.
+    api_key_env: EMBEDDING_API_KEY
+
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ Other infrastructure: each section is "pick an implementation + its args" ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+
+vector_store:
+  # file (on disk, dense+sparse hybrid retrieval takes effect) | in_memory (tests)
+  provider: file
+  params:
+    path: ./data/vectors
+    # Clear this directory before changing dimension: upsert raises on a dimension mismatch.
+
+agent_store:
+  # file | in_memory
+  provider: file
+  params:
+    path: ./data/agents
+
+message:
+  provider: in_memory
+  params: {}
+
+snapshot:
+  # file | in_memory
+  provider: file
+  params:
+    path: ./data/snapshots
+
+world:
+  # Source of the world's spatial template. min/max_agents bound the cast size at build time:
+  # falling short of the minimum fails the build instead of padding with filler characters,
+  # since a one-person show grows no narrative.
+  config: tiled
+  min_agents: 5
+  max_agents: 8
+
+engine:
+  max_concurrent_llm: 16       # process-wide cap on in-flight calls; orthogonal to rate_limit
+  decay_interval: 5
+  event_system_enabled: true
+  max_events_per_window: 2     # injection density is a sliding-window quota: at most M in the last N steps
+  event_quota_window: 20
+  event_check_interval: 6
+  # An idle agent (no pressure, no urgent need, no strong emotion) is pulled back into the
+  # decision loop at least every this many steps. One step ≈ one world hour and a waking day
+  # is ~16 hours; both numbers are set in world time.
+  main_max_idle_steps: 2
+  background_max_idle_steps: 6
+  max_npcs: 6                  # cap on actors with a body but no cognition. The cost is prompt
+                               # space, not memory: each takes a line in main-character decision prompts.
+
+# Rate-limit defaults. cooldown is always on (shared backoff after a 429); rpm / tpm default
+# to 0 = off and only apply once you fill in a known quota. Gates are per endpoint (each
+# llm.providers declaration); an endpoint's own rpm/tpm takes precedence.
+rate_limit:
+  cooldown_base: 2.0
+  cooldown_max: 30.0
+  retry_after_max: 120.0       # a longer Retry-After (a spent quota) fails calls instead of stalling every world
+  rpm: 0
+  tpm: 0
+
+logging:
+  level: INFO                  # use DEBUG to trace the full chain
+  fmt: json                    # json | console
+  output: stdout               # stdout | file | stdout+file
+  # file_path: ./data/logs/asamana.log
+  max_size_mb: 20
+  backup_count: 5
+
+observability:
+  # Records every LLM call (prompt / response / tokens / latency / stage) plus per-step total
+  # time, for the trace viewer and post-hoc audits. Disabled means zero overhead.
+  enabled: true
+  provider: jsonl              # jsonl | null
+  # capture_thinking: false    # thinking text is often several times the answer; not written by default (token counts always are)
+  params:
+    base_dir: ./data/traces
+    # prompt_max_chars: 0      # >0 truncates long prompts/responses to protect disk (0 = no truncation)
+
+web:
+  host: 127.0.0.1
+  port: 7860
+  cors_origins: ["*"]          # set the frontend's origin when deployed separately; * is fine for same-origin proxy / local
+  # Developer tools (trace viewer / audit / prompt replay) spawn subprocesses and can send any
+  # prompt to a paid LLM. Off by default; enable locally with ASAMANA_DEV_TOOLS=true, never in a
+  # public deployment.
+  dev_tools_enabled: ${ASAMANA_DEV_TOOLS:-false}

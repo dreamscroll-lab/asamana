@@ -1,0 +1,5 @@
+# Frontend build context = frontend/. Only source is needed.
+node_modules
+dist
+.DS_Store
+*.local

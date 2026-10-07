@@ -1,0 +1,509 @@
+{
+  "_doc": "EventSystem(叙事事件注入)验证场景。世界=长安宫变(玄武门之变前夜),premise(core_tension/narrative_theme)由 restore 的 world.analysis 注入,不在此重复。kind=gate 验 _passes_llm_check(节奏门);kind=plan 验 _generate_event_plan(生成事件+选通道)。plan 覆盖:接住近况钩子的环境/动静广播(environment_omen)、天然天候广播(weather_omen,天气变化——政治世界里唯一不与权斗打架的纯环境事件)、全局信息广播(court_tidings)、定向投递(directed_dread)、双通道(dual_palace)、不重复已注入(avoid_repeat)、空间僵局(spatial_stalemate,人人困在一处);gate 覆盖该注入(冷场)/不该注入(刚饱和)。**数据具体且贴合史实**(长林兵、嘉猷门、常何、密表、房杜乔装、昆明池设伏…),禁止为高分构造。近况遵叙事认知论:公开之事写**确凿可观测的事实**,机密之事写**观测痕迹或传闻**('有…传出''据…密报'),不写全知的私密意图。step=60 以容纳近况快照;recent[].actions 的 actor 须为主角才显示在近况,背景/环境变化走 annotations。relations 注入最新一帧关系标签+演化描述;prior_events 注入已注入事件。description/expect 是设计意图,不喂答案。",
+  "scenarios": [
+    {
+      "name": "plan_environment_omen",
+      "kind": "plan",
+      "step": 60,
+      "description": "黎明前的玄武门一带出现反常动静——守军换防、火把通明。近况里已铺下这个钩子,适合编辑接住、把它向前推一步,成为在场或临近之人可公开感知的一桩动静。",
+      "expect": "事件应**接住近况里玄武门守军换防、火把通明这个钩子**、把它向前推一步——守军、门禁、巡防一带客观公开、具体可感的进一步动静(可锁定玄武门,宜走 broadcast);只要扎根这个近况钩子即可,不强求是纯自然环境、也不必抛开钩子另起炉灶。不写成既成伤亡,不替人定计。",
+      "locations": {
+        "李世民": "qinwang_fu",
+        "李建成": "dongong",
+        "李渊": "taiji_palace"
+      },
+      "relations": [
+        {
+          "from": "李世民",
+          "to": "李建成",
+          "labels": [
+            "兄弟:弟弟",
+            "夺嫡死敌"
+          ],
+          "history_summary": "建成于东宫设宴,我饮其酒后归府呕血数升、几乎丧命;又联齐王元吉在父皇前进谗,调走我府中尉迟恭、程知节诸将。",
+          "trust": 0.05,
+          "affection": -0.85
+        },
+        {
+          "from": "李建成",
+          "to": "李世民",
+          "labels": [
+            "兄弟:哥哥",
+            "心腹大患"
+          ],
+          "history_summary": "世民功盖天下,秦王府房玄龄、杜如晦、尉迟恭皆死士,我若不先发,东宫储位难保。",
+          "trust": 0.05,
+          "affection": -0.8
+        }
+      ],
+      "recent": [
+        {
+          "time": "武德九年，六月初三，戌时",
+          "actions": [
+            {
+              "actor": "李建成",
+              "location": "dongong",
+              "outcome": "遣东宫属官携金帛二车至秦王府将领段志玄宅,许以厚禄求其归附;段志玄闭门不纳,原物退回。"
+            }
+          ]
+        },
+        {
+          "time": "武德九年，六月初三，亥时",
+          "actions": [
+            {
+              "actor": "李世民",
+              "location": "qinwang_fu",
+              "outcome": "入夜后闭门谢客,有两名身着道袍者由侧门入府,正堂一灯彻夜不熄。"
+            }
+          ],
+          "annotations": [
+            {
+              "location": "xuanwu_gate",
+              "content": "[守军异动] 玄武门当值卫士换了一批生面孔,皆执长戟分立门侧;守将常何亲自巡城,火把比往夜多燃了一倍。",
+              "actor": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "plan_weather_omen",
+      "kind": "plan",
+      "step": 60,
+      "description": "长安连日酷暑郁蒸,入夜暑气不散、西天积起墨色云头,远处闷雷隐隐——一场夏夜暴雨将至。这是世界自身的天候,与谁的密谋无关,却将笼罩这剑拔弩张的一夜。",
+      "expect": "事件应是一桩客观的天候/环境变化(暴雨、夜雾、骤起的风雷一类),全域或长安城可感知(宜走 broadcast,可不锁定地点),扎根于时令(武德九年盛夏六月初三)与近况铺垫的闷热将雨;它不必挤压某条政治张力,但必须真正改变处境——成为众人行动的变量(挡路、掩护、逼人改期或改道),而非只为这一夜添一层背景质感。内容具体可感,不写成既成伤亡,不替人定计。",
+      "locations": {
+        "李世民": "qinwang_fu",
+        "李建成": "dongong",
+        "李渊": "taiji_palace"
+      },
+      "relations": [
+        {
+          "from": "李世民",
+          "to": "李建成",
+          "labels": [
+            "兄弟:弟弟",
+            "夺嫡死敌"
+          ],
+          "history_summary": "积怨已深、势同水火,只待天明摊牌。",
+          "trust": 0.05,
+          "affection": -0.85
+        }
+      ],
+      "recent": [
+        {
+          "time": "武德九年，六月初三，申时",
+          "broadcasts": [
+            {
+              "content": "连日酷暑,长安街巷暑气蒸腾,行人皆避入檐下;午后西天积起墨色云头,闷得人喘不过气。",
+              "location": null,
+              "severity": "low"
+            }
+          ]
+        },
+        {
+          "time": "武德九年，六月初三，戌时",
+          "actions": [
+            {
+              "actor": "李世民",
+              "location": "qinwang_fu",
+              "outcome": "在府中闷热难当,推开窗棂,望见西边天际墨云压城、隐隐透出雷光,料这一夜必有风雨。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "plan_court_tidings",
+      "kind": "plan",
+      "step": 60,
+      "description": "皇帝李渊接到一封加急密表后,连夜传旨命太子、秦王明晨入宫对质——这道风声正沿宫禁传开,是一桩牵动全局、人人当知的世界级消息。",
+      "expect": "事件应是全域可感知的世界级消息(传旨、对质将至一类的朝野动静,具体到何人传何旨、何时何地),挤压'储位裁决悬而未决'这条核心张力;不预先替皇帝写出裁断结果。",
+      "locations": {
+        "李世民": "qinwang_fu",
+        "李建成": "dongong",
+        "李渊": "taiji_palace"
+      },
+      "relations": [
+        {
+          "from": "李世民",
+          "to": "李渊",
+          "labels": [
+            "父子:儿子"
+          ],
+          "history_summary": "父皇既倚我平刘武周、王世充之功,又忌我兵权日盛;储位之争上屡屡迟疑,前许我太子又中辍。",
+          "trust": 0.5,
+          "affection": 0.55
+        },
+        {
+          "from": "李建成",
+          "to": "李渊",
+          "labels": [
+            "父子:儿子"
+          ],
+          "history_summary": "我居东宫太子之位名分早定,然父皇近来似为世民之功所动,我心不安。",
+          "trust": 0.55,
+          "affection": 0.6
+        }
+      ],
+      "recent": [
+        {
+          "time": "武德九年，六月初三，酉时",
+          "actions": [
+            {
+              "actor": "李渊",
+              "location": "taiji_palace",
+              "outcome": "于太极宫拆阅一封加急密表,阅毕掷表于案、面色骤沉,当即唤内侍裴寂近前低语数句。"
+            }
+          ]
+        },
+        {
+          "time": "武德九年，六月初三，戌时",
+          "broadcasts": [
+            {
+              "content": "太极宫内侍连夜持黄封文书出入东宫与秦王府,宫门下钥又复开,值夜宫人交头私语。",
+              "location": "taiji_palace",
+              "severity": "medium"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "plan_directed_dread",
+      "kind": "plan",
+      "step": 60,
+      "description": "一桩只该由李世民独自察觉的私密信号——一封自皇城疾送入府的密报,牵动他'功高震主、命悬一线'的处境。它不是公开动静,而是定向落在他一人身上的。",
+      "expect": "事件应定向投递给李世民一人(其余人不该公开感知),贴合他眼下的险境;内容具体可感(具体的来人、信物、口信指向),直接面向他,不以第三人称指称他,不替他做出抉择。",
+      "locations": {
+        "李世民": "qinwang_fu",
+        "尉迟恭": "qinwang_fu"
+      },
+      "relations": [
+        {
+          "from": "李世民",
+          "to": "李建成",
+          "labels": [
+            "兄弟:弟弟",
+            "夺嫡死敌"
+          ],
+          "history_summary": "建成设宴鸩我于前,又谋伏杀我于后,势不两立、退无可退。",
+          "trust": 0.05,
+          "affection": -0.85
+        },
+        {
+          "from": "李世民",
+          "to": "尉迟恭",
+          "labels": [
+            "君臣:主公"
+          ],
+          "history_summary": "尉迟恭骁勇,美良川一战救我于刘武周枪下,几番于阵中护我周全。",
+          "trust": 0.9,
+          "affection": 0.6
+        }
+      ],
+      "recent": [
+        {
+          "time": "武德九年，六月初三，亥时",
+          "actions": [
+            {
+              "actor": "李世民",
+              "location": "qinwang_fu",
+              "outcome": "独坐府中书房,案上摊着东宫与齐王府近月往来的名册,一盏茶凉了又续,迟迟未眠。"
+            }
+          ],
+          "annotations": [
+            {
+              "location": "qinwang_fu",
+              "content": "[密报送达] 一骑自皇城方向疾驰入府,马不及卸鞍;来人径被引入内室,据传是宫中眼线送来的紧要口信。",
+              "actor": "尉迟恭"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "plan_dual_palace_stir",
+      "kind": "plan",
+      "step": 60,
+      "description": "东宫深夜调集长林兵,甲胄铿锵惊动四下——既是众人可闻的公开骚动,又格外牵动最受其害的李世民。一桩波及众人的变故,公开一份、当事人一份。",
+      "expect": "宜双通道:一份客观公开的广播(东宫方向具体可感的兵马骚动),外加一份定向给李世民的感受;两者各司其职、不互相替代,不写成既成的兵变事实。",
+      "locations": {
+        "李世民": "qinwang_fu",
+        "李建成": "dongong"
+      },
+      "relations": [
+        {
+          "from": "李世民",
+          "to": "李建成",
+          "labels": [
+            "兄弟:弟弟",
+            "夺嫡死敌"
+          ],
+          "history_summary": "我与建成已成死局,他若先动,我秦王府上下老幼皆危。",
+          "trust": 0.05,
+          "affection": -0.85
+        }
+      ],
+      "recent": [
+        {
+          "time": "武德九年，六月初三，亥时",
+          "actions": [
+            {
+              "actor": "李建成",
+              "location": "dongong",
+              "outcome": "在东宫嘉猷门内集结长林兵八百,甲胄齐备、刀槊出鞘,约束众人衔枚,似为明晨早朝预作部署。"
+            }
+          ],
+          "annotations": [
+            {
+              "location": "dongong",
+              "content": "[兵马调动] 入夜后东宫方向甲叶铿锵、马嘶不绝,巡夜金吾卫远远望见火把连成一片,不敢近前。",
+              "actor": "李建成"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "plan_avoid_repeat_prior_ambush",
+      "kind": "plan",
+      "step": 60,
+      "description": "此前已注入过一桩'昆明池设伏'的波折(见已注入事件)。眼下若再来一记雷同的伏杀密报,便是同一批人、同一手法的重复。该换一个角度、另起一处压力。",
+      "expect": "事件不应与'昆明池设伏'同一批人、同一手法雷同;应另辟蹊径(换人物、换地点或换性质)、具体可感地挤压同一条储位之争的张力,而非重复造梗。",
+      "locations": {
+        "李世民": "qinwang_fu",
+        "李建成": "dongong",
+        "李渊": "taiji_palace"
+      },
+      "relations": [
+        {
+          "from": "李世民",
+          "to": "李建成",
+          "labels": [
+            "兄弟:弟弟",
+            "夺嫡死敌"
+          ],
+          "history_summary": "昆明池设伏之谋已为我眼线探得,我虽先知,凶险却未稍减。",
+          "trust": 0.05,
+          "affection": -0.85
+        }
+      ],
+      "recent": [
+        {
+          "time": "武德九年，六月初三，戌时",
+          "actions": [
+            {
+              "actor": "李世民",
+              "location": "qinwang_fu",
+              "outcome": "召长孙无忌、尉迟恭入府,命人取来玄武门内外布防图铺于案上,就着烛火反复推演方位。"
+            }
+          ]
+        }
+      ],
+      "prior_events": [
+        {
+          "narrative_desc": "眼线密报:太子借为齐王饯行出征之名,欲于昆明池席间设伏杀秦王。",
+          "affected": [
+            "李世民"
+          ],
+          "location": "xuanwu_gate",
+          "step": 56
+        }
+      ]
+    },
+    {
+      "name": "plan_spatial_stalemate",
+      "kind": "plan",
+      "step": 60,
+      "description": "三位主角连日困在太极殿廷议,同一套说辞翻来覆去:建成请削秦王兵权,世民以功自辩,李渊两头安抚、迟迟不决。殿外世界此刻发生什么,殿内无人知晓。",
+      "expect": "事件应让殿外的世界压进殿内,打破人人困在一处的空转。若仍只在殿内加码同一场争执、或在无人之处广播无人能感知的事,应被判低。",
+      "locations": {
+        "李世民": "taiji_palace",
+        "李建成": "taiji_palace",
+        "李渊": "taiji_palace"
+      },
+      "relations": [
+        {
+          "from": "李世民",
+          "to": "李建成",
+          "labels": [
+            "兄弟:弟弟",
+            "夺嫡死敌"
+          ],
+          "history_summary": "廷上连日相争,他步步要削我兵权,我寸步不让。",
+          "trust": 0.1,
+          "affection": -0.8
+        },
+        {
+          "from": "李渊",
+          "to": "李世民",
+          "labels": [
+            "父子:儿子",
+            "功高难制"
+          ],
+          "history_summary": "世民屡立大功,我既倚重又忌惮,不知该如何安置。",
+          "trust": 0.45,
+          "affection": 0.4
+        }
+      ],
+      "recent": [
+        {
+          "time": "武德九年，六月初一，巳时",
+          "actions": [
+            {
+              "actor": "李建成",
+              "location": "taiji_palace",
+              "outcome": "在太极殿上再请削去秦王府兵马,言天策府将士只知有秦王、不知有陛下。"
+            },
+            {
+              "actor": "李世民",
+              "location": "taiji_palace",
+              "outcome": "当廷列举洛阳、虎牢之功,称府中将士皆为国效死,削之寒天下将士之心。"
+            }
+          ]
+        },
+        {
+          "time": "武德九年，六月初二，巳时",
+          "actions": [
+            {
+              "actor": "李渊",
+              "location": "taiji_palace",
+              "outcome": "命二子各退一步,称此事容后再议,当日罢朝。"
+            },
+            {
+              "actor": "李建成",
+              "location": "taiji_palace",
+              "outcome": "复入太极殿,仍以秦王府兵马过盛为由请削其兵权。"
+            }
+          ]
+        },
+        {
+          "time": "武德九年，六月初三，巳时",
+          "actions": [
+            {
+              "actor": "李世民",
+              "location": "taiji_palace",
+              "outcome": "仍在殿上以旧功自辩,与太子言辞往复,与前两日所言几无二致。"
+            },
+            {
+              "actor": "李渊",
+              "location": "taiji_palace",
+              "outcome": "又一次两头安抚、未作决断,命二人留殿候旨。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "gate_lull_warrants_beat",
+      "kind": "gate",
+      "step": 60,
+      "description": "连日来只有零碎的例行政务——批文、操演、议礼,无任何重新定向局势的转折。生死博弈的张力仍在,故事却陷入僵持冷场,迟迟不见推进。",
+      "expect": "节奏判断应准确读出'冷场/僵持、缺乏推进'的状态;此时倾向注入一拍打破僵局是合理的。任一判断只要 reason 由近况如实推出即可;若明显冷场却以空泛理由拒绝、或理由与近况相悖,应被判低。",
+      "locations": {
+        "李世民": "qinwang_fu",
+        "李建成": "dongong",
+        "李渊": "taiji_palace"
+      },
+      "relations": [
+        {
+          "from": "李世民",
+          "to": "李建成",
+          "labels": [
+            "兄弟:弟弟",
+            "夺嫡死敌"
+          ],
+          "history_summary": "积怨已深、势同水火,然近日并无新的冲突挑动。",
+          "trust": 0.1,
+          "affection": -0.8
+        }
+      ],
+      "recent": [
+        {
+          "time": "武德九年，六月初二，辰时",
+          "actions": [
+            {
+              "actor": "李渊",
+              "location": "taiji_palace",
+              "outcome": "于太极宫批阅岭南、剑南二道呈上的赋税文书,无大事可议,午前即罢朝。"
+            }
+          ]
+        },
+        {
+          "time": "武德九年，六月初二，午时",
+          "actions": [
+            {
+              "actor": "李世民",
+              "location": "qinwang_fu",
+              "outcome": "在府中校场点视亲兵骑射,例行操演毕,赏酒一巡,各自散去。"
+            }
+          ]
+        },
+        {
+          "time": "武德九年，六月初三，辰时",
+          "actions": [
+            {
+              "actor": "李建成",
+              "location": "dongong",
+              "outcome": "在东宫接见太常寺属官,议定夏至祭祀的仪注与牲牢数目,别无他事。"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "gate_saturated_just_injected",
+      "kind": "gate",
+      "step": 60,
+      "description": "张力已绷至极点:玄武门设伏的密报刚刚搅动全局(见已注入事件,就在上一拍),秦王府连夜披甲、各方剑拔弩张。此刻再强行加一记波折,只会喧嚣过度、盖过人物自身的应对。",
+      "expect": "节奏判断应读出'刚注入过、张力已饱和'的状态,倾向暂不注入、把舞台让给人物消化变故。若无视刚发生的强烈变故而再次注入,且理由未交代必要性,应被判低。",
+      "locations": {
+        "李世民": "qinwang_fu",
+        "李建成": "dongong"
+      },
+      "relations": [
+        {
+          "from": "李世民",
+          "to": "李建成",
+          "labels": [
+            "兄弟:弟弟",
+            "夺嫡死敌"
+          ],
+          "history_summary": "伏谋已露,双方都已按剑束甲,只待天明摊牌。",
+          "trust": 0.05,
+          "affection": -0.85
+        }
+      ],
+      "recent": [
+        {
+          "time": "武德九年，六月初三，子时",
+          "actions": [
+            {
+              "actor": "李世民",
+              "location": "qinwang_fu",
+              "outcome": "闻玄武门设伏之讯,当夜披甲,召尉迟恭、张公谨等九将入府,分授玄武门内外的埋伏方位。"
+            }
+          ],
+          "broadcasts": [
+            {
+              "content": "子夜时分秦王府灯火尽明,甲士束装列于庭中,战马已备鞍辔,门禁森严不放一人出入。",
+              "location": "qinwang_fu",
+              "severity": "high"
+            }
+          ]
+        }
+      ],
+      "prior_events": [
+        {
+          "narrative_desc": "密报急传秦王府:太子已于玄武门内伏下甲士,欲在明晨入朝时将秦王就地诛杀。",
+          "affected": [
+            "李世民"
+          ],
+          "location": "xuanwu_gate",
+          "step": 59
+        }
+      ]
+    }
+  ]
+}

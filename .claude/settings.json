@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -m pytest tests/ *)",
+      "Bash(.venv/bin/python -m pytest tests/unit/ *)"
+    ]
+  }
+}

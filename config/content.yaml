@@ -1,0 +1,49 @@
+# UI content: copy, not behavior.
+#
+# Kept apart from config.yaml because they differ in kind: that file decides how the system runs
+# (model routing, concurrency, storage) and needs a restart to change; this one is just text
+# shown to users and should take effect immediately. So deploy/docker-compose.yml mounts it into
+# the container and the server re-reads it on every request: edit this file and refresh the
+# page, no image rebuild or restart.
+#
+# The file may be missing (the UI then just shows less), but whatever is written must be valid:
+# a format error is logged at error level, not silently ignored.
+
+# Home page "试试这些" (try these): clicking one fills its theme into the input box.
+# - title: short name shown on the pill (4–6 characters fits best; longer stretches the row)
+# - theme: the full theme description actually submitted to world building
+# Themes and maps need not correspond one-to-one: world building picks a map from the theme
+# (see TemplateSelector).
+presets:
+  - title: 玄武门之变
+    theme: 玄武门之变：大唐初年的手足相残与夺嫡风云
+  - title: 有内鬼，停止交易
+    theme: |
+      侦探小分队由于秘密行动屡次泄漏，经过排查，他们可以确定是小分队内部出现了叛徒，他们现在的首要目标是将叛徒找出来。
+      基础设定
+      1. 小队≥7 人，共 2 名叛徒，其余为好人。
+      2. 每个人只知道叛徒总数是 2；叛徒知道自己是叛徒，但不知道另一个叛徒是谁；好人知道自己是好人。
+      角色目标
+      - 叛徒：隐藏身份，尝试找出自己的队友；干扰好人。
+      - 好人：通过讨论与线索，推理找出全部 2 名叛徒。
+      信息规则
+      1. 所有人可自由发言。
+      2. 没有人能直接查看他人身份。
+      3. 有用的线索会遍布在城市的各个角落。线索可有真的，也可以有干扰的。
+      行为底线
+      1. 禁止自爆身份、直接点名叛徒队友。
+      2. 叛徒就算一直找不到彼此，也依然有机会获胜。
+      3. 叛徒和好人一开始就要确认，叛徒和好人不要互换身份。
+      4. 叙事要有逻辑条理，同时也不失风趣幽默，禁涉及警察，军事，政治，制度，公众人物等敏感话题内容。
+  - title: 李华去哪儿了
+    theme: |
+      高考前夕，常年拜托大家写书信的李华离奇失踪。
+      一众高三考生炸开锅，迅速分成两派。
+
+      英语成绩好的同学自成一派，他们十分擅长替李华给外国笔友写信，不太希望找到李华。
+      另一派是英语成绩比较差的同学，他们不擅长帮李华写信给外国笔友，格外希望找到李华。
+      李华一心只想躲起来不被发现，一旦被找到，就轮到他自己亲自给外国笔友写信了。
+
+      叙事要有逻辑条理，同时也不失风趣幽默，禁止涉及警察，军事，政治，制度，公众人物等敏感话题内容。
+
+      提示：高考生帮李华写信给外国笔友是中国高考的网络梗。

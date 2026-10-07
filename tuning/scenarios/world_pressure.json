@@ -1,0 +1,183 @@
+{
+  "_comment": "world_pressure 验证场景集。可编辑。agent 用人名引用(harness 解析名→id)。location 占位符由 validator 解析：@loc_of:<人名> → 该 agent 当前 location_id；@empty_location → 世界图里无人所在的 location_id。criteria_focus: boundary | reasonableness | fields。",
+  "scenarios": [
+    {
+      "name": "broadcast_global",
+      "description": "只有一条全局世界级威胁广播。",
+      "criteria_focus": [
+        "reasonableness",
+        "fields"
+      ],
+      "expect": "处于现场的角色应生成 THREAT/EVENT 类、urgency 偏高的目标；字段合法。",
+      "scenario": {
+        "broadcasts": [
+          {
+            "content": "玄武门方向骤起喊杀，兵刃交击与马匹嘶鸣大作",
+            "severity": "high"
+          }
+        ]
+      }
+    },
+    {
+      "name": "broadcast_scoped_empty",
+      "description": "广播 scope 指向一个无人所在的地点（location 硬边界测试）。",
+      "criteria_focus": [
+        "boundary"
+      ],
+      "expect": "没有任何角色在该地点，应全员 goals 为空（不得越 location 边界）。",
+      "scenario": {
+        "broadcasts": [
+          {
+            "content": "偏僻库房传来闷响，似有重物倒地",
+            "severity": "high",
+            "location_scope": "@empty_location"
+          }
+        ]
+      }
+    },
+    {
+      "name": "broadcast_scoped_local",
+      "description": "广播 scope 限定到某在场角色所处地点。",
+      "criteria_focus": [
+        "boundary",
+        "reasonableness"
+      ],
+      "expect": "仅该地点的角色应被此广播触发压力；其他地点的角色不应因此广播生成目标。",
+      "scenario": {
+        "broadcasts": [
+          {
+            "content": "此处宫墙之上忽现弓弩手身影，箭镞泛光",
+            "severity": "high",
+            "location_scope": "@loc_of:李世民"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ambient_person",
+      "description": "location 级旁观者测试：一处可见的人身威胁在某地点上演，在场众人皆可目睹，但施压者本人(actor)被排除——检验同处旁观者是否对可见威胁应激。",
+      "criteria_focus": [
+        "reasonableness",
+        "boundary"
+      ],
+      "expect": "在场目睹者皆应应激：受威胁者(李世民)→高 urgency THREAT/自保；其同处盟友(长孙无忌/尉迟恭, 高信任)→应反应(护卫/反制)；施压者本人(李建成)不感知此叙述应无目标；不在场者(李渊)无目标。",
+      "scenario": {
+        "ambient": [
+          {
+            "content": "李建成按剑疾步逼近李世民，眼中杀机毕露",
+            "strength": 0.8,
+            "location": "@loc_of:李世民",
+            "exclude": "李建成"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ambient_impersonal",
+      "description": "只有感知：环境痕迹不涉及任何具体人。",
+      "criteria_focus": [
+        "reasonableness",
+        "fields"
+      ],
+      "expect": "应是较温和/低 urgency 的 EVENT 类，或无明显压力；不应凭空制造人际威胁。",
+      "scenario": {
+        "ambient": [
+          {
+            "content": "晨雾弥漫，远处隐约可见火光摇曳",
+            "strength": 0.4
+          }
+        ]
+      }
+    },
+    {
+      "name": "message_authority",
+      "description": "只有定向消息：来自权威方的指令/召见。",
+      "criteria_focus": [
+        "reasonableness",
+        "boundary"
+      ],
+      "expect": "收件人(李世民)应生成 AUTHORITY 类、应响应的目标（除非情境本身即将颠覆该权威）；非收件人无自身急性信号→不应承压，且绝不得引用该私密召见(信息边界)。",
+      "scenario": {
+        "messages": [
+          {
+            "to": "李世民",
+            "from": "李渊",
+            "content": "朕已知晓今日之事，命你即刻入宫觐见，不得有误",
+            "urgency": "high"
+          }
+        ]
+      }
+    },
+    {
+      "name": "message_threat",
+      "description": "只有定向消息：压迫/威胁性。",
+      "criteria_focus": [
+        "reasonableness",
+        "boundary"
+      ],
+      "expect": "收件人(李建成)应生成 THREAT 类、自保/反制、urgency 偏高的目标；非收件人无自身急性信号→不应承压，且不得引用该私密威胁(信息边界)。",
+      "scenario": {
+        "messages": [
+          {
+            "to": "李建成",
+            "from": "李世民",
+            "content": "兄长，今日玄武门便是你的死期，束手就缚或可留全尸",
+            "urgency": "critical"
+          }
+        ]
+      }
+    },
+    {
+      "name": "message_inform",
+      "description": "只有定向消息：单纯告知,无威胁无指令。",
+      "criteria_focus": [
+        "reasonableness",
+        "fields"
+      ],
+      "expect": "收件人(尉迟恭)应是低 urgency、信息性目标或无明显压力，不应过度升级为威胁；非收件人无自身急性信号→不应承压。",
+      "scenario": {
+        "messages": [
+          {
+            "to": "尉迟恭",
+            "from": "长孙无忌",
+            "content": "粮草与备用兵刃已悄然运抵后院，一切就绪",
+            "urgency": "normal"
+          }
+        ]
+      }
+    },
+    {
+      "name": "combined_all",
+      "description": "三通道齐发：全局广播 + 定向消息 + 涉人 ambient。",
+      "criteria_focus": [
+        "boundary",
+        "reasonableness",
+        "fields"
+      ],
+      "expect": "各信号应分别落到正确的角色（不串味）；综合压力合理；字段合法。",
+      "scenario": {
+        "broadcasts": [
+          {
+            "content": "玄武门内外杀声震天，局势骤变",
+            "severity": "high"
+          }
+        ],
+        "messages": [
+          {
+            "to": "李世民",
+            "from": "长孙无忌",
+            "content": "常何已控北门，太子车驾将至，请殿下速决",
+            "urgency": "high"
+          }
+        ],
+        "ambient": [
+          {
+            "content": "宫墙阴影中甲士伏动，弓弦渐张",
+            "strength": 0.7,
+            "agent": "李建成"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,299 @@
+{
+  "_comment": "perception_emotion(感知情绪)阶段验证场景集。该阶段在『感知之后、决策之前』生成本能即时情绪——未经权衡、不持久化到人格,仅作为该步决策的情绪底色。所有 agent 一律走 LLM 认知路径(CLAUDE.md §5,无规则档),故每个在场 agent 都产出可评判的 LLM 情绪。本套件:确定性字段检查(原始 LLM 输出的语法/字段)+ LLM judge(语法/语义/功能定位三维打分)。无旋钮/A/B——本阶段 LLM 路径无数值旋钮,唯一杠杆是 prompt,而 prompt 不得对测试过拟合。场景是测试数据,可引用具体世界(玄武门:李世民/李建成/长孙无忌/尉迟恭=主角@xuanwu_gate,李渊=背景@taiji_palace);生产代码保持主题中立。可注入信号:broadcasts/messages/ambient/private/external_goals。",
+  "scenarios": [
+    {
+      "name": "acute_threat",
+      "criteria_focus": [
+        "semantic",
+        "functional"
+      ],
+      "description": "生死攸关的外部威胁压力 + 全域高烈度广播同时降临主角。",
+      "expect": "即时情绪应为恐惧/警觉一类、负向、强度高;reason 是被激起的本能反应,而非已成形的决策或行动指令。",
+      "scenario": {
+        "external_goals": [
+          {
+            "to": "李世民",
+            "text": "有人正持刃向你逼近",
+            "urgency": "critical",
+            "drive_type": "threat",
+            "source": "world"
+          }
+        ],
+        "broadcasts": [
+          {
+            "content": "宫门方向骤起喊杀，火光冲天",
+            "severity": "high"
+          }
+        ]
+      }
+    },
+    {
+      "name": "authority_summons",
+      "criteria_focus": [
+        "semantic",
+        "fields"
+      ],
+      "description": "来自最高权威的紧急召见压力,无直接威胁。",
+      "expect": "应是带压力的响应性情绪(期待/紧张一类),而非纯粹的恐惧或喜悦;强度适中偏高,极性中性偏负。",
+      "scenario": {
+        "external_goals": [
+          {
+            "to": "李世民",
+            "text": "立刻入宫面君",
+            "urgency": "high",
+            "drive_type": "authority",
+            "source": "李渊"
+          }
+        ]
+      }
+    },
+    {
+      "name": "urgent_message",
+      "criteria_focus": [
+        "semantic",
+        "functional"
+      ],
+      "description": "一条高紧迫度的密报直达主角。",
+      "expect": "应被这条急讯激起警觉/紧张的即时反应,reason 紧扣消息内容而非泛泛而谈。",
+      "scenario": {
+        "messages": [
+          {
+            "to": "李世民",
+            "from": "长孙无忌",
+            "content": "东宫已有异动，恐其先发制人",
+            "urgency": "high"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ally_warmth",
+      "criteria_focus": [
+        "semantic"
+      ],
+      "description": "无急迫负面信号;身边有亲信在场,并收到信赖之人的寻常消息。",
+      "expect": "在没有威胁的前提下,看见挚友/收到信赖者的平和消息应引出暖意、信任、安定一类的正向情绪,强度温和。",
+      "scenario": {
+        "messages": [
+          {
+            "to": "李世民",
+            "from": "长孙无忌",
+            "content": "诸事已备妥，静候时机",
+            "urgency": "normal"
+          }
+        ]
+      }
+    },
+    {
+      "name": "obligation_duty",
+      "criteria_focus": [
+        "semantic",
+        "fields"
+      ],
+      "description": "一项高紧迫度的责任/承诺压力,无威胁信号。",
+      "expect": "应是带责任感的决意/振奋一类(中性偏正),而非恐惧;强度与责任之重相称。",
+      "scenario": {
+        "external_goals": [
+          {
+            "to": "李世民",
+            "text": "今日必须护住麾下众人周全",
+            "urgency": "high",
+            "drive_type": "obligation",
+            "source": "world"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ambiguous_faint",
+      "criteria_focus": [
+        "functional"
+      ],
+      "description": "只有一条模糊、微弱、未明确指向主角的环境观察,别无其它信号。",
+      "expect": "即时反应应是轻微、低强度的(淡淡的留意/不安),绝不能升级为强烈恐惧——本能反应须与信号烈度相称,不过度升级。",
+      "scenario": {
+        "ambient": [
+          {
+            "content": "廊柱后似有极轻微的衣料摩擦声，旋即又静",
+            "strength": 0.2,
+            "agent": "李世民"
+          }
+        ]
+      }
+    },
+    {
+      "name": "conflict_threat_vs_ally",
+      "criteria_focus": [
+        "semantic",
+        "functional"
+      ],
+      "description": "生死威胁与挚友在场同时出现。门区高强广播让在场所有人都真切感知到伏兵(李世民另有直指本人的威胁压力);太极宫的李渊在作用域外,感知不到。",
+      "expect": "凡感知到伏兵的在场者,本能都应被急迫危险主导(负向、警觉);挚友在场可影响色彩,但不应压过生死威胁——在威胁信号下给出纯正向(trust/喜悦)即为失真。考察对竞争信号的合理取舍。",
+      "scenario": {
+        "external_goals": [
+          {
+            "to": "李世民",
+            "text": "伏兵已起，刀锋直指你",
+            "urgency": "critical",
+            "drive_type": "threat",
+            "source": "world"
+          }
+        ],
+        "broadcasts": [
+          {
+            "content": "宫门内外伏兵骤起，刀光乍现，杀机四伏",
+            "severity": "high",
+            "location_scope": "@loc_of:李世民"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ambient_only_danger",
+      "criteria_focus": [
+        "semantic",
+        "functional"
+      ],
+      "description": "只有环境观察:浓烈血腥味、奔逃脚步、远处兵刃相击——无任何消息/广播/外部压力。",
+      "expect": "应能从环境本身推断出危险、生出警觉(safety 被激活);情绪由 ambient 独立支撑,不应因『无明示威胁』而无动于衷。",
+      "scenario": {
+        "ambient": [
+          {
+            "content": "空气里突然涌起浓烈的血腥气",
+            "strength": 0.6
+          },
+          {
+            "content": "不远处传来杂沓的奔逃脚步与压抑的惊呼",
+            "strength": 0.55
+          },
+          {
+            "content": "墙那侧隐约有兵刃相击的脆响",
+            "strength": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "name": "ambient_only_calm",
+      "criteria_focus": [
+        "functional"
+      ],
+      "description": "只有平和的环境观察:晨光、鸟鸣、庭中扫洒声——别无信号。",
+      "expect": "应平静/中性、低强度;不应从寻常安宁里凭空升起强烈情绪;need_activation 普遍很低或为空。",
+      "scenario": {
+        "ambient": [
+          {
+            "content": "晨光斜照在廊柱上，檐下有麻雀啁啾",
+            "strength": 0.2
+          },
+          {
+            "content": "庭院里传来仆役洒扫的窸窣声",
+            "strength": 0.15
+          }
+        ]
+      }
+    },
+    {
+      "name": "ambient_only_social",
+      "criteria_focus": [
+        "semantic"
+      ],
+      "description": "只有环境观察,且暗示他人聚集与低语:不远处几人围聚、压低声音交谈,目光时而扫来。",
+      "expect": "应生出与社交/被注视相关的轻度反应(好奇/在意/微戒备),need_activation 偏向 social/esteem;强度温和,不应直接判成生死恐惧。",
+      "scenario": {
+        "ambient": [
+          {
+            "content": "廊下三两人影围聚，压低了声音交谈",
+            "strength": 0.4
+          },
+          {
+            "content": "那几人交谈间，目光时不时扫向你这边",
+            "strength": 0.4
+          }
+        ]
+      }
+    },
+    {
+      "name": "mixed_channels",
+      "criteria_focus": [
+        "semantic",
+        "functional"
+      ],
+      "description": "四通道并发但都不急迫:亲信的平常问候消息 + 区域级中等广播 + 中性环境观察 + 一条常规职责压力。",
+      "expect": "应把多条并发信号整合成一个连贯的即时反应,而非对每条各起一种情绪;无急迫负面信号时整体偏安定,强度温和。",
+      "scenario": {
+        "messages": [
+          {
+            "to": "李世民",
+            "from": "长孙无忌",
+            "content": "今晨一切如常，无须挂心",
+            "urgency": "normal"
+          }
+        ],
+        "broadcasts": [
+          {
+            "content": "宫中按例开始晨间换值",
+            "severity": "medium"
+          }
+        ],
+        "ambient": [
+          {
+            "content": "庭中旗幡在风里轻摆",
+            "strength": 0.3,
+            "agent": "李世民"
+          }
+        ],
+        "external_goals": [
+          {
+            "to": "李世民",
+            "text": "按例处置今日府中庶务",
+            "urgency": "normal",
+            "drive_type": "obligation",
+            "source": "world"
+          }
+        ]
+      }
+    },
+    {
+      "name": "overlapping_same_event",
+      "criteria_focus": [
+        "semantic",
+        "functional"
+      ],
+      "description": "同一突发事件经四个通道重叠传来:全域广播、亲信急报、近处环境声、以及指向该事件的外部威胁压力,均是同一场宫门骚乱。",
+      "expect": "应识别这是『同一件事』并形成单一、连贯的强烈反应,而非当成多起独立危机叠加放大;reason 紧扣那一事件。",
+      "scenario": {
+        "broadcasts": [
+          {
+            "content": "宫门方向骤起骚乱，人马奔突",
+            "severity": "high"
+          }
+        ],
+        "messages": [
+          {
+            "to": "李世民",
+            "from": "尉迟恭",
+            "content": "宫门出事了，速做决断",
+            "urgency": "high"
+          }
+        ],
+        "ambient": [
+          {
+            "content": "宫门那头隐隐传来喧哗与马蹄声",
+            "strength": 0.55,
+            "agent": "李世民"
+          }
+        ],
+        "external_goals": [
+          {
+            "to": "李世民",
+            "text": "宫门之变迫在眼前，须立时应对",
+            "urgency": "high",
+            "drive_type": "threat",
+            "source": "world"
+          }
+        ]
+      }
+    }
+  ]
+}

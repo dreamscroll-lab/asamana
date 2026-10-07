@@ -1,0 +1,178 @@
+{
+  "_comment": "perception(感知记忆化)阶段验证场景集 + 旋钮组。perception 纯规则无 LLM。场景聚焦『阈值 / 上限(cap) / 去重 / visible_agent 门控 / importance 切点』的边界判断,用刚好卡边界的输入去触发选择逻辑;确定性检查验证选择遵守规则,A/B(baseline vs 变体旋钮)展示改阈值/上限后边界如何移动。agent 用人名引用(名→id),location 占位 @loc_of:<人名>/@empty_location 由 validator 解析。可注入信号:broadcasts/messages/ambient(可带 strength)/private/external_goals。玄武门世界:李世民/李建成/长孙无忌/尉迟恭=主角@xuanwu_gate,李渊=背景@taiji_palace。",
+  "knob_sets": {
+    "baseline": {},
+    "bg_eq_main": {
+      "threshold_bg": 0.15
+    }
+  },
+  "scenarios": [
+    {
+      "name": "threshold_main_boundary",
+      "description": "两条全局 ambient,强度刚好卡在主角阈值两侧:0.15(==阈值)与 0.14(<阈值)。",
+      "criteria_focus": [
+        "threshold"
+      ],
+      "expect": "主角应保留 0.15、丢弃 0.14(主角阈值 0.15,>= 才入)。背景(李渊,阈值 0.35)两条都丢。",
+      "scenario": {
+        "ambient": [
+          {
+            "content": "廊下似有极轻的脚步声",
+            "strength": 0.15
+          },
+          {
+            "content": "远处一丝若有若无的微响",
+            "strength": 0.14
+          }
+        ]
+      }
+    },
+    {
+      "name": "threshold_bg_boundary",
+      "description": "两条全局 ambient,强度卡在背景阈值两侧:0.35(==背景阈值)与 0.34(<背景阈值)。",
+      "criteria_focus": [
+        "threshold"
+      ],
+      "expect": "背景(李渊)应保留 0.35、丢弃 0.34;主角(阈值 0.15)两条都留。bg_eq_main 旋钮下李渊也会留 0.34(A/B diff 体现)。",
+      "scenario": {
+        "ambient": [
+          {
+            "content": "院中传来一阵清晰的器物碰撞",
+            "strength": 0.35
+          },
+          {
+            "content": "墙角有一点细微的窸窣",
+            "strength": 0.34
+          }
+        ]
+      }
+    },
+    {
+      "name": "message_cap_boundary",
+      "description": "向李世民灌入 6 条不同内容的消息(message 源主角 cap=5)。",
+      "criteria_focus": [
+        "caps"
+      ],
+      "expect": "李世民选中的 message 恰好截到 cap=5,且保留 strength 最高的(high>normal)。",
+      "scenario": {
+        "messages": [
+          {
+            "to": "李世民",
+            "from": "长孙无忌",
+            "content": "北门守军已就位",
+            "urgency": "normal"
+          },
+          {
+            "to": "李世民",
+            "from": "尉迟恭",
+            "content": "甲胄兵器分发完毕",
+            "urgency": "normal"
+          },
+          {
+            "to": "李世民",
+            "from": "长孙无忌",
+            "content": "宫门钥匙已取得",
+            "urgency": "normal"
+          },
+          {
+            "to": "李世民",
+            "from": "尉迟恭",
+            "content": "斥候回报东路无异",
+            "urgency": "normal"
+          },
+          {
+            "to": "李世民",
+            "from": "尉迟恭",
+            "content": "退路马匹备于侧门",
+            "urgency": "high"
+          },
+          {
+            "to": "李世民",
+            "from": "长孙无忌",
+            "content": "城中眼线传来新讯",
+            "urgency": "high"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ambient_cap_boundary",
+      "description": "向李世民投 3 条不同内容、过阈值的 ambient(ambient 源主角 cap=2)。",
+      "criteria_focus": [
+        "caps"
+      ],
+      "expect": "李世民选中的 ambient 恰好截到 cap=2,保留 strength 最高的两条。",
+      "scenario": {
+        "ambient": [
+          {
+            "content": "近处刀剑出鞘之声",
+            "strength": 0.6,
+            "agent": "李世民"
+          },
+          {
+            "content": "脚步杂沓自后逼近",
+            "strength": 0.55,
+            "agent": "李世民"
+          },
+          {
+            "content": "隐约的低声交谈",
+            "strength": 0.5,
+            "agent": "李世民"
+          }
+        ]
+      }
+    },
+    {
+      "name": "dedup",
+      "description": "三条内容完全相同的全局 ambient(strength 0.5)。",
+      "criteria_focus": [
+        "dedup"
+      ],
+      "expect": "同 source+content 去重塌缩为一条。",
+      "scenario": {
+        "ambient": [
+          {
+            "content": "空气中弥漫浓重血腥味",
+            "strength": 0.5
+          },
+          {
+            "content": "空气中弥漫浓重血腥味",
+            "strength": 0.5
+          },
+          {
+            "content": "空气中弥漫浓重血腥味",
+            "strength": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "name": "importance_cutoff",
+      "description": "强度卡在 importance 两个切点附近:broadcast high(→0.75,HIGH)+ ambient 0.4(==MEDIUM切点)+ ambient 0.39(<MEDIUM切点→LOW)。",
+      "criteria_focus": [
+        "importance"
+      ],
+      "expect": "0.75→HIGH、0.4→MEDIUM、0.39→LOW;均过主角阈值故都入(ambient 两条未超 cap=2)。importance 分桶随切点旋钮变化。",
+      "scenario": {
+        "broadcasts": [
+          {
+            "content": "喊杀声自宫门内炸开，火光冲天",
+            "severity": "high"
+          }
+        ],
+        "ambient": [
+          {
+            "content": "石阶上一摊将干的暗红",
+            "strength": 0.4,
+            "agent": "李世民"
+          },
+          {
+            "content": "栏杆上一道极浅的刮痕",
+            "strength": 0.39,
+            "agent": "李世民"
+          }
+        ]
+      }
+    }
+  ]
+}

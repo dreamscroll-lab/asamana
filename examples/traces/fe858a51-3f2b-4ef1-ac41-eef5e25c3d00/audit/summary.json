@@ -1,0 +1,365 @@
+{
+  "world_id": "fe858a51-3f2b-4ef1-ac41-eef5e25c3d00",
+  "world_name": "屋内之人",
+  "generated_at": "2026-10-07T07:13:23.580168",
+  "judge_model": "qwen3.7-max",
+  "step_count": 35,
+  "agent_count": 7,
+  "ran_scopes": [
+    "initialization",
+    "multi_agent_multi_step",
+    "single_agent_multi_step"
+  ],
+  "filters": {
+    "agents": null,
+    "steps": null
+  },
+  "world_score": 97.0,
+  "coverage": 0.94,
+  "dimensions": {
+    "persona_worldview": {
+      "name": "人设与世界观一致性",
+      "category": "basic",
+      "weight": 20,
+      "effective_weight": 20.0,
+      "inspect": "言行是否偏离其性格设定 / 身份 / 世界观常识（含时间线常识、已死者不复现）",
+      "score": 100.0,
+      "coverage": 1.0,
+      "sources": {
+        "single_agent_multi_step": {
+          "score": 100.0,
+          "samples": 7,
+          "weight": 60,
+          "share": 0.6,
+          "stale": false
+        },
+        "multi_agent_multi_step": {
+          "score": 100.0,
+          "samples": 1,
+          "weight": 20,
+          "share": 0.2,
+          "stale": false
+        },
+        "initialization": {
+          "score": 100.0,
+          "samples": 1,
+          "weight": 20,
+          "share": 0.2,
+          "stale": false
+        }
+      },
+      "abstained": [],
+      "stale": []
+    },
+    "causal_coherence": {
+      "name": "因果逻辑连贯性",
+      "category": "basic",
+      "weight": 20,
+      "effective_weight": 14.0,
+      "inspect": "行动 / 情绪 / 需求能否从其感知 / 动机 / 记忆找到明确因果来源,不凭空、不失忆、不臆造事实",
+      "score": 95.0,
+      "coverage": 0.7,
+      "sources": {
+        "single_agent_multi_step": {
+          "score": 95.0,
+          "samples": 7,
+          "weight": 55,
+          "share": 0.85,
+          "stale": false
+        },
+        "initialization": {
+          "score": 95.0,
+          "samples": 1,
+          "weight": 15,
+          "share": 0.15,
+          "stale": false
+        }
+      },
+      "abstained": [],
+      "stale": []
+    },
+    "action_efficacy": {
+      "name": "行动有效性与社交率",
+      "category": "basic",
+      "weight": 20,
+      "effective_weight": 20.0,
+      "inspect": "是否无意义空转 / 重复打转;社交是否真正改变了世界状态或关系,而非流于形式",
+      "score": 89.4,
+      "coverage": 1.0,
+      "sources": {
+        "single_agent_multi_step": {
+          "score": 95.7,
+          "samples": 7,
+          "weight": 60,
+          "share": 0.6,
+          "stale": false
+        },
+        "multi_agent_multi_step": {
+          "score": 80.0,
+          "samples": 1,
+          "weight": 40,
+          "share": 0.4,
+          "stale": false
+        }
+      },
+      "abstained": [],
+      "stale": []
+    },
+    "narrative_convergence": {
+      "name": "叙事终局性与收敛度",
+      "category": "basic",
+      "weight": 15,
+      "effective_weight": 15.0,
+      "inspect": "是否朝核心冲突 / 主题 / 长期目标收敛推进,而非无限发散、各行其是或戛然而止",
+      "score": 100.0,
+      "coverage": 1.0,
+      "sources": {
+        "multi_agent_multi_step": {
+          "score": 100.0,
+          "samples": 1,
+          "weight": 100,
+          "share": 1.0,
+          "stale": false
+        }
+      },
+      "abstained": [],
+      "stale": []
+    },
+    "dramatic_arc": {
+      "name": "戏剧性弧线与冲突强度",
+      "category": "quality",
+      "weight": 15,
+      "effective_weight": 15.0,
+      "inspect": "情绪 / 压力 / 冲突曲线是否有起伏张弛与节奏,而非一条平直线",
+      "score": 100.0,
+      "coverage": 1.0,
+      "sources": {
+        "single_agent_multi_step": {
+          "score": 100.0,
+          "samples": 7,
+          "weight": 50,
+          "share": 0.5,
+          "stale": false
+        },
+        "multi_agent_multi_step": {
+          "score": 100.0,
+          "samples": 1,
+          "weight": 50,
+          "share": 0.5,
+          "stale": false
+        }
+      },
+      "abstained": [],
+      "stale": []
+    },
+    "emergent_novelty": {
+      "name": "涌现趣味与意料之外",
+      "category": "quality",
+      "weight": 5,
+      "effective_weight": 5.0,
+      "inspect": "是否有认知差 / 情报差带来的误会 / 反转 / 博弈,而非俗套直线剧本",
+      "score": 100.0,
+      "coverage": 1.0,
+      "sources": {
+        "multi_agent_multi_step": {
+          "score": 100.0,
+          "samples": 1,
+          "weight": 100,
+          "share": 1.0,
+          "stale": false
+        }
+      },
+      "abstained": [],
+      "stale": []
+    },
+    "character_growth": {
+      "name": "角色弧光与成长性",
+      "category": "quality",
+      "weight": 5,
+      "effective_weight": 5.0,
+      "inspect": "经历重大变故后,底层情绪 / 需求 / 行为模式是否发生可见质变",
+      "score": 100.0,
+      "coverage": 1.0,
+      "sources": {
+        "single_agent_multi_step": {
+          "score": 100.0,
+          "samples": 7,
+          "weight": 100,
+          "share": 1.0,
+          "stale": false
+        }
+      },
+      "abstained": [],
+      "stale": []
+    }
+  },
+  "fidelity_score": null,
+  "scope_totals": {
+    "single_agent_single_step": null,
+    "single_agent_multi_step": 97.7,
+    "multi_agent_single_step": null,
+    "multi_agent_multi_step": 94.7,
+    "initialization": 97.5
+  },
+  "scope_provenance": {
+    "multi_agent_multi_step": {
+      "judge_model": "qwen3.7-max",
+      "digest": "3f2da1920cab",
+      "generated_at": "2026-10-07T07:13:23.580168"
+    },
+    "initialization": {
+      "judge_model": "qwen3.7-max",
+      "digest": "385eb64313a4",
+      "generated_at": "2026-10-07T07:13:23.580168"
+    },
+    "single_agent_multi_step": {
+      "judge_model": "qwen3.7-max",
+      "digest": "63e5f90bab27",
+      "generated_at": "2026-10-07T07:13:23.580168"
+    }
+  },
+  "stale_scopes": [],
+  "mixed_provenance": false,
+  "scopes_meta": {
+    "single_agent_single_step": {
+      "label": "1 agent · 1 step",
+      "purpose": "一次思考内部:输出是否忠于它自己的输入(不凭空添事实、不越出给定的框)",
+      "unit": "stage",
+      "metrics": [
+        {
+          "id": "grounding",
+          "name": "言必有据",
+          "inspect": "输出断言的事实,能否在这次调用拿到的输入里找到出处;不凭空添人 / 添物 / 添往事",
+          "category": "basic",
+          "weight": 60
+        },
+        {
+          "id": "instruction_adherence",
+          "name": "照章办事",
+          "inspect": "输出本身守没守规矩:该有的口吻在不在、字段之间自不自洽、给的是不是这次要它给的东西",
+          "category": "basic",
+          "weight": 40
+        }
+      ]
+    },
+    "single_agent_multi_step": {
+      "label": "1 agent · N steps",
+      "purpose": "多步中某 agent 的人设一致 / 因果连贯 / 有效性 / 成长 / 弧线",
+      "unit": "none",
+      "metrics": [
+        {
+          "id": "persona_worldview",
+          "name": "人设与世界观一致性",
+          "inspect": "言行是否偏离其性格设定 / 身份 / 世界观常识（含时间线常识、已死者不复现）",
+          "category": "basic",
+          "weight": 20
+        },
+        {
+          "id": "causal_coherence",
+          "name": "因果逻辑连贯性",
+          "inspect": "行动 / 情绪 / 需求能否从其感知 / 动机 / 记忆找到明确因果来源,不凭空、不失忆、不臆造事实",
+          "category": "basic",
+          "weight": 20
+        },
+        {
+          "id": "action_efficacy",
+          "name": "行动有效性与社交率",
+          "inspect": "是否无意义空转 / 重复打转;社交是否真正改变了世界状态或关系,而非流于形式",
+          "category": "basic",
+          "weight": 20
+        },
+        {
+          "id": "character_growth",
+          "name": "角色弧光与成长性",
+          "inspect": "经历重大变故后,底层情绪 / 需求 / 行为模式是否发生可见质变",
+          "category": "quality",
+          "weight": 5
+        },
+        {
+          "id": "dramatic_arc",
+          "name": "戏剧性弧线与冲突强度",
+          "inspect": "情绪 / 压力 / 冲突曲线是否有起伏张弛与节奏,而非一条平直线",
+          "category": "quality",
+          "weight": 15
+        }
+      ]
+    },
+    "multi_agent_single_step": {
+      "label": "N agents · 1 step",
+      "purpose": "单步内 agent 之间:谁知道什么、反应打在谁身上、同环境行动是否互不矛盾",
+      "unit": "none",
+      "metrics": [
+        {
+          "id": "causal_coherence",
+          "name": "因果逻辑连贯性",
+          "inspect": "行动 / 情绪 / 需求能否从其感知 / 动机 / 记忆找到明确因果来源,不凭空、不失忆、不臆造事实",
+          "category": "basic",
+          "weight": 20
+        }
+      ]
+    },
+    "multi_agent_multi_step": {
+      "label": "N agents · N steps",
+      "purpose": "整体叙事:收敛 / 弧线 / 涌现 / 有效性 / 世界观",
+      "unit": "none",
+      "metrics": [
+        {
+          "id": "narrative_convergence",
+          "name": "叙事终局性与收敛度",
+          "inspect": "是否朝核心冲突 / 主题 / 长期目标收敛推进,而非无限发散、各行其是或戛然而止",
+          "category": "basic",
+          "weight": 15
+        },
+        {
+          "id": "dramatic_arc",
+          "name": "戏剧性弧线与冲突强度",
+          "inspect": "情绪 / 压力 / 冲突曲线是否有起伏张弛与节奏,而非一条平直线",
+          "category": "quality",
+          "weight": 15
+        },
+        {
+          "id": "emergent_novelty",
+          "name": "涌现趣味与意料之外",
+          "inspect": "是否有认知差 / 情报差带来的误会 / 反转 / 博弈,而非俗套直线剧本",
+          "category": "quality",
+          "weight": 5
+        },
+        {
+          "id": "action_efficacy",
+          "name": "行动有效性与社交率",
+          "inspect": "是否无意义空转 / 重复打转;社交是否真正改变了世界状态或关系,而非流于形式",
+          "category": "basic",
+          "weight": 20
+        },
+        {
+          "id": "persona_worldview",
+          "name": "人设与世界观一致性",
+          "inspect": "言行是否偏离其性格设定 / 身份 / 世界观常识（含时间线常识、已死者不复现）",
+          "category": "basic",
+          "weight": 20
+        }
+      ]
+    },
+    "initialization": {
+      "label": "Initialization",
+      "purpose": "开局设定:人设 / 关系自洽 + 历史时间线",
+      "unit": "none",
+      "metrics": [
+        {
+          "id": "persona_worldview",
+          "name": "人设与世界观一致性",
+          "inspect": "言行是否偏离其性格设定 / 身份 / 世界观常识（含时间线常识、已死者不复现）",
+          "category": "basic",
+          "weight": 20
+        },
+        {
+          "id": "causal_coherence",
+          "name": "因果逻辑连贯性",
+          "inspect": "行动 / 情绪 / 需求能否从其感知 / 动机 / 记忆找到明确因果来源,不凭空、不失忆、不臆造事实",
+          "category": "basic",
+          "weight": 20
+        }
+      ]
+    }
+  }
+}

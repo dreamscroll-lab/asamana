@@ -1,0 +1,45 @@
+# All mock / in-memory; needs no API keys. See config/config.example.yaml for field meanings.
+llm:
+  default_provider: mock
+
+embedding:
+  provider: in_memory
+  params:
+    dimension: 4
+
+vector_store:
+  provider: in_memory
+  params: {}
+
+agent_store:
+  provider: in_memory
+  params: {}
+
+message:
+  provider: in_memory
+  params: {}
+
+snapshot:
+  provider: in_memory
+  params: {}
+
+world:
+  config: tiled
+  max_agents: 3
+
+engine:
+  max_concurrent_llm: 2
+  decay_interval: 5
+  event_system_enabled: true
+  max_events_per_window: 1
+  event_quota_window: 8
+  event_check_interval: 2
+  max_npcs: 3
+
+logging:
+  level: INFO
+  fmt: console
+  output: stdout
+
+observability:
+  enabled: false   # tests must not write trace files to ./data/traces

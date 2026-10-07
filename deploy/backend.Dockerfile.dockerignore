@@ -1,0 +1,28 @@
+# Backend build context = repo root. Exclude everything the API image doesn't need.
+frontend
+node_modules
+.venv
+venv
+data/
+# Bytecode lives one dir down from the context root (agent/__pycache__/…), and
+# .dockerignore patterns without **/ only match at the root — so the bare forms
+# let every nested cache into the image.
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+.git
+.gitignore
+.gitattributes
+tests/
+.pytest_cache
+*.tmp
+*.log
+.vscode
+.idea
+deploy/
+docs/
+scripts/
+README.md
+AGENTS.md
+CLAUDE.md

@@ -1,0 +1,111 @@
+# Alibaba Cloud DashScope (Qwen), the default
+# See config/config.example.yaml for field meanings, allowed values and how to add a provider.
+# Comments here cover only what the config can't say itself: measured numbers, costs, and one
+# safety switch.
+
+llm:
+  providers:
+    dashscope:
+      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      model: qwen3.8-flash
+      params:
+        # Don't remove: these models think by default on DashScope, and thinking tokens cost
+        # both money and time (measured world build: 750s vs 150s with it off). To enable it,
+        # override in a specific scene's params.
+        enable_thinking: false
+
+  default_provider: dashscope
+
+  scenes:
+    persona_generation:
+      provider: dashscope
+      model: qwen3.8-max
+    cast_design:
+      provider: dashscope
+      model: qwen3.8-max
+    world_building:
+      provider: dashscope
+      model: qwen3.8-max
+      # Required. The 60s default can't cover "thousands of tokens of search results +
+      # thousands of thinking and JSON": both attempts timed out, so the build raised (Rule 2).
+      timeout: 300
+      params:
+        enable_thinking: false   # on, this step goes 54s→134s with no visible gain in world quality; change it here to try
+        enable_search: true      # verified effective: input grows from ~20 to ~5000 tokens
+
+  # Judge for offline review (python -m tuning). It scores the output of the scenes above, so it
+  # deliberately uses a different model: a model grading its own output grades too leniently.
+  judge:
+    provider: dashscope
+    model: qwen3.7-max
+    params:
+      enable_thinking: true
+
+embedding:
+  provider: dashscope
+  params:
+    model: text-embedding-v3
+    dimension: 1024
+    output_type: dense&sparse   # only the native DashScope endpoint returns learned sparse, which hybrid retrieval needs
+
+vector_store:
+  provider: file
+  params:
+    # Clear this directory before changing dimension: upsert raises on a dimension mismatch.
+    path: ./data/vectors
+
+agent_store:
+  provider: file
+  params:
+    path: ./data/agents
+
+message:
+  provider: in_memory
+  params: {}
+
+snapshot:
+  provider: file
+  params:
+    path: ./data/snapshots
+
+rate_limit:
+  tpm: 5000000
+
+world:
+  config: tiled
+  min_agents: 5
+  max_agents: 8
+
+engine:
+  max_concurrent_llm: 16
+  decay_interval: 5
+  event_system_enabled: true
+  max_events_per_window: 2
+  event_quota_window: 20
+  event_check_interval: 6
+  main_max_idle_steps: 2
+  background_max_idle_steps: 6
+  max_npcs: 6                  # the cost is prompt space, not memory: each takes a line in main-character decision prompts
+
+logging:
+  level: DEBUG
+  fmt: json
+  output: stdout+file
+  file_path: ./data/logs/asamana.log
+  max_size_mb: 20
+  backup_count: 5
+
+observability:
+  enabled: true
+  provider: jsonl
+  params:
+    base_dir: ./data/traces
+
+web:
+  host: 127.0.0.1
+  port: 7860
+  cors_origins: ["*"]
+  # Developer tools (trace viewer / audit / prompt replay) spawn subprocesses and can send any
+  # prompt to a paid LLM. Off by default; enable locally with ASAMANA_DEV_TOOLS=true, never in a
+  # public deployment.
+  dev_tools_enabled: ${ASAMANA_DEV_TOOLS:-false}

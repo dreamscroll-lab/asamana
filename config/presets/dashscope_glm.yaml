@@ -1,0 +1,125 @@
+# Zhipu GLM on Alibaba Cloud DashScope
+# Usage: CONFIG=config/presets/dashscope_glm.yaml python main.py web
+# Needs DASHSCOPE_API_KEY and EMBEDDING_API_KEY (both the DashScope key) and
+# DASHSCOPE_WORKSPACE_ID: DashScope serves GLM only on a per-workspace endpoint in cn-beijing, so
+# the workspace id is part of the URL.
+#
+# See config/config.example.yaml for field meanings, allowed values and how to add a provider.
+# Comments here cover only what the config can't say itself: measured numbers, costs, and one
+# safety switch.
+
+llm:
+  providers:
+    # One DashScope account behind all three declarations, so they name the same key explicitly.
+    # GLM is split in two only so scenes can name the fast or strong tier.
+    dashscope_glm:
+      base_url: https://${DASHSCOPE_WORKSPACE_ID}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+      model: ZHIPU/GLM-5.3-Flash
+      api_key_env: DASHSCOPE_API_KEY
+      params:
+        # The GLM-5.3 family can't disable thinking; don't send enable_thinking: false here.
+        # The default effort is max, the slowest and most expensive, so lower it explicitly.
+        reasoning_effort: low
+    dashscope_glm_pro:
+      base_url: https://${DASHSCOPE_WORKSPACE_ID}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+      model: ZHIPU/GLM-5.3
+      api_key_env: DASHSCOPE_API_KEY
+      params:
+        reasoning_effort: low
+    # The standard endpoint; only the judge uses it.
+    dashscope:
+      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      model: qwen3.7-max
+      api_key_env: DASHSCOPE_API_KEY
+
+  default_provider: dashscope_glm
+
+  scenes:
+    persona_generation:
+      provider: dashscope_glm_pro
+    cast_design:
+      provider: dashscope_glm_pro
+    world_building:
+      provider: dashscope_glm_pro
+      # Required: the 60s default can't cover thousands of tokens of thinking plus JSON. No web
+      # search: DashScope doesn't document one for GLM.
+      timeout: 300
+
+  # Judge for offline review (python -m tuning). It scores the output of the scenes above, so it
+  # deliberately uses a different model: a model grading its own output grades too leniently.
+  judge:
+    provider: dashscope
+    model: qwen3.7-max
+    params:
+      enable_thinking: true
+
+embedding:
+  # This dashscope is an implementation name in the embedding registry, a separate namespace from
+  # llm.providers. Only native DashScope returns learned sparse.
+  provider: dashscope
+  params:
+    model: text-embedding-v3
+    dimension: 1024
+    output_type: dense&sparse   # only the native DashScope endpoint returns learned sparse, which hybrid retrieval needs
+
+vector_store:
+  provider: file
+  params:
+    # Clear this directory before changing dimension: upsert raises on a dimension mismatch.
+    path: ./data/vectors
+
+agent_store:
+  provider: file
+  params:
+    path: ./data/agents
+
+message:
+  provider: in_memory
+  params: {}
+
+snapshot:
+  provider: file
+  params:
+    path: ./data/snapshots
+
+rate_limit:
+  tpm: 5000000
+
+world:
+  config: tiled
+  min_agents: 5
+  max_agents: 8
+
+engine:
+  max_concurrent_llm: 16
+  decay_interval: 5
+  event_system_enabled: true
+  max_events_per_window: 2
+  event_quota_window: 20
+  event_check_interval: 6
+  main_max_idle_steps: 2
+  background_max_idle_steps: 6
+  max_npcs: 6                  # the cost is prompt space, not memory: each takes a line in main-character decision prompts
+
+logging:
+  level: DEBUG
+  fmt: json
+  output: stdout+file
+  file_path: ./data/logs/asamana.log
+  max_size_mb: 20
+  backup_count: 5
+
+observability:
+  enabled: true
+  provider: jsonl
+  params:
+    base_dir: ./data/traces
+
+web:
+  host: 127.0.0.1
+  port: 7860
+  cors_origins: ["*"]
+  # Developer tools (trace viewer / audit / prompt replay) spawn subprocesses and can send any
+  # prompt to a paid LLM. Off by default; enable locally with ASAMANA_DEV_TOOLS=true, never in a
+  # public deployment.
+  dev_tools_enabled: ${ASAMANA_DEV_TOOLS:-false}
