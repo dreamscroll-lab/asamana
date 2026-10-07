@@ -1,0 +1,363 @@
+{
+  "_comment": "记忆写入(record_event)调优场景。验证一件事如何被写进 agent 记忆:FACTUAL 客观镜像(=事件原文)、EXPERIENTIAL 第一人称内心独白(人格染色)、写入时的 importance 标量、以及非对称写入闸门。kind=self 给单个 actor + event;kind=contrast 给同一 event + 多个 actors,核心测『同一件事不同人格留下不同体验』与『importance 随人格的分布』。scene.emotion 设写入此刻的心境(染色棱镜 + 闸门强度)。harness 用读透-写捕获 + InMemoryVectorStore 隔离,不污染基线。expect 只述何为合理、不喂答案(既不喂独白、也不喂分数)。基线世界(玄武门主题)。主角:李世民/李建成/李渊;背景:尉迟恭/魏征。",
+  "scenarios": [
+    {
+      "name": "write_pivotal_threat",
+      "kind": "self",
+      "criteria_focus": [
+        "experiential",
+        "importance"
+      ],
+      "description": "李世民确知李建成正密谋于朝会上对自己下杀手(强信号、性命攸关)。",
+      "expect": "importance 应偏高(牵动安危/性命/对兄长认知的颠覆);experiential 第一人称、含住『得知兄长要杀我』这件事、被其枭雄人格染色(警觉/杀机/决断皆可),不套话不泄漏 id/step。",
+      "actor": "李世民",
+      "event": {
+        "factual": "得知李建成正密谋在下次朝会上对自己下手。",
+        "dominant_need": "safety",
+        "related": [
+          "李建成"
+        ],
+        "triggered_by": "covert"
+      },
+      "scene": {
+        "emotion": {
+          "李世民": {
+            "type": "anger",
+            "intensity": 0.75,
+            "valence": -0.55
+          }
+        }
+      }
+    },
+    {
+      "name": "write_trivial_mundane_bg",
+      "kind": "self",
+      "criteria_focus": [
+        "importance",
+        "fields"
+      ],
+      "description": "背景 agent 魏征注意到宫中庭院已被洒扫干净(明显琐碎、情绪平淡)。",
+      "expect": "importance 应低(纯日常、不牵动其利害);背景 agent 情绪强度未达阈值,experiential 应被跳过(只写 factual)——若写入也应极淡。无泄漏。",
+      "actor": "魏征",
+      "event": {
+        "factual": "看见宫中庭院已被洒扫干净。",
+        "dominant_need": "physiological",
+        "triggered_by": "observation"
+      },
+      "scene": {
+        "emotion": {
+          "魏征": {
+            "type": "neutral",
+            "intensity": 0.2,
+            "valence": 0.0
+          }
+        }
+      }
+    },
+    {
+      "name": "write_mild_understated",
+      "kind": "self",
+      "criteria_focus": [
+        "experiential"
+      ],
+      "description": "李世民例行巡查了一遍宫门守备,一切如常、并无异状(温和事件、情绪不强)。",
+      "expect": "experiential 虽因主角阈值低而写入,但应淡描——绝不能把一次平常巡查硬拔成深刻心绪或重大转折;含住『巡查、无异状』本身;第一人称、不注水。importance 不应高。",
+      "actor": "李世民",
+      "event": {
+        "factual": "例行巡查了一遍宫门守备，未见异状。",
+        "dominant_need": "safety",
+        "triggered_by": "work"
+      },
+      "scene": {
+        "emotion": {
+          "李世民": {
+            "type": "anticipation",
+            "intensity": 0.45,
+            "valence": 0.1
+          }
+        }
+      }
+    },
+    {
+      "name": "write_core_ally",
+      "kind": "self",
+      "criteria_focus": [
+        "experiential",
+        "importance"
+      ],
+      "description": "死忠尉迟恭于私下再次表明誓死相随(核心关系人的暖意时刻)。已植入二人深厚君臣情谊的关系背景。",
+      "expect": "experiential 应被对这名死忠的信任/暖意**及二人既有的生死情谊**染色,与记一个陌生人或政敌截然不同;含住『尉迟恭表忠』本身。importance 应体现这层厚重关系的分量(非琐事)。无泄漏。",
+      "actor": "李世民",
+      "event": {
+        "factual": "尉迟恭于私下再次表明对自己誓死相随。",
+        "dominant_need": "social",
+        "related": [
+          "尉迟恭"
+        ],
+        "core_relations": [
+          "尉迟恭"
+        ],
+        "triggered_by": "talk"
+      },
+      "scene": {
+        "emotion": {
+          "李世民": {
+            "type": "trust",
+            "intensity": 0.5,
+            "valence": 0.5
+          }
+        },
+        "relations": [
+          {
+            "from": "李世民",
+            "to": "尉迟恭",
+            "trust": 0.85,
+            "affection": 0.7,
+            "labels": [
+              "心腹爱将",
+              "生死之交"
+            ],
+            "history": "多年并肩征战、数度以命相托，是我最信得过的左膀右臂。",
+            "interaction_count": 12
+          }
+        ]
+      }
+    },
+    {
+      "name": "write_stranger_no_fabrication",
+      "kind": "self",
+      "criteria_focus": [
+        "experiential"
+      ],
+      "description": "一名不认识的内侍塞给李世民一张示警纸条便匆匆离去(涉及一个他并不认识的人)。",
+      "expect": "experiential 提到那人时应用描述性指称(如『一个不知名的内侍』),绝不臆造出一个姓名;含住『有人递来示警』本身;第一人称、被其多疑/警觉染色。无 id 泄漏。",
+      "actor": "李世民",
+      "event": {
+        "factual": "一名不认识的内侍塞来一张示警的纸条，随即匆匆离去。",
+        "dominant_need": "safety",
+        "triggered_by": "observation"
+      },
+      "scene": {
+        "emotion": {
+          "李世民": {
+            "type": "surprise",
+            "intensity": 0.6,
+            "valence": -0.15
+          }
+        }
+      }
+    },
+    {
+      "name": "write_esteem_blow",
+      "kind": "self",
+      "criteria_focus": [
+        "experiential",
+        "importance"
+      ],
+      "description": "李世民当廷陈奏被父皇李渊当众驳斥、颜面受挫(明显负信号、触及尊严)。",
+      "expect": "importance 应体现对尊严/自我/与父皇关系的触动;experiential 第一人称、被其人格染色(隐忍/不甘/羞愤视人设),不把心事直白说尽、不喊口号。无泄漏。",
+      "actor": "李世民",
+      "event": {
+        "factual": "当廷陈奏时被父皇李渊当众驳斥，殿上诸臣侧目。",
+        "dominant_need": "esteem",
+        "related": [
+          "李渊"
+        ],
+        "triggered_by": "talk"
+      },
+      "scene": {
+        "emotion": {
+          "李世民": {
+            "type": "anger",
+            "intensity": 0.65,
+            "valence": -0.55
+          }
+        }
+      }
+    },
+    {
+      "name": "write_goal_advance",
+      "kind": "self",
+      "criteria_focus": [
+        "importance"
+      ],
+      "description": "李世民争取到一名关键禁军将领的效忠,夺嫡大计实质推进了一步(推进毕生追求)。",
+      "expect": "importance 应反映其对毕生追求/长期目标的推进价值(不应被当成普通社交);experiential 被其抱负染色。无泄漏。",
+      "actor": "李世民",
+      "event": {
+        "factual": "争取到一名关键禁军将领的效忠，起事的胜算多了一分。",
+        "dominant_need": "self_actualization",
+        "related": [
+          "尉迟恭"
+        ],
+        "triggered_by": "talk"
+      },
+      "scene": {
+        "emotion": {
+          "李世民": {
+            "type": "anticipation",
+            "intensity": 0.55,
+            "valence": 0.45
+          }
+        }
+      }
+    },
+    {
+      "name": "write_physical_aftermath",
+      "kind": "self",
+      "criteria_focus": [
+        "experiential"
+      ],
+      "description": "李世民在一场遭遇厮杀中险胜、自身也负了伤(心绪可复杂)。",
+      "expect": "experiential 允许复杂/苦乐参半(后怕、决绝、惨胜之感并存皆可),不该被强行写成单一情绪;含住『厮杀、负伤、险胜』本身;第一人称。importance 不必低(涉安危)。无泄漏。",
+      "actor": "李世民",
+      "event": {
+        "factual": "在一场遭遇厮杀中险胜，肩上也负了伤。",
+        "dominant_need": "safety",
+        "triggered_by": "physical"
+      },
+      "scene": {
+        "emotion": {
+          "李世民": {
+            "type": "fear",
+            "intensity": 0.6,
+            "valence": -0.2
+          }
+        }
+      }
+    },
+    {
+      "name": "write_trivial_meal_main",
+      "kind": "self",
+      "criteria_focus": [
+        "importance",
+        "fields"
+      ],
+      "description": "李世民在短暂歇息时用了一顿简单的饭食(主角的明显琐事)。",
+      "expect": "importance 应低(琐碎日常、不牵动利害)——绝不能因写入者是主角就给高分;若 importance 判低且情绪弱,experiential 应被跳过;若写入也应极淡、不拔高。无泄漏。",
+      "actor": "李世民",
+      "event": {
+        "factual": "在短暂歇息时用了一顿简单的饭食。",
+        "dominant_need": "physiological",
+        "triggered_by": "rest"
+      },
+      "scene": {
+        "emotion": {
+          "李世民": {
+            "type": "neutral",
+            "intensity": 0.2,
+            "valence": 0.05
+          }
+        }
+      }
+    },
+    {
+      "name": "contrast_dawn_coup",
+      "kind": "contrast",
+      "criteria_focus": [
+        "experiential",
+        "importance"
+      ],
+      "description": "同一件事——玄武门对决定于明日拂晓——分别被发起者李世民与目标李建成写入记忆。",
+      "expect": "两人的内心独白应读出是**两个不同的人**(发起者的决断/筹谋 vs 被针对者的惊惧/抗拒之类),且各自都含住『拂晓对决』本身,而非互换的通用独白。两人皆为当事主角、利害都重,importance 都应偏高,分布相称即可。无泄漏。",
+      "actors": [
+        "李世民",
+        "李建成"
+      ],
+      "event": {
+        "factual": "得知玄武门的对决将于明日拂晓发动。",
+        "dominant_need": "safety",
+        "triggered_by": "covert"
+      },
+      "scene": {
+        "emotion": {
+          "李世民": {
+            "type": "anticipation",
+            "intensity": 0.65,
+            "valence": 0.1
+          },
+          "李建成": {
+            "type": "fear",
+            "intensity": 0.65,
+            "valence": -0.4
+          }
+        }
+      }
+    },
+    {
+      "name": "contrast_emperor_ailing",
+      "kind": "contrast",
+      "criteria_focus": [
+        "importance",
+        "experiential"
+      ],
+      "description": "同一件事——皇帝李渊骤然病重——分别被李世民、李建成、谏臣魏征写入记忆。利害深浅悬殊。",
+      "expect": "importance 分布应贴合人格利害:于储位攸关的李世民、李建成应远高于一名谏臣魏征——若三人几乎一样或方向反了则不合理。两位皇子的 experiential 应读出截然不同的人(同为切身却心思相反);魏征情绪较淡、experiential 可被跳过(也属合理)。各写入含住『父皇/皇帝病重』本身。无泄漏。",
+      "actors": [
+        "李世民",
+        "李建成",
+        "魏征"
+      ],
+      "event": {
+        "factual": "皇帝李渊骤然病重的消息传开。",
+        "dominant_need": "safety",
+        "triggered_by": "observation"
+      },
+      "scene": {
+        "emotion": {
+          "李世民": {
+            "type": "anticipation",
+            "intensity": 0.65,
+            "valence": -0.1
+          },
+          "李建成": {
+            "type": "fear",
+            "intensity": 0.65,
+            "valence": -0.3
+          },
+          "魏征": {
+            "type": "sadness",
+            "intensity": 0.45,
+            "valence": -0.3
+          }
+        }
+      }
+    },
+    {
+      "name": "emotion_contrast_summons",
+      "kind": "emotion_contrast",
+      "criteria_focus": [
+        "experiential",
+        "importance"
+      ],
+      "description": "同一个人(李世民)、同一件事(父皇李渊急召入宫觐见),在愤懑/惶惧/进取三种心境下分别写入。",
+      "expect": "三段内心独白应读出**同一个人在不同心境下**对这次急召的不同解读与感受(怒则疑其刁难/惧则忧其降罪问罪/进取则视为机会),但人格底色(枭雄、隐忍、抱负)始终一致、都含住『父皇急召觐见』本身。importance 应相对**稳定**——这次召见的结构性利害不该因一时心情而大起大落(情绪只是次要输入);跨度过大或某版本失准才算问题。无泄漏。",
+      "actor": "李世民",
+      "event": {
+        "factual": "父皇李渊急召自己即刻入宫觐见。",
+        "dominant_need": "esteem",
+        "related": [
+          "李渊"
+        ],
+        "triggered_by": "observation"
+      },
+      "emotions": [
+        {
+          "type": "anger",
+          "intensity": 0.7,
+          "valence": -0.5
+        },
+        {
+          "type": "fear",
+          "intensity": 0.7,
+          "valence": -0.5
+        },
+        {
+          "type": "anticipation",
+          "intensity": 0.65,
+          "valence": 0.4
+        }
+      ]
+    }
+  ]
+}

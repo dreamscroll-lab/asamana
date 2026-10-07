@@ -1,0 +1,139 @@
+# Kimi (Moonshot AI)
+# Usage: CONFIG=config/presets/kimi.yaml python main.py web
+# Needs MOONSHOT_API_KEY (LLM) and EMBEDDING_API_KEY (embedding stays on the native DashScope
+# endpoint for sparse).
+#
+# See config/config.example.yaml for field meanings, allowed values and how to add a provider.
+# Comments here cover only what the config can't say itself: measured numbers, costs, and one
+# safety switch.
+
+llm:
+  providers:
+    # One account split into two declarations only so scenes can name the fast or strong tier;
+    # the shared api_key_env means they spend the same key. The two models switch thinking via
+    # different fields, so their params differ.
+    kimi:
+      base_url: https://api.moonshot.cn/v1
+      model: kimi-k2.6
+      api_key_env: MOONSHOT_API_KEY
+      # Kimi fixes temperature per model and thinking mode and returns 400 for any other value,
+      # so it is never sent (k2.6: 0.6 without thinking, 1.0 with; k3: 1.0 only).
+      accepts_temperature: false
+      params:
+        # Don't remove: thinking.type defaults to enabled, and thinking shares max_tokens with
+        # the answer, so it eats the few-hundred-token per-step cognition budget and truncates
+        # into unparseable JSON.
+        thinking:
+          type: disabled
+    kimi_pro:
+      base_url: https://api.moonshot.cn/v1
+      model: kimi-k3
+      api_key_env: MOONSHOT_API_KEY
+      accepts_temperature: false
+      params:
+        # k3 can't disable thinking (no thinking.type, only effort levels) and defaults to max,
+        # the slowest and most expensive, so it must be lowered explicitly.
+        reasoning_effort: low
+
+  default_provider: kimi
+
+  scenes:
+    persona_generation:
+      provider: kimi_pro
+    cast_design:
+      provider: kimi_pro
+    world_building:
+      provider: kimi_pro
+      # Required. The 60s default can't cover the world build's "thousands of tokens of thinking and JSON"
+      timeout: 300
+      # No enable_search equivalent: Kimi's chat API only accepts custom function tools and has
+      # no web search, so theme analysis relies on the model's own knowledge.
+
+  # Judge for offline review (python -m tuning). It scores the output of the scenes above, so it
+  # deliberately uses a different model: a model grading its own output grades too leniently.
+  judge:
+    provider: kimi_pro
+
+embedding:
+  # This dashscope is an implementation name in the embedding registry, a separate namespace from
+  # llm.providers. Kimi offers no embedding and only native DashScope returns learned sparse, so
+  # this axis stays on DashScope.
+  provider: dashscope
+  params:
+    model: text-embedding-v3
+    dimension: 1024
+    output_type: dense&sparse   # only the native DashScope endpoint returns learned sparse, which hybrid retrieval needs
+
+vector_store:
+  provider: file
+  params:
+    # Clear this directory before changing dimension: upsert raises on a dimension mismatch.
+    path: ./data/vectors
+
+agent_store:
+  provider: file
+  params:
+    path: ./data/agents
+
+message:
+  provider: in_memory
+  params: {}
+
+snapshot:
+  provider: file
+  params:
+    path: ./data/snapshots
+
+# Concurrency / RPM / TPM / TPD are tiered by the account's cumulative top-up, not by model, so
+# they go here (account-level defaults), not on each llm.providers entry. These are Tier1
+# numbers (cumulative top-up ≥ ¥50); tiers: https://platform.kimi.com/docs/pricing/limits. When
+# changing tier, change max_concurrent_llm too.
+#
+# Topping up only ¥10 to unlock k3 leaves you at Tier0: concurrency 1 / RPM 3. That tier can't
+# run the simulation; a step's dozens of calls would queue the whole time.
+#
+# Both provider declarations share one account's quota, but each endpoint's gate counts
+# separately, so full load would let through 2×100 RPM. They never collide: kimi_pro only runs
+# for world building (one-shot) and the offline judge, never alongside runtime.
+rate_limit:
+  rpm: 100
+  tpm: 2000000
+
+world:
+  config: tiled
+  min_agents: 5
+  max_agents: 8
+
+engine:
+  max_concurrent_llm: 15      # Tier1's concurrency cap is 15; higher only buys 429s
+  decay_interval: 5
+  event_system_enabled: true
+  max_events_per_window: 2
+  event_quota_window: 20
+  event_check_interval: 6
+  main_max_idle_steps: 2
+  background_max_idle_steps: 6
+  max_npcs: 6                  # the cost is prompt space, not memory: each takes a line in main-character decision prompts
+
+logging:
+  level: DEBUG
+  fmt: json
+  output: stdout+file
+  file_path: ./data/logs/asamana.log
+  max_size_mb: 20
+  backup_count: 5
+
+observability:
+  enabled: true
+  provider: jsonl
+  params:
+    base_dir: ./data/traces
+
+web:
+  host: 127.0.0.1
+  port: 7860
+  cors_origins: ["*"]
+  # Developer tools (trace viewer / audit / prompt replay) spawn subprocesses and can send any
+  # prompt to a paid LLM. Off by default; enable locally with ASAMANA_DEV_TOOLS=true, never in a
+  # public deployment.
+  dev_tools_enabled: ${ASAMANA_DEV_TOOLS:-false}

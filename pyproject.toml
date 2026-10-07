@@ -1,0 +1,15 @@
+# Tool configuration only. Asamana is an application, not an installable package —
+# its top-level packages (core, agent, config, …) would collide with others in site-packages.
+# Dependencies: requirements.txt (runtime) and requirements-dev.txt (tests, lint).
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = ["frontend", "data"]
+
+[tool.ruff.lint]
+select = ["F"]

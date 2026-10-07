@@ -1,0 +1,23 @@
+.venv/
+__pycache__/
+data/
+.claude/worktrees/
+
+# Env files — may contain real secrets; never commit real ones.
+# .env.example is a placeholder template and IS tracked.
+.env
+.env.*
+!.env.example
+
+# Ad-hoc map/template backups taken before destructive edits — local only.
+.map_backups/
+
+# macOS Finder metadata — per-machine junk, never part of the tree.
+.DS_Store
+
+# Generated codebase analysis reports — local only.
+codebase-report/
+
+# Where a template archive is unpacked while it is being checked. Always cleaned
+# up; a killed process leaves it behind, and it holds a whole map's art.
+worlds/templates/.incoming/

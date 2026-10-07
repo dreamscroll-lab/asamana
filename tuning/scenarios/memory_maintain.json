@@ -1,0 +1,668 @@
+{
+  "_comment": "记忆维护(decay/compress/reflect)调优场景。基线 step-0 没有陈年/低 decay 记忆,故每场景用 scene.seed_memories 注入受控属性的记忆(stream/kind/importance/decay_score/valence/age/related/retrieval_count/reflection_depth;content×count 或 variants 列表),并用 step 指定模拟当前步(age→created_step=step-age)。kind=decay 纯机制(确定性,锚点保护/衰减率/不删除),无 judge;kind=compress 机制(候选/聚类/触发阈值30/删源仅在摘要落库后/锚点不动)+ summary 语义 judge;kind=reflect 机制(接地≥1event/depth≤2/源可溯源/不改人格)+ insight 语义 judge。持久化隔离,不污染基线。actor 用主角李世民(有 reflection_engine)。expect 只述何为合理、不喂答案。基线世界(玄武门主题)。",
+  "scenarios": [
+    {
+      "name": "decay_anchor_protection",
+      "kind": "decay",
+      "step": 60,
+      "description": "一批普通记忆 + 若干情感锚点(CRITICAL / insight / 高|valence|体验)一起经历背景衰减。",
+      "expect": "锚点(CRITICAL importance、kind=insight、|valence|≥0.7 的 experiential)decay_score 应纹丝不动;普通记忆应按衰减率下降;全程一条都不删除(衰减≠遗忘)。",
+      "actor": "李世民",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "在偏殿等候召见，无事可做。",
+            "importance": 0.3,
+            "decay_score": 0.8,
+            "valence": 0.1
+          },
+          {
+            "stream": "factual",
+            "kind": "event",
+            "content": "辰时于偏殿等候召见。",
+            "importance": 0.3,
+            "decay_score": 0.8
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "翻看旧日舆图，心绪平平。",
+            "importance": 0.25,
+            "decay_score": 0.6,
+            "valence": 0.05,
+            "retrieval_count": 3
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "父皇当众驳斥的羞愤，至今灼心。",
+            "importance": 0.7,
+            "decay_score": 0.9,
+            "valence": -0.85
+          },
+          {
+            "stream": "experiential",
+            "kind": "insight",
+            "content": "我渐渐看清，建成对我的敌意已无转圜余地。",
+            "importance": 0.8,
+            "decay_score": 0.9,
+            "valence": -0.6,
+            "reflection_depth": 1
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "目睹亲信惨死，那一幕刻骨难忘。",
+            "importance": 0.95,
+            "decay_score": 0.9,
+            "valence": -0.9
+          }
+        ]
+      }
+    },
+    {
+      "name": "decay_rate_and_no_delete",
+      "kind": "decay",
+      "step": 60,
+      "description": "普通记忆在不同流、不同 retrieval_count 下衰减;验证衰减率与不删除。",
+      "expect": "experiential 衰减略慢于 factual(体验加成);retrieval_count 高的衰减略慢(巩固加成);decay_score 仍在 (0,1];条数不变。",
+      "actor": "李世民",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "kind": "event",
+            "content": "巡视了一遍宫墙。",
+            "importance": 0.3,
+            "decay_score": 0.5,
+            "retrieval_count": 0
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "巡墙时想起些旧事，并无波澜。",
+            "importance": 0.3,
+            "decay_score": 0.5,
+            "valence": 0.1,
+            "retrieval_count": 0
+          },
+          {
+            "stream": "factual",
+            "kind": "event",
+            "content": "与门吏核对了换防名册。",
+            "importance": 0.3,
+            "decay_score": 0.5,
+            "retrieval_count": 4
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "核对名册时格外留意了几个生面孔。",
+            "importance": 0.3,
+            "decay_score": 0.5,
+            "valence": 0.2,
+            "retrieval_count": 4
+          }
+        ]
+      }
+    },
+    {
+      "name": "compress_factual_cluster",
+      "kind": "compress",
+      "stream": "factual",
+      "step": 60,
+      "description": "一段时期积累的大量平淡客观日志(factual、已老化、低重要性)触发压缩,合并去重凝成几条简短客观要点。",
+      "expect": "应触发压缩并产出 summary(kind=summary、importance≤0.95);客观第三人称、剥离情绪、合并同类、保留 who/where/大致何事、不臆造源里没有的人事、不渲染不评判、几条短要点、无 id/step。原簇成员在摘要落库后被删除。",
+      "actor": "李世民",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "kind": "event",
+            "importance": 0.2,
+            "decay_score": 0.1,
+            "age": 25,
+            "related": [
+              "尉迟恭"
+            ],
+            "variants": [
+              "在廊下与尉迟恭交谈营中事务片刻。",
+              "听尉迟恭报操练如常。",
+              "与尉迟恭对弈一局。",
+              "与尉迟恭核对当值人手。",
+              "尉迟恭送来时令果子。",
+              "听尉迟恭陈说军粮调度。",
+              "与尉迟恭沿宫墙巡视一周。",
+              "尉迟恭问次日安排。",
+              "查看尉迟恭新领来的弓矢。",
+              "与尉迟恭商定换防细节。",
+              "与尉迟恭清点箭壶。",
+              "尉迟恭辞去前禀报守夜安排。",
+              "与尉迟恭点验甲胄。",
+              "尉迟恭核了门禁。",
+              "与尉迟恭对了时辰。",
+              "尉迟恭报巡夜平安。"
+            ]
+          },
+          {
+            "stream": "factual",
+            "kind": "event",
+            "importance": 0.2,
+            "decay_score": 0.1,
+            "age": 22,
+            "related": [
+              "李建成"
+            ],
+            "variants": [
+              "李建成仪仗自街口经过，未照面。",
+              "闻李建成今日入朝。",
+              "传李建成府中设宴。",
+              "李建成遣人送来一份例行公文。",
+              "李建成属官前来递话。",
+              "阅一份李建成署名的奏报。",
+              "闻李建成又荐数人入职。",
+              "李建成府车马于街口擦身而过。",
+              "有人议李建成所受赏赐。",
+              "李建成差人问候。",
+              "翻检到一封李建成旧日书信。",
+              "闻李建成称病未朝。",
+              "李建成属下于宫门外徘徊。",
+              "闻李建成调动若干人手。",
+              "李建成名下田庄报灾。",
+              "李建成府递来节礼一份。"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "compress_below_threshold",
+      "kind": "compress",
+      "stream": "factual",
+      "step": 60,
+      "description": "可压缩候选数不足触发阈值(30);压缩应是 no-op。",
+      "expect": "候选不足时压缩不应触发:不产出任何 summary、不删除任何源记忆。纯机制验证。",
+      "actor": "李世民",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "kind": "event",
+            "importance": 0.2,
+            "decay_score": 0.1,
+            "age": 25,
+            "related": [
+              "尉迟恭"
+            ],
+            "variants": [
+              "与尉迟恭交谈数语。",
+              "听尉迟恭回报操练。",
+              "与尉迟恭对弈一局。",
+              "尉迟恭送来果子。",
+              "与尉迟恭核对人手。",
+              "尉迟恭陈说军务。",
+              "与尉迟恭查看军械。",
+              "尉迟恭禀报守夜安排。"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "compress_anchor_protection",
+      "kind": "compress",
+      "stream": "factual",
+      "step": 60,
+      "description": "可压缩的客观尘埃日志里混入一条 CRITICAL 重要性的 factual(情感锚点);压缩绝不能碰锚点。",
+      "expect": "应正常压缩那批平淡尘埃日志,但 CRITICAL importance 的 factual 绝不进候选、绝不被删除;summary 只由尘埃聚成。(factual 流的锚点是 CRITICAL 重要性——factual 无 |valence| 锚、insight 属 experiential。)",
+      "actor": "李世民",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "kind": "event",
+            "importance": 0.2,
+            "decay_score": 0.1,
+            "age": 25,
+            "related": [
+              "尉迟恭"
+            ],
+            "variants": [
+              "与尉迟恭交谈营中事务。",
+              "听尉迟恭报操练。",
+              "与尉迟恭对弈一局。",
+              "尉迟恭回报操练如常。",
+              "与尉迟恭核对人手。",
+              "尉迟恭送来时令果子。",
+              "听尉迟恭陈说军粮调度。",
+              "与尉迟恭沿宫墙巡视。",
+              "尉迟恭问次日安排。",
+              "查看新领弓矢。",
+              "与尉迟恭商定换防。",
+              "与尉迟恭清点箭壶。",
+              "尉迟恭禀报守夜。",
+              "与尉迟恭对账册。",
+              "尉迟恭递来公文。",
+              "与尉迟恭查看马厩。",
+              "与尉迟恭点验甲胄。",
+              "尉迟恭辞去。",
+              "与尉迟恭议事半晌。",
+              "尉迟恭报巡夜平安。",
+              "与尉迟恭核门禁。",
+              "尉迟恭取来茶水。",
+              "与尉迟恭对时辰。",
+              "尉迟恭问候起居。",
+              "与尉迟恭清点校场器械。",
+              "尉迟恭报操练毕。",
+              "与尉迟恭核对名册。",
+              "尉迟恭呈上当值簿。",
+              "与尉迟恭查看库藏。",
+              "尉迟恭报无异常。",
+              "与尉迟恭巡查宫门。",
+              "尉迟恭禀报换岗。"
+            ]
+          },
+          {
+            "stream": "factual",
+            "kind": "event",
+            "content": "亲信于眼前遇害身亡。",
+            "importance": 0.95,
+            "decay_score": 0.1,
+            "age": 25,
+            "related": [
+              "李建成"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "compress_dedup_merge",
+      "kind": "compress",
+      "stream": "factual",
+      "step": 60,
+      "description": "一段时期的值守日志:几类反复发生的事(巡墙/核名册/查器械/接见门吏)被**用不同措辞**记了许多遍,中间夹着几件一次性的具体事项。横跨一段时间。压缩应识别『措辞不同但其实同类』并合并,同时保留那几件不该被抹去的一次性事项。",
+      "expect": "压缩应**按语义去重合并**:把措辞各异、实则同类的反复事项收成概括(如『多次巡墙、核名册、查器械、接见门吏』),而不是逐条照搬、也不是只合并字面完全相同的;同时**保留那几件一次性的具体事项**(宫墙砖石松动待修、补充守卫、改换岗时辰)不被笼统抹掉。客观第三人称、精简。能看出是否真按语义压缩到位。",
+      "actor": "李世民",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "kind": "event",
+            "importance": 0.2,
+            "decay_score": 0.1,
+            "age_span": [
+              22,
+              36
+            ],
+            "related": [
+              "尉迟恭"
+            ],
+            "variants": [
+              "巡视宫墙一周，无异常。",
+              "核对当值名册。",
+              "点验库中兵器。",
+              "接见门吏例行禀报。",
+              "沿宫墙巡查，未见异状。",
+              "查点值守名录。",
+              "检视武库军械。",
+              "听门吏日常回禀。",
+              "例行巡墙，一切如常。",
+              "校了当班的名单。",
+              "清点府库刀弓。",
+              "门吏来报，无事。",
+              "绕宫墙巡视，平安无事。",
+              "对了一遍守卫花名。",
+              "查看库存甲械。",
+              "见过当值门吏。",
+              "查看宫墙各处，并无异常。",
+              "清点当值人员名册。",
+              "核了库中器仗。",
+              "门吏例行通禀。",
+              "夜间巡墙，未察异常。",
+              "核验值勤名单。",
+              "点检武库刀枪。",
+              "门吏通报当值情形。",
+              "复巡宫墙，安好。",
+              "又核了一遍当值名册。",
+              "再查府库器械。",
+              "查得西侧宫墙砖石松动，已记下待修。",
+              "新补两名守卫填补空缺。",
+              "调整了西侧换岗的时辰。"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "compress_progressing_thread",
+      "kind": "compress",
+      "stream": "factual",
+      "step": 60,
+      "description": "一段时期里『修缮太极殿』这件工程持续推进的零散日志(从备料、施工到收尾竣工,逐日登记);压缩应把这条线收成连贯概括并保留关键的人/地/事。",
+      "expect": "修缮太极殿这条持续推进的工程线,压缩后应读得出连贯的推进(从备料→施工→竣工),**保留关键信息:涉及的人(工部/匠人)、地点(太极殿)、事情主干(修缮)**,而不是打散成互不相干的碎片、或把关键的人地事抹成『做了些事』。客观第三人称、合并精简。",
+      "actor": "李世民",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "kind": "event",
+            "importance": 0.3,
+            "decay_score": 0.1,
+            "age_span": [
+              22,
+              38
+            ],
+            "variants": [
+              "工部呈太极殿修缮的工料清单。",
+              "核准太极殿修缮的工料用度。",
+              "征调匠人三十名入宫修缮太极殿。",
+              "太极殿旧梁查验，三根定为更换。",
+              "太极殿西墙裂缝勘验登记。",
+              "督运修缮太极殿的木料入宫。",
+              "太极殿换瓦所需青瓦备齐。",
+              "核太极殿修缮的工期与开工吉日。",
+              "匠人于太极殿搭起脚手。",
+              "太极殿廊柱除旧漆。",
+              "太极殿东庑旧瓦拆卸。",
+              "太极殿首梁更换。",
+              "太极殿东庑上梁。",
+              "太极殿西墙裂缝修补。",
+              "太极殿地砖残缺处铺补。",
+              "太极殿门扇修整归位。",
+              "太极殿窗棂重漆。",
+              "太极殿排水沟疏浚。",
+              "工部报匠人误工两日、工期顺延。",
+              "工部报太极殿修缮已过半。",
+              "太极殿正脊彩绘起稿。",
+              "太极殿屋脊瓦兽归位。",
+              "太极殿廊下灯架修复。",
+              "太极殿殿前石阶替换毕。",
+              "太极殿西庑换瓦完工。",
+              "匠人清运太极殿修缮碎料。",
+              "太极殿殿前石狮归位。",
+              "工部报太极殿修缮将竣。",
+              "太极殿修缮验收事宜核定。",
+              "太极殿修缮竣工，工部呈上结项。"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "reflect_grounded_insight",
+      "kind": "reflect",
+      "step": 60,
+      "description": "近来一连串关于李建成的亲历(挑衅/排挤/暗算)留在心里;主角反思,对建成形成或加深认知。",
+      "expect": "应从这些亲历归纳出对建成的稳定判断(belief),扎在至少一件真实发生的事上、第一人称、是对这个人/这段关系的认知,而非复读单条、空喊口号或空泛大道理。insight 深度=1、接地。",
+      "actor": "李世民",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "朝会上建成当众抢白我的方略，语带讥诮。",
+            "importance": 0.7,
+            "decay_score": 0.9,
+            "valence": -0.6,
+            "age": 12,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "我荐的人接连被建成寻故压下，分明是冲我来的。",
+            "importance": 0.72,
+            "decay_score": 0.9,
+            "valence": -0.6,
+            "age": 9,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "夜里察觉府外有建成的眼线窥探。",
+            "importance": 0.75,
+            "decay_score": 0.9,
+            "valence": -0.65,
+            "age": 6,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "建成设宴邀我，席间话里藏刀，试探再三。",
+            "importance": 0.7,
+            "decay_score": 0.9,
+            "valence": -0.5,
+            "age": 4,
+            "related": [
+              "李建成"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "reflect_overturn_insight",
+      "kind": "reflect",
+      "step": 60,
+      "description": "已有一条对尉迟恭『还在观望、未必肯效死』的旧判断;新近的亲历(临危挡刀、立誓)与旧念相悖,促使主角推翻它。",
+      "expect": "新 insight 应**推翻**旧念(对尉迟恭的判断由『未必效死』反转为『真死士、可托后背』),仍接地于真实 event、第一人称;深度可达 2(旧 insight depth=1 + 1),不超过封顶。",
+      "actor": "李世民",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "experiential",
+            "kind": "insight",
+            "content": "我一度以为敬德只是在观望，未必真肯为我效死。",
+            "importance": 0.7,
+            "decay_score": 0.9,
+            "valence": -0.1,
+            "age": 20,
+            "reflection_depth": 1,
+            "related": [
+              "尉迟恭"
+            ]
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "危急关头敬德挺身挡在我身前，毫不迟疑。",
+            "importance": 0.8,
+            "decay_score": 0.9,
+            "valence": 0.6,
+            "age": 8,
+            "related": [
+              "尉迟恭"
+            ]
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "敬德当面立誓，纵死不弃，言辞恳切。",
+            "importance": 0.78,
+            "decay_score": 0.9,
+            "valence": 0.55,
+            "age": 5,
+            "related": [
+              "尉迟恭"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "reflect_deepen_insight",
+      "kind": "reflect",
+      "step": 60,
+      "description": "已有一条对李建成『容不下我、处处掣肘』的旧判断;新近的亲历是同方向的进一步印证(更狠的打压),促使主角加深这条认知。",
+      "expect": "新 insight 应在旧念基础上**同向加深**(由『掣肘排挤』加重为『已是不容并存、欲除之而后快』),不是推翻、也不是重复旧念原话;仍接地于真实 event、第一人称;深度可达 2,不超过封顶。",
+      "actor": "李世民",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "experiential",
+            "kind": "insight",
+            "content": "我看出建成容不下我，朝中处处对我掣肘。",
+            "importance": 0.75,
+            "decay_score": 0.9,
+            "valence": -0.5,
+            "age": 22,
+            "reflection_depth": 1,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "建成借故撤换了我数名属官，断我臂助。",
+            "importance": 0.76,
+            "decay_score": 0.9,
+            "valence": -0.6,
+            "age": 9,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "我的军报被扣在东宫数日，分明是建成授意。",
+            "importance": 0.74,
+            "decay_score": 0.9,
+            "valence": -0.6,
+            "age": 6,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "密报称建成正暗中调兵，似要对我下手。",
+            "importance": 0.8,
+            "decay_score": 0.9,
+            "valence": -0.7,
+            "age": 3,
+            "related": [
+              "李建成"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "reflect_mundane_returns_empty",
+      "kind": "reflect",
+      "step": 60,
+      "expect_empty": true,
+      "description": "近来是一长串平淡无事的流水账:零散琐碎、互不相关、无人际冲突、无情感重量、不触及人/关系/抱负。主角反思时本应『交白卷』。",
+      "expect": "这一堆流水账里确实没什么真正值得记下的新认知——正确做法是**留空(不产出 insight)**:空远胜过把无谓小事硬夸成洞察。若仍产出了 insight(哪怕『我近来清闲』之类),都属硬挤/拔高,应判低。",
+      "actor": "李世民",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "用了午膳，没什么胃口，搁了筷子。",
+            "importance": 0.2,
+            "decay_score": 0.9,
+            "valence": 0.0,
+            "age": 11
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "在廊下站了会儿，看了看天色，又回了屋。",
+            "importance": 0.2,
+            "decay_score": 0.9,
+            "valence": 0.05,
+            "age": 10
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "翻了几页旧书，没读进去，搁下了。",
+            "importance": 0.18,
+            "decay_score": 0.9,
+            "valence": 0.0,
+            "age": 9
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "午后小憩了一阵，醒来天还亮着。",
+            "importance": 0.18,
+            "decay_score": 0.9,
+            "valence": 0.05,
+            "age": 8
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "院里的花开了几枝，随意看了两眼。",
+            "importance": 0.2,
+            "decay_score": 0.9,
+            "valence": 0.1,
+            "age": 7
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "煮了壶茶，慢慢喝了半盏。",
+            "importance": 0.18,
+            "decay_score": 0.9,
+            "valence": 0.05,
+            "age": 6
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "听见檐下雨声，发了会儿呆。",
+            "importance": 0.18,
+            "decay_score": 0.9,
+            "valence": 0.0,
+            "age": 5
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "换了身常服，理了理衣袖。",
+            "importance": 0.15,
+            "decay_score": 0.9,
+            "valence": 0.0,
+            "age": 4
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "在院中走了几步，活动了下筋骨。",
+            "importance": 0.18,
+            "decay_score": 0.9,
+            "valence": 0.05,
+            "age": 3
+          },
+          {
+            "stream": "experiential",
+            "kind": "event",
+            "content": "早早歇下了，没什么可记的。",
+            "importance": 0.15,
+            "decay_score": 0.9,
+            "valence": 0.0,
+            "age": 2
+          }
+        ]
+      }
+    }
+  ]
+}

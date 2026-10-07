@@ -1,0 +1,553 @@
+{
+  "_comment": "记忆检索(retrieve_both)调优场景。用真 text-embedding-v3 hybrid(dense+学习型 sparse)重建隔离 memory_system,种入贴合玄武门叙事的候选池(scene.seed_memories),驱动生产 retrieve_both(已 per-query min-max 归一)。query 支持纯文本或结构化(spatial/message/broadcast/goal = 真实 _build_retrieval_query 同构)。kind=contrast 给 query+query_b 验证 query-sensitivity。确定性:kind分类/top_k/无id·step泄漏/无近重复/contrast召回不同/可选 must_recall·must_not_recall 锚点。judge(deepseek-v3.1)评 relevance+coverage,不喂正确召回集。基线世界,actor 李世民。",
+  "scenarios": [
+    {
+      "name": "retrieve_crisis",
+      "kind": "single",
+      "step": 60,
+      "top_k": 5,
+      "description": "危机情境:查询李建成/李元吉的逼迫威胁有多深;池中混有威胁、盟友、琐事记忆。",
+      "expect": "应以威胁/逼迫主题的记忆为主,日常琐事不该挤占 top-k;近期高重要的记忆自然浮现属合理。",
+      "actor": "李世民",
+      "query": "李建成、李元吉对我的逼迫与威胁究竟有多深",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "content": "李建成在朝会上当众驳斥我所奏的边防方略。",
+            "importance": 0.75,
+            "decay_score": 0.9,
+            "age": 9,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "密报称东宫今夜暗中调集兵马，似有图谋。",
+            "importance": 0.88,
+            "decay_score": 0.95,
+            "age": 3,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "齐王李元吉进言父皇，请削夺我的兵权。",
+            "importance": 0.8,
+            "decay_score": 0.9,
+            "age": 7,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "experiential",
+            "content": "建成步步紧逼，刀已悬颈，我已无退路可言。",
+            "importance": 0.85,
+            "decay_score": 0.92,
+            "valence": -0.65,
+            "age": 4,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "尉迟恭当面立誓，纵死不弃。",
+            "importance": 0.62,
+            "decay_score": 0.9,
+            "age": 5,
+            "related": [
+              "尉迟恭"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "常何暗中表示愿归附于我。",
+            "importance": 0.8,
+            "decay_score": 0.9,
+            "age": 5
+          },
+          {
+            "stream": "factual",
+            "content": "巡视秦王府宫墙一周，无异常。",
+            "importance": 0.2,
+            "decay_score": 0.85,
+            "age": 8
+          },
+          {
+            "stream": "factual",
+            "content": "用了午膳。",
+            "importance": 0.15,
+            "decay_score": 0.85,
+            "age": 6
+          },
+          {
+            "stream": "factual",
+            "content": "查验府库器械。",
+            "importance": 0.2,
+            "decay_score": 0.85,
+            "age": 10
+          }
+        ]
+      }
+    },
+    {
+      "name": "retrieve_social",
+      "kind": "single",
+      "step": 60,
+      "top_k": 5,
+      "description": "社交情境:查询尉迟恭、常何是否真心效忠;池中混有盟友、威胁、琐事。",
+      "expect": "应以效忠/盟友主题的记忆为主,而非威胁类;噪声(无关琐事)不该挤占 top-k。",
+      "actor": "李世民",
+      "query": "尉迟恭、常何这些人是否真心效忠于我、可否托付后背",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "content": "尉迟恭当面立誓，纵死不弃。",
+            "importance": 0.62,
+            "decay_score": 0.9,
+            "age": 5,
+            "related": [
+              "尉迟恭"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "尉迟恭于府中向我陈述玄武门设伏之策。",
+            "importance": 0.58,
+            "decay_score": 0.9,
+            "age": 6,
+            "related": [
+              "尉迟恭"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "玄武门守将常何暗中表示愿归附于我。",
+            "importance": 0.82,
+            "decay_score": 0.9,
+            "age": 5
+          },
+          {
+            "stream": "experiential",
+            "content": "敬德愿以死相随，这份赤诚让我在绝境里仍有底气。",
+            "importance": 0.62,
+            "decay_score": 0.9,
+            "valence": 0.55,
+            "age": 5,
+            "related": [
+              "尉迟恭"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "密报称东宫今夜暗中调集兵马，似有图谋。",
+            "importance": 0.88,
+            "decay_score": 0.95,
+            "age": 3,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "李建成在朝会上当众驳斥我所奏的边防方略。",
+            "importance": 0.75,
+            "decay_score": 0.9,
+            "age": 9,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "巡视秦王府宫墙一周，无异常。",
+            "importance": 0.2,
+            "decay_score": 0.85,
+            "age": 8
+          },
+          {
+            "stream": "factual",
+            "content": "庭中梅树新枝抽芽。",
+            "importance": 0.15,
+            "decay_score": 0.85,
+            "age": 12
+          }
+        ]
+      }
+    },
+    {
+      "name": "retrieve_structured_query",
+      "kind": "single",
+      "step": 60,
+      "top_k": 5,
+      "description": "结构化 query(真实 _build_retrieval_query 四要素:在场/消息/广播/目标)——玄武门戒备 + 东宫调兵密报 + 太子不利传闻 + 先发制人目标。",
+      "expect": "应偏向与四个信号通道(在场人/密报/传闻/目标)共同指向的当前危机筹谋强相关的记忆;无关琐事不该挤占 top-k。",
+      "actor": "李世民",
+      "query": {
+        "spatial": "玄武门内，可见尉迟恭、常何，守军持械戒备",
+        "message": "收到密报：东宫今夜调兵",
+        "broadcast": "朝中传闻太子将对秦王不利",
+        "goal": "先发制人、保全秦王府上下"
+      },
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "content": "尉迟恭于府中向我陈述玄武门设伏之策。",
+            "importance": 0.58,
+            "decay_score": 0.9,
+            "age": 6,
+            "related": [
+              "尉迟恭"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "玄武门守将常何暗中表示愿归附于我。",
+            "importance": 0.82,
+            "decay_score": 0.9,
+            "age": 5
+          },
+          {
+            "stream": "factual",
+            "content": "密报称东宫今夜暗中调集兵马，似有图谋。",
+            "importance": 0.88,
+            "decay_score": 0.95,
+            "age": 3,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "长孙无忌力劝我早定大计、先发制人。",
+            "importance": 0.6,
+            "decay_score": 0.9,
+            "age": 4
+          },
+          {
+            "stream": "factual",
+            "content": "清点府中可调用的甲士人数。",
+            "importance": 0.45,
+            "decay_score": 0.85,
+            "age": 10
+          },
+          {
+            "stream": "factual",
+            "content": "父皇李渊降旨，召我明日入宫觐见。",
+            "importance": 0.72,
+            "decay_score": 0.95,
+            "age": 2,
+            "related": [
+              "李渊"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "用了午膳。",
+            "importance": 0.15,
+            "decay_score": 0.85,
+            "age": 6
+          },
+          {
+            "stream": "factual",
+            "content": "命人添置了几样笔墨。",
+            "importance": 0.12,
+            "decay_score": 0.85,
+            "age": 8
+          }
+        ]
+      }
+    },
+    {
+      "name": "contrast_crisis_vs_social",
+      "kind": "contrast",
+      "step": 60,
+      "top_k": 3,
+      "description": "同一候选池(威胁类4条 / 效忠类4条,共8条),两个不同 query;top_k=3 容不下整池——验证 query-sensitivity 在**成员选择**层面:换了 query,召回成员是否真的随之改变。importance/recency 按叙事各取其实(致命威胁如毒酒/调兵天然偏高,寻常效忠誓言偏中),不为实验抹平。",
+      "expect": "换 query 后召回**成员集应明显不同**,各自偏向与该 query 主题相符的记忆。注:若高重要的威胁记忆在效忠 query 下仍挤进 top-k,属真实可观察的现象(relevance 与 importance 的权衡),据召回与情境据实判断,不强求完美分簇。",
+      "actor": "李世民",
+      "query": "李建成对我的威胁与逼迫",
+      "query_b": "追随我的部下的忠诚与效命",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "content": "李建成在朝会上当众驳斥我所奏的边防方略。",
+            "importance": 0.66,
+            "decay_score": 0.9,
+            "age": 9,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "密报称东宫今夜暗中调集兵马，似有图谋。",
+            "importance": 0.88,
+            "decay_score": 0.92,
+            "age": 6,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "齐王李元吉进言父皇，请削夺我的兵权。",
+            "importance": 0.78,
+            "decay_score": 0.9,
+            "age": 7,
+            "related": [
+              "李元吉"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "李建成遣人设宴相邀，席间所赐之酒入口竟带血腥。",
+            "importance": 0.9,
+            "decay_score": 0.9,
+            "age": 8,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "尉迟恭当面立誓，纵死不弃。",
+            "importance": 0.6,
+            "decay_score": 0.9,
+            "age": 5,
+            "related": [
+              "尉迟恭"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "尉迟恭于府中向我陈述玄武门设伏之策。",
+            "importance": 0.63,
+            "decay_score": 0.9,
+            "age": 6,
+            "related": [
+              "尉迟恭"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "长孙无忌力主先发制人，愿与我共担成败。",
+            "importance": 0.66,
+            "decay_score": 0.9,
+            "age": 5,
+            "related": [
+              "长孙无忌"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "常何已暗中归附，玄武门守备尽在我掌握之中。",
+            "importance": 0.82,
+            "decay_score": 0.9,
+            "age": 4,
+            "related": [
+              "常何"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "retrieve_decay_sink",
+      "kind": "single",
+      "step": 60,
+      "top_k": 4,
+      "description": "池中混入一条深度衰减(decay 0.04)的久远且与当前情境无关的记忆;当前 query 是迫近威胁。",
+      "expect": "深度衰减的久远旧记忆应被 decay floor 压沉、不进 top-k;召回应偏向当前威胁主题。",
+      "actor": "李世民",
+      "must_not_recall": [
+        "刘黑闼"
+      ],
+      "query": "眼下东宫与建成对我的威胁",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "content": "密报称东宫今夜暗中调集兵马，似有图谋。",
+            "importance": 0.88,
+            "decay_score": 0.95,
+            "age": 3,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "李建成在朝会上当众驳斥我所奏的边防方略。",
+            "importance": 0.75,
+            "decay_score": 0.9,
+            "age": 9,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "齐王李元吉请父皇削夺我的兵权。",
+            "importance": 0.8,
+            "decay_score": 0.9,
+            "age": 7,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "去岁随父皇出征、平定刘黑闼的酣战。",
+            "importance": 0.5,
+            "decay_score": 0.04,
+            "age": 55,
+            "related": [
+              "李渊"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "用了午膳。",
+            "importance": 0.15,
+            "decay_score": 0.85,
+            "age": 6
+          }
+        ]
+      }
+    },
+    {
+      "name": "retrieve_dedup",
+      "kind": "single",
+      "step": 60,
+      "top_k": 5,
+      "description": "池中有近乎重复的同一条记忆(同事件几乎相同措辞)若干,加若干不同记忆;query 命中该事件。",
+      "expect": "MMR 应把近重复折叠为一条,召回里不该出现两条几乎一样的记忆。",
+      "actor": "李世民",
+      "query": "东宫调兵的密报",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "content": "密报称东宫今夜暗中调集兵马，似有图谋。",
+            "importance": 0.85,
+            "decay_score": 0.9,
+            "age": 3,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "密报称东宫今夜暗中调集兵马，似有图谋。",
+            "importance": 0.84,
+            "decay_score": 0.9,
+            "age": 4,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "密报称东宫今夜暗中调集兵马，似有图谋。",
+            "importance": 0.83,
+            "decay_score": 0.9,
+            "age": 5,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "尉迟恭当面立誓，纵死不弃。",
+            "importance": 0.62,
+            "decay_score": 0.9,
+            "age": 5,
+            "related": [
+              "尉迟恭"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "父皇李渊降旨，召我明日入宫觐见。",
+            "importance": 0.72,
+            "decay_score": 0.95,
+            "age": 2,
+            "related": [
+              "李渊"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "retrieve_mundane",
+      "kind": "single",
+      "step": 60,
+      "top_k": 5,
+      "description": "平淡 query(近来日常起居);池中既有琐事也有近期危机记忆。已知的弱例:relevance 信号弱时,近期/高重要记忆易浮现。",
+      "expect": "理想上偏向日常琐事类记忆;但若池中琐事老旧/relevance 弱,近期重要记忆浮现也属合理(不强求,不喂答案)。",
+      "actor": "李世民",
+      "query": "近来宫中的日常起居与琐事",
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "content": "巡视秦王府宫墙一周，无异常。",
+            "importance": 0.2,
+            "decay_score": 0.85,
+            "age": 8
+          },
+          {
+            "stream": "factual",
+            "content": "用了午膳，没什么胃口。",
+            "importance": 0.15,
+            "decay_score": 0.85,
+            "age": 6
+          },
+          {
+            "stream": "factual",
+            "content": "查验府库器械。",
+            "importance": 0.2,
+            "decay_score": 0.85,
+            "age": 10
+          },
+          {
+            "stream": "factual",
+            "content": "庭中梅树新枝抽芽。",
+            "importance": 0.15,
+            "decay_score": 0.85,
+            "age": 12
+          },
+          {
+            "stream": "factual",
+            "content": "密报称东宫今夜暗中调集兵马，似有图谋。",
+            "importance": 0.88,
+            "decay_score": 0.95,
+            "age": 3,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "尉迟恭当面立誓，纵死不弃。",
+            "importance": 0.62,
+            "decay_score": 0.9,
+            "age": 5,
+            "related": [
+              "尉迟恭"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

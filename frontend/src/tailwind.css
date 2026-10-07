@@ -1,0 +1,32 @@
+/* Tailwind entry. Preflight is disabled in tailwind.config.cjs (the bare-element base is
+   styles.css), so only utilities/components are emitted. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Small keyframe helpers the dashboard uses (Tailwind arbitrary
+   animations reference these by name, e.g. animate-[fadeIn_0.5s_ease-out]). */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* fadeIn's 4px lift is calibrated for a panel; on display type it reads as nothing.
+   riseIn is the same idea at wordmark scale — used by the splash screen. */
+@keyframes riseIn {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+

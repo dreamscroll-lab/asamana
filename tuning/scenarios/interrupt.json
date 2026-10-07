@@ -1,0 +1,215 @@
+{
+  "_comment": "interrupt 阶段(Agent.evaluate_interrupt)调优场景。角色正进行某多步行动时,外部信号(消息/广播/外部威胁)到来,以第一人称权衡『这事够不够分量让我立刻放下手头的事』并决定是否中断 + 留下第一人称内心独白。分场景覆盖不同中断源 × 不同行动类型 × 不同信号轻重(琐碎→性命攸关)。**全员走 LLM 认知路径**(CLAUDE.md §5 质量优先,无规则档):前 6 个为主角(李世民),最后 1 个为非主角(李建成)——后者专门验证非主角同样做第一人称权衡,不因非主角就退化成机械服从。expect 只说『何为失真』、不喂答案——中断或不中断都可能合理,judge 评是否站得住,不得因角色没选你设想的方向而扣分。注入数据须自洽合常理(史实/世界设定一致)。ongoing.estimated_steps/remaining_steps 决定进度(由生产 _render_progress_hint 翻成自然时长/定性,绝不出现裸 step)。",
+  "scenarios": [
+    {
+      "name": "critical_msg_during_rest",
+      "agent": "李世民",
+      "source": "message(critical)",
+      "criteria_focus": [
+        "decision_fit",
+        "voice"
+      ],
+      "description": "书房小憩(进行过半)时,心腹尉迟恭急报玄武门那头出了事关举事成败的变故。",
+      "expect": "这是一桩对举事成败至关重要、迫在眉睫的军情。以李世民的处境(成败系于此),放下小憩去应对是站得住的;但若他独白里权衡后判断尚可稍后、或先定一定神再动,也非全错——关键看决定是否与『此事之于我的轻重』相称。失真:把这等关乎全局成败的大事当耳旁风、无动于衷继续睡;独白跳出第一人称、写成情绪标签(如『我很震惊』)、或与最终决定自相矛盾。",
+      "emotion": {
+        "type": "alert",
+        "intensity": 0.5,
+        "valence": -0.1
+      },
+      "goals": [
+        "确保玄武门举事万无一失"
+      ],
+      "ongoing": {
+        "action_type": "rest",
+        "purpose": "在书房小憩片刻、养精蓄锐",
+        "estimated_steps": 8,
+        "remaining_steps": 4
+      },
+      "reason": "尉迟恭急报：玄武门守将那头突生变故，事关举事成败，请王爷即刻定夺！"
+    },
+    {
+      "name": "threat_goal_during_work",
+      "agent": "李世民",
+      "source": "external_goal(threat)",
+      "criteria_focus": [
+        "decision_fit",
+        "voice"
+      ],
+      "description": "刚伏案细化布防图(才开始不久),传来指向自身安危的迫近威胁——东宫卫率正向秦王府逼近。",
+      "expect": "一股可能危及性命的迫近威胁。面对逼近的危险,警觉应对(中断手头案牍)站得住;但若他权衡后判断布防未定更要紧、需先定夺关键一处也可成立——看独白里的取舍。失真:对指向自身的迫近威胁毫无反应、麻木伏案;或反应慌乱到与其沉稳果决的人设相悖;独白非第一人称或与决定矛盾。",
+      "emotion": {
+        "type": "focused",
+        "intensity": 0.4,
+        "valence": 0.0
+      },
+      "goals": [
+        "定夺布防图上最后一处悬而未决的伏兵站位"
+      ],
+      "ongoing": {
+        "action_type": "work",
+        "purpose": "伏案细化玄武门布防图",
+        "estimated_steps": 6,
+        "remaining_steps": 5
+      },
+      "reason": "外部压力（威胁）：李建成似已察觉异动，正调东宫卫率向秦王府一线逼近，恐对你不利。"
+    },
+    {
+      "name": "minor_noise_during_critical_talk",
+      "agent": "李世民",
+      "source": "broadcast(low)",
+      "criteria_focus": [
+        "decision_fit",
+        "voice"
+      ],
+      "description": "正与心腹尉迟恭密议举事最后部署(谈到一半),府外街市传来一阵与己无关的寻常喧闹。",
+      "expect": "一桩与己无关的市井喧闹,而手头正是事关成败的密议。沉得住气、不为这点动静打断要紧密谈是自然的;若出于谨慎稍留意一下也非大错。失真:为这等无关紧要的市井小事慌忙中断关键密议(一惊一乍),与其老练沉稳的人设相悖;独白非第一人称或与决定矛盾。【测『不要一惊一乍』】",
+      "emotion": {
+        "type": "focused",
+        "intensity": 0.4,
+        "valence": 0.0
+      },
+      "goals": [
+        "与心腹敲定举事的最后部署"
+      ],
+      "ongoing": {
+        "action_type": "talk",
+        "purpose": "与尉迟恭密议举事的最后部署",
+        "estimated_steps": 5,
+        "remaining_steps": 3
+      },
+      "reason": "府外街市传来一阵喧闹，似是寻常车马争道、贩夫走卒拌嘴。"
+    },
+    {
+      "name": "trivial_query_during_final_work",
+      "agent": "李世民",
+      "source": "message(low)",
+      "criteria_focus": [
+        "decision_fit",
+        "voice"
+      ],
+      "description": "正核定举事时辰与接应信号(就快收尾),仆役来问今夜膳食灯烛的琐碎安排。",
+      "expect": "一桩可有可无的琐碎询问,而手头之事就快收尾、且至关重要。理应不为琐事打断、先把要紧事收尾(膳食灯烛大可稍后再答);若顺口处置一句也无伤大雅。失真:为膳食灯烛这等琐事中断就快完成的关键部署(轻重不分),严重失真;独白非第一人称或与决定矛盾。【测抵抗琐碎中断、轻重相称】",
+      "emotion": {
+        "type": "focused",
+        "intensity": 0.3,
+        "valence": 0.0
+      },
+      "goals": [
+        "核定今夜举事的时辰与接应信号"
+      ],
+      "ongoing": {
+        "action_type": "work",
+        "purpose": "核定举事的时辰与接应信号",
+        "estimated_steps": 6,
+        "remaining_steps": 1
+      },
+      "reason": "府中仆役来问：今夜的膳食与灯烛该如何安排，请王爷示下。"
+    },
+    {
+      "name": "real_emergency_during_covert",
+      "agent": "李世民",
+      "source": "broadcast(high)",
+      "criteria_focus": [
+        "decision_fit",
+        "voice"
+      ],
+      "description": "正暗中观察李建成动向(进行了一会儿),宫中骤起大火、禁卫四处奔走呼号。",
+      "expect": "一场近在眼前、势态严重的突发(宫中大火、禁卫大乱),这类变局往往改写全局。警觉中断暗察去重新研判是站得住的;但若他权衡后判断暗察正到关键、火情一时未及己身而选择继续潜伏,也属一种冷峻取舍——看独白是否掂量了火情之于全局的分量。失真:把眼前的重大突发当不存在、机械潜伏而毫无研判;独白非第一人称或与决定矛盾。",
+      "emotion": {
+        "type": "wary",
+        "intensity": 0.4,
+        "valence": -0.1
+      },
+      "goals": [
+        "摸清李建成下一步的动向"
+      ],
+      "ongoing": {
+        "action_type": "covert",
+        "purpose": "暗中观察李建成的动向",
+        "estimated_steps": 7,
+        "remaining_steps": 4
+      },
+      "reason": "公开警讯（高危）：宫中骤起大火，浓烟蔽天，禁卫四处奔走呼号、乱作一团。"
+    },
+    {
+      "name": "conflicting_crisis_during_move",
+      "agent": "李世民",
+      "source": "message(critical)",
+      "criteria_focus": [
+        "decision_fit",
+        "voice"
+      ],
+      "description": "已快赶到临湖殿应皇帝急召(就快到),又传来玄武门伏兵调度生变的急报——两头都要紧、无完美解。",
+      "expect": "两头都要紧:人已快走到应皇命的临湖殿,又传来玄武门伏兵生变的急报。这是无完美解的取舍——无论他选择中断折返去处置军情、还是先到临湖殿稳住圣意,只要独白显出他在两股轻重之间权衡取舍,都站得住。失真:无视其中任一股压力、或独白毫无权衡地一拍脑袋就定;臆造不存在的信息;独白非第一人称或与决定矛盾。【测冲突权衡】",
+      "emotion": {
+        "type": "anxious",
+        "intensity": 0.55,
+        "valence": -0.2
+      },
+      "goals": [
+        "应皇命赶赴临湖殿",
+        "稳住玄武门的伏兵部署"
+      ],
+      "ongoing": {
+        "action_type": "move",
+        "purpose": "赶往临湖殿应皇帝急召",
+        "estimated_steps": 4,
+        "remaining_steps": 1
+      },
+      "reason": "尉迟恭急报：玄武门伏兵调度突然生变，迟则生乱，请王爷速断！"
+    },
+    {
+      "name": "non_protagonist_summoned_during_work",
+      "agent": "李建成",
+      "source": "message(high)",
+      "criteria_focus": [
+        "decision_fit",
+        "voice"
+      ],
+      "description": "非主角角色正部署东宫卫率时接到皇命急召——验证非主角同样走 LLM 第一人称权衡(而非机械让位)。",
+      "expect": "这是一道够格的皇命急召,而他手上的布防部署也正做到一半。以他的身份处境,奉召即行是站得住的;若独白中权衡后判断布防更要紧、或先交代几句再动身,也非全错——关键看决定是否与『此召之于我的分量』和『我手上这件事的紧要』相称。失真:把皇命当耳旁风、毫无权衡地机械让位或机械无视;独白跳出第一人称、写成情绪标签;独白与最终决定自相矛盾。【测非主角同样有第一人称权衡,不因非主角就退化成无脑服从】",
+      "emotion": {
+        "type": "alert",
+        "intensity": 0.4,
+        "valence": -0.1
+      },
+      "goals": [
+        "稳固东宫防务"
+      ],
+      "ongoing": {
+        "action_type": "work",
+        "purpose": "部署东宫卫率、巡查布防",
+        "estimated_steps": 6,
+        "remaining_steps": 3
+      },
+      "reason": "皇命传至：陛下急召，速回宫中候命，不得延误。"
+    },
+    {
+      "name": "bound_man_weighs_an_interruption",
+      "agent": "李元吉",
+      "source": "ambient(high)",
+      "criteria_focus": [
+        "decision_fit",
+        "voice"
+      ],
+      "description": "双手已被反绑、动弹不得的人,听见宫门方向传来兵刃与呼喝——验证中断权衡是否落在他自身的处境上。",
+      "expect": "关键看这段第一人称权衡**知不知道自己动不了**。他大可以判断该放下手头的事(interrupt=true 本身不算错——下一拍他仍要重新盘算),但独白必须与被缚之身自洽。失真:独白盘算着扑上去、冲出去、抢先动手这类他此刻做不到的事;或写成与被缚全然无关的泛泛权衡,读起来像一个自由人在掂量。此外仍守通例:不跳出第一人称、不写成情绪标签、不与最终决定自相矛盾。",
+      "condition": "双手被反绑",
+      "emotion": {
+        "type": "anger",
+        "intensity": 0.7,
+        "valence": -0.6
+      },
+      "goals": [
+        "等一个能脱身的机会"
+      ],
+      "ongoing": {
+        "action_type": "rest",
+        "purpose": "屏息养力，等一个可乘之机",
+        "estimated_steps": 6,
+        "remaining_steps": 4
+      },
+      "reason": "宫门方向骤起兵刃相击与呼喝，人声由远及近。"
+    }
+  ]
+}
