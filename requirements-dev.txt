@@ -1,5 +1,5 @@
 # Tests and lint. The image installs requirements.txt only — nothing here ships.
 -r requirements.txt
-pytest>=8.0.0,<10
-pytest-asyncio>=0.23.0,<2
-ruff>=0.6,<1
+pytest>=8.4.2,<10
+pytest-asyncio>=0.26.0,<2
+ruff>=0.16.10,<1
