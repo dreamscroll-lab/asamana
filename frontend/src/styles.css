@@ -1,0 +1,51 @@
+:root {
+  /* Neutrals lean toward the brand purple (violet-gray, not blue-black) so the
+     plain-CSS base shares one ground with the Tailwind `slate` override. */
+  --bg: #150f24;
+  --panel-2: #322850;
+  --border: #463a68;
+  --text: #f4f1fb;
+  --accent: #6b4eaa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Tailwind preflight is disabled, so give bare form controls a neutral reset —
+   otherwise a native <button> shows the OS default gray background. Tailwind
+   utility classes have higher specificity and still override these. */
+button {
+  background-color: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* Checkboxes and radios are excluded: width:100% would stretch them across the row.
+   The exclusion must be wrapped in `:where()`: a bare `:not()` takes its argument's specificity
+   (0,2,1 here) and would override components' own width classes like `w-24`. */
+input:where(:not([type="checkbox"]):not([type="radio"])),
+textarea {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+  width: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "PingFang SC", "Segoe UI", system-ui, sans-serif;
+  font-size: 14px;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}

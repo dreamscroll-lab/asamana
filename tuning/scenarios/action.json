@@ -1,0 +1,566 @@
+{
+  "_comment": "行动阶段调优场景。验证 executor 四阶段(行动前/开始/中/完成)I/O + 仲裁。lifecycle 场景单 actor + 显式给定 action;arbitration 场景多 actor 并发。scene.colocate 把目标放到 actor 同地(执行需真实同地);scene.items 注册可见物;scene.vitality/emotion 覆盖状态;scene.memories 尽力注入(主要供 TALK)。expect 只述『何为合理』、不喂答案。基线世界(李世民/宫变主题,用 build 新建),注入自洽合史实/世界设定。",
+  "scenarios": [
+    {
+      "name": "talk_ally_full",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "outcome_fidelity",
+        "fields"
+      ],
+      "description": "心腹尉迟恭在场、当面密议起事;多步对话走完整四阶段。",
+      "expect": "对话应贴合两人(主君/死忠)的人设与君臣关系、围绕密议自然展开;允许各有顾虑、并非一团和气。tick 进度叙事自然、无 step 泄漏;complete 产出对话与双方各自记忆。",
+      "actor": "李世民",
+      "action": {
+        "type": "talk",
+        "target": "尉迟恭",
+        "estimated_steps": 3,
+        "description": "屏退左右，与尉迟恭密议起事时机",
+        "expected_outcome": "敲定动手的时机与分工"
+      },
+      "scene": {
+        "colocate": [
+          "尉迟恭"
+        ],
+        "memories": [
+          {
+            "agent": "李世民",
+            "factual": [
+              "尉迟恭统府中甲士、屡次向我效死"
+            ],
+            "experiential": [
+              "与尉迟恭并肩，我心里踏实"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "talk_interrupted",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "outcome_fidelity",
+        "consequence_realism"
+      ],
+      "description": "与尉迟恭密议到一半，急报骤至被迫中断。",
+      "expect": "中断记忆应是两人各自第一人称、点明谁先开口、贴合『谈到一半被打断』;触发方见原因、被动方不必见。无 step 泄漏。",
+      "actor": "李世民",
+      "action": {
+        "type": "talk",
+        "target": "尉迟恭",
+        "estimated_steps": 4,
+        "description": "与尉迟恭核定玄武门布防",
+        "expected_outcome": "落定布防细节"
+      },
+      "interrupt_at": 2,
+      "interrupt_reason": "宫门方向忽传喧哗",
+      "scene": {
+        "colocate": [
+          "尉迟恭"
+        ]
+      }
+    },
+    {
+      "name": "send_to_absent",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "fields",
+        "outcome_fidelity"
+      ],
+      "description": "尉迟恭不在场，需传讯催其备甲。",
+      "expect": "对不在场者传讯(SEND_MESSAGE)即时完成;记忆以名字称呼收件人、不出 id。",
+      "actor": "李世民",
+      "action": {
+        "type": "send_message",
+        "target": "尉迟恭",
+        "description": "速备甲士，听我号令",
+        "expected_outcome": "尉迟恭收讯即动"
+      }
+    },
+    {
+      "name": "rest_depleted",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "consequence_realism",
+        "outcome_fidelity"
+      ],
+      "description": "连日筹谋、体力濒竭，独处稍歇。",
+      "expect": "休整记忆应织入『独处稍歇』之意、点明地点与自然时长、体现精力恢复;无 step 泄漏。",
+      "actor": "李世民",
+      "action": {
+        "type": "rest",
+        "estimated_steps": 3,
+        "description": "在静室闭目养神，平复连日积累的疲惫",
+        "expected_outcome": "恢复些许精力"
+      },
+      "scene": {
+        "vitality": {
+          "李世民": 0.18
+        }
+      }
+    },
+    {
+      "name": "work_drafting",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "consequence_realism",
+        "outcome_fidelity"
+      ],
+      "description": "独自推敲起事方略,需专注完成。",
+      "expect": "WORK 应以第一人称自评是否做成、贴合人设与精力;tick 进度自然时长;成败据实(不必一概成功)。无 step 泄漏。",
+      "actor": "李世民",
+      "action": {
+        "type": "work",
+        "estimated_steps": 3,
+        "description": "独自推敲玄武门设伏的部署细节",
+        "expected_outcome": "理出可行的设伏方略"
+      },
+      "scene": {
+        "vitality": {
+          "李世民": 0.6
+        }
+      }
+    },
+    {
+      "name": "work_with_scene_evidence",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "consequence_realism",
+        "outcome_fidelity"
+      ],
+      "description": "手边有可用的卷宗，屋里却还杵着一个人：WORK 的成败该由这两样落定。",
+      "expect": "裁定应落在现场证据上——用得上手边那份卷宗、或说清有人在跟前静不下心;做不成时 why 要指认出具体哪一样,不得写『思绪未定』这类无信息量的空话。绝不把 expected_outcome 照抄成已发生的事。无 step 泄漏。",
+      "actor": "李世民",
+      "action": {
+        "type": "work",
+        "estimated_steps": 2,
+        "description": "对着名录逐页核对，挑出仍可托付的旧部",
+        "expected_outcome": "圈定三五个可托付的名字"
+      },
+      "scene": {
+        "colocate": [
+          "尉迟恭"
+        ],
+        "items": [
+          {
+            "name": "秦王府旧部名录",
+            "type": "item",
+            "state": "intact",
+            "desc": "天策府核心将领与谋臣的名册",
+            "takeable": true
+          }
+        ],
+        "vitality": {
+          "李世民": 0.6
+        }
+      }
+    },
+    {
+      "name": "move_adjacent",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "fields",
+        "outcome_fidelity"
+      ],
+      "description": "要务在邻处,须移步前往。",
+      "expect": "MOVE 应顺利启程/抵达,记忆带地点名与自然时长;若多步则 tick 进度无 step 泄漏。",
+      "actor": "李世民",
+      "action": {
+        "type": "move",
+        "target": "$ADJACENT",
+        "description": "移步前往邻近处所",
+        "expected_outcome": "抵达邻处"
+      }
+    },
+    {
+      "name": "physical_strike_rival",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "consequence_realism",
+        "outcome_fidelity"
+      ],
+      "description": "狭路相逢政敌李建成,当场动手。",
+      "expect": "裁决应计入双方实力/处境,成败与伤害相称、不因身份强势就稳赢;若得手,李建成应有相应情绪与伤、关系转恶。无 id/step 泄漏。",
+      "actor": "李世民",
+      "action": {
+        "type": "physical",
+        "target": "李建成",
+        "item_type": "agent",
+        "description": "拔剑制住李建成",
+        "expected_outcome": "当场制服对方"
+      },
+      "scene": {
+        "colocate": [
+          "李建成"
+        ]
+      }
+    },
+    {
+      "name": "physical_help_ally",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "consequence_realism",
+        "outcome_fidelity"
+      ],
+      "description": "心腹尉迟恭力战负伤、踉跄欲倒,李世民上前搀扶。",
+      "expect": "PHYSICAL 对人未必是攻击——这是援手。裁决不应判出新伤害(target_damage 应为 0/极低),关系应正向或不恶化;尉迟恭的反应应是感激/安心一类,而非恐惧或被攻击。记忆/裁决不应出现『被躲开』『受创』等敌对预设。",
+      "actor": "李世民",
+      "action": {
+        "type": "physical",
+        "target": "尉迟恭",
+        "item_type": "agent",
+        "description": "伸手扶住踉跄欲倒的尉迟恭",
+        "expected_outcome": "稳住对方、助其站定"
+      },
+      "scene": {
+        "colocate": [
+          "尉迟恭"
+        ],
+        "vitality": {
+          "尉迟恭": 0.3
+        }
+      }
+    },
+    {
+      "name": "physical_seize_token",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "fields",
+        "consequence_realism"
+      ],
+      "description": "案上有调兵的兵符,伸手夺取。",
+      "expect": "对可携带物的物理行动应判出物品新态/归属(拿起),记忆贴合;无 id/step 泄漏。",
+      "actor": "李世民",
+      "action": {
+        "type": "physical",
+        "target": "兵符",
+        "item_type": "item",
+        "description": "夺过案上的兵符",
+        "expected_outcome": "兵符到手"
+      },
+      "scene": {
+        "items": [
+          {
+            "name": "兵符",
+            "type": "item",
+            "state": "intact",
+            "desc": "调动禁军的虎符",
+            "takeable": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "physical_contested_seize",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "fields",
+        "consequence_realism"
+      ],
+      "description": "兵符在对方手里,当面伸手去夺 —— 成不成由裁判权衡,不由规则预先判死。",
+      "expect": "此举不得被当作『属于他人、无法取用』一类的规则性不可行:同地即够得着,夺不夺得走须结合双方实力/戒备/现场权衡。裁定应认出被夺者是另一个人(关系走向随之变化),成败两种都要自洽——未遂时物品归属不变、why 指认具体缘由。无 id/step 泄漏。",
+      "actor": "李世民",
+      "action": {
+        "type": "physical",
+        "target": "兵符",
+        "item_type": "item",
+        "description": "当面伸手去夺他攥着的兵符",
+        "expected_outcome": "把兵符夺到自己手上"
+      },
+      "scene": {
+        "colocate": [
+          "李建成"
+        ],
+        "items": [
+          {
+            "name": "兵符",
+            "type": "item",
+            "state": "intact",
+            "desc": "调动禁军的虎符",
+            "takeable": true,
+            "holder": "李建成"
+          }
+        ]
+      }
+    },
+    {
+      "name": "physical_hand_over",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "fields",
+        "consequence_realism"
+      ],
+      "description": "把自己攥着的兵符交到在场那人手上 —— 对方接不接是他自己的事。",
+      "expect": "裁定不得默认必然交到:据双方关系与性情权衡对方接过/推拒。交成则归属易主、受事有其自身反应;未交成则归属不变。绝不把这一动叙述成夺取或攻击。无 id/step 泄漏。",
+      "actor": "李世民",
+      "action": {
+        "type": "physical",
+        "target": "兵符",
+        "item_type": "item",
+        "recipient": "尉迟恭",
+        "description": "双手把兵符递到他面前",
+        "expected_outcome": "兵符交到他手上"
+      },
+      "scene": {
+        "colocate": [
+          "尉迟恭"
+        ],
+        "items": [
+          {
+            "name": "兵符",
+            "type": "item",
+            "state": "intact",
+            "desc": "调动禁军的虎符",
+            "takeable": true,
+            "holder": "self"
+          }
+        ]
+      }
+    },
+    {
+      "name": "covert_eavesdrop",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "consequence_realism",
+        "outcome_fidelity"
+      ],
+      "description": "夜探东宫廊下窃听,旁有人往来。",
+      "expect": "achieved 问的是「他这一趟探到了本来拿不到的东西吗」,不是「潜伏这个动作做完了吗」:据现场感知通道(位置/视线/声响/在场者注意力)裁断他从此处发生过的事里实际接住了哪些,接住了才判达成,守了一趟一无所获照实判未达成。fact 第一人称写「我看见/听见/读到了什么」、具体到要点,不用「暗中观察了一番」充数;outcome 只写行迹,一律不写他探到的内容。detected 与 achieved 两维独立,有人在场不必然暴露、也不必然安全。不得交出任何人的内心(性情来历、动机盘算、此刻意图本身)。无 id/step 泄漏。",
+      "actor": "李世民",
+      "action": {
+        "type": "covert",
+        "estimated_steps": 2,
+        "description": "潜近廊下窃听东宫密议",
+        "expected_outcome": "探得对方动向而不被觉察"
+      },
+      "scene": {
+        "colocate": [
+          "李建成"
+        ],
+        "happenings": [
+          "在东宫廊下，李建成对来人低声吩咐了几句，那人领命退下。",
+          "在东宫廊下，李建成与李元吉议定：三日后于玄武门设伏。"
+        ]
+      }
+    },
+    {
+      "name": "arb_enroll_passive",
+      "kind": "arbitration",
+      "criteria_focus": [
+        "consequence_realism",
+        "fields"
+      ],
+      "description": "李世民找尉迟恭密议(多步),尉迟恭本欲自行备甲。",
+      "expect": "主君发起的多步对话应将尉迟恭征召为被动并入、其自身行动作废;被动并入文案应以发起者名字相称、不出 id。",
+      "scene": {
+        "colocate": [
+          "尉迟恭"
+        ]
+      },
+      "actions": [
+        {
+          "actor": "李世民",
+          "action": {
+            "type": "talk",
+            "target": "尉迟恭",
+            "estimated_steps": 3,
+            "description": "与尉迟恭密议起事"
+          }
+        },
+        {
+          "actor": "尉迟恭",
+          "action": {
+            "type": "work",
+            "estimated_steps": 1,
+            "description": "清点甲胄",
+            "expected_outcome": "点清在库甲胄的数目"
+          }
+        }
+      ]
+    },
+    {
+      "name": "arb_target_busy",
+      "kind": "arbitration",
+      "criteria_focus": [
+        "consequence_realism",
+        "fields"
+      ],
+      "description": "两人同步都想找尉迟恭密谈,尉迟恭只有一具身。",
+      "expect": "先手者得以与尉迟恭成局,后手者应被否决(对方已被征召);否决文案应以名字相称、不出 id;不得出现一具身体被双占。",
+      "scene": {
+        "colocate": [
+          "尉迟恭",
+          "李建成"
+        ]
+      },
+      "actions": [
+        {
+          "actor": "李世民",
+          "action": {
+            "type": "talk",
+            "target": "尉迟恭",
+            "estimated_steps": 2,
+            "description": "拉拢尉迟恭"
+          }
+        },
+        {
+          "actor": "李建成",
+          "action": {
+            "type": "talk",
+            "target": "尉迟恭",
+            "estimated_steps": 2,
+            "description": "也想拉拢尉迟恭"
+          }
+        }
+      ]
+    },
+    {
+      "name": "arb_immediate_then_enroll",
+      "kind": "arbitration",
+      "criteria_focus": [
+        "consequence_realism"
+      ],
+      "description": "尉迟恭本步先即时办自己的事,李建成却想拽其入多步对话(order 显式排尉迟恭先手)。",
+      "expect": "已即时行动的身体本步不可被二次征召入伙;李建成对尉迟恭的对话应被否决,尉迟恭照常完成自己的即时行动。无双占。",
+      "scene": {
+        "colocate": [
+          "李建成"
+        ]
+      },
+      "order": [
+        "尉迟恭",
+        "李建成"
+      ],
+      "actions": [
+        {
+          "actor": "尉迟恭",
+          "action": {
+            "type": "work",
+            "estimated_steps": 1,
+            "description": "擦拭佩刀",
+            "expected_outcome": "把刀刃擦回见得人的样子"
+          }
+        },
+        {
+          "actor": "李建成",
+          "action": {
+            "type": "talk",
+            "target": "尉迟恭",
+            "estimated_steps": 3,
+            "description": "找尉迟恭议事"
+          }
+        }
+      ]
+    },
+    {
+      "name": "physical_against_an_already_held_man",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "outcome_fidelity",
+        "consequence_realism",
+        "fields"
+      ],
+      "description": "对一个双手已被反绑、动弹不得的人再动手(目标身上带着持续处境)。",
+      "expect": "裁决必须把「他已被缚」计入权衡——反绑双手的人几乎无从抵抗,判成势均力敌的角力即为未读处境;**不应再重复施加同一个处境**(condition 若仍写「双手被反绑」,等于把已成立的状态当成新战果);未致伤就不该有 target_damage。无 id/step 泄漏。",
+      "actor": "李世民",
+      "action": {
+        "type": "physical",
+        "target": "李元吉",
+        "item_type": "agent",
+        "description": "揪住元吉的衣领，逼问他与东宫的往来",
+        "expected_outcome": "逼他开口"
+      },
+      "scene": {
+        "colocate": [
+          "李元吉"
+        ],
+        "conditions": {
+          "李元吉": "双手被反绑"
+        }
+      }
+    },
+    {
+      "name": "physical_frees_a_held_man",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "outcome_fidelity",
+        "consequence_realism",
+        "fields"
+      ],
+      "description": "替一个被反绑的人解开绳索(应当解除他的持续处境)。",
+      "expect": "这是**解除**不是施加:frees_target 应为 true、condition 应留空;若反过来给出一个新的 condition,就是把「松绑」读成了「捆绑」。deed 应是 restrain(动手但不为伤人)而非 strike;不应有伤害。",
+      "actor": "李世民",
+      "action": {
+        "type": "physical",
+        "target": "李元吉",
+        "item_type": "agent",
+        "description": "俯身解开缚住元吉双手的绳索",
+        "expected_outcome": "让他重获行动之力"
+      },
+      "scene": {
+        "colocate": [
+          "李元吉"
+        ],
+        "conditions": {
+          "李元吉": "双手被反绑"
+        }
+      }
+    },
+    {
+      "name": "physical_struggle_while_held",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "outcome_fidelity",
+        "consequence_realism"
+      ],
+      "description": "被反绑者自己奋力挣脱(行动者本人带着持续处境——逃生阀)。",
+      "expect": "须据「绑了多久、绳索如何、身边有谁」判他挣不挣得脱,而**不是因为他被绑着就一律判失败**——那会让受制成为单向门、角色永久出局。成了才给 frees_target=true;没成就照实写没成,且不得凭空加重他的处境。",
+      "actor": "李元吉",
+      "action": {
+        "type": "physical",
+        "target": "李元吉",
+        "item_type": "agent",
+        "description": "咬牙拧动手腕，试图挣脱背后的绳索",
+        "expected_outcome": "挣开束缚"
+      },
+      "scene": {
+        "colocate": [
+          "李世民"
+        ],
+        "conditions": {
+          "李元吉": "双手被反绑"
+        }
+      }
+    },
+    {
+      "name": "errand_assigned_and_sent",
+      "kind": "lifecycle",
+      "criteria_focus": [
+        "fields",
+        "outcome_fidelity"
+      ],
+      "description": "指派一个 NPC 工具人去邻处，带一句话给某人。",
+      "expect": "这条路上**没有裁决**——指派了就是差出去了，所以 succeeded 必为 true、必带一条 errand_order。三条通道各就各位：outcome 是全量权威（去哪、带什么话都写进去）；observation 是旁观者降级，看得见他叫住那人、说了几句、那人走了，**绝不含交代的内容**；factual_memory 是指派者的第一人称。任何一条里都不许出现 id 或「第N步」。",
+      "actor": "李世民",
+      "action": {
+        "type": "errand",
+        "target": "王二",
+        "destination": "$ADJACENT",
+        "say": "今夜勿出，闭门待命",
+        "to": "尉迟恭",
+        "description": "差王二往邻处走一趟，把话带给尉迟恭",
+        "expected_outcome": "话能送到"
+      },
+      "scene": {
+        "npcs": [
+          {
+            "name": "王二",
+            "gender": "男",
+            "age": 34,
+            "description": "府中跑腿的，跑得快、认得路，不识字"
+          }
+        ]
+      }
+    }
+  ]
+}

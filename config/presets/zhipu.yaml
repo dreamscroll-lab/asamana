@@ -1,0 +1,142 @@
+# Zhipu (bigmodel, China site)
+# Usage: CONFIG=config/presets/zhipu.yaml python main.py web
+# Needs ZHIPU_API_KEY (LLM) and EMBEDDING_API_KEY (embedding stays on the native DashScope
+# endpoint for sparse).
+#
+# See config/config.example.yaml for field meanings, allowed values and how to add a provider.
+# Comments here cover only what the config can't say itself: measured numbers, costs, and one
+# safety switch.
+
+llm:
+  providers:
+    # Zhipu RPM is per model (flash 50 / pro 5), so one account is split into two declarations:
+    # rate limiting is per endpoint, not per account, one gate each. The shared api_key_env only
+    # means they spend the same key.
+    zhipu:
+      base_url: https://open.bigmodel.cn/api/paas/v4
+      model: glm-5.3-flash
+      api_key_env: ZHIPU_API_KEY
+      rpm: 45
+      params:
+        # glm-5.3 can't disable thinking (thinking.type only accepts enabled; disabled returns
+        # 400/code 1210); effort goes via reasoning_effort. The default is max, the slowest and
+        # most expensive, so it must be lowered explicitly.
+        reasoning_effort: low
+    zhipu_pro:
+      base_url: https://open.bigmodel.cn/api/paas/v4
+      model: glm-5.3
+      api_key_env: ZHIPU_API_KEY
+      # Only 5/minute. AgentGenerator fires every character's persona at once via asyncio.gather
+      # (min_agents=5 / max_agents=8), so without this gate it always overshoots; the gate
+      # queues them.
+      rpm: 5
+      params:
+        reasoning_effort: low
+
+  default_provider: zhipu
+
+  scenes:
+    persona_generation:
+      provider: zhipu_pro
+    cast_design:
+      provider: zhipu_pro
+    world_building:
+      provider: zhipu_pro
+      # Required. The 60s default can't cover "thousands of tokens of search results +
+      # thousands of thinking and JSON": both attempts timed out, so the build raised (Rule 2).
+      timeout: 300
+      params:
+        # Thinking effort inherits the provider's low. On DashScope, thinking took this step
+        # 54s→134s with no visible gain in world quality; Zhipu can't disable it, so use the
+        # lowest level.
+        tools:                   # Zhipu's web search; DashScope calls it enable_search, here it's a tools array
+          - type: web_search
+            web_search:
+              enable: "True"
+              search_engine: search_pro
+
+  # Judge for offline review (python -m tuning). It scores the output of the scenes above, so it
+  # deliberately uses a different model: a model grading its own output grades too leniently.
+  judge:
+    provider: zhipu_pro
+
+embedding:
+  # This dashscope is an implementation name in the embedding registry, a separate namespace from
+  # llm.providers. Only native DashScope returns learned sparse, so embedding stays there even
+  # with the LLM on Zhipu.
+  provider: dashscope
+  params:
+    model: text-embedding-v3
+    dimension: 1024
+    output_type: dense&sparse   # only the native DashScope endpoint returns learned sparse, which hybrid retrieval needs
+
+vector_store:
+  provider: file
+  params:
+    # Clear this directory before changing dimension: upsert raises on a dimension mismatch.
+    path: ./data/vectors
+
+agent_store:
+  provider: file
+  params:
+    path: ./data/agents
+
+message:
+  provider: in_memory
+  params: {}
+
+snapshot:
+  provider: file
+  params:
+    path: ./data/snapshots
+
+# These are defaults, used by any endpoint without its own rpm/tpm. Zhipu RPM is per model and
+# already set in each llm.providers.<name>.rpm, so only tpm is left here.
+#
+# Each endpoint's gate counts tpm separately (though it's one account's quota). From the two
+# RPMs, full load is only ~340k tokens/minute, below 500k, so the double counting never kicks in.
+# Split it per endpoint if that ever changes.
+#
+# Inert for embedding (reserve_rate=False: cooldown only), so rpm/tpm constrain only chat, all
+# on this one Zhipu account.
+rate_limit:
+  tpm: 500000
+
+world:
+  config: tiled
+  min_agents: 5
+  max_agents: 8
+
+engine:
+  max_concurrent_llm: 30       # just a machine-level cap: Zhipu doesn't limit concurrency, the per-endpoint rpm is what binds
+  decay_interval: 5
+  event_system_enabled: true
+  max_events_per_window: 2
+  event_quota_window: 20
+  event_check_interval: 6
+  main_max_idle_steps: 2
+  background_max_idle_steps: 6
+  max_npcs: 6                  # the cost is prompt space, not memory: each takes a line in main-character decision prompts
+
+logging:
+  level: DEBUG
+  fmt: json
+  output: stdout+file
+  file_path: ./data/logs/asamana.log
+  max_size_mb: 20
+  backup_count: 5
+
+observability:
+  enabled: true
+  provider: jsonl
+  params:
+    base_dir: ./data/traces
+
+web:
+  host: 127.0.0.1
+  port: 7860
+  cors_origins: ["*"]
+  # Developer tools (trace viewer / audit / prompt replay) spawn subprocesses and can send any
+  # prompt to a paid LLM. Off by default; enable locally with ASAMANA_DEV_TOOLS=true, never in a
+  # public deployment.
+  dev_tools_enabled: ${ASAMANA_DEV_TOOLS:-false}

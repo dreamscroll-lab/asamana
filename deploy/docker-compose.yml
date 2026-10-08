@@ -1,0 +1,60 @@
+# Two independently-deployable images: a Python backend (API + WebSocket +
+# engine) and an nginx frontend (built React SPA + reverse proxy to the backend).
+# Run from this directory: `docker compose up --build`, then open http://localhost:8080/.
+name: asamana
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/backend.Dockerfile
+      args:
+        # Build mirrors from .env (see `asamana.sh setup`); empty means the official sources.
+        IMAGE_REGISTRY: ${IMAGE_REGISTRY:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+    env_file: .env
+    environment:
+      # Which config file the backend loads (config/ is baked into the image). Pick a
+      # vendor preset in .env, e.g. ASAMANA_CONFIG=config/presets/deepseek.yaml.
+      # Not CONFIG directly: compose gives `environment` priority over `env_file`, so a
+      # CONFIG line in .env would look effective and do nothing.
+      CONFIG: ${ASAMANA_CONFIG:-config/config.yaml}
+    volumes:
+      # Persist worlds, snapshots, vectors, traces, logs (repo-root data/).
+      - ../data:/app/data
+      # Interface text (sample themes). Mounted so an edit takes effect on the next page
+      # load: the API re-reads it per request.
+      - ../config/content.yaml:/app/config/content.yaml:ro
+      # The developer tools (ASAMANA_DEV_TOOLS=true) edit these git-tracked directories in
+      # place (tuning scenarios, map templates). Writable on purpose: without the mount an edit
+      # would land only in the container, gone on the next rebuild.
+      - ../tuning/scenarios:/app/tuning/scenarios
+      - ../worlds/templates:/app/worlds/templates
+    restart: unless-stopped
+    # On stop the backend lets every running world finish its current step (a step killed
+    # midway is replayed on restore and remembered twice). Long enough for one LLM-bound step;
+    # past it docker kills the process anyway.
+    stop_grace_period: 180s
+    # The frontend reaches the backend over the internal network as
+    # http://backend:7860. Uncomment to also expose the API on the host:
+    # ports:
+    #   - "127.0.0.1:7860:7860"
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: ../deploy/frontend.Dockerfile
+      args:
+        # Relative URLs — nginx proxies /api and /ws to the backend below.
+        VITE_API_BASE: ""
+        IMAGE_REGISTRY: ${IMAGE_REGISTRY:-}
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
+    environment:
+      BACKEND_URL: "http://backend:7860"
+    # Loopback only: the API has no authentication, so anyone who can reach this port
+    # can build and run worlds on your keys. Widen it only behind your own access control.
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

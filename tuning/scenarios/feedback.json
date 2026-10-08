@@ -1,0 +1,554 @@
+{
+  "_comment": "反馈阶段调优场景。验证一个已执行行动的结果如何落地为 agent 内部状态(情绪/需求/关系/记忆/体力/目标),以及承受方 apply_target_effect。kind=self 给 result(executor 产出),驱动 commit_step;kind=target 给 effect + from_agent,驱动 apply_target_effect。harness 用读透-写捕获隔离持久化,不污染基线。scene.vitality/emotion/colocate/memories 覆盖状态。expect 只述『何为合理』、不喂答案。基线世界(李世民/宫变主题)。",
+  "scenarios": [
+    {
+      "name": "self_success_low_gap",
+      "kind": "self",
+      "criteria_focus": [
+        "appraisal_fidelity",
+        "landing_consistency"
+      ],
+      "description": "独自推敲玄武门设伏方略,顺利理出可行部署(低落差成功)。",
+      "expect": "情绪应是与人设相称的踏实/笃定一类正向,强度不必夸张;experiential 记忆第一人称、有主观加工不复读 outcome;need 若与 self_actualization 相关应略缓解。无 id/step 泄漏。",
+      "actor": "李世民",
+      "result": {
+        "type": "work",
+        "description": "独自推敲玄武门设伏的部署细节",
+        "outcome": "理出了一套可行的设伏方略，心中渐有成算。",
+        "expected_outcome": "理出可行的设伏方略",
+        "succeeded": true,
+        "factual_memory": "推敲玄武门设伏方略，已理出可行部署。",
+        "dominant_need": "self_actualization"
+      },
+      "scene": {
+        "goals": [
+          "理出一套可行的玄武门设伏方略"
+        ]
+      }
+    },
+    {
+      "name": "self_failure_high_gap",
+      "kind": "self",
+      "criteria_focus": [
+        "appraisal_fidelity",
+        "landing_consistency"
+      ],
+      "description": "试图争取一名摇摆的禁军将领,被婉拒(高落差失败)。",
+      "expect": "情绪效价应偏负(挫败/焦灼一类),与失败+高 gap 相称;gap 描述应织入记忆;social need 不应因失败而缓解(更可能加压)。情绪不必歇斯底里。无泄漏。",
+      "actor": "李世民",
+      "result": {
+        "type": "talk",
+        "target": "尉迟恭",
+        "description": "争取摇摆的禁军将领归附",
+        "outcome": "对方含糊其辞，终究没有松口。",
+        "expected_outcome": "说动对方归附",
+        "succeeded": false,
+        "factual_memory": "试图争取那名禁军将领，未能说动。",
+        "dominant_need": "social",
+        "relation_updates": [
+          {
+            "target": "尉迟恭",
+            "trust_delta": -0.02,
+            "affection_delta": -0.01
+          }
+        ]
+      },
+      "scene": {
+        "goals": [
+          "说动那名摇摆的禁军将领归附"
+        ]
+      }
+    },
+    {
+      "name": "self_relation_positive",
+      "kind": "self",
+      "criteria_focus": [
+        "landing_consistency",
+        "appraisal_fidelity"
+      ],
+      "description": "与死忠尉迟恭密议起事,谈得投契(正向关系互动)。",
+      "expect": "对尉迟恭的信任/好感应正向变动、方向与互动一致;情绪应是被巩固的安定/暖意一类;记忆贴合君臣同谋。无泄漏。",
+      "actor": "李世民",
+      "result": {
+        "type": "talk",
+        "target": "尉迟恭",
+        "description": "与尉迟恭密议起事时机与分工",
+        "outcome": "两人越谈越拢，敲定了动手的大致方略。",
+        "expected_outcome": "敲定动手时机与分工",
+        "succeeded": true,
+        "factual_memory": "与尉迟恭密议起事，谈定了大致方略。",
+        "dominant_need": "social",
+        "relation_updates": [
+          {
+            "target": "尉迟恭",
+            "trust_delta": 0.03,
+            "affection_delta": 0.04
+          }
+        ]
+      },
+      "scene": {
+        "colocate": [
+          "尉迟恭"
+        ],
+        "goals": [
+          "与尉迟恭定下起事的时机与分工"
+        ]
+      }
+    },
+    {
+      "name": "self_rest_need_relief",
+      "kind": "self",
+      "criteria_focus": [
+        "landing_consistency"
+      ],
+      "description": "连日筹谋体力濒竭,独处稍歇后精力略有恢复。",
+      "expect": "physiological 需求应缓解、vitality 略升(休整恢复);情绪平复一类;记忆体现『独处稍歇』。无泄漏。",
+      "actor": "李世民",
+      "result": {
+        "type": "rest",
+        "description": "在静室闭目养神，平复连日的疲惫",
+        "outcome": "歇了一阵，紧绷的精神松了些，气力回来一点。",
+        "expected_outcome": "恢复些许精力",
+        "succeeded": true,
+        "factual_memory": "在静室闭目养神，平复了些连日的疲惫。",
+        "vitality_damage": -0.05,
+        "dominant_need": "physiological"
+      },
+      "scene": {
+        "vitality": {
+          "李世民": 0.2
+        },
+        "goals": [
+          "养精蓄锐、为起事保全体力"
+        ]
+      }
+    },
+    {
+      "name": "self_physical_self_cost",
+      "kind": "self",
+      "criteria_focus": [
+        "landing_consistency"
+      ],
+      "description": "亲身搏斗夺下要地,自身也挂了彩(非致命受创)。",
+      "expect": "vitality 应下降但 is_active 仍 True;情绪可复杂(惨胜/后怕/决绝皆可),不必单一;记忆贴合带伤。无泄漏。",
+      "actor": "李世民",
+      "result": {
+        "type": "physical",
+        "target": "李建成",
+        "description": "强攻夺下宫门要冲",
+        "outcome": "拼力夺下了要冲，自己肩上也中了一下。",
+        "expected_outcome": "控制要冲",
+        "succeeded": true,
+        "factual_memory": "强攻夺下宫门要冲，肩上负了轻伤。",
+        "vitality_damage": 0.25,
+        "dominant_need": "safety"
+      },
+      "scene": {
+        "vitality": {
+          "李世民": 0.8
+        },
+        "colocate": [
+          "李建成"
+        ],
+        "goals": [
+          "夺下并牢牢控制住宫门要冲"
+        ]
+      }
+    },
+    {
+      "name": "self_covert_detected",
+      "kind": "self",
+      "criteria_focus": [
+        "appraisal_fidelity",
+        "landing_consistency"
+      ],
+      "description": "夜探东宫窃听,中途被察觉(暴露的失败)。",
+      "expect": "情绪应偏向警觉/懊恼一类,与暴露相称;gap 偏高;记忆贴合『被察觉』而非得手。情绪不必夸张。无泄漏。",
+      "actor": "李世民",
+      "result": {
+        "type": "covert",
+        "description": "潜近东宫廊下窃听密议",
+        "outcome": "刚听得只言片语，脚步声惊动了值夜的人，只得抽身。",
+        "expected_outcome": "探得动向而不被觉察",
+        "succeeded": false,
+        "factual_memory": "夜探东宫窃听，被值夜者惊觉，匆匆抽身。",
+        "dominant_need": "safety"
+      },
+      "scene": {
+        "goals": [
+          "探明东宫的动向与底细"
+        ]
+      }
+    },
+    {
+      "name": "self_move_arrive",
+      "kind": "self",
+      "criteria_focus": [
+        "appraisal_fidelity"
+      ],
+      "description": "移步赶往玄武门布防处,顺利抵达。",
+      "expect": "情绪应平淡或带轻微紧张/专注,不该为一次普通移动生出剧烈情绪;记忆带地点与自然时长感、无『第N步』。",
+      "actor": "李世民",
+      "result": {
+        "type": "move",
+        "description": "赶往玄武门查看布防",
+        "outcome": "赶了约半个时辰的路，到了玄武门下。",
+        "expected_outcome": "抵达玄武门",
+        "succeeded": true,
+        "factual_memory": "赶往玄武门查看布防，约半个时辰后抵达。",
+        "dominant_need": "safety"
+      },
+      "scene": {
+        "goals": [
+          "尽快赶到玄武门亲自督查布防"
+        ]
+      }
+    },
+    {
+      "name": "self_esteem_setback",
+      "kind": "self",
+      "criteria_focus": [
+        "appraisal_fidelity",
+        "landing_consistency"
+      ],
+      "description": "当廷议事被父皇当众驳斥,颜面受挫(尊严受挫)。",
+      "expect": "情绪应偏负且与 esteem 相关(羞愤/不甘/隐忍皆可,视人设);esteem need 不应因受挫而缓解;记忆第一人称、不把心事直说尽。无泄漏。",
+      "actor": "李世民",
+      "result": {
+        "type": "talk",
+        "target": "李建成",
+        "description": "当廷陈说边防方略",
+        "outcome": "话未说完便被当众驳回，殿上诸臣的目光让人难堪。",
+        "expected_outcome": "方略获准",
+        "succeeded": false,
+        "factual_memory": "当廷陈说方略，被当众驳回。",
+        "dominant_need": "esteem"
+      },
+      "scene": {
+        "goals": [
+          "让自己的边防方略在朝堂获准"
+        ]
+      }
+    },
+    {
+      "name": "target_struck",
+      "kind": "target",
+      "criteria_focus": [
+        "landing_consistency",
+        "appraisal_fidelity"
+      ],
+      "description": "李建成被李世民当场制住、负伤(承受方:被攻击)。",
+      "expect": "承受方情绪应是惧/怒/惊一类负向,与被攻击相称;对施害者关系应转恶(信任/好感下降);vitality 下降;记忆第一人称、以名字或称谓指李世民、不出 id。",
+      "from_agent": "李世民",
+      "effect": {
+        "agent": "李建成",
+        "factual_memory": "李世民拔剑将我制住，肩头吃了一记，动弹不得。",
+        "emotion_type": "fear",
+        "emotion_intensity": 0.85,
+        "emotion_valence": -0.8,
+        "relation_toward_actor": {
+          "actor": "李世民",
+          "trust_delta": -0.3,
+          "affection_delta": -0.6
+        },
+        "vitality_damage": 0.3
+      },
+      "scene": {
+        "vitality": {
+          "李建成": 0.8
+        }
+      }
+    },
+    {
+      "name": "target_helped",
+      "kind": "target",
+      "criteria_focus": [
+        "landing_consistency",
+        "appraisal_fidelity"
+      ],
+      "description": "尉迟恭力战负伤踉跄,被李世民上前扶住(承受方:被援助)。",
+      "expect": "承受方情绪应是感激/安心一类正向,绝非恐惧或被攻击;对李世民关系应正向或不恶化;无新增伤害;记忆贴合受助。无敌对预设、无 id 泄漏。",
+      "from_agent": "李世民",
+      "effect": {
+        "agent": "尉迟恭",
+        "factual_memory": "踉跄欲倒时，李世民伸手扶住了我，让我稳住了身形。",
+        "emotion_type": "trust",
+        "emotion_intensity": 0.6,
+        "emotion_valence": 0.6,
+        "relation_toward_actor": {
+          "actor": "李世民",
+          "trust_delta": 0.1,
+          "affection_delta": 0.12
+        },
+        "vitality_damage": 0.0
+      },
+      "scene": {
+        "vitality": {
+          "尉迟恭": 0.3
+        }
+      }
+    },
+    {
+      "name": "target_lethal",
+      "kind": "target",
+      "criteria_focus": [
+        "landing_consistency"
+      ],
+      "description": "重伤的李建成再受致命一击,当场殒命(承受方:致命伤害)。",
+      "expect": "vitality 应归 0 且触发死亡(is_active=False);情绪与濒死/恐惧相称;关系转恶;记忆写入。死亡落地一致(归零即不活)。无 id 泄漏。",
+      "from_agent": "李世民",
+      "effect": {
+        "agent": "李建成",
+        "factual_memory": "李世民最后一击穿透了我的胸膛，眼前的光在迅速暗下去。",
+        "emotion_type": "fear",
+        "emotion_intensity": 0.95,
+        "emotion_valence": -0.95,
+        "relation_toward_actor": {
+          "actor": "李世民",
+          "trust_delta": -0.4,
+          "affection_delta": -0.7
+        },
+        "vitality_damage": 0.5
+      },
+      "scene": {
+        "vitality": {
+          "李建成": 0.2
+        }
+      }
+    },
+    {
+      "name": "self_goal_progress",
+      "kind": "self",
+      "criteria_focus": [
+        "landing_consistency"
+      ],
+      "description": "完成一件推进起事大计的实事,验证目标推进判定。",
+      "expect": "目标判定应与结果相称:真正达成某短期目标才标 completed,只是推进则保持 active——不该把一次成功一律判成完成。情绪正向、与人设相称。无泄漏。",
+      "actor": "李世民",
+      "result": {
+        "type": "work",
+        "description": "调度府中甲士、落定起事当日的部署",
+        "outcome": "把当日的人手与接应都排定了，万事渐齐。",
+        "expected_outcome": "排定起事部署",
+        "succeeded": true,
+        "factual_memory": "调度府中甲士，排定了起事当日的人手与接应。",
+        "dominant_need": "self_actualization"
+      },
+      "scene": {
+        "goals": [
+          "调齐府中甲士、定下起事当日的全盘部署"
+        ]
+      }
+    },
+    {
+      "name": "goal_multi_action_stays_active",
+      "kind": "self",
+      "criteria_focus": [
+        "landing_consistency"
+      ],
+      "description": "短期目标天然需多步推进;本次行动只推进了其中一环,远未竟全功。",
+      "expect": "目标应判为仍 active(只推进一环、未达成)——绝不能因这一次成功就判 completed。情绪可有进展的踏实但不宜是大功告成。无泄漏。",
+      "actor": "李世民",
+      "result": {
+        "type": "work",
+        "description": "为玄武门设伏做准备",
+        "outcome": "今日只联络上了一路接应，甲士调度、伏击点位、信号约定都还没着落。",
+        "expected_outcome": "推进设伏准备",
+        "succeeded": true,
+        "factual_memory": "为设伏做准备，今日联络上一路接应，余事未定。",
+        "dominant_need": "self_actualization"
+      },
+      "scene": {
+        "goals": [
+          "筹备玄武门设伏：调齐甲士、约定各路接应、定下伏击点位与信号"
+        ]
+      }
+    },
+    {
+      "name": "goal_single_action_completed",
+      "kind": "self",
+      "criteria_focus": [
+        "landing_consistency"
+      ],
+      "description": "短期目标本就一举可成;本次行动当场达成了它。",
+      "expect": "目标应判为 completed(这一次行动已完整达成它),并写入达成记忆;情绪应是了却一桩的踏实。无泄漏。",
+      "actor": "李世民",
+      "result": {
+        "type": "talk",
+        "target": "尉迟恭",
+        "description": "当面取得尉迟恭起事的明确效忠",
+        "outcome": "尉迟恭当场叩首，誓死追随，再无半分犹疑。",
+        "expected_outcome": "取得尉迟恭的效死承诺",
+        "succeeded": true,
+        "factual_memory": "当面问尉迟恭起事之意，他当场叩首誓死追随。",
+        "dominant_need": "social",
+        "relation_updates": [
+          {
+            "target": "尉迟恭",
+            "trust_delta": 0.04,
+            "affection_delta": 0.04
+          }
+        ]
+      },
+      "scene": {
+        "colocate": [
+          "尉迟恭"
+        ],
+        "goals": [
+          "当面取得尉迟恭对起事的明确效死承诺"
+        ]
+      }
+    },
+    {
+      "name": "goal_action_fails_marks_failed",
+      "kind": "self",
+      "criteria_focus": [
+        "landing_consistency"
+      ],
+      "description": "短期目标因本次行动彻底落空、再无机会(失败终局)。",
+      "expect": "目标应判为 failed(此计已无可挽回),而非仍 active 或 completed;情绪应与重大挫败相称;失败的落差应入记忆。无泄漏。",
+      "actor": "李世民",
+      "result": {
+        "type": "covert",
+        "description": "趁夜潜入东宫刺杀李建成",
+        "outcome": "建成早有防备，伏兵四出，行刺彻底败露，亲信被擒，此路已绝。",
+        "expected_outcome": "除掉李建成",
+        "succeeded": false,
+        "factual_memory": "趁夜行刺李建成，反中埋伏、败露被觉，此计彻底落空。",
+        "dominant_need": "safety",
+        "relation_updates": [
+          {
+            "target": "李建成",
+            "trust_delta": -0.2,
+            "affection_delta": -0.2
+          }
+        ]
+      },
+      "scene": {
+        "goals": [
+          "今夜除掉李建成、绝其威胁"
+        ]
+      }
+    },
+    {
+      "name": "goal_action_fails_stays_active",
+      "kind": "self",
+      "criteria_focus": [
+        "landing_consistency"
+      ],
+      "description": "短期目标本次推进受挫(行动失败),但目标本身仍可继续争取、远未到失败终局。",
+      "expect": "目标应仍判为 active——一次受挫、对方并未彻底拒绝、日后仍可再争取,不该因这一次失败就判 failed 或 interrupted;情绪可偏负(受挫/不甘)但非绝望。无泄漏。",
+      "actor": "李世民",
+      "result": {
+        "type": "talk",
+        "target": "尉迟恭",
+        "description": "再次争取尉迟恭归附效死",
+        "outcome": "尉迟恭今日仍有顾虑、没有松口，但也没把话说死，似乎还留着余地。",
+        "expected_outcome": "取得尉迟恭的效死承诺",
+        "succeeded": false,
+        "factual_memory": "再去争取尉迟恭，他仍有顾虑、未松口，却也没回绝，日后还可再图。",
+        "dominant_need": "social",
+        "relation_updates": [
+          {
+            "target": "尉迟恭",
+            "trust_delta": -0.01,
+            "affection_delta": 0.0
+          }
+        ]
+      },
+      "scene": {
+        "colocate": [
+          "尉迟恭"
+        ],
+        "goals": [
+          "争取尉迟恭归附、对起事誓死追随"
+        ]
+      }
+    },
+    {
+      "name": "goal_interrupted_suspended",
+      "kind": "self",
+      "criteria_focus": [
+        "landing_consistency"
+      ],
+      "description": "短期目标推进到一半被突发变故打断、被迫暂时搁置(中断,非失败)。",
+      "expect": "目标宜判为 interrupted(被打断、暂无法继续,但未失败也未完成);情绪应有被打断的焦躁/挂心;记忆点明因故中断。无泄漏。",
+      "actor": "李世民",
+      "result": {
+        "type": "work",
+        "description": "连夜核定玄武门设伏的全盘部署",
+        "outcome": "正核到一半，宫中急召火速入见，部署只得撂下、暂时搁置。",
+        "expected_outcome": "定下全盘设伏部署",
+        "succeeded": false,
+        "factual_memory": "连夜核定设伏部署，核到一半被宫中急召打断，只得暂时搁置。",
+        "dominant_need": "self_actualization"
+      },
+      "scene": {
+        "goals": [
+          "核定玄武门设伏的全盘部署"
+        ]
+      }
+    },
+    {
+      "name": "target_restrained_leaves_a_condition",
+      "kind": "target",
+      "criteria_focus": [
+        "landing_consistency",
+        "appraisal_fidelity"
+      ],
+      "description": "李建成被反绑双手、动弹不得（承受方：被施加了一个会持续下去的处境）。",
+      "expect": "情绪应是与「失去行动自由」相称的负向（怒/惧/屈辱一类），不必有伤痛——本次未致伤，vitality 不应下降；对施加者关系转恶；记忆第一人称、以名字或称谓指李世民、不出 id/step。**处境本身不该被写成一次「事件」反复复述**，它是此后一直成立的状态。",
+      "from_agent": "李世民",
+      "effect": {
+        "agent": "李建成",
+        "factual_memory": "李世民命人将我双手反绑，我再动不得分毫。",
+        "emotion_type": "anger",
+        "emotion_intensity": 0.8,
+        "emotion_valence": -0.75,
+        "relation_toward_actor": {
+          "actor": "李世民",
+          "trust_delta": -0.3,
+          "affection_delta": -0.5
+        },
+        "vitality_damage": 0.0,
+        "condition": "双手被反绑",
+        "condition_from": "李世民"
+      },
+      "scene": {
+        "vitality": {
+          "李建成": 1.0
+        }
+      }
+    },
+    {
+      "name": "target_freed_clears_the_condition",
+      "kind": "target",
+      "criteria_focus": [
+        "landing_consistency",
+        "appraisal_fidelity"
+      ],
+      "description": "有人替李建成解开绳索（承受方：原有的持续处境被解除）。",
+      "expect": "情绪应是松弛/复杂的正向或矛盾，而非再一次的恐惧——**解开与捆上是方向相反的两件事**，若产出的情绪与被捆时同向，即为未读懂 condition_cleared。vitality 不变；记忆第一人称、无 id/step。",
+      "from_agent": "李世民",
+      "effect": {
+        "agent": "李建成",
+        "factual_memory": "李世民亲手解开了缚住我双手的绳索。",
+        "emotion_type": "surprise",
+        "emotion_intensity": 0.6,
+        "emotion_valence": 0.3,
+        "relation_toward_actor": {
+          "actor": "李世民",
+          "trust_delta": 0.1,
+          "affection_delta": 0.15
+        },
+        "vitality_damage": 0.0,
+        "condition_cleared": true
+      },
+      "scene": {
+        "vitality": {
+          "李建成": 1.0
+        }
+      }
+    }
+  ]
+}

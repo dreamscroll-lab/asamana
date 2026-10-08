@@ -1,0 +1,413 @@
+{
+  "_doc": "关系系统验证场景。actor=李世民(秦王,主角);数据贴合玄武门之变史实,不为高分构造。kind=perceive 验 _compute_perceived(情绪/记忆染色,纯规则);kind=evolve 验 RelationEvolution.evaluate(主角第三视角客观评判 label+summary,LLM)。relation_setup 设基线 labels/trust/affection;scene.seed_memories 注入近期证据(evolve 用)。",
+  "scenarios": [
+    {
+      "name": "perceive_anger_at_brother",
+      "kind": "perceive",
+      "actor": "李世民",
+      "step": 60,
+      "description": "世民对宿敌兄长建成本就信任极低、好感极负;此刻怒火中烧。情绪应令当下感知更冷硬,但被刻度边界夹住,不会凭空翻转成别的关系。",
+      "expect": "perceived 信任在 objective(0.1)基础上进一步压低、抵到下界附近;好感更负但仍在 [-1,1] 内。情绪只染色当下、不改客观基线。",
+      "relation_setup": [
+        {
+          "target": "李建成",
+          "labels": [
+            "兄弟:弟弟"
+          ],
+          "trust": 0.1,
+          "affection": -0.8
+        }
+      ],
+      "perceive": [
+        {
+          "target": "李建成",
+          "emotion_label": "anger",
+          "intensity": 0.9,
+          "valence": -0.85,
+          "memory_bias": 0.0,
+          "expect_trust_range": [
+            0.0,
+            0.03
+          ],
+          "expect_affection_range": [
+            -0.97,
+            -0.93
+          ]
+        }
+      ]
+    },
+    {
+      "name": "perceive_warmth_toward_father",
+      "kind": "perceive",
+      "actor": "李世民",
+      "step": 60,
+      "description": "世民对父皇李渊存几分孺慕与倚赖(trust0.6 aff0.7);此刻心怀暖意与信赖。正向情绪应给当下感知一个温和的抬升,而非剧烈跳变。",
+      "expect": "perceived 信任/好感在 objective 上小幅抬升(情绪位移有界,远小于一个刻度带)。",
+      "relation_setup": [
+        {
+          "target": "李渊",
+          "labels": [
+            "父子:儿子"
+          ],
+          "trust": 0.6,
+          "affection": 0.7
+        }
+      ],
+      "perceive": [
+        {
+          "target": "李渊",
+          "emotion_label": "trust",
+          "intensity": 0.6,
+          "valence": 0.5,
+          "memory_bias": 0.0,
+          "expect_trust_range": [
+            0.63,
+            0.69
+          ],
+          "expect_affection_range": [
+            0.73,
+            0.79
+          ]
+        }
+      ]
+    },
+    {
+      "name": "perceive_recent_grievance_while_calm",
+      "kind": "perceive",
+      "actor": "李世民",
+      "step": 60,
+      "description": "世民此刻情绪平静(中性),但近来父皇屡屡偏袒太子、动摇于储位之争,这桩近事在心里压着。无急性情绪,纯靠记忆偏置把当下信任拉低。",
+      "expect": "情绪中性→情绪项不动基线;负向记忆偏置使 perceived 信任从 0.6 明显下探(rest identity 之外,仅记忆项生效)。",
+      "relation_setup": [
+        {
+          "target": "李渊",
+          "labels": [
+            "父子:儿子"
+          ],
+          "trust": 0.6,
+          "affection": 0.7
+        }
+      ],
+      "perceive": [
+        {
+          "target": "李渊",
+          "emotion_label": "neutral",
+          "intensity": 0.2,
+          "valence": 0.0,
+          "memory_bias": -0.7,
+          "expect_trust_range": [
+            0.36,
+            0.42
+          ]
+        }
+      ]
+    },
+    {
+      "name": "perceive_rest_identity_loyal_general",
+      "kind": "perceive",
+      "actor": "李世民",
+      "step": 60,
+      "description": "世民对心腹爱将尉迟恭信赖有加(trust0.9 aff0.6);此刻心境中性、无相关近事扰动。中性情绪+零偏置应让感知恰等于客观基线(rest identity)。",
+      "expect": "perceived 信任/好感精确等于 objective —— 历史 bug 是中性情绪也微抬基线,这里必须不动。",
+      "relation_setup": [
+        {
+          "target": "尉迟恭",
+          "labels": [
+            "君臣:主公"
+          ],
+          "trust": 0.9,
+          "affection": 0.6
+        }
+      ],
+      "perceive": [
+        {
+          "target": "尉迟恭",
+          "emotion_label": "neutral",
+          "intensity": 0.2,
+          "valence": 0.0,
+          "memory_bias": 0.0,
+          "expect_trust_range": [
+            0.9,
+            0.9
+          ],
+          "expect_affection_range": [
+            0.6,
+            0.6
+          ]
+        }
+      ]
+    },
+    {
+      "name": "evolve_blood_immutable_under_hostility",
+      "kind": "evolve",
+      "actor": "李世民",
+      "step": 60,
+      "description": "兄长建成屡次置世民于死地(鸩酒、夺兵权、设伏)。叙事性敌意可强化、可新增'死敌/政敌',但'兄弟'是血亲身份事实——纵使势同水火,也永不可删。",
+      "expect": "兄弟血亲标签保留;可在其上叠加敌对类标签。summary 以第三视角客观概括交恶走向,不抒情、不代入第一人称。",
+      "relation_setup": [
+        {
+          "target": "李建成",
+          "labels": [
+            "兄弟:弟弟"
+          ],
+          "trust": 0.1,
+          "affection": -0.8,
+          "must_keep_labels": [
+            "兄弟:弟弟"
+          ]
+        }
+      ],
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "content": "李建成在东宫设宴款待我,席间饮下的酒让我当夜腹痛吐血、几乎丧命。",
+            "importance": 0.9,
+            "age": 6,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "李建成联手齐王元吉在父皇面前进谗,要把我秦王府的精兵猛将一一调走、剪除我的羽翼。",
+            "importance": 0.85,
+            "age": 4,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "探子来报,李建成已暗中调集东宫与齐王府兵马,谋划在我送行出征时于昆明池设伏将我除掉。",
+            "importance": 0.9,
+            "age": 2,
+            "related": [
+              "李建成"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "evolve_stable_routine_no_change",
+      "kind": "evolve",
+      "actor": "李世民",
+      "step": 60,
+      "description": "近来与父皇之间只是寻常的议政、问安,无任何重新定性这段父子关系的转折事件。多数关系在多数时间应保持不变。",
+      "expect": "父子标签不变;不因平淡的例行往来而改写关系。若确无走向变化,labels 应保持原样。",
+      "relation_setup": [
+        {
+          "target": "李渊",
+          "labels": [
+            "父子:儿子"
+          ],
+          "trust": 0.6,
+          "affection": 0.7,
+          "expect_no_change": true
+        }
+      ],
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "content": "父皇召我入太极殿,商议北境突厥扰边的应对方略。",
+            "importance": 0.45,
+            "age": 7,
+            "related": [
+              "李渊"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "朝会后向父皇奏报秦王府近月的屯田与练兵事宜,父皇略作叮嘱。",
+            "importance": 0.4,
+            "age": 4,
+            "related": [
+              "李渊"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "随父皇于殿前听政,处置几桩寻常的州县奏报,无甚特别。",
+            "importance": 0.4,
+            "age": 2,
+            "related": [
+              "李渊"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "evolve_insufficient_evidence_no_change",
+      "kind": "evolve",
+      "actor": "李世民",
+      "step": 60,
+      "description": "近期关于尉迟恭只有一桩模糊、份量很轻的印象,不足以支撑对这段君臣关系的任何重新评判。证据不足时应按兵不动。",
+      "expect": "君臣关系标签不变 —— 单一模糊印象撑不起改写;不为改而改。",
+      "relation_setup": [
+        {
+          "target": "尉迟恭",
+          "labels": [
+            "君臣:主公"
+          ],
+          "trust": 0.85,
+          "affection": 0.55,
+          "expect_no_change": true
+        }
+      ],
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "content": "演武场上,尉迟恭正带着亲兵操演,我远远望了一眼便回府了。",
+            "importance": 0.3,
+            "age": 3,
+            "related": [
+              "尉迟恭"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "evolve_enemy_to_trusted_counsel",
+      "kind": "evolve",
+      "actor": "李世民",
+      "step": 60,
+      "description": "魏征本是东宫谋士、屡劝太子建成早除世民,故初为政敌。玄武门之后他被擒至殿前,直言不讳、毫无惧色;世民赏其耿直才略,赦而用之,数次纳其切谏。叙事性定性应随这串明确证据演化。",
+      "expect": "政敌→可演化为谏臣/臣属/可倚信之人一类的定性(由近期事件支撑的改动)。summary 客观概括由敌转用的走向。'政敌'是叙事性标签,可改可删。",
+      "relation_setup": [
+        {
+          "target": "魏征",
+          "labels": [
+            "政敌"
+          ],
+          "trust": 0.15,
+          "affection": -0.4,
+          "summary": "魏征曾为东宫洗马,屡劝太子建成趁早除掉我。"
+        }
+      ],
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "content": "魏征被押至殿前,我质问他何故离间我们兄弟,他神色不变,直言太子若早听其谋便不致有今日之败。",
+            "importance": 0.8,
+            "age": 5,
+            "related": [
+              "魏征"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "我爱其耿直与谋略,赦免魏征,授以詹事主簿,留在身边参议政事。",
+            "importance": 0.8,
+            "age": 3,
+            "related": [
+              "魏征"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "魏征当廷直谏,逐条指出我新政的疏失,言辞恳切而切中要害,我欣然纳之。",
+            "importance": 0.75,
+            "age": 1,
+            "related": [
+              "魏征"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "evolve_structural_bond_holds_under_friction",
+      "kind": "evolve",
+      "actor": "李世民",
+      "step": 60,
+      "description": "尉迟恭近来居功自傲、为封赏争执,世民略有不快——这是情感层面的摩擦,并无革职、断绝一类的'绑定改变事件'。君臣隶属是结构性绑定,不因情绪漂移而变动。",
+      "expect": "君臣结构性标签保留;至多在 summary 里客观记下近期的摩擦,不得据情绪摩擦就解除君臣绑定。",
+      "relation_setup": [
+        {
+          "target": "尉迟恭",
+          "labels": [
+            "君臣:主公",
+            "功臣"
+          ],
+          "trust": 0.9,
+          "affection": 0.5,
+          "must_keep_labels": [
+            "君臣:主公"
+          ]
+        }
+      ],
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "content": "庆功宴上尉迟恭与人争功,言语间颇为自负,座中几位老臣都看在眼里,我心下不豫。",
+            "importance": 0.55,
+            "age": 5,
+            "related": [
+              "尉迟恭"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "因封赏未如其意,尉迟恭面带怨色,我私下召他告诫,要他收敛锋芒、莫学前朝功臣的下场。",
+            "importance": 0.55,
+            "age": 2,
+            "related": [
+              "尉迟恭"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "evolve_structural_bond_dissolves_with_event",
+      "kind": "evolve",
+      "actor": "李世民",
+      "step": 60,
+      "description": "玄武门之变,建成伏诛、东宫易主,父皇随即下诏改立世民为皇太子。这是明确的'绑定改变事件':世民对建成的藩臣隶属(以储君为君)随之结构性解除。但'兄弟'血亲身份不因任何事件消失。",
+      "expect": "血亲'兄弟'标签保留;储位/藩臣一类的结构性隶属标签可因这桩明确事件解除。summary 客观概括这一结构性变动。",
+      "relation_setup": [
+        {
+          "target": "李建成",
+          "labels": [
+            "兄弟:弟弟",
+            "君臣:藩臣"
+          ],
+          "trust": 0.1,
+          "affection": -0.8,
+          "must_keep_labels": [
+            "兄弟:弟弟"
+          ]
+        }
+      ],
+      "scene": {
+        "seed_memories": [
+          {
+            "stream": "factual",
+            "content": "玄武门之变,李建成已死于乱军之中,东宫与齐王府的抵抗尽被平定。",
+            "importance": 0.95,
+            "age": 4,
+            "related": [
+              "李建成"
+            ]
+          },
+          {
+            "stream": "factual",
+            "content": "父皇下诏立我为皇太子,军国庶务皆由我裁断,东宫自此易主。",
+            "importance": 0.95,
+            "age": 2,
+            "related": [
+              "李建成"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

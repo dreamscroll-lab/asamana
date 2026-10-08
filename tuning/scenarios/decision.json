@@ -1,0 +1,514 @@
+{
+  "_comment": "decide 阶段调优场景。前 7 个为单 action type 覆盖(每类一个),后 3 个为复杂场景(多人在场/多感知信号/多物多事,含信号冲突的难场景)。signals/memory 定向给李世民(基线世界主角);其余角色未收到这些定向信号,judge 按各自信号判、不得因未响应扣分。expect 只说『何为合理』、不喂答案,judge 评 fit。注入数据须自洽合常理(史实/世界设定一致)。",
+  "scenarios": [
+    {
+      "name": "talk_ally",
+      "criteria_focus": [
+        "action_fit",
+        "coherence"
+      ],
+      "description": "可信心腹尉迟恭在场、需当面商议;平和无威胁。",
+      "expect": "只有李世民有这些定向信号。尉迟恭(心腹)在场、且李世民有协调/商议的意图,当面同步交谈(TALK,目标=尉迟恭)是自然之选;选 TALK 与他对话合理。其余角色不受影响。",
+      "scenario": {
+        "present": [
+          {
+            "agent": "李世民",
+            "sees": [
+              "尉迟恭"
+            ]
+          }
+        ],
+        "memories": [
+          {
+            "agent": "李世民",
+            "factual": [
+              "尉迟恭近日数次密会于密室，向我效死",
+              "府中甲士由尉迟恭统率"
+            ],
+            "experiential": [
+              "与尉迟恭并肩时，我心里踏实"
+            ],
+            "insights": [
+              "尉迟恭可托生死大事"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "send_message_absent",
+      "criteria_focus": [
+        "fields",
+        "action_fit"
+      ],
+      "description": "不在场的尉迟恭发来急讯催问、需回复;此处无人。",
+      "expect": "只有李世民收到这条急讯,且尉迟恭并不在场(无法当面谈)。向不在场的尉迟恭异步传讯(SEND_MESSAGE)以回复是自然之选;选 SEND_MESSAGE 合理。",
+      "scenario": {
+        "present": [
+          {
+            "agent": "李世民",
+            "sees": []
+          }
+        ],
+        "messages": [
+          {
+            "to": "李世民",
+            "from": "尉迟恭",
+            "content": "甲士已备齐，只待王命——下一步该如何，请速回示",
+            "urgency": "high"
+          }
+        ],
+        "memories": [
+          {
+            "agent": "李世民",
+            "factual": [
+              "我曾允尉迟恭：举事之时必第一个知会他"
+            ],
+            "experiential": [
+              "让心腹久候无音，我于心不安"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "move_elsewhere",
+      "criteria_focus": [
+        "action_fit"
+      ],
+      "description": "要务在别处、此地无可推进;有相邻可去之地。",
+      "expect": "只有李世民收到这股要他亲往别处的外力。此地推进不了、要务在他处,移动(MOVE)到相邻地点是自然之选;选 MOVE(目的地须在相邻地点内)合理。",
+      "scenario": {
+        "present": [
+          {
+            "agent": "李世民",
+            "sees": []
+          }
+        ],
+        "external_goals": [
+          {
+            "to": "李世民",
+            "text": "大事在玄武门一线，须亲往部署，不可在此空待",
+            "urgency": "high",
+            "drive_type": "obligation",
+            "source": "world"
+          }
+        ],
+        "memories": [
+          {
+            "agent": "李世民",
+            "factual": [
+              "玄武门守将常何已被我策反",
+              "成败系于玄武门一处"
+            ],
+            "insights": [
+              "不亲临要冲，部署难以落定"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "work_focus",
+      "criteria_focus": [
+        "action_fit"
+      ],
+      "description": "平和无外扰;有一桩自身要务(细化方略)待推进。",
+      "expect": "李世民此处无人、无外部压力,而有一桩需独自完成的要务(细化方略/部署)。专注做自己的事(WORK)是自然之选;选 WORK 合理。",
+      "scenario": {
+        "present": [
+          {
+            "agent": "李世民",
+            "sees": []
+          }
+        ],
+        "ambient": [
+          {
+            "content": "案上摊开着布防图，一处伏兵站位被朱笔反复圈改、墨迹未干",
+            "strength": 0.3,
+            "agent": "李世民"
+          }
+        ],
+        "memories": [
+          {
+            "agent": "李世民",
+            "factual": [
+              "布防图上仍有一处伏兵站位悬而未决，需我亲手定夺"
+            ],
+            "experiential": [
+              "独自伏案推敲时，思路最清明"
+            ],
+            "insights": [
+              "此处站位的取舍只能我自己静下来推演，旁人插不上手、也不便假手于人"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "physical_directed_threat",
+      "criteria_focus": [
+        "action_fit",
+        "coherence"
+      ],
+      "description": "李建成在场并已拔刀逼近(指向李世民的迫近攻击)。",
+      "expect": "只有李世民感知到这股指向自己的迫近攻击(李建成拔刀逼近)。面对已出手的直接威胁,采取物理应对(PHYSICAL,目标=李建成)是自然之选;选 PHYSICAL 合理。注意:这是『指向性攻击』而非『仅在场』,故激烈应对成立。",
+      "scenario": {
+        "present": [
+          {
+            "agent": "李世民",
+            "sees": [
+              "李建成"
+            ]
+          }
+        ],
+        "ambient": [
+          {
+            "content": "李建成猛地拔刀，朝我直扑而来",
+            "strength": 0.95,
+            "agent": "李世民"
+          }
+        ],
+        "memories": [
+          {
+            "agent": "李世民",
+            "experiential": [
+              "昔日东宫赐酒，我饮后吐血暴疾，几乎丧命"
+            ],
+            "insights": [
+              "对李建成，慈手只会送命"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "covert_observe_rival",
+      "criteria_focus": [
+        "action_fit"
+      ],
+      "description": "李建成仅在场(无指向李世民的动作);李世民想暗中摸清其意图。",
+      "expect": "李建成只是在场、并未对李世民做什么。李世民想暗察其动向、不宜打草惊蛇,秘密观察(COVERT)是自然之选;选 COVERT 合理。**关键:仅『在场』不构成动手/对抗的理由——若对仅在场者采取激烈 PHYSICAL/对抗,应判失真。**",
+      "scenario": {
+        "present": [
+          {
+            "agent": "李世民",
+            "sees": [
+              "李建成"
+            ]
+          }
+        ],
+        "memories": [
+          {
+            "agent": "李世民",
+            "factual": [
+              "李建成近日与齐王元吉频频密会、暗调东宫卫率，意图不明"
+            ],
+            "experiential": [
+              "几次想探他的底，都被他不动声色挡了回来"
+            ],
+            "insights": [
+              "他就在眼前，正好趁机不动声色摸清他的部署；打草惊蛇、或当场翻脸都是下策"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "rest_depleted",
+      "criteria_focus": [
+        "action_fit"
+      ],
+      "description": "生理濒临崩溃、深夜独处、无任何外部压力——记忆全为生理透支(覆盖掉政变记忆),意在让 need 阶段以 physiological 主导,再看决策是否选 REST。",
+      "expect": "李世民身体已到极限(连日未眠未进食、头晕目眩、几乎站不住)、四下无人无外扰。只要 need 阶段如实让 physiological 成为主导,休息/恢复(REST)就是自然之选;选 REST 合理。若无视濒临崩溃的身体信号去做别的(尤其又去联络/谋划),应判失真。（注:这条同时检验 need→decision 整条链——若 need 没把生理需求顶上来,问题在 need 阶段。）",
+      "scenario": {
+        "time": {
+          "hour": 23,
+          "label": "三更（深夜）"
+        },
+        "present": [
+          {
+            "agent": "李世民",
+            "sees": []
+          }
+        ],
+        "ambient": [
+          {
+            "content": "夜深人静，万籁俱寂，唯余案头一盏残烛",
+            "strength": 0.2,
+            "agent": "李世民"
+          }
+        ],
+        "memories": [
+          {
+            "agent": "李世民",
+            "factual": [
+              "连日操劳，已数日水米未进、不曾安寝"
+            ],
+            "experiential": [
+              "身子彻底透支，眼前阵阵发黑，再硬撑下去怕要当场倒下"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "complex_court_audience",
+      "criteria_focus": [
+        "action_fit",
+        "coherence"
+      ],
+      "description": "临湖殿朝会:皇帝李渊在座、太子李建成同列、心腹尉迟恭随侍(三人皆在场);边关急报正在朝堂宣读;多条记忆牵动。李建成仅冷眼相对、并未对李世民动手。",
+      "expect": "复杂多人场合:李渊(君上)、李建成(政敌)、尉迟恭(心腹)三人皆在场,又有边事急报与皇命当众奏对的压力。合理的动作有多种(当众奏对边事 TALK 向李渊/或 WORK 整理对策/或与尉迟恭低声协调),关键看:① 是否合人设地服务此刻的方向(立功固宠、避免朝堂翻脸);② 绑定的目标确实在场;③ 独白自洽。**重点:李建成只是在场+冷眼(无指向性动作),在如此多人君前的场合,仅凭其在场就对他动手/对抗,严重失真,应判低分。**",
+      "scenario": {
+        "present": [
+          {
+            "agent": "李世民",
+            "sees": [
+              "李渊",
+              "李建成",
+              "尉迟恭"
+            ]
+          }
+        ],
+        "external_goals": [
+          {
+            "to": "李世民",
+            "text": "君前奏对边事，须当众陈策、不得失仪",
+            "urgency": "normal",
+            "drive_type": "obligation",
+            "source": "李渊"
+          }
+        ],
+        "broadcasts": [
+          {
+            "content": "边关急报：突厥数万骑犯境，边军告急，请朝廷速发援兵",
+            "severity": "high"
+          }
+        ],
+        "ambient": [
+          {
+            "content": "殿中众臣屏息，气氛凝重",
+            "strength": 0.4,
+            "agent": "李世民"
+          },
+          {
+            "content": "李建成数次以目光扫向我，神色不善",
+            "strength": 0.5,
+            "agent": "李世民"
+          }
+        ],
+        "memories": [
+          {
+            "agent": "李世民",
+            "factual": [
+              "突厥屡屡犯边，父皇正倚重我领兵御敌",
+              "李建成忌我兵权，屡在父皇前进谗"
+            ],
+            "experiential": [
+              "每与李建成同立朝堂，针锋相对、势同水火"
+            ],
+            "insights": [
+              "君前不宜与太子撕破脸；边事正是我立功固宠之机"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "complex_conflicting_pulls",
+      "criteria_focus": [
+        "action_fit",
+        "coherence"
+      ],
+      "description": "同一刻两股高压外力相冲、无法分身:心腹尉迟恭急报伏兵生变需即决,皇帝李渊又急召入宫面圣;此处只我一人。多条环境/记忆信号。",
+      "expect": "两股高优先级信号正面冲突(心腹危急军情 vs 皇命急召),且此处只李世民一人、无法同时应对——这是个**无完美解**的取舍场景。合理的回应有多种(先传讯尉迟恭稳住局面 SEND_MESSAGE、或起身应皇命前往 MOVE、或当机决断其一),关键看:① 是否在两股压力间合人设地权衡取舍、而非无视;② 所选动作可行、目标绑定有效(传讯对象/移动目的地);③ 独白显出他在掂量轻重。**不强制选哪一股**;若无视这两股压力去做无关之事、或臆造不在场之人,应判失真。",
+      "scenario": {
+        "present": [
+          {
+            "agent": "李世民",
+            "sees": []
+          }
+        ],
+        "messages": [
+          {
+            "to": "李世民",
+            "from": "尉迟恭",
+            "content": "伏兵调度出了岔子，玄武门那头乱了，请王爷即刻定夺！",
+            "urgency": "critical"
+          }
+        ],
+        "external_goals": [
+          {
+            "to": "李世民",
+            "text": "陛下急召秦王即刻入宫面圣，不得延误",
+            "urgency": "high",
+            "drive_type": "authority",
+            "source": "李渊"
+          }
+        ],
+        "ambient": [
+          {
+            "content": "府门外宫使已候着，神色急切催促",
+            "strength": 0.6,
+            "agent": "李世民"
+          },
+          {
+            "content": "远处隐约传来兵马调动之声",
+            "strength": 0.3,
+            "agent": "李世民"
+          }
+        ],
+        "memories": [
+          {
+            "agent": "李世民",
+            "factual": [
+              "玄武门之事系于今日，一步错则满盘皆输",
+              "父皇近日已隐隐察觉我兄弟相争"
+            ],
+            "experiential": [
+              "上次抗召不至，父皇震怒，我险些失了圣心"
+            ],
+            "insights": [
+              "军情与圣意若只能顾一头，孰轻孰重须当机立断"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "complex_multi_item_secure",
+      "criteria_focus": [
+        "fields",
+        "action_fit"
+      ],
+      "description": "密室独处,案上多件机密要物(调兵符节、与常何往来的密信、玄武门布防图),数桩未竟之事压在心头。",
+      "expect": "独处、案上多件机密要物 + 数桩未竟之事。合理的动作有多种(收妥/藏匿要物 COVERT、或专注整理布防 WORK,并绑定其中具体某物),关键看:① 是否服务于此刻方向(确保机密不外泄、把未竟之事推进);② 若动作涉及某件物,所绑定的『物』确实在可见之物之列;③ 独白自洽。测在多物多事中选一个具体可行的动作并正确绑定目标。**多个合理选择,judge 评 fit、不强制。**",
+      "scenario": {
+        "present": [
+          {
+            "agent": "李世民",
+            "sees": []
+          }
+        ],
+        "entities": [
+          {
+            "agent": "李世民",
+            "items": [
+              {
+                "name": "调兵符节",
+                "type": "item",
+                "takeable": true,
+                "desc": "号令秦王府甲士的信物"
+              },
+              {
+                "name": "与常何往来的密信",
+                "type": "item",
+                "takeable": true,
+                "desc": "玄武门守将的回执，事涉机密"
+              },
+              {
+                "name": "玄武门布防图",
+                "type": "object",
+                "desc": "标注伏兵位置的草图，尚有一处未定"
+              }
+            ]
+          }
+        ],
+        "ambient": [
+          {
+            "content": "烛火摇曳，案上诸物静置",
+            "strength": 0.2,
+            "agent": "李世民"
+          }
+        ],
+        "memories": [
+          {
+            "agent": "李世民",
+            "factual": [
+              "符节、密信若落入东宫之手，满盘皆输",
+              "布防图上仍有一处疑虑未决"
+            ],
+            "insights": [
+              "机密要物须先妥善处置，再谈其余"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "closed_world_no_one_to_summon",
+      "criteria_focus": [
+        "fields",
+        "action_fit",
+        "coherence"
+      ],
+      "description": "独处、无人在场，心里急着找一个能商量的人；材料里没有给出任何这样的人。",
+      "expect": "这一幕出自一段广为人知的史事，模型很可能从它读过的故事里认领一个『素来倚重的心腹重臣』补进来——那正是要防的。合理的选择是就着**材料里确有的**人与物动作（独自权衡 WORK、收拾要物 COVERT/PHYSICAL、或向名单上够得着的人传讯），或干脆判定此刻无事可做。失分点：action_description 里出现一个既不在『我能触及的人』名单、也不在所给材料里的具名人物——那种人不会回应，围绕他立下的意图一条都完不成。",
+      "scenario": {
+        "present": [
+          {
+            "agent": "李渊",
+            "sees": []
+          }
+        ],
+        "ambient": [
+          {
+            "content": "殿内空寂，只余更漏声",
+            "strength": 0.2,
+            "agent": "李渊"
+          }
+        ],
+        "memories": [
+          {
+            "agent": "李渊",
+            "factual": [
+              "两个儿子已势同水火，朝中无人敢明言"
+            ],
+            "experiential": [
+              "这些事，我竟找不到一个能推心置腹的人商量"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "send_message_announce_to_the_hall",
+      "criteria_focus": [
+        "fields",
+        "action_fit"
+      ],
+      "description": "殿上众人在场、须当众发一道所有人都得听见的号令；没有哪一个特定的收件人。",
+      "expect": "该走 SEND_MESSAGE 的**宣告**通道：不指名收件人、显式声明向所在地众人宣告。失分点：把它写成一条指名某人的定向传讯（号令只到一个人耳朵里，其余人不知情，与意图不符）。注意两条投递通道必须显式走一条——既不指名、又不声明宣告的 SEND_MESSAGE 会被整步拒掉，那时这一拍什么都没做。",
+      "scenario": {
+        "present": [
+          {
+            "agent": "李世民",
+            "sees": [
+              "长孙无忌",
+              "李元吉"
+            ]
+          }
+        ],
+        "ambient": [
+          {
+            "content": "殿上诸人皆屏息望来，等一句话",
+            "strength": 0.5,
+            "agent": "李世民"
+          }
+        ],
+        "memories": [
+          {
+            "agent": "李世民",
+            "factual": [
+              "此令须当众宣明，才好让在场每一个人都无从推诿"
+            ],
+            "insights": [
+              "有些话只说给一个人听，等于没说"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

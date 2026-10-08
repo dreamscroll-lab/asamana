@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Asamana System Architecture</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: top-down layer bands (UI → interaction → business → core ← providers → external), offline-eval sidebar on the right */
+:root{
+  --bg:#f3f5f8; --panel:#ffffff; --fg:#1b2330; --muted:#5d6878; --line:#c9d1dc;
+  --ui:#e7eefb; --ui-b:#7c9bd6;
+  --ia:#e8f4f1; --ia-b:#5ea995;
+  --biz:#f1edf9; --biz-b:#8f7bc7;
+  --core:#fbf1e2; --core-b:#c99a4e;
+  --prov:#eef1f4; --prov-b:#8592a3;
+  --ext:#f6f6f6; --ext-b:#a7aeb8;
+  --accent:#3d5ccc; --tag-fg:#ffffff; --focus-shadow:rgba(61,92,204,.18);
+  --f-body:"IBM Plex Sans",system-ui,sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#12161d; --panel:#1a2029; --fg:#e4e8ef; --muted:#9aa5b5; --line:#36404e;
+  --ui:#1c2740; --ui-b:#6f8fd0; --ia:#17302b; --ia-b:#5ea995; --biz:#251f38; --biz-b:#9c88d6;
+  --core:#33291a; --core-b:#c99a4e; --prov:#1f252e; --prov-b:#8592a3; --ext:#1b1f25; --ext-b:#6b7380;
+  --accent:#8aa2f0; --tag-fg:#10162a; --focus-shadow:rgba(138,162,240,.15); color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#12161d; --panel:#1a2029; --fg:#e4e8ef; --muted:#9aa5b5; --line:#36404e;
+  --ui:#1c2740; --ui-b:#6f8fd0; --ia:#17302b; --ia-b:#5ea995; --biz:#251f38; --biz-b:#9c88d6;
+  --core:#33291a; --core-b:#c99a4e; --prov:#1f252e; --prov-b:#8592a3; --ext:#1b1f25; --ext-b:#6b7380;
+  --accent:#8aa2f0; --tag-fg:#10162a; --focus-shadow:rgba(138,162,240,.15); color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);padding:28px 16px 40px}
+.wrap{max-width:1180px;margin:0 auto}
+h1{font-size:24px;margin:0 0 4px;text-wrap:balance}
+.sub{color:var(--muted);margin:0 0 20px;font-size:13.5px;line-height:1.6;max-width:70ch}
+.scroll{overflow-x:auto;padding-bottom:6px}
+.diagram{min-width:1100px;display:grid;grid-template-columns:1fr 200px;gap:14px}
+.stack{display:flex;flex-direction:column;gap:0}
+.band{border:1.5px solid;border-radius:10px;padding:12px 14px;display:grid;grid-template-columns:118px 1fr;gap:12px;align-items:stretch}
+.band-label{display:flex;flex-direction:column;justify-content:center;gap:2px}
+.band-label b{font-size:14px}
+.band-label code{font-family:var(--f-mono);font-size:11.5px;color:var(--muted)}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:7px;padding:8px 10px;flex:1;min-width:0}
+.box h3{margin:0 0 3px;font-size:13px;font-weight:600}
+.box p{margin:0;font-size:12px;color:var(--muted);line-height:1.5}
+.box .m{font-family:var(--f-mono);font-size:11px;color:var(--accent)}
+.ui{background:var(--ui);border-color:var(--ui-b)}
+.ia{background:var(--ia);border-color:var(--ia-b)}
+.biz{background:var(--biz);border-color:var(--biz-b)}
+.core{background:var(--core);border-color:var(--core-b)}
+.prov{background:var(--prov);border-color:var(--prov-b)}
+.ext{background:var(--ext);border-color:var(--ext-b);border-style:dashed}
+.conn{display:flex;justify-content:center;align-items:center;gap:8px;height:34px;color:var(--muted);font-size:11.5px}
+.conn svg{width:14px;height:26px;flex:none}
+.conn svg path{stroke:var(--muted);fill:none;stroke-width:1.6}
+.conn svg polygon{fill:var(--muted)}
+.biz-grid{display:flex;flex-direction:column;gap:0;min-width:0}
+.wb{flex-direction:row!important;align-items:center;flex-wrap:wrap;gap:6px 14px!important;padding:8px 10px!important}
+.wb>h3{font-size:12.5px}
+.wb .d{margin-left:auto}
+.wb-conn{display:flex;justify-content:center;align-items:center;gap:6px;height:30px;color:var(--muted);font-size:11px}
+.wb-conn svg{width:14px;height:22px}
+.wb-conn svg path,.arr svg path{stroke:var(--accent);fill:none;stroke-width:1.6}
+.wb-conn svg polygon,.arr svg polygon{fill:var(--accent)}
+.wb-conn svg path{stroke:var(--muted)}.wb-conn svg polygon{fill:var(--muted)}
+.focus-row{display:grid;grid-template-columns:1fr 84px 1.2fr;gap:0;align-items:stretch}
+.focus{background:var(--panel);border:2px solid var(--accent);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0;box-shadow:0 2px 0 var(--focus-shadow)}
+.focus-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.focus-head h2{margin:0;font-size:18px;font-weight:700;letter-spacing:-.01em}
+.focus-head code{font-family:var(--f-mono);font-size:12px;color:var(--accent)}
+.tag{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--tag-fg);background:var(--accent);border-radius:3px;padding:2px 6px;align-self:center}
+.focus .d{font-size:12px;color:var(--muted);margin:0;line-height:1.5}
+.steps{margin:0;padding:0;list-style:none;counter-reset:s;display:flex;flex-direction:column;gap:4px}
+.steps li{counter-increment:s;display:grid;grid-template-columns:22px 78px 1fr;align-items:baseline;font-size:12px;gap:4px}
+.steps li::before{content:counter(s);font-family:var(--f-mono);font-size:10.5px;color:var(--tag-fg);background:var(--accent);border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center}
+.steps li b{font-weight:600}
+.steps li span{color:var(--muted)}
+.authors,.mech{display:flex;flex-direction:column;gap:5px;border-top:1px solid var(--line);padding-top:8px}
+.authors div,.mech div{font-size:12px;display:grid;grid-template-columns:130px 1fr;gap:6px}
+.authors div{grid-template-columns:100px 1fr}
+.authors span,.mech span{color:var(--muted)}
+.cycle{display:grid;grid-template-columns:repeat(5,minmax(min-content,1fr));gap:5px;position:relative}
+.cycle .st{background:var(--biz);border:1px solid var(--biz-b);border-radius:6px;padding:6px 4px;display:flex;flex-direction:column;gap:3px;min-width:0}
+.cycle .st b{font-size:11.5px;white-space:nowrap}
+.cycle .st span{font-size:11px;color:var(--muted);line-height:1.35}
+.cycle .back{grid-column:1/-1;text-align:center;font-size:11px;color:var(--accent);border:1px dashed var(--biz-b);border-top:none;border-radius:0 0 8px 8px;padding:3px 0 2px;margin-top:-2px}
+.bridge{display:flex;flex-direction:column;justify-content:center;gap:22px;padding:0 6px}
+.arr{display:flex;flex-direction:column;align-items:center;gap:2px;font-size:10.5px;color:var(--muted);text-align:center;line-height:1.3}
+.arr.l{flex-direction:column-reverse}
+.arr svg{width:72px;height:12px}
+.domain{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px;display:flex;flex-direction:column;gap:7px;min-width:0}
+.domain>h3{margin:0;font-size:13.5px;display:flex;justify-content:space-between;align-items:baseline;gap:6px}
+.domain>h3 code{font-family:var(--f-mono);font-size:11px;color:var(--accent);font-weight:400}
+.domain>.d{font-size:12px;color:var(--muted);margin:0;line-height:1.5}
+.chips{display:flex;flex-wrap:wrap;gap:5px}
+.chip{font-size:11.5px;border:1px solid var(--line);border-radius:4px;padding:2px 6px;background:var(--bg)}
+.flow{display:flex;align-items:center;flex-wrap:wrap;gap:4px;font-size:11.5px}
+.flow span.s{border:1px solid var(--biz-b);border-radius:4px;padding:2px 6px;background:var(--biz)}
+.flow i{font-style:normal;color:var(--muted)}
+.loop{border:1px solid var(--biz-b);border-radius:6px;padding:8px;background:var(--biz)}
+.loop .t{font-size:11.5px;color:var(--muted);margin-bottom:5px}
+.loop .flow span.s{background:var(--panel)}
+.side{display:flex;flex-direction:column;gap:14px}
+.sidecard .box{flex:none}
+.sidecard{border:1.5px solid;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px}
+.sidecard>b{font-size:14px}
+.sidecard>code{font-family:var(--f-mono);font-size:11.5px;color:var(--muted);margin-top:-6px}
+.note{font-size:11.5px;color:var(--muted);line-height:1.55}
+.legend{margin-top:18px;display:flex;flex-wrap:wrap;gap:8px 22px;font-size:12.5px;color:var(--muted);line-height:1.6}
+.legend b{color:var(--fg);font-weight:600}
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+  <h1>Asamana System Architecture</h1>
+  <p class="sub">An emergent narrative engine. Give it a theme and it builds a world full of autonomous agents. Each agent runs its own perceive, decide, act loop, and the story grows out of what they do. Dependencies flow one way: <b>interaction → world, engine, agent → core ← providers</b>.</p>
+
+  <div class="scroll">
+  <div class="diagram">
+    <div class="stack">
+
+      <!-- UI layer -->
+      <div class="band ui">
+        <div class="band-label"><b>User Interface</b><code>frontend/, main.py</code></div>
+        <div class="row">
+          <div class="box"><h3>Web App</h3><p>React app for managing worlds, watching them live, replaying history, and viewing a 2D map</p></div>
+          <div class="box"><h3>Dev Tools</h3><p>LLM call tracing, quality audits, and prompt replay</p></div>
+          <div class="box"><h3>CLI</h3><p>Commands: <span class="m">build</span>, <span class="m">list</span>, <span class="m">reset</span>, <span class="m">web</span></p></div>
+        </div>
+      </div>
+
+      <div class="conn"><svg viewBox="0 0 14 26"><polygon points="7,0 2,7 12,7"/><path d="M7 6v14"/><polygon points="7,26 2,19 12,19"/></svg>REST + WebSocket (world state only, no layout)</div>
+
+      <!-- interaction -->
+      <div class="band ia">
+        <div class="band-label"><b>Interaction</b><code>interaction/</code></div>
+        <div class="row">
+          <div class="box"><h3>Web API</h3><p>FastAPI. Starts, pauses, and stops worlds, streams live updates, and takes director input</p></div>
+          <div class="box"><h3>World Manager</h3><p>Creates, loads, and resets worlds, and hosts running simulations</p></div>
+          <div class="box"><h3>Replayer</h3><p>Replays history from snapshots and events</p></div>
+        </div>
+      </div>
+
+      <div class="conn"><svg viewBox="0 0 14 26"><path d="M7 0v20"/><polygon points="7,26 2,19 12,19"/></svg>calls</div>
+
+      <!-- domain -->
+      <div class="band biz">
+        <div class="band-label"><b>Domain</b><code>world/, engine/, agent/</code></div>
+        <div class="biz-grid">
+          <div class="domain wb">
+            <h3>World Builder <code>world/</code></h3>
+            <div class="flow"><span class="s">Analyze theme</span><i>→</i><span class="s">Pick template</span><i>→</i><span class="s">Design cast</span><i>→</i><span class="s">Generate agents</span><i>→</i><span class="s">Initialize</span></div>
+            <p class="d">Runs once before the simulation. Fails outright rather than return a placeholder world.</p>
+          </div>
+          <div class="wb-conn"><svg viewBox="0 0 14 22"><path d="M7 0v16"/><polygon points="7,22 2,15 12,15"/></svg>initial world and agents</div>
+
+          <div class="focus-row">
+            <div class="focus">
+              <div class="focus-head"><span class="tag">Key</span><h2>Narrative Runtime</h2><code>engine/</code></div>
+              <p class="d">Advances the world one step at a time in the background. Each step:</p>
+              <ol class="steps">
+                <li><b>Deliver</b><span>messages and broadcasts that are due</span></li>
+                <li><b>Pressure</b><span>assess outside pressure on each agent</span></li>
+                <li><b>Interrupt</b><span>cut actions short when something urgent happens</span></li>
+                <li><b>Schedule</b><span>choose which agents act</span></li>
+                <li><b>Plan</b><span>those agents run their cognition loop</span></li>
+                <li><b>Arbitrate</b><span>settle conflicts over the same person or object</span></li>
+                <li><b>Execute</b><span>an LLM judges how each action turns out</span></li>
+                <li><b>Carry over</b><span>results become what agents perceive next</span></li>
+              </ol>
+              <div class="chips"><span class="chip">Clock</span><span class="chip">Environment</span><span class="chip">Messaging</span><span class="chip">Executors: social, movement, work, covert, and more</span></div>
+              <div class="authors">
+                <div><b>Event System</b><span>an AI editor that injects occasional story events</span></div>
+                <div><b>Director</b><span>lets a human author step in</span></div>
+                <div><b>Upkeep</b><span>memory decay, reflection, and goal updates</span></div>
+              </div>
+            </div>
+
+            <div class="bridge">
+              <div class="arr r"><span>what agents<br>perceive</span><svg viewBox="0 0 60 12"><path d="M0 6h52"/><polygon points="60,6 51,1 51,11"/></svg></div>
+              <div class="arr l"><svg viewBox="0 0 60 12"><polygon points="0,6 9,1 9,11"/><path d="M8 6h52"/></svg><span>chosen<br>action</span></div>
+              <div class="arr r"><span>action<br>results</span><svg viewBox="0 0 60 12"><path d="M0 6h52"/><polygon points="60,6 51,1 51,11"/></svg></div>
+            </div>
+
+            <div class="focus">
+              <div class="focus-head"><span class="tag">Key</span><h2>Agent Cognition</h2><code>agent/</code></div>
+              <p class="d">Every agent thinks with the same LLM-driven loop. Each stage is its own focused LLM call, sequenced by code.</p>
+              <div class="cycle">
+                <div class="st"><b>Perceive</b><span>take in what is happening</span></div>
+                <div class="st"><b>Motivate</b><span>weigh needs, goals, and feelings</span></div>
+                <div class="st"><b>Decide</b><span>pick one action</span></div>
+                <div class="st"><b>Act</b><span>hand it to the runtime</span></div>
+                <div class="st"><b>Feedback</b><span>update memory, mood, and relationships</span></div>
+                <div class="back">↺ repeat</div>
+              </div>
+              <div class="mech">
+                <div><b>Staged pipeline</b><span>predictable control flow instead of an open-ended chat loop</span></div>
+                <div><b>Typed handoffs</b><span>structured data between stages keeps errors from compounding</span></div>
+                <div><b>Selective context</b><span>each prompt gets only the state it needs: persona, emotion, goals, relationships, or memories</span></div>
+              </div>
+              <div class="chips"><span class="chip">Personality</span><span class="chip">Memory</span><span class="chip">Needs</span><span class="chip">Relationships</span><span class="chip">Goals</span><span class="chip">Reflection</span></div>
+              <p class="d"><b>Limited knowledge:</b> each agent knows only what it has perceived.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="conn"><svg viewBox="0 0 14 26"><path d="M7 0v20"/><polygon points="7,26 2,19 12,19"/></svg>uses interfaces only</div>
+
+      <!-- core -->
+      <div class="band core">
+        <div class="band-label"><b>Core</b><code>core/</code></div>
+        <div class="row">
+          <div class="box"><h3>Interfaces</h3><p>Contracts for LLMs, embeddings, storage, tracing, messaging, and more</p></div>
+          <div class="box"><h3>Dependency Injection</h3><p>Builds the configured providers at startup</p></div>
+          <div class="box"><h3>Shared Utilities</h3><p>Event bus, prompt helpers, rate limiting, and logging</p></div>
+        </div>
+      </div>
+
+      <div class="conn"><svg viewBox="0 0 14 26"><polygon points="7,0 2,7 12,7"/><path d="M7 6v20"/></svg>implements interfaces (swappable)</div>
+
+      <!-- providers -->
+      <div class="band prov">
+        <div class="band-label"><b>Providers</b><code>providers/</code></div>
+        <div class="row">
+          <div class="box"><h3>LLM</h3><p>Any OpenAI-compatible API, plus a mock for tests. Models are set per task</p></div>
+          <div class="box"><h3>Embeddings</h3><p>DashScope or any OpenAI-compatible API, with caching</p></div>
+          <div class="box"><h3>Storage</h3><p>Vector, agent, and snapshot stores, on disk or in memory</p></div>
+          <div class="box"><h3>Tracing</h3><p>Logs every LLM call to JSONL</p></div>
+        </div>
+      </div>
+
+      <div class="conn"><svg viewBox="0 0 14 26"><path d="M7 0v20"/><polygon points="7,26 2,19 12,19"/></svg></div>
+
+      <!-- external -->
+      <div class="band ext">
+        <div class="band-label"><b>External</b><code>config/, data/</code></div>
+        <div class="row">
+          <div class="box"><h3>LLM Vendors</h3><p>DashScope, DeepSeek, Kimi, Zhipu, MiniMax, and others</p></div>
+          <div class="box"><h3>Local Data</h3><p><span class="m">data/</span> holds snapshots, vector indexes, and traces</p></div>
+          <div class="box"><h3>Config</h3><p><span class="m">config/*.yaml</span> picks providers and models</p></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- side -->
+    <div class="side">
+      <div class="sidecard core" style="flex:1">
+        <b>Evaluation &amp; Tuning</b>
+        <code>tuning/</code>
+        <div class="box"><h3>Trace Audit</h3><p>An LLM judge scores finished runs on seven quality dimensions</p></div>
+        <div class="box"><h3>Stage Judges</h3><p>Quality checks and regression tests for each cognition stage</p></div>
+        <div class="box"><h3>Phase Harness</h3><p>Replays and compares prompts for a single stage</p></div>
+        <p class="note">Works from saved traces and never reruns the simulation. Results appear in the Audit panel.</p>
+      </div>
+      <div class="sidecard prov">
+        <b>Deployment</b>
+        <code>deploy/</code>
+        <p class="note">Backend and frontend ship as separate Docker images. nginx serves the UI and proxies API and WebSocket traffic.</p>
+      </div>
+    </div>
+  </div>
+  </div>
+
+  <div class="legend">
+    <span><b>Principles</b></span>
+    <span>Dependencies only point down, and domain code never sees concrete providers</span>
+    <span>Internal IDs never appear in LLM prompts</span>
+    <span>If an LLM call fails, the agent skips the step instead of inventing memories</span>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,119 @@
+# MiniMax (China site)
+# Usage: CONFIG=config/presets/minimax.yaml python main.py web
+# Needs MINIMAX_API_KEY (LLM) and EMBEDDING_API_KEY (embedding stays on the native DashScope
+# endpoint for sparse). The international site is a different URL (https://api.minimax.io/v1);
+# keys are tied to the site, not portable.
+#
+# See config/config.example.yaml for field meanings, allowed values and how to add a provider.
+# Comments here cover only what the config can't say itself: measured numbers, costs, and one
+# safety switch.
+
+llm:
+  providers:
+    # A single declaration: M3 is the only model that can disable thinking (M2.x ignores
+    # thinking.type: disabled), and it must be disabled. MiniMax has no effort knob, so on means
+    # full: measured persona thinking is 2900–5300 tokens against a 5000 budget, so builds
+    # randomly raise (Rule 2). To enable thinking, first raise max_tokens for
+    # persona_generation / cast_design / world_building to ~12000. Cost: world building gets no
+    # "strong model + thinking" here.
+    minimax:
+      base_url: https://api.minimax.cn/v1
+      model: MiniMax-M3
+      api_key_env: MINIMAX_API_KEY
+      params:
+        thinking:
+          type: disabled
+
+  default_provider: minimax
+
+  scenes:
+    world_building:
+      provider: minimax
+      # Required. The 60s default can't cover the world build's thousands of tokens of JSON
+      timeout: 300
+      # No enable_search equivalent: MiniMax's chat API only accepts custom function tools and
+      # has no web search, so theme analysis relies on the model's own knowledge.
+
+  # Judge for offline review (python -m tuning). It uses the same model as the scenes it grades,
+  # so it grades leniently; that's this vendor's cost. Judge calls have only ~900–1700
+  # max_tokens, and M2.x (thinking can't be disabled) would get truncated by thinking, which is
+  # far worse than lenient grading.
+  judge:
+    provider: minimax
+
+embedding:
+  # This dashscope is an implementation name in the embedding registry, a separate namespace from
+  # llm.providers. Only native DashScope returns learned sparse, so embedding stays there even
+  # with the LLM on MiniMax.
+  provider: dashscope
+  params:
+    model: text-embedding-v3
+    dimension: 1024
+    output_type: dense&sparse   # only the native DashScope endpoint returns learned sparse, which hybrid retrieval needs
+
+vector_store:
+  provider: file
+  params:
+    # Clear this directory before changing dimension: upsert raises on a dimension mismatch.
+    path: ./data/vectors
+
+agent_store:
+  provider: file
+  params:
+    path: ./data/agents
+
+message:
+  provider: in_memory
+  params: {}
+
+snapshot:
+  provider: file
+  params:
+    path: ./data/snapshots
+
+# RPM / TPM are per account, not per model, so they go here (account-level defaults) rather than
+# on the llm.providers entry. These are paid-account M3 numbers; an unpaid account gets only
+# 20 RPM / 1M TPM, and then both must be lowered, or proactive limiting does nothing and only 429
+# backpressure is left. Table: https://platform.minimax.cn/docs/guides/rate-limits
+rate_limit:
+  rpm: 200
+  tpm: 10000000
+
+world:
+  config: tiled
+  min_agents: 5
+  max_agents: 8
+
+engine:
+  max_concurrent_llm: 16
+  decay_interval: 5
+  event_system_enabled: true
+  max_events_per_window: 2
+  event_quota_window: 20
+  event_check_interval: 6
+  main_max_idle_steps: 2
+  background_max_idle_steps: 6
+  max_npcs: 6                  # the cost is prompt space, not memory: each takes a line in main-character decision prompts
+
+logging:
+  level: DEBUG
+  fmt: json
+  output: stdout+file
+  file_path: ./data/logs/asamana.log
+  max_size_mb: 20
+  backup_count: 5
+
+observability:
+  enabled: true
+  provider: jsonl
+  params:
+    base_dir: ./data/traces
+
+web:
+  host: 127.0.0.1
+  port: 7860
+  cors_origins: ["*"]
+  # Developer tools (trace viewer / audit / prompt replay) spawn subprocesses and can send any
+  # prompt to a paid LLM. Off by default; enable locally with ASAMANA_DEV_TOOLS=true, never in a
+  # public deployment.
+  dev_tools_enabled: ${ASAMANA_DEV_TOOLS:-false}
