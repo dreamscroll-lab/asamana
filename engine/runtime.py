@@ -16,12 +16,18 @@ from agent.personality import ActionStatus, activity_status_for
 from core.context import annotate_call, observe_stage, set_log_context
 from core.event_bus import NarrativeEventBus
 from core.interfaces.action import COVERTABLE_ACTION_TYPES
+from core.interfaces.actor import ActorDecision, ActorInterruptAnswer, ActorTurn
+from core.interfaces.perception import PerceivedSignals
 from core.interfaces.agent_store import AgentStoreProvider, relations_snapshot
 from core.interfaces.directory import WorldDirectory
 from core.interfaces.snapshot import SnapshotProvider, WorldSnapshot
 from core.interfaces.trace import Stage, StepTrace, TraceSink
 from core.duration import describe_duration
 from core.logging import get_logger
+from core.validate import require_at_least
+from engine.actor_channel import ActorChannel
+from engine.actor_coordinator import ActorCoordinator
+from engine.signals import perceived_signals, perception_record
 from engine.broadcast import BroadcastChannel
 from engine.presence import attach_presence
 from engine.clock import GlobalClock
@@ -42,7 +48,7 @@ from engine.executors.movement import arrival_view, transit_view
 from engine.executors.registry import ActionExecutorRegistry
 from engine.message_system import MessageDelivery, MessageSystem
 from engine.npc_runner import NpcRunner
-from engine.run_control import RunController
+from engine.run_control import RunController, StepWithdrawn
 from engine.scheduler import AgentScheduler, StepExecutionPlan
 from core.interfaces.llm import LLMRouter
 from engine.world_pressure import WorldPressureEvaluator
@@ -141,6 +147,10 @@ class NarrativeRuntime:
             clock=self._clock,
             processor=self._processor,
         )
+        # The actor a person performs a character through, once ``cast_actor`` hands it one. The
+        # step loop never asks it: the character does. Each turn opening and closing goes out on
+        # the event bus, like steps.
+        self._actor = ActorCoordinator(on_turn=self._publish_actor_turn)
         # Owns its edge-trigger state (_interrupt_seen_goals); lands torn-down actions
         # through the processor.
         self._interrupts = InterruptCoordinator(
@@ -205,6 +215,23 @@ class NarrativeRuntime:
         return self._director
 
     @property
+    def actor(self) -> ActorChannel:
+        """The actor's channel — the API answers the character's turns through this."""
+        return self._actor.channel
+
+    def cast_actor(self, agent: Agent) -> None:
+        """Have a person perform ``agent`` through this world's actor."""
+        self._actor.perform(agent)
+
+    def _publish_actor_turn(self, turn: ActorTurn | None) -> None:
+        self._event_bus.publish({"type": "actor_turn", "world_id": self._world_id, "turn": turn})
+
+    async def interpret_actor_answer(self, text: str) -> "ActorDecision | ActorInterruptAnswer | None":
+        """The actor's words read as an answer to the open turn, for them to confirm (see
+        ``ActorCoordinator.interpret``)."""
+        return await self._actor.interpret(text)
+
+    @property
     def clock(self) -> GlobalClock:
         """This world's clock. Read-only to callers — only ``run_step`` may tick it."""
         return self._clock
@@ -232,8 +259,7 @@ class NarrativeRuntime:
         persists at its end, so this loses no step.
         """
 
-        if total_steps < 1:
-            raise ValueError(f"total_steps must be at least 1, got {total_steps}")
+        require_at_least(total_steps, 1, "total_steps")
         if self._running:
             raise ValueError(f"World {self._world_id!r} is already running.")
         self._running = True
@@ -372,6 +398,18 @@ class NarrativeRuntime:
         # This step's due broadcasts: events injected above and death notices published during
         # the previous step's execution.
         broadcasts_this_step = self._broadcast_channel.collect(step=step)
+        # What reached each living agent this step; one definition for pressure, each
+        # character's own reading of it and the persisted perception record.
+        agent_signals = {
+            agent.agent_id: perceived_signals(
+                location_id=agent_spatials[agent.agent_id].location_id,
+                inbox=deliveries.inbox_for(agent.agent_id),
+                broadcasts=broadcasts_this_step,
+                ambient=agent_spatials[agent.agent_id].ambient_events,
+            )
+            for agent in agents
+            if agent.is_active
+        }
 
         # --- pressure → perceive → interrupt → tick → plan → commit ---
         # Perception reads the pre-tick world (agent_spatials).
@@ -415,7 +453,7 @@ class NarrativeRuntime:
         _t_interrupt = time.perf_counter()
         with annotate_call(settles_prior_action=True):
             interrupt_records = await self._interrupts.evaluate_interrupts(
-                deliveries, broadcasts_this_step, agents_dict, step
+                deliveries, broadcasts_this_step, agents_dict, step, signals=agent_signals,
             )
         interrupt_ms = round((time.perf_counter() - _t_interrupt) * 1000, 1)
 
@@ -425,7 +463,7 @@ class NarrativeRuntime:
         #   · pending_external_goals: rewritten every step, never in memory, trigger already
         #     delivered.
         #   · Perception emotion and need_activation: only evaluated in plan_step.
-        # Safe: _apply_interrupt has landed feedback synchronously and reset the state.
+        # Safe: apply_interrupt has landed feedback synchronously and reset the state.
         # Every participant is subtracted (interrupt_records has one entry each), not just the
         # interrupter: the other side of an overturned talk is free too.
         in_progress_at_step_start -= {r["agent_id"] for r in interrupt_records}
@@ -458,6 +496,7 @@ class NarrativeRuntime:
             step=step,
             in_progress_at_step_start=in_progress_at_step_start,
             interrupters=interrupters,
+            signals=agent_signals,
         )
 
         plan_start = time.perf_counter()
@@ -470,6 +509,7 @@ class NarrativeRuntime:
             world_time_label=world_time.time_label,
             agent_spatials=agent_spatials,
             broadcasts=broadcasts_this_step,
+            signals=agent_signals,
         )
         plan_elapsed_ms = (time.perf_counter() - plan_start) * 1000.0
         # Count deciders (spent LLM calls), idle (conscriptable) and busy (listed only to be
@@ -635,6 +675,8 @@ class NarrativeRuntime:
                 },
             )
 
+        self._note_acted_upon(agents_dict, all_action_records, injections)
+
         # Stamp the monotonic event seq on every event channel; ordering lives in
         # EventSequencer.assign_event_seqs. The returned payloads are shared by snapshot and
         # step_event so both carry identical ordinals.
@@ -647,6 +689,10 @@ class NarrativeRuntime:
 
         await self._persist_agent_states(agents, step)
         agent_relations = await self._build_relation_snapshot(agents_dict.keys())
+        perceptions = {
+            agent_id: perception_record(agent_spatials[agent_id], signals)
+            for agent_id, signals in agent_signals.items()
+        }
         snapshot = WorldSnapshot(
             world_id=self._world_id,
             step=step,
@@ -661,6 +707,7 @@ class NarrativeRuntime:
             pending_broadcasts=self._broadcast_channel.peek_pending(),
             events_this_step=serialized_events,
             actions_this_step=all_action_records,
+            perceptions=perceptions,
             metadata={
                 "schedule": plan.as_dict(),
                 "messages": messages_payload,
@@ -695,6 +742,7 @@ class NarrativeRuntime:
             "actions": all_action_records,
             "events": serialized_events,
             "broadcasts": broadcast_records,
+            "perceptions": perceptions,
             "environment": self._environment.snapshot_state(),
         }
         self._event_bus.publish(step_event)
@@ -933,7 +981,7 @@ class NarrativeRuntime:
                 continue
             if r.get("adjudication_failed"):   # null step: nothing happened in the world
                 continue
-            actor_id = r.get("agent_id")
+            doer_id = r.get("agent_id")
             # Fine-grained gate: read the executor's authorization, don't infer it. Empty = this
             # beat has no such layer (progress beats are content-free, interrupt beats private).
             happening = r.get("happening")
@@ -941,18 +989,18 @@ class NarrativeRuntime:
             # (where onlookers saw it). Exclude both pseudo-places: IN_TRANSIT would be treated
             # as one shared "room" by travelers, and UNPLACED isn't a place at all.
             loc = r.get("location_id")
-            if not actor_id or not happening or not loc or loc in (IN_TRANSIT, UNPLACED):
+            if not doer_id or not happening or not loc or loc in (IN_TRANSIT, UNPLACED):
                 continue
             # Listeners, like participants, already hold this: it isn't new to them, and handing it
             # over would let the adjudication rule success on something they already knew. They're
             # outside participant_ids for turn-economy reasons, not cognitive ones.
             merged.setdefault((loc, happening), set()).update(
-                r.get("participant_ids") or [actor_id], r.get("overheard_by") or (),
+                r.get("participant_ids") or [doer_id], r.get("overheard_by") or (),
             )
 
         for (loc_id, happening), holders in merged.items():
             self._environment.record_happening(
-                location_id=loc_id, outcome=happening, step=step, actor_ids=tuple(holders),
+                location_id=loc_id, outcome=happening, step=step, doer_ids=tuple(holders),
             )
 
     def _carry_step_observations(
@@ -983,14 +1031,14 @@ class NarrativeRuntime:
             # Null step: nothing happened in the world.
             if r.get("adjudication_failed"):
                 continue
-            actor_id = r.get("agent_id")
-            if not actor_id:
+            doer_id = r.get("agent_id")
+            if not doer_id:
                 continue
             # The person acted on is self-excluded like execution members: he already got his own
             # memory from the effect (see completion_record's acted_upon). That's also why he's in
             # this onlooker memory's related_agents: the event is about him.
-            actor_ids = tuple(dict.fromkeys(
-                [*(r.get("participant_ids") or [actor_id]), *(r.get("acted_upon") or ())]
+            doer_ids = tuple(dict.fromkeys(
+                [*(r.get("participant_ids") or [doer_id]), *(r.get("acted_upon") or ())]
             ))
             for o in r.get("observations") or []:
                 place, text, strength = o.get("location_id"), o.get("text"), o.get("strength")
@@ -999,20 +1047,41 @@ class NarrativeRuntime:
                 # IN_TRANSIT, but its "the origin watches him go" must still land.
                 if not place or not text or place == IN_TRANSIT:
                     continue
-                key = (place, actor_ids, text)
+                key = (place, doer_ids, text)
                 if key in seen_carries:
                     continue
                 seen_carries.add(key)
-                location_outcomes[place].append((actor_ids, text, strength))
+                location_outcomes[place].append((doer_ids, text, strength))
 
         for loc_id, entries in location_outcomes.items():
-            for actor_ids, observation, strength in entries:
+            for doer_ids, observation, strength in entries:
                 self._environment.record_carry_observation(
                     location_id=loc_id,
                     observation=observation,
                     strength=strength,
-                    actor_ids=actor_ids,
+                    doer_ids=doer_ids,
                 )
+
+    @staticmethod
+    def _note_acted_upon(
+        agents: Dict[str, "Agent"], records: List[Dict[str, Any]], injections: "List[Any]",
+    ) -> None:
+        """Tell each character that someone else's action, or a world event, landed on it.
+
+        Effects on a character reach it through feedback (its own memory of the effect), and
+        onlooker traces exclude whoever was acted on, so its perception alone would miss the one
+        thing most likely to matter to it. Its own acts, including the partner's side of one it
+        started, don't count.
+        """
+        acted_upon: set[str] = set()
+        for record in records:
+            doers = {record.get("agent_id"), record.get("initiator_id")}
+            acted_upon.update(aid for aid in record.get("acted_upon") or () if aid not in doers)
+        for injection in injections:
+            acted_upon.update(injection.target_ids)
+        for agent_id in acted_upon:
+            if (agent := agents.get(agent_id)) is not None:
+                agent.note_acted_upon()
 
     async def _plan_one_agent(
         self,
@@ -1023,6 +1092,7 @@ class NarrativeRuntime:
         world_time_label: str,
         broadcasts: "List[Broadcast]",
         spatial: "SpatialPerception | None" = None,
+        signals: PerceivedSignals = PerceivedSignals(),
     ) -> tuple[str, "Agent", AgentStepPlan]:
         """Build perception inputs for one agent and run its plan_step.
 
@@ -1035,11 +1105,13 @@ class NarrativeRuntime:
                 step=step,
                 world_time=world_time_label,
             )
+        local_broadcasts = BroadcastChannel.for_location(broadcasts, spatial.location_id)
         plan_result = await agent.plan_step(
             step=step,
             spatial=spatial,
             inbox=agent_messages,
-            broadcasts=BroadcastChannel.for_location(broadcasts, spatial.location_id),
+            broadcasts=local_broadcasts,
+            signals=signals,
         )
         return (phase, agent, plan_result)
 
@@ -1156,6 +1228,7 @@ class NarrativeRuntime:
         world_time_label: str,
         broadcasts: "List[Broadcast]",
         agent_spatials: "dict[str, SpatialPerception] | None" = None,
+        signals: "Mapping[str, PerceivedSignals] | None" = None,
     ) -> List[tuple[str, Agent, AgentStepPlan]]:
         # Planning is parallel across the whole scheduled set: plan_step writes nothing shared.
         # Main-before-background is an arbitration property, not a planning barrier: gather
@@ -1182,6 +1255,7 @@ class NarrativeRuntime:
                     world_time_label=world_time_label,
                     broadcasts=broadcasts,
                     spatial=agent_spatials.get(agent.agent_id) if agent_spatials else None,
+                    signals=(signals or {}).get(agent.agent_id, PerceivedSignals()),
                 )
                 for phase, agent in ordered
             ],
@@ -1191,6 +1265,9 @@ class NarrativeRuntime:
         # kept so the agent can still be conscripted this step.
         planned_steps: List[tuple[str, "Agent", AgentStepPlan]] = []
         for (phase, agent), result in zip(ordered, results):
+            # A withdrawn step ends here, not just this agent's plan.
+            if isinstance(result, StepWithdrawn):
+                raise result
             if isinstance(result, BaseException):
                 logger.warning(
                     "agent_plan_failed",
@@ -1286,7 +1363,7 @@ class NarrativeRuntime:
         """Begin one agent's action (IN_PROGRESS, no outcome writeback) and return its
         begin-marker record.
 
-        Every admitted action is an execution: the actor calls begin_ongoing_step, a
+        Every admitted action is an execution: the doer calls begin_ongoing_step, a
         conscripted co-participant join_ongoing_action. Completion and all writeback happen
         later in finalize: same step for a born-zero execution (same-step sweep), else via
         tick. There is no commit_step.

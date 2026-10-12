@@ -1939,7 +1939,7 @@ def test_foiled_single_attempt_carries_no_count(container) -> None:
 
 
 def test_foiled_different_keys_never_merge(container) -> None:
-    """Different keys get one line each. Merging only happens within the same actor and action."""
+    """Different keys get one line each. Merging only happens within the same doer and action."""
     system = _make_memory_system(container)
     system.note_foiled_attempt(step=1, text="我想找甲说话。", key=("talk", "agent-a"), gist="找甲说话")
     system.note_foiled_attempt(step=2, text="我想找乙说话。", key=("talk", "agent-b"), gist="找乙说话")

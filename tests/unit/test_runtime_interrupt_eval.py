@@ -173,7 +173,7 @@ class _DecisionSpy:
         self._tracker = tracker
 
     async def __call__(self, *, step: int, reason: str, current_action_desc: str,
-                        intent: str, progress_hint: str) -> tuple[bool, str]:
+                        intent: str, progress_hint: str, signals=None) -> tuple[bool, str]:
         self.reasons.append(reason)
         if self._tracker is not None:
             await self._tracker.enter()
@@ -798,11 +798,11 @@ def _same_step_compel_world(container, *, listener_action=None, with_x=False):
     return runtime, registry, env, agents
 
 
-def _talk(actor: str, other: str):
+def _talk(doer: str, other: str):
     from core.interfaces.action import AgentAction
 
     return AgentAction(
-        agent_id=actor, step=2, action_type=ActionType.TALK, action_description=f"{actor}找{other}议事",
+        agent_id=doer, step=2, action_type=ActionType.TALK, action_description=f"{doer}找{other}议事",
         estimated_steps=3, target=ActionTarget(acts_on=[Ref.agent(other)], claims=[Ref.agent(other)]),
     )
 
@@ -908,11 +908,11 @@ async def test_same_step_compel_gives_a_listener_whose_turn_has_passed_his_own_t
     assert not any(r.message == "stranded_participant_released" for r in caplog.records)
 
 
-def _move_carrying(actor: str, carried: str, to: str = "n1"):
+def _move_carrying(doer: str, carried: str, to: str = "n1"):
     from core.interfaces.action import AgentAction
 
     return AgentAction(
-        agent_id=actor, step=2, action_type=ActionType.MOVE, action_description="拽着他走",
+        agent_id=doer, step=2, action_type=ActionType.MOVE, action_description="拽着他走",
         estimated_steps=1, target=ActionTarget(acts_on=[Ref.place(to)], claims=[Ref.agent(carried)]),
     )
 

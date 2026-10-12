@@ -49,17 +49,17 @@ def _phase_block(inputs: dict[str, Any], outputs: dict[str, Any]) -> str:
         lines.append("### 类型:并发裁决")
         lines.append("同步行动:")
         for a in inputs.get("actions", []):
-            lines.append(f"  - {a.get('actor')}: {a.get('action_type')} → {a.get('target')}（{a.get('estimated_steps')}步）")
+            lines.append(f"  - {a.get('doer')}: {a.get('action_type')} → {a.get('target')}（{a.get('estimated_steps')}步）")
         lines.append("裁决结果:")
         for v in outputs.get("verdicts", []):
-            lines.append(f"  - {v.get('actor')}: 【{v.get('kind')}】succeeded={v.get('succeeded')} "
+            lines.append(f"  - {v.get('doer')}: 【{v.get('kind')}】succeeded={v.get('succeeded')} "
                          f"passive={v.get('is_passive_join')} ongoing={v.get('ongoing')} ｜ {v.get('outcome')}")
         return "\n".join(lines)
 
     # lifecycle
     tier = "主角" if inputs.get("is_main_character") else "背景"
     traits = "、".join(inputs.get("core_traits") or []) or "—"
-    lines.append(f"### 行动者:{inputs.get('actor_name')}（{tier}，位于 {inputs.get('location')}；性格：{traits}）")
+    lines.append(f"### 行动者:{inputs.get('doer_name')}（{tier}，位于 {inputs.get('location')}；性格：{traits}）")
     if inputs.get("core_values"):
         lines.append("  价值观：" + "、".join(inputs["core_values"]))
     lines.append(f"  体力:{inputs.get('vitality')}")
@@ -100,7 +100,7 @@ def _phase_block(inputs: dict[str, Any], outputs: dict[str, Any]) -> str:
 
 
 def _result_line(r: dict[str, Any]) -> str:
-    who = f"[{r.get('actor')}视角] " if r.get("actor") else ""
+    who = f"[{r.get('doer')}视角] " if r.get("doer") else ""
     parts = [f"{who}succeeded={r.get('succeeded')}"]
     if r.get("failure_reason"):
         parts.append(f"why={r['failure_reason']}")

@@ -13,7 +13,7 @@ export interface StepCast {
   inkOf(id: string | undefined): string | undefined;
   /** The name this step reported for an agent id; "" when it never mentioned them. */
   nameOf(id: string): string;
-  /** Where a deed happened: the actor's reported location name. */
+  /** Where a deed happened: the doer's reported location name. */
   placeOf(act: ActionSummary): string;
   /**
    * An imposed condition this person is standing under ("双手被反绑"), "" when free.

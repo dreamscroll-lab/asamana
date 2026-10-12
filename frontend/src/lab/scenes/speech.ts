@@ -1,6 +1,6 @@
 import { ActionType, Deed, Phase } from "../../lib/contract";
 import type { LabPlaces } from "../places";
-import { CHE, Emotion, LAN, LIN, MO, Need, SHI, YAN, aimNothing, aimTalk, did, execId, nextSeq, step, type LabActor, type LabScene, type Room, who } from "./fixtures";
+import { CHE, Emotion, LAN, LIN, MO, Need, SHI, YAN, aimNothing, aimTalk, did, execId, nextSeq, step, type LabCharacter, type LabScene, type Room, who } from "./fixtures";
 
 /**
  * A conversation as the engine emits one: two records per beat sharing one `execution_id` (each
@@ -10,11 +10,11 @@ import { CHE, Emotion, LAN, LIN, MO, Need, SHI, YAN, aimNothing, aimTalk, did, e
  * newline; the renderer's `seenDialogue` guard keeps the exchange from playing twice.
  */
 function talkBeats(
-  a: LabActor,
-  b: LabActor,
+  a: LabCharacter,
+  b: LabCharacter,
   room: Room,
-  lines: [LabActor, string][],
-  overheard: LabActor[] = [],
+  lines: [LabCharacter, string][],
+  overheard: LabCharacter[] = [],
   // The judge's verdict and, on failure, its reason; both ride on the closing beat only.
   succeeded = true,
   failure = "",

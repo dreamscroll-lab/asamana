@@ -181,7 +181,24 @@ def build_lifecycle_router(services: ApiServices) -> Any:
         return _with_run_state(meta)
 
     @router.post("/{world_id}/confirm")
-    async def confirm_world(world_id: str) -> dict[str, Any]:
+    async def confirm_world(world_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
+        """Lock the world's setup. ``character_id`` casts the actor in the same act: the cast is
+        part of the setup, so this is the only place it is chosen. Without it the world is
+        confirmed for the director."""
+        character_id = payload.get("character_id")
+        if character_id is not None:
+            if not isinstance(character_id, str) or not character_id.strip():
+                raise HTTPException(status_code=400, detail="character_id must be a character's id")
+            # Casting rebuilds the session, which runs on the models.
+            services.require_model_keys()
+            if await manager.get_world(world_id) is None:
+                raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
+            if character_id not in await manager.character_profiles(world_id):
+                raise HTTPException(status_code=400, detail=f"No character {character_id!r} in this world")
+            try:
+                await application.cast_actor(world_id, character_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         try:
             meta = await manager.confirm_world(world_id)
         except ValueError as exc:

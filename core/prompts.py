@@ -27,6 +27,9 @@ from core.interfaces.urgency import Urgency
 # Emotion (scales for emotion fields)
 # ============================================================================
 
+EMOTION_INTENSITY_RANGE: tuple[float, float] = (0.0, 1.0)
+EMOTION_VALENCE_RANGE: tuple[float, float] = (-1.0, 1.0)
+
 EMOTION_INTENSITY_DEFINITION: str = (
     "intensity（情绪强度）: 浮点数 [0.0, 1.0]，情绪被激活的程度，与情绪种类无关。"
     "0.0=平静，0.2=轻微，0.5=明显，0.8=强烈，1.0=极度激烈"
@@ -465,7 +468,7 @@ def render_entity(
 
     Takeable reads by relation: own hands "可交出", unowned "可取", someone else's only "由X持有"
     ("可取" would let the judge treat taking it as picking up an unowned item). ``held_by_viewer``
-    is the reader in first person, the actor in adjudication.
+    is the reader in first person, the doer in adjudication.
     """
     name = ((getattr(entity, "name", "") or "").strip()) if entity is not None else ""
     if not name:
@@ -641,7 +644,7 @@ def vitality_line(
     """The full "<person>此刻的体力：X" line; the only place vitality enters a prompt.
 
     Only cognition should set ``omit_when_full`` (a constant "full" is noise); the judge must
-    always see the actor's vitality.
+    always see the doer's vitality.
     """
     if omit_when_full and vitality > VITALITY_FULL:
         return ""

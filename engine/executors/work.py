@@ -26,7 +26,7 @@ from core.duration import describe_duration
 from core.interfaces.execution import TickResult
 from engine.executors.base import ActionExecutionState, ActionExecutor
 from engine.narration import (
-    ensure_actor_named, format_interrupt_reason_3p, format_interrupt_thought, observed_here,
+    ensure_doer_named, format_interrupt_reason_3p, format_interrupt_thought, observed_here,
     scene_line,
 )
 from engine.scene import SceneVisibility, assemble_scene_context, observe_location, situation_for
@@ -81,7 +81,7 @@ class WorkExecutor(ActionExecutor):
     and no relation delta.
 
     Judged in character, first person: with no opponent, it's an honest self-assessment. It
-    must rest on what the actor perceives (things at hand, who's present, his
+    must rest on what the doer perceives (things at hand, who's present, his
     ``expected_outcome``): from persona alone the verdict is always "nothing came of it" and the
     goal is retried forever.
     """
@@ -94,10 +94,10 @@ class WorkExecutor(ActionExecutor):
     def _outcome(self, agent_id: str, purpose: str, location: str, *, succeeded: bool) -> str:
         """Fallback 3p outcome when the judge gives none. Never quotes ``purpose``: it's a
         first-person sentence and breaks a third-person line."""
-        actor_name = self._directory.agent_name(agent_id)
+        doer_name = self._directory.agent_name(agent_id)
         body = (
-            f"{actor_name}做完了手上的事。" if succeeded
-            else f"{actor_name}忙活了一阵，终究没能做成手上的事。"
+            f"{doer_name}做完了手上的事。" if succeeded
+            else f"{doer_name}忙活了一阵，终究没能做成手上的事。"
         )
         return scene_line(location, body)
 
@@ -139,13 +139,13 @@ class WorkExecutor(ActionExecutor):
         environment: "EnvironmentSystem",
         message_system: "MessageSystem",
     ) -> List[TickResult]:
-        actor_name = self._directory.agent_name(state.initiator_id)
+        doer_name = self._directory.agent_name(state.initiator_id)
         location = observe_location(environment, state.initiator_id)
         elapsed = state.estimated_steps - state.remaining_steps
         if elapsed <= 0:
-            body = f"{actor_name}着手做手上的事。"                  # same form as start
+            body = f"{doer_name}着手做手上的事。"                  # same form as start
         else:
-            body = f"{actor_name}手上的事仍在进行，已投入{describe_duration(elapsed, self._seconds_per_step)}。"
+            body = f"{doer_name}手上的事仍在进行，已投入{describe_duration(elapsed, self._seconds_per_step)}。"
         progress = scene_line(location, body)
         return [TickResult(
             agent_id=state.initiator_id, outcome=progress,
@@ -206,16 +206,16 @@ class WorkExecutor(ActionExecutor):
             estimated_steps=state.estimated_steps,
         )
         # A missing observation falls back to the template, never to outcome (it has the product).
-        actor_name = self._directory.agent_name(state.initiator_id)
+        doer_name = self._directory.agent_name(state.initiator_id)
         fallback_3p = self._outcome(
             state.initiator_id, state.purpose, location, succeeded=gen_result.succeeded,
         )
         outcome = (
-            scene_line(location, ensure_actor_named(gen_result.outcome, actor_name))
+            scene_line(location, ensure_doer_named(gen_result.outcome, doer_name))
             if gen_result.outcome else fallback_3p
         )
         observation = (
-            scene_line(location, ensure_actor_named(gen_result.observation, actor_name))
+            scene_line(location, ensure_doer_named(gen_result.observation, doer_name))
             if gen_result.observation else fallback_3p
         )
         # Carried products are private (public would leak them via others' reachable lists);
@@ -246,7 +246,7 @@ class WorkExecutor(ActionExecutor):
                 # Announce something set down, so others learn it just appeared.
                 perception=(
                     "" if carried
-                    else scene_line(location, f"{actor_name}把{gen_result.product_name}留在了此处。")
+                    else scene_line(location, f"{doer_name}把{gen_result.product_name}留在了此处。")
                 ),
             ))
         return [ActionResult(
@@ -306,17 +306,17 @@ class WorkExecutor(ActionExecutor):
 严格输出以下 JSON,不要任何多余内容:
 {"fact": "一句话（不超过36字）"}
 """
-            actor_condition = condition_line(
+            doer_condition = condition_line(
                 agent.personality.state.condition, voice=SituationVoice.FIRST,
                 now_step=step, seconds_per_step=self._seconds_per_step,
         )
-            actor_vitality = vitality_line(
+            doer_vitality = vitality_line(
                 agent.personality.state.vitality, voice=SituationVoice.FIRST, lead="",
             )
             user = f"""\
 {header_part}【我是谁】
-{agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{actor_condition}
-{actor_vitality}
+{agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{doer_condition}
+{doer_vitality}
 
 【刚刚发生的事】
 我做「{state.purpose}」，已投入{elapsed_label}，突然{cut}{thought_part}（时间地点见开头）。
@@ -326,8 +326,8 @@ class WorkExecutor(ActionExecutor):
                 with annotate_call(
                     given_facts=GivenFacts()  # same source as user above
                     .add("此刻何时何地", situation_header)
-                    .add("我的处境", actor_condition)
-                    .add("我的体力", actor_vitality)
+                    .add("我的处境", doer_condition)
+                    .add("我的体力", doer_vitality)
                     .add("刚刚发生的事",
                          f"我做「{state.purpose}」，已投入{elapsed_label}，突然{cut}{thought_part}"),
                     action_owner=agent.personality.soul.name,
@@ -346,13 +346,13 @@ class WorkExecutor(ActionExecutor):
             except Exception as exc:
                 logger.warning("work_interrupt_failed", extra={"agent_id": agent.agent_id, "error": str(exc)})
 
-        actor_name = self._directory.agent_name(state.initiator_id)
+        doer_name = self._directory.agent_name(state.initiator_id)
         gist = scene_line(location, (
-            f"{actor_name}做手上的事做了{elapsed_label}，{cut}。"
+            f"{doer_name}做手上的事做了{elapsed_label}，{cut}。"
             if elapsed > 0
-            else f"{actor_name}刚着手做手上的事就{cut}。"
+            else f"{doer_name}刚着手做手上的事就{cut}。"
         ))
-        outcome = gist + format_interrupt_reason_3p(actor_name, thought)
+        outcome = gist + format_interrupt_reason_3p(doer_name, thought)
         stub = AgentAction(
             agent_id=state.initiator_id,
             step=step,
@@ -415,7 +415,7 @@ class WorkExecutor(ActionExecutor):
         are invisible to the judge.
         """
         if agent is None:
-            logger.warning("work_self_judge_no_actor", extra={"purpose": purpose})
+            logger.warning("work_self_judge_no_doer", extra={"purpose": purpose})
             return None
 
         header_part = f"{situation_header}\n\n" if situation_header else ""
@@ -494,17 +494,17 @@ class WorkExecutor(ActionExecutor):
         expected_part = (
             f"\n【我出发时想要的】\n{expected_outcome}\n" if expected_outcome else ""
         )
-        actor_condition = condition_line(
+        doer_condition = condition_line(
             agent.personality.state.condition, voice=SituationVoice.FIRST,
             now_step=now_step, seconds_per_step=self._seconds_per_step,
         )
-        actor_vitality = vitality_line(
+        doer_vitality = vitality_line(
             agent.personality.state.vitality, voice=SituationVoice.FIRST, lead="",
         )
         user = f"""\
 {header_part}【我是谁】
-{agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{actor_condition}
-{actor_vitality}
+{agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{doer_condition}
+{doer_vitality}
 {scene_part}
 【我动手前打算做的】
 {purpose}
@@ -517,8 +517,8 @@ class WorkExecutor(ActionExecutor):
             with annotate_call(
                 given_facts=GivenFacts()  # same source as user above
                 .add("此刻何时何地", situation_header)
-                .add("我的处境", actor_condition)
-                .add("我的体力", actor_vitality)
+                .add("我的处境", doer_condition)
+                .add("我的体力", doer_vitality)
                 .add("现场", scene)
                 .add("我动手前打算做的", purpose)
                 .add("花掉的时间", duration_label)

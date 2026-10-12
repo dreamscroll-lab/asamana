@@ -53,14 +53,14 @@ async def run_memory_maintain(
     # filters key off current_step - created_step, which a step-1 restore can't satisfy).
     step = int(scenario.get("step", 60))
 
-    actor_id = resolve_ref(scenario["actor"], id_by_name, valid_ids)
-    agent = world.agents[actor_id]
+    doer_id = resolve_ref(scenario["doer"], id_by_name, valid_ids)
+    agent = world.agents[doer_id]
     isolate_agent(agent, name_by_id)
     seeded = await seed_memories(agent, world_id, scenario, step, id_by_name, valid_ids)
 
-    set_log_context(world_id=world_id, agent_id=actor_id, step=str(step))
+    set_log_context(world_id=world_id, agent_id=doer_id, step=str(step))
     inputs = {
-        "kind": kind, "actor_name": name_by_id.get(actor_id, actor_id),
+        "kind": kind, "doer_name": name_by_id.get(doer_id, doer_id),
         "is_main_character": agent.is_main_character, "step": step, "seeded": seeded,
         "seed_memories": [seed_view(m) for m in agent.memory_system._entries.values()],  # noqa: SLF001
     }
@@ -73,7 +73,7 @@ async def run_memory_maintain(
     clear_log_context()
 
     trace_sink.record_phase(PhaseTrace(
-        world_id=world_id, phase="stage.memory_maintain", step=step, agent_id=actor_id,
+        world_id=world_id, phase="stage.memory_maintain", step=step, agent_id=doer_id,
         inputs=inputs, outputs=outputs, timestamp=datetime.now().isoformat(),
     ))
     logger.info("tuning_memory_maintain_dry_run_complete",

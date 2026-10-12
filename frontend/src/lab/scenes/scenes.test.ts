@@ -43,7 +43,7 @@ describe("lab scenes", () => {
   });
 
   it("every figure staged has a registered gender and age", () => {
-    // An actor missing from the setCast table still draws, on the fallback body, so the bench
+    // A character missing from the setCast table still draws, on the fallback body, so the bench
     // would quietly examine a figure no world produces.
     const known = castDemographics();
     for (const s of scenes) {

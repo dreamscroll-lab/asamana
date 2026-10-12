@@ -21,7 +21,7 @@ from engine.executors.base import (
     ActionExecutor,
 )
 from engine.narration import (
-    SAME_PLACE_VERDICT_RULE, ensure_actor_named, format_interrupt_reason_3p,
+    SAME_PLACE_VERDICT_RULE, ensure_doer_named, format_interrupt_reason_3p,
     format_interrupt_thought, observed_here, scene_line,
 )
 from engine.scene import (
@@ -41,7 +41,7 @@ class CovertExecutor(ActionExecutor):
     Onlookers perceive nothing unless the act is ``detected``. COVERT doesn't see more; it sees
     the other layer: an action's full ``outcome`` instead of the onlooker string, a thing's
     ``content`` instead of its appearance. It never changes the world (that's PHYSICAL's);
-    what it gains lands only in the actor's memory.
+    what it gains lands only in the doer's memory.
 
     achieved (``succeeded``) and ``detected`` are judged independently. achieved means "learned
     something he couldn't otherwise get", not "finished lurking".
@@ -103,9 +103,9 @@ class CovertExecutor(ActionExecutor):
         duration_part = (
             f"，已持续{describe_duration(elapsed, self._seconds_per_step)}" if elapsed > 0 else ""
         )
-        actor_name = self._directory.agent_name(state.initiator_id)
+        doer_name = self._directory.agent_name(state.initiator_id)
         location = observe_location(environment, state.initiator_id)
-        outcome = scene_line(location, f"{actor_name}正秘密进行「{state.purpose}」{duration_part}。")
+        outcome = scene_line(location, f"{doer_name}正秘密进行「{state.purpose}」{duration_part}。")
         # No observation: exposure is decided only by complete()'s detection verdict.
         return [TickResult(agent_id=state.initiator_id, outcome=outcome, observations=[])]
 
@@ -146,7 +146,7 @@ class CovertExecutor(ActionExecutor):
             )]
         achieved, detected, outcome, fact, why = verdict
         # Also the exposure observation's text, so one fix covers both channels.
-        named_outcome = ensure_actor_named(outcome, self._directory.agent_name(state.initiator_id))
+        named_outcome = ensure_doer_named(outcome, self._directory.agent_name(state.initiator_id))
         stub = AgentAction(
             agent_id=state.initiator_id,
             step=step,
@@ -158,11 +158,11 @@ class CovertExecutor(ActionExecutor):
         return [ActionResult(
             action=stub,
             expected_outcome=state.expected_outcome or state.purpose,
-            outcome=scene_line(location, named_outcome),  # 3p full (god-view web/snapshot + actor's ledger)
+            outcome=scene_line(location, named_outcome),  # 3p full (god-view web/snapshot + doer's ledger)
             observations=self._exposure_observations(environment, state.initiator_id, named_outcome, detected),
             succeeded=achieved,
             failure_reason=why,         # 3p authoritative "why it didn't work"
-            factual_memory=fact,        # 1p → the actor's own memory channel
+            factual_memory=fact,        # 1p → the doer's own memory channel
             detected=detected,          # structured exposure signal (runtime propagation reads it)
         )]
 
@@ -188,7 +188,7 @@ class CovertExecutor(ActionExecutor):
         outcome = ""
         detected = False
         detection_known = False
-        actor_name = self._directory.agent_name(state.initiator_id)
+        doer_name = self._directory.agent_name(state.initiator_id)
         if agent is not None:
             # Only third-person cause goes in; the interrupt signal is first-person prompt input
             # and would land in memory via fact.
@@ -240,9 +240,9 @@ class CovertExecutor(ActionExecutor):
         if not outcome:
             suffix = ("，被人察觉了" if detected else "，幸未被察觉") if detection_known else ""
             outcome = (
-                f"{actor_name}的秘密行动「{state.purpose}」进行了{elapsed_label}后被迫中止{suffix}"
+                f"{doer_name}的秘密行动「{state.purpose}」进行了{elapsed_label}后被迫中止{suffix}"
                 if elapsed > 0
-                else f"{actor_name}的秘密行动「{state.purpose}」刚开始就被迫中止{suffix}"
+                else f"{doer_name}的秘密行动「{state.purpose}」刚开始就被迫中止{suffix}"
             )
 
 
@@ -258,11 +258,11 @@ class CovertExecutor(ActionExecutor):
         return [ActionResult(
             action=stub,
             expected_outcome=state.expected_outcome or state.purpose,
-            outcome=scene_line(location, outcome + format_interrupt_reason_3p(actor_name, thought)),
+            outcome=scene_line(location, outcome + format_interrupt_reason_3p(doer_name, thought)),
             gist=scene_line(location, outcome),
             succeeded=False,
             # No failure_reason: phase="interrupt" already says it.
-            factual_memory=fact,        # 1p → the actor's own memory channel
+            factual_memory=fact,        # 1p → the doer's own memory channel
             detected=detected,          # structured exposure signal
         )]
 
@@ -288,14 +288,14 @@ class CovertExecutor(ActionExecutor):
 
     @staticmethod
     def _exposure_observations(
-        environment: "EnvironmentSystem", actor_id: str, body: str, detected: bool,
+        environment: "EnvironmentSystem", doer_id: str, body: str, detected: bool,
     ) -> list[Observed]:
         """What onlookers see on exposure (prefixed, social-signal strength); nothing if
         undetected. Authored here, not added downstream by the runtime."""
         if not detected or not body:
             return []
         return observed_here(
-            environment, actor_id, f"[秘密行动暴露] {scene_line(observe_location(environment, actor_id), body)}",
+            environment, doer_id, f"[秘密行动暴露] {scene_line(observe_location(environment, doer_id), body)}",
             strength=SALIENT_AMBIENT_STRENGTH,
         )
 
@@ -314,11 +314,11 @@ class CovertExecutor(ActionExecutor):
         """Neutral third-party adjudication. Returns (achieved, detected, outcome, fact, why).
 
         ``outcome`` is third person (also the exposure string); ``fact`` is first person, for
-        the actor's memory. Returns ``None`` when adjudication can't happen (LLM failure,
-        missing actor), so the caller fabricates nothing.
+        the doer's memory. Returns ``None`` when adjudication can't happen (LLM failure,
+        missing doer), so the caller fabricates nothing.
         """
         if agent is None:
-            logger.warning("covert_judge_no_actor", extra={"purpose": purpose})
+            logger.warning("covert_judge_no_doer", extra={"purpose": purpose})
             return None
 
         expected_part = f"\n- 期望结果：{expected_outcome}" if expected_outcome else ""
@@ -333,7 +333,7 @@ class CovertExecutor(ActionExecutor):
             ) + text
             for at_step, text in happenings
         ) if happenings else "（这段时间此处没有任何事发生——他无物可探）"
-        actor_condition = condition_line(
+        doer_condition = condition_line(
             agent.personality.state.condition, voice=SituationVoice.THIRD,
             now_step=now_step, seconds_per_step=self._seconds_per_step,
         )
@@ -381,7 +381,7 @@ class CovertExecutor(ActionExecutor):
 """
         user = f"""\
 【行动者】（裁决输入：行动者的性格，人设与状态等信息影响行动水准，但你不站在他的立场）
-{agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{actor_condition}
+{agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{doer_condition}
 
 【行动】
 - 秘密行动意图：{purpose}
@@ -397,7 +397,7 @@ class CovertExecutor(ActionExecutor):
         # Same source as the user message above: every fact this adjudication can see.
         facts = (
             GivenFacts()
-            .add("行动者处境", actor_condition)
+            .add("行动者处境", doer_condition)
             .add("秘密行动意图", purpose)
             .add("投入时间", duration_label)
             .add("期望结果", expected_outcome)
@@ -431,11 +431,11 @@ class CovertExecutor(ActionExecutor):
         # Missing fields claim the least (Rule 1).
         achieved = coerce_bool(data.get("achieved"), False)
         detected = coerce_bool(data.get("detected"), False)
-        actor_name = self._directory.agent_name(agent.agent_id)
+        doer_name = self._directory.agent_name(agent.agent_id)
         # Default "found nothing": coming away empty-handed is still a real experience.
         fact = str(data.get("fact", "")).strip() or f"我暗中留意「{purpose}」，什么也没探到。"
         # Third person, never first: it leaks to onlookers on exposure.
-        outcome = str(data.get("outcome", "")).strip() or f"{actor_name}悄悄进行了「{purpose}」。"
+        outcome = str(data.get("outcome", "")).strip() or f"{doer_name}悄悄进行了「{purpose}」。"
         # The judge sometimes fills why on success too. Unsliced: the prompt caps it.
         why = str(data.get("why", "")).strip() if not achieved else ""
         return achieved, detected, outcome, fact, why

@@ -118,7 +118,7 @@ async def test_a_tool_body_is_told_and_it_goes() -> None:
     env.place_agent(agent_id="a2", location_id="gate")
 
     order = ErrandOrder(npc_id, "gate", recipient_id="a2", message="今夜勿出")
-    result = (await _run_errand(env, order, actor_id="a1"))[0]
+    result = (await _run_errand(env, order, doer_id="a1"))[0]
 
     assert result.succeeded is True
     assert result.errand_orders == [order]
@@ -153,7 +153,7 @@ async def test_a_body_already_out_on_one_cannot_be_sent_again() -> None:
     # location, so place a2 first.
     assert env.assign_errand(ErrandOrder(npc_id, "gate"), requester_id="a2")
 
-    result = (await _run_errand(env, ErrandOrder(npc_id, "gate"), actor_id="a1"))[0]
+    result = (await _run_errand(env, ErrandOrder(npc_id, "gate"), doer_id="a1"))[0]
     assert result.succeeded is False
     assert result.adjudication_failed is False        # a real event, not a null step
     assert result.errand_orders == []                 # no second errand appears in the world
@@ -246,7 +246,7 @@ async def test_a_body_that_cannot_move_cannot_be_sent() -> None:
     env.place_agent(agent_id="a1", location_id="hall")
     env.get_npc(npc_id).condition = BodyCondition(description="被按在地上", since_step=1)
 
-    result = (await _run_errand(env, ErrandOrder(npc_id, "gate"), actor_id="a1"))[0]
+    result = (await _run_errand(env, ErrandOrder(npc_id, "gate"), doer_id="a1"))[0]
     assert result.succeeded is False and "动弹不得" in result.failure_reason
     assert result.errand_orders == []
 
@@ -273,7 +273,7 @@ async def test_a_bearer_that_vanished_between_the_beats_fabricates_nothing() -> 
 
 @pytest.mark.asyncio
 async def test_telling_someone_costs_the_teller_exactly_one_beat() -> None:
-    """The point of sending someone is not having to wait: the actor's step estimate is ignored and
+    """The point of sending someone is not having to wait: the doer's step estimate is ignored and
     fixed at 1."""
     env = _world()
     npc_id = _bearer(env)
@@ -488,7 +488,7 @@ async def test_the_one_who_dictated_it_does_not_hear_it_shouted_back() -> None:
 
     The mouth and the author are different people: this body speaks, but the words are his.
     Excluding only the sender, he'd receive his own order where he sent the NPC and read the echo as
-    someone falsely relaying his words (self-exclusion, see ``Message.actor_ids``).
+    someone falsely relaying his words (self-exclusion, see ``Message.doer_ids``).
     """
     env = _world()
     npc_id = _bearer(env)
@@ -638,12 +638,12 @@ async def test_the_thing_changes_hands_when_he_is_sent_off_with_it() -> None:
         presence=EntityPresence.HELD, presence_ref="a1", is_takeable=True,   # requester holds it
     ))
     order = ErrandOrder(npc_id, "gate", item_id="box", recipient_id="a2")
-    result = (await _run_errand(env, order, actor_id="a1"))[0]
+    result = (await _run_errand(env, order, doer_id="a1"))[0]
 
     # The executor only declares; applying it belongs to the feedback layer, done by hand here.
     assert [c.entity_id for c in result.entity_state_changes] == ["box"]
     for change in result.entity_state_changes:
-        env.change_entity_state(change, acting_agent_id="a1")
+        env.change_entity_state(change, doer_id="a1")
     assert env.get_entity("box").presence_ref == npc_id      # now in his hands
     assert "木匣" in result.observations[0].text             # handed over in sight of bystanders
 
@@ -675,7 +675,7 @@ async def test_he_cannot_send_off_a_thing_that_is_not_in_his_own_hands() -> None
         is_takeable=True,
     ))
     results = await _run_errand(
-        env, ErrandOrder(npc_id, "gate", item_id="box"), actor_id="a1",
+        env, ErrandOrder(npc_id, "gate", item_id="box"), doer_id="a1",
     )
 
     assert results[0].succeeded is False
@@ -843,7 +843,7 @@ async def test_a_body_can_be_held_down_without_losing_what_it_was_sent_to_do() -
     Consequences go only through ``npc_effects``: no ``TargetAgentEffect``, no relation_updates. He
     has no emotion, relations, memory or vitality; writing them would just be dropped by the
     feedback layer, and the relation delta would put an id outside the relation namespace into the
-    actor's relation table.
+    doer's relation table.
     """
     from core.interfaces.action import ActionType as _AT
     from engine.executors.physical import PhysicalExecutor
@@ -938,11 +938,11 @@ async def test_a_body_that_cannot_struggle_is_not_held_for_good() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _action(actor_id: str, npc_id: str, order: ErrandOrder, *, estimated_steps: int = 1):
+def _action(doer_id: str, npc_id: str, order: ErrandOrder, *, estimated_steps: int = 1):
     from agent.decision import ActionIntent
 
     return AgentAction(
-        agent_id=actor_id,
+        agent_id=doer_id,
         step=1,
         action_type=ActionType.ERRAND,
         action_description="请他去宫门看看守备",
@@ -952,11 +952,11 @@ def _action(actor_id: str, npc_id: str, order: ErrandOrder, *, estimated_steps: 
     )
 
 
-async def _run_errand(env, order: ErrandOrder, *, actor_id: str):
+async def _run_errand(env, order: ErrandOrder, *, doer_id: str):
     """Run one assignment through the whole executor lifecycle (start → complete). No LLM, so no
     stubs needed."""
     executor = ErrandExecutor(LiveWorldDirectory.from_agents({}, env))
-    action = _action(actor_id, order.npc_id, order)
+    action = _action(doer_id, order.npc_id, order)
     state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
     return await executor.complete(
         state, 1, agents={}, environment=env, message_system=None,
@@ -964,7 +964,7 @@ async def _run_errand(env, order: ErrandOrder, *, actor_id: str):
 
 
 class _StubAgent:
-    """The PHYSICAL judge reads the actor's ``personality`` and nothing else."""
+    """The PHYSICAL judge reads the doer's ``personality`` and nothing else."""
 
     def __init__(self, agent_id: str) -> None:
         from agent.personality import PersonalityLayer, SoulLayer

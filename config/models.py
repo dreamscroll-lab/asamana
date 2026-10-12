@@ -201,7 +201,7 @@ class EngineConfig(AsamanaConfigModel):
     # a waking day ≈ 16 hours). Don't use these to patch problems in the gate's other criteria.
     main_max_idle_steps: int = Field(default=2, gt=0)
     background_max_idle_steps: int = Field(default=6, gt=0)
-    # Cap on Npcs (actors with a body but no cognition). The cost is prompt space, not memory: each
+    # Cap on Npcs (bodies with no cognition). The cost is prompt space, not memory: each
     # takes a line in main-character decision prompts. 0 = none.
     max_npcs: int = Field(default=6, ge=0)
 

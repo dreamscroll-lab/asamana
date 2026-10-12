@@ -92,7 +92,7 @@ def test_in_transit_location_ambient_isolated() -> None:
     # Simulate a producer writing location ambient into the pseudo-location (a backstop beyond the
     # guard)
     env.record_carry_observation(
-        location_id=IN_TRANSIT, observation="甲正赶往秘密据点", actor_ids=("agent-a",),
+        location_id=IN_TRANSIT, observation="甲正赶往秘密据点", doer_ids=("agent-a",),
     )
     env.begin_step(step=1, world_time=_world_time())
 

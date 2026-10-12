@@ -18,7 +18,7 @@ from agent.relation import format_relation_block
 from core.context import observe_stage
 from core.interfaces.llm import IndexedRef, LLMMessage, LLMScene, LLMRouter, extract_json, output_budget
 from core.interfaces.perception import Situation
-from engine.broadcast import BroadcastChannel
+from engine.signals import perceived_signals
 from core.interfaces.severity import Severity
 from core.interfaces.trace import Stage
 from core.interfaces.urgency import Urgency, parse_urgency
@@ -144,8 +144,9 @@ class WorldPressureEvaluator:
                 world_time_label=world_time_label,
             )
             for agent_id, agent in agents.items()
-            # Otherwise world-wide death notices would get evaluated for the corpse.
-            if agent.is_active
+            # Otherwise world-wide death notices would get evaluated for the corpse. External
+            # goals are motivation, which a character performed by a person takes from them.
+            if agent.is_active and agent.reads_world_pressure
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         out: dict[str, list[ExternalGoal]] = {}
@@ -171,13 +172,16 @@ class WorldPressureEvaluator:
     ) -> tuple[str, list[ExternalGoal] | None]:
         """Evaluate one agent. Returns (agent_id, goals) or (agent_id, None) when skipped."""
         location = agent.personality.state.current_location or (spatial.location_id if spatial else "")
-        perceivable_bcs = BroadcastChannel.for_location(broadcasts, location)
-        ambient = list(spatial.ambient_events) if spatial is not None else []
-
-        # Pure co-location does not trigger: standing beside someone who did nothing is not the
-        # world speaking to you.
-        if not (inbox or perceivable_bcs or ambient):
+        signals = perceived_signals(
+            location_id=location,
+            inbox=inbox,
+            broadcasts=broadcasts,
+            ambient=spatial.ambient_events if spatial is not None else (),
+        )
+        if not signals:
             return agent_id, None
+        perceivable_bcs = list(signals.broadcasts)
+        ambient = list(signals.ambient)
 
         visible_ids = list(spatial.visible_agent_ids) if spatial is not None else []
         co_located = await self._co_located(agent, all_agents, spatial, visible_ids)

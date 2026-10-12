@@ -51,7 +51,7 @@ def _block(inputs: dict[str, Any], outputs: dict[str, Any]) -> str:
     kind = inputs.get("kind", "self")
     tier = "主角" if inputs.get("is_main_character") else "背景"
     traits = "、".join(inputs.get("core_traits") or []) or "—"
-    lines.append(f"### {('行动者' if kind == 'self' else '承受方')}:{inputs.get('actor_name')}"
+    lines.append(f"### {('行动者' if kind == 'self' else '承受方')}:{inputs.get('doer_name')}"
                  f"（{tier}；性格：{traits}）")
     if inputs.get("core_values"):
         lines.append("  价值观：" + "、".join(inputs["core_values"]))

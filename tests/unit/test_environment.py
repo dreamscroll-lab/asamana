@@ -343,7 +343,7 @@ def test_feasibility_lets_the_judge_decide_a_contested_grab() -> None:
 def test_change_entity_state_updates_state_and_triggers_observation() -> None:
     """Entity state change observations carry to next step's ambient (not current step).
 
-    The acting agent must not read his own change again through ambient (he already knows it via
+    The doer must not read his own change again through ambient (he already knows it via
     ActionResult/_apply_feedback); only onlookers (other agents in the same place) should.
     """
     env = EnvironmentSystem()
@@ -354,17 +354,17 @@ def test_change_entity_state_updates_state_and_triggers_observation() -> None:
 
     env.change_entity_state(
         EntityStateChange(entity_id="sword", new_state="damaged", perception="铁剑被损坏了。"),
-        acting_agent_id="a1",
+        doer_id="a1",
     )
     assert env._entities["sword"].state == "damaged"
 
     env.begin_step(step=1, world_time=_world_time(1))
     spatial_a2 = env.spatial_for(agent_id="a2")
     assert any("损坏" in ev.content for ev in spatial_a2.ambient_events)
-    # the actor doesn't read his own change again through ambient
+    # the doer doesn't read his own change again through ambient
     spatial_a1 = env.spatial_for(agent_id="a1")
     assert not any("损坏" in ev.content for ev in spatial_a1.ambient_events), (
-        "F-fixture-1:acting agent 不应通过 ambient 读到自己的实体变更观察。"
+        "F-fixture-1:doer 不应通过 ambient 读到自己的实体变更观察。"
     )
 
 
@@ -468,7 +468,7 @@ def test_carried_observations_survive_a_snapshot_round_trip() -> None:
 
     env = EnvironmentSystem()
     env.record_carry_observation(
-        location_id="hall", observation="有人在殿上拔刀相向。", strength=0.6, actor_ids=("a1",),
+        location_id="hall", observation="有人在殿上拔刀相向。", strength=0.6, doer_ids=("a1",),
     )
 
     restored = EnvironmentSystem()
@@ -741,7 +741,7 @@ def test_check_talk_feasibility_different_locations() -> None:
     result = env.check_talk_feasibility("agent-1", ["agent-2"], target_label="李二")
 
     assert result.ok is False
-    # The reason names the target and the actor's own location; it doesn't reveal where the target
+    # The reason names the target and the doer's own location; it doesn't reveal where the target
     # actually is and contains no ids.
     assert "李二" in result.reason and "大殿" in result.reason
     assert "后花园" not in result.reason
@@ -850,7 +850,7 @@ def test_change_entity_state_ignores_owner_id_for_non_takeable_entity() -> None:
 
     env.change_entity_state(
         EntityStateChange(entity_id="gate_sign", new_state="defaced", owner_id="a1"),
-        acting_agent_id="a1",
+        doer_id="a1",
     )
 
     entity = env.find_item("gate_sign")
@@ -877,7 +877,7 @@ def test_check_physical_feasibility_landmark_returns_infeasible_when_not_at_loca
     result = env.check_physical_feasibility("a1", "notice_board", "landmark")
 
     assert not result.ok
-    # The message names the actor's location; the landmark's actual location isn't revealed.
+    # The message names the doer's location; the landmark's actual location isn't revealed.
     assert "告示牌不在后花园" in result.reason
     assert "hall" not in result.reason
 
@@ -892,7 +892,7 @@ def test_check_physical_feasibility_agent_reason_names_own_location() -> None:
     result = env.check_physical_feasibility("a1", "b1", "agent")
 
     assert not result.ok
-    assert "大殿" in result.reason        # the actor's own location appears
+    assert "大殿" in result.reason        # the doer's own location appears
     assert "后花园" not in result.reason  # the target's actual location doesn't
     assert "b1" not in result.reason      # no ids
 
@@ -1123,7 +1123,7 @@ def test_a_thing_just_made_outranks_the_ones_that_were_always_there() -> None:
     env.place_agent(agent_id="me", location_id="hall")
     env.register_entity(_make_item("seed", "开局就有的", location_id="hall"))   # created_step=0
     env.begin_step(step=9, world_time=_world_time(9))
-    env.spawn_entity(EntitySpawn(name="刚做出来的"), ground=env.get_body_location("me"), actor_id="me")
+    env.spawn_entity(EntitySpawn(name="刚做出来的"), ground=env.get_body_location("me"), doer_id="me")
 
     assert [e.name for e in env.spatial_for(agent_id="me").visible_entities] == [
         "刚做出来的", "开局就有的",
@@ -1139,7 +1139,7 @@ def test_someone_elses_new_thing_still_ranks_below_my_old_one() -> None:
     env.place_agent(agent_id="other", location_id="hall")
     env.register_entity(_make_item("mine", "我的旧物", owner_id="me"))         # created_step=0
     env.begin_step(step=9, world_time=_world_time(9))
-    env.spawn_entity(EntitySpawn(name="他刚拿到的", holder_id="other"), ground=env.get_body_location("other"), actor_id="other")
+    env.spawn_entity(EntitySpawn(name="他刚拿到的", holder_id="other"), ground=env.get_body_location("other"), doer_id="other")
 
     assert [e.name for e in env.spatial_for(agent_id="me").visible_entities] == [
         "我的旧物", "他刚拿到的",
@@ -1153,7 +1153,7 @@ def test_when_it_appeared_survives_a_restore() -> None:
     env.space.register_place(_make_location("hall", "大殿"))
     env.place_agent(agent_id="me", location_id="hall")
     env.begin_step(step=9, world_time=_world_time(9))
-    env.spawn_entity(EntitySpawn(name="刚做出来的"), ground=env.get_body_location("me"), actor_id="me")
+    env.spawn_entity(EntitySpawn(name="刚做出来的"), ground=env.get_body_location("me"), doer_id="me")
 
     fresh = EnvironmentSystem()
     fresh.space.register_place(_make_location("hall", "大殿"))
@@ -1162,8 +1162,8 @@ def test_when_it_appeared_survives_a_restore() -> None:
     assert fresh.all_live_entities()[0].created_step == 9
 
 
-def test_the_judge_reads_the_same_scene_the_actor_saw() -> None:
-    """If two places ordered the list separately, the judge could rule on something the actor
+def test_the_judge_reads_the_same_scene_the_doer_saw() -> None:
+    """If two places ordered the list separately, the judge could rule on something the doer
     never saw. The order is defined in one place only."""
     from engine.directory import LiveWorldDirectory
     from engine.scene import SceneVisibility, assemble_scene_context
@@ -1173,7 +1173,7 @@ def test_the_judge_reads_the_same_scene_the_actor_saw() -> None:
     env.place_agent(agent_id="me", location_id="hall")
     env.register_entity(_make_item("seed", "开局就有的", location_id="hall"))
     env.begin_step(step=9, world_time=_world_time(9))
-    env.spawn_entity(EntitySpawn(name="刚做出来的", holder_id="me"), ground=env.get_body_location("me"), actor_id="me")
+    env.spawn_entity(EntitySpawn(name="刚做出来的", holder_id="me"), ground=env.get_body_location("me"), doer_id="me")
 
     seen = [e.name for e in env.spatial_for(agent_id="me").visible_entities]
     scene = assemble_scene_context(
@@ -1236,7 +1236,7 @@ def test_first_person_scene_marks_his_own_things_as_his_to_hand_over() -> None:
 
 
 def test_the_judge_may_read_more_than_the_menu_offers() -> None:
-    """Truncation costs are asymmetric: an actor missing an item just loses an option, but a judge
+    """Truncation costs are asymmetric: a doer missing an item just loses an option, but a judge
     missing one rules on an incomplete scene."""
     from engine.environment import MAX_SCENE_ENTITIES, MAX_VISIBLE_ENTITIES
 
@@ -1301,7 +1301,7 @@ def test_making_a_thing_cannot_make_a_place() -> None:
     env.place_agent(agent_id="a1", location_id="hall")
 
     assert env.spawn_entity(
-        EntitySpawn(name="密室", entity_type="location"), ground=env.get_body_location("a1"), actor_id="a1"
+        EntitySpawn(name="密室", entity_type="location"), ground=env.get_body_location("a1"), doer_id="a1"
     ) is False
     assert env.space.all_place_ids() == ["hall"]
     assert env.all_live_entities() == []

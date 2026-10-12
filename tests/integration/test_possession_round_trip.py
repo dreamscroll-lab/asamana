@@ -49,7 +49,7 @@ def test_a_thing_can_be_taken_handed_over_and_set_down(env: EnvironmentSystem) -
     # for A.
     env.change_entity_state(
         EntityStateChange(entity_id="tally", new_state="intact", owner_id="agent-a"),
-        acting_agent_id="agent-a",
+        doer_id="agent-a",
     )
     assert env.get_entity("tally").owner_id == "agent-a"
     assert _seen_by(env, "agent-a") == {"虎符": "agent-a"}   # I can see what I'm holding
@@ -62,7 +62,7 @@ def test_a_thing_can_be_taken_handed_over_and_set_down(env: EnvironmentSystem) -
     # (2) A hands it to B (RELINQUISH + recipient). HELD -> HELD, a direct hand-to-hand transfer.
     env.change_entity_state(
         EntityStateChange(entity_id="tally", new_state="intact", owner_id="agent-b"),
-        acting_agent_id="agent-a",
+        doer_id="agent-a",
     )
     assert env.get_entity("tally").owner_id == "agent-b"
     assert _seen_by(env, "agent-b") == {"虎符": "agent-b"}
@@ -71,7 +71,7 @@ def test_a_thing_can_be_taken_handed_over_and_set_down(env: EnvironmentSystem) -
     # the holder to die.
     env.change_entity_state(
         EntityStateChange(entity_id="tally", new_state="intact", location_id="hall"),
-        acting_agent_id="agent-b",
+        doer_id="agent-b",
     )
     entity = env.get_entity("tally")
     assert entity.presence is EntityPresence.AT_LOCATION and entity.location_id == "hall"
@@ -82,7 +82,7 @@ def test_a_carried_thing_travels_with_its_holder(env: EnvironmentSystem) -> None
     """A held item moves with its holder."""
     env.change_entity_state(
         EntityStateChange(entity_id="tally", new_state="intact", owner_id="agent-a"),
-        acting_agent_id="agent-a",
+        doer_id="agent-a",
     )
     env.place_agent(agent_id="agent-a", location_id="garden")
 

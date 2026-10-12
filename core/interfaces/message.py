@@ -53,7 +53,7 @@ class Message:
         None         | None           | global broadcast: every agent (narrator use case)
         list[str]    | str (L)        | intersection: listed agents who are at L (edge but valid)
 
-    All four cells then subtract ``{sender_id} ∪ actor_ids`` (self-exclusion, below).
+    All four cells then subtract ``{sender_id} ∪ doer_ids`` (self-exclusion, below).
 
     Time is orthogonal: deliver_step > created_step = delayed. ``content`` and ``urgency``
     follow the module charter (lossless transport; the receiver decides).
@@ -63,7 +63,7 @@ class Message:
     interchangeable with ``metadata["narrative"]``, which also drops ``sender_name``: a
     non-cognitive body is a real person whose name must stay in memory.
 
-    ``actor_ids`` is this pipe's half of self-exclusion (the other is ``AmbientEvent.actor_ids``):
+    ``doer_ids`` is this pipe's half of self-exclusion (the other is ``AmbientEvent.doer_ids``):
     the mouth and the author can differ, and an agent who dictated a message an Npc reads aloud
     must not receive their own order and take it for a forgery. Addressing is still the matrix's.
     """
@@ -80,7 +80,7 @@ class Message:
     intent: str = ""
     urgency: Urgency = Urgency.NORMAL      # 4-level enum — meta-signal, receiver may ignore it
     sender_is_agent: bool = True           # False = sender has no cognition; receivers form no relation with it
-    actor_ids: tuple[str, ...] = ()        # all members of the acting body, excluded from delivery; sender always excluded
+    doer_ids: tuple[str, ...] = ()        # all members of the acting body, excluded from delivery; sender always excluded
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

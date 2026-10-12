@@ -37,6 +37,10 @@ class WorldSnapshot:
     pending_broadcasts: list[Broadcast] = field(default_factory=list)
     events_this_step: list[dict[str, Any]] = field(default_factory=list)
     actions_this_step: list[dict[str, Any]] = field(default_factory=list)
+    # What each agent perceived at this step's perception phase, ids only:
+    # ``{agent_id: {"location_id", "agent_ids", "entity_ids", "npc_ids"}}``. The basis for showing
+    # a single character's view of the step without consulting the omniscient state.
+    perceptions: dict[str, dict[str, Any]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property

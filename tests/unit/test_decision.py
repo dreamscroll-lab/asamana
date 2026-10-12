@@ -561,7 +561,7 @@ def test_parse_llm_selection_binds_person_via_person_index(container: object) ->
 
 def test_send_message_parses_message_content_and_routes_to_content(container: object) -> None:
     """SEND_MESSAGE: message_content (the exact words to the recipient) is parsed and lands on
-    AgentAction.content via _build_action; action_description (the actor's own account) stays
+    AgentAction.content via _build_action; action_description (the doer's own account) stays
     separate."""
     engine = _make_engine(container)
     candidates = [
@@ -589,7 +589,7 @@ def test_send_message_parses_message_content_and_routes_to_content(container: ob
     soul = SoulLayer(name="李世民", role="秦王", agent_id="agent-1")
     personality = PersonalityLayer(soul=soul, state=StateLayer(agent_id="agent-1", step=0))
     action = engine._build_action(selection, personality, packet)  # noqa: SLF001
-    # content carries the exact words; action_description stays the actor's own account
+    # content carries the exact words; action_description stays the doer's own account
     assert action.content == "父皇！太子欲谋逆，请明察！"
     assert action.action_description == "我向父皇传讯，揭发太子谋反"
     # Async action: decide pins expected_outcome to "the message is delivered" (a fixed value),

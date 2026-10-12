@@ -209,7 +209,7 @@ class TestResolveDeed:
     def _resolve(label, **kw):
         from engine.executors.physical import PhysicalExecutor
         base = dict(is_person=False, has_entity=False, seize_available=False,
-                    actor_holds=False, target_damage=0.0)
+                    doer_holds=False, target_damage=0.0)
         return PhysicalExecutor._resolve_deed(label, **{**base, **kw})
 
     def test_blood_settles_it(self):
@@ -224,9 +224,9 @@ class TestResolveDeed:
         # Same guard, mirrored twice more: taking what is already in his own hand is not a
         # taking, and letting go of what he is not holding is not a letting-go.
         assert self._resolve("seize", has_entity=True, seize_available=False,
-                             actor_holds=True) is Deed.OPERATE
-        assert self._resolve("relinquish", has_entity=True, actor_holds=False) is Deed.OPERATE
-        assert self._resolve("relinquish", has_entity=True, actor_holds=True) is Deed.RELINQUISH
+                             doer_holds=True) is Deed.OPERATE
+        assert self._resolve("relinquish", has_entity=True, doer_holds=False) is Deed.OPERATE
+        assert self._resolve("relinquish", has_entity=True, doer_holds=True) is Deed.RELINQUISH
 
     def test_a_state_word_saying_it_is_gone_settles_it(self):
         # Both fields say "it's destroyed"; the judge just picked the wrong channel. Without
@@ -300,7 +300,7 @@ async def _judge_with(payload: str, *, agent, is_person: bool, has_entity: bool,
     verdict = await ex._judge(
         agent, description="做点什么", expected_outcome="", scene="",
         target_block="目标", is_person=is_person, has_entity=has_entity,
-        seize_available=takeable, actor_holds=holds, needs_relation=needs_relation,
+        seize_available=takeable, doer_holds=holds, needs_relation=needs_relation,
         recipient_line=recipient_line, step=1,
     )
     return verdict, llm
@@ -313,7 +313,7 @@ class TestJudgeParsesDeed:
         agent = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
         verdict, llm = await _judge_with(
             '{"reason":"他弯腰把它收进袖中","deed":"seize","success":true,'
-            '"outcome":"甲拿起了令牌","fact":"我拿起了令牌","new_entity_state":"intact","actor_damage":0.0}',
+            '"outcome":"甲拿起了令牌","fact":"我拿起了令牌","new_entity_state":"intact","doer_damage":0.0}',
             agent=agent, is_person=False, has_entity=True, takeable=True,
         )
         assert verdict is not None and verdict.deed is Deed.SEIZE
@@ -329,7 +329,7 @@ class TestJudgeParsesDeed:
         agent = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
         _, llm = await _judge_with(
             '{"reason":"r","deed":"seize","success":false,"outcome":"甲没拿到","fact":"我没拿到",'
-            '"why":"对方攥得紧","relation":"negative","new_entity_state":"","actor_damage":0.0}',
+            '"why":"对方攥得紧","relation":"negative","new_entity_state":"","doer_damage":0.0}',
             agent=agent, is_person=False, has_entity=True, takeable=True, needs_relation=True,
         )
         system = llm.messages[0].content
@@ -350,7 +350,7 @@ class TestJudgeParsesDeed:
         from tests.unit.test_action_executors import _make_agent
         agent = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
         _, llm = await _judge_with(
-            '{"reason":"r","success":true,"outcome":"甲动了手","fact":"我动了手","actor_damage":0.0}',
+            '{"reason":"r","success":true,"outcome":"甲动了手","fact":"我动了手","doer_damage":0.0}',
             agent=agent, is_person=is_person, has_entity=has_entity, takeable=has_entity,
         )
         assert ("不会让任何东西易手" in llm.messages[0].content) is expected
@@ -364,7 +364,7 @@ class TestJudgeParsesDeed:
         agent = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
         verdict, llm = await _judge_with(
             '{"reason":"他推开了它","deed":"seize","success":true,'
-            '"outcome":"甲推开了门","fact":"我推开了门","new_entity_state":"open","actor_damage":0.0}',
+            '"outcome":"甲推开了门","fact":"我推开了门","new_entity_state":"open","doer_damage":0.0}',
             agent=agent, is_person=False, has_entity=True, takeable=False,
         )
         assert verdict is not None and verdict.deed is Deed.OPERATE
@@ -384,7 +384,7 @@ class TestJudgeParsesDeed:
             '{"reason":"帛书在场且标注可取","deed":"operate","success":true,'
             '"outcome":"李建成取出密报帛书细读后亲手销毁，帛书不再存在。",'
             '"fact":"我取出密报帛书细读，暗记线索后亲手销毁。","why":"",'
-            '"new_entity_state":"destroyed","actor_damage":0.05,"frees_actor":false}',
+            '"new_entity_state":"destroyed","doer_damage":0.05,"frees_doer":false}',
             agent=agent, is_person=False, has_entity=True, takeable=True,
         )
         assert verdict is not None and verdict.deed is Deed.DESTROY
@@ -396,7 +396,7 @@ class TestJudgeParsesDeed:
         verdict, _ = await _judge_with(
             '{"reason":"他只想拦住对方","deed":"restrain","success":true,'
             '"outcome":"甲拦住了乙","fact":"我拦住了乙","relation":"negative",'
-            '"target_damage":0.5,"actor_damage":0.0}',
+            '"target_damage":0.5,"doer_damage":0.0}',
             agent=agent, is_person=True, has_entity=False, takeable=False,
         )
         assert verdict is not None and verdict.deed is Deed.STRIKE  # blood settles it
@@ -406,7 +406,7 @@ class TestJudgeParsesDeed:
         from tests.unit.test_action_executors import _make_agent
         agent = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
         verdict, llm = await _judge_with(
-            '{"reason":"他用力一推","success":true,"outcome":"甲使了把力","fact":"我使了把力","actor_damage":0.1}',
+            '{"reason":"他用力一推","success":true,"outcome":"甲使了把力","fact":"我使了把力","doer_damage":0.1}',
             agent=agent, is_person=False, has_entity=False, takeable=False,
         )
         assert verdict is not None and verdict.deed is Deed.EXERT

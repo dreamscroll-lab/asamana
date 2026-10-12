@@ -140,7 +140,7 @@ async def test_apply_target_effect_updates_relation_when_present(container) -> N
     effect = TargetAgentEffect(
         agent_id="agent-target",
         factual_memory="被攻击",
-        relation_toward_actor=("agent-shimin", -0.3, -0.6),
+        relation_toward_doer=("agent-shimin", -0.3, -0.6),
     )
     await agent.apply_target_effect(effect, from_agent_id="agent-shimin", step=5)
     relation = await agent.relation_system.get_or_create("agent-shimin")
@@ -156,7 +156,7 @@ async def test_apply_target_effect_relation_none_skips_relation_update(container
     effect = TargetAgentEffect(
         agent_id="agent-target",
         factual_memory="无关系标注",
-        relation_toward_actor=None,
+        relation_toward_doer=None,
     )
     await agent.apply_target_effect(effect, from_agent_id="agent-shimin", step=5)
     # The relation wasn't triggered by get_or_create, so it's not in the store

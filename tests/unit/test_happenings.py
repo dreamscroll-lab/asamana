@@ -35,7 +35,7 @@ def test_history_returns_content_in_order_within_window() -> None:
     env = _env()
     for step in (3, 4, 5):
         env.record_happening(
-            location_id="hall", outcome=f"第{step}件事", step=step, actor_ids=("a",),
+            location_id="hall", outcome=f"第{step}件事", step=step, doer_ids=("a",),
         )
 
     # Returns (step, full text). The caller turns the step into a time prefix; the raw step never
@@ -55,7 +55,7 @@ def test_history_orders_by_step_not_by_write_order() -> None:
     env = _env()
     for step, text in ((5, "后来的事"), (3, "更早的事"), (4, "中间的事")):
         env.record_happening(
-            location_id="hall", outcome=text, step=step, actor_ids=(),
+            location_id="hall", outcome=text, step=step, doer_ids=(),
         )
     assert [c for _, c in env.recent_happenings("hall", since_step=0)] == [
         "更早的事", "中间的事", "后来的事",
@@ -63,17 +63,17 @@ def test_history_orders_by_step_not_by_write_order() -> None:
 
 
 def test_history_excludes_those_who_already_hold_it() -> None:
-    """The exclusion set is "whoever already holds this": the actor and anyone who overheard it.
+    """The exclusion set is "whoever already holds this": the doer and anyone who overheard it.
 
     It isn't news to them; handing it over would let adjudication rule success on something they
     already knew, which is exactly the empty gain this mechanism exists to prevent.
     """
     env = _env()
     env.record_happening(
-        location_id="hall", outcome="甲与乙谈定了动手的日子", step=1, actor_ids=("甲", "乙"),
+        location_id="hall", outcome="甲与乙谈定了动手的日子", step=1, doer_ids=("甲", "乙"),
     )
     env.record_happening(
-        location_id="hall", outcome="丙在案前写了一封信", step=1, actor_ids=("丙",),
+        location_id="hall", outcome="丙在案前写了一封信", step=1, doer_ids=("丙",),
     )
 
     assert [c for _, c in env.recent_happenings("hall", since_step=0, exclude_ids=("丁",))] == [
@@ -92,7 +92,7 @@ def test_history_is_bounded_by_both_steps_and_entries() -> None:
     # fill a single step past the entry cap
     for i in range(HAPPENINGS_MAX_ENTRIES + 10):
         env.record_happening(
-            location_id="hall", outcome=f"事{i}", step=1, actor_ids=(),
+            location_id="hall", outcome=f"事{i}", step=1, doer_ids=(),
         )
     kept = [c for _, c in env.recent_happenings("hall", since_step=0)]
     assert len(kept) == HAPPENINGS_MAX_ENTRIES
@@ -100,11 +100,11 @@ def test_history_is_bounded_by_both_steps_and_entries() -> None:
 
     env2 = _env()
     env2.record_happening(
-        location_id="hall", outcome="很久以前的事", step=1, actor_ids=(),
+        location_id="hall", outcome="很久以前的事", step=1, doer_ids=(),
     )
     env2.record_happening(
         location_id="hall", outcome="刚刚的事", step=1 + HAPPENINGS_WINDOW_STEPS + 1,
-        actor_ids=(),
+        doer_ids=(),
     )
     assert [c for _, c in env2.recent_happenings("hall", since_step=0)] == ["刚刚的事"]
 
@@ -115,7 +115,7 @@ def test_history_never_reaches_ordinary_perception() -> None:
     env = _env()
     env.place_agent(agent_id="watcher", location_id="hall")
     env.record_happening(
-        location_id="hall", outcome="密谈的内容是三日后动手", step=1, actor_ids=("甲",),
+        location_id="hall", outcome="密谈的内容是三日后动手", step=1, doer_ids=("甲",),
     )
     env.begin_step(step=2, world_time=_world_time(2))
 
@@ -130,7 +130,7 @@ def test_history_never_reaches_the_snapshot() -> None:
     """
     env = _env()
     env.record_happening(
-        location_id="hall", outcome="密谈的内容是三日后动手", step=1, actor_ids=("甲",),
+        location_id="hall", outcome="密谈的内容是三日后动手", step=1, doer_ids=("甲",),
     )
     env.begin_step(step=2, world_time=_world_time(2))
 

@@ -13,7 +13,7 @@ Asamana is an AI-driven emergent narrative simulation. Users select a world them
 ## Architecture Layers
 
 ```
-interaction/    — Replayer, WorldManager, api/ (read-only user-facing; REST + WebSocket)
+interaction/    — Reactor, WorldManager, api/ (read-only user-facing; REST + WebSocket)
 world/          — WorldBuilder: one-shot theme→world construction
 engine/         — Runtime loop: Clock, Scheduler, Environment, Message, Event
 agent/          — Per-agent cognition: Personality, Memory, Need, Relation, Decision
@@ -201,6 +201,12 @@ logger.error("provider_call_failed", extra={"provider": provider_name, "error": 
 - Centralize constants near the subsystem that owns them. Do not create a global dump file for unrelated constants.
 - Environment-dependent values (API keys, DSNs, model names) go in config, not code.
 - Configuration is loaded from the `config/` directory; select a file with `CONFIG=config/config.test.yaml python main.py`.
+- **Strict value checks go through `core.validate`** (`require_in_range`, `require_at_least`, `require_positive`,
+  `require_text`, `require_member`): contracts, config and external input raise `ValueError` on a bad
+  value (Rule 3). Don't hand-write `if not a <= x <= b: raise ValueError(...)`. Its lenient sibling
+  `core.coerce` repairs loosely-typed data (LLM payloads, snapshots) instead of raising. The range
+  itself belongs to the value's domain as a named constant (`TRUST_RANGE`, `EMOTION_INTENSITY_RANGE`);
+  checks that depend on context (what a turn listed, whether a world has run) stay with their owner.
 - **Emotion types in LLM prompts must use `EmotionType.prompt_list()`** — never write a slash-separated emotion list by hand. Any value returned by an LLM at an emotion boundary must go through `parse_emotion_type()`. To support a new informal label (e.g. a synonym the LLM may produce), add it to the synonym table in `parse_emotion_type()` — do not expand the prompt with non-canonical values or widen the enum without a deliberate decision.
 
 ### max_tokens needs headroom over the estimated output
@@ -287,7 +293,7 @@ Write as little as possible on failure, choosing the tier with the smallest down
      and the runtime skips that agent for the step — no execution, no commit, no memory. Never fall
      back to a placeholder action that gets executed and embedded.
    - **Executor adjudication**: when adjudication **never happened** (the judge LLM failed, or the
-     actor's `Agent` object is missing), return a structurally valid
+     doer's `Agent` object is missing), return a structurally valid
      `ActionResult(success=False, adjudication_failed=True)` and **don't invent** `factual_memory`,
      relations, entities or detections. The feedback layer reads `adjudication_failed` and treats the
      step as **null**: it skips all writeback (memory, emotion, need feedback, goal progress) and
@@ -364,12 +370,12 @@ except Exception as exc:
 
 `except Exception: pass` is forbidden in executor code. Callers depend on `ActionResult` to know whether execution succeeded.
 
-If the judge LLM call raises or the actor's `Agent` object is missing, adjudication has not occurred.
+If the judge LLM call raises or the doer's `Agent` object is missing, adjudication has not occurred.
 Return `ActionResult(success=False, adjudication_failed=True)` without inventing an outcome,
 `factual_memory`, relations or entities. Feedback treats this as a **null step**: skip all writeback
 (memory, emotion, need feedback and goal progress) and reset the agent to idle. A genuine in-world
 failure ruled by the judge keeps `adjudication_failed=False` and is remembered normally. Every
-actor is judged by the LLM; there is no rule-based adjudication path (Design Principle 5).
+doer is judged by the LLM; there is no rule-based adjudication path (Design Principle 5).
 
 ### Rule 6: Runtime provider read vs. write failures
 
@@ -389,7 +395,7 @@ Runtime LLM call (background agent)?      → catch, log warning; prefer no-op/e
 Runtime LLM call (main character)?        → retry once, then fallback (same LLM cognition path, plus one retry and a higher model tier)
 Should a cognition gate use the LLM?      → always, for every agent; there is no "background uses rules" path (§5)
 asyncio.gather?                           → return_exceptions=True, handle per slot
-Executor exception / actor missing?       → log warning, ActionResult(success=False, adjudication_failed=True), invent nothing
+Executor exception / doer missing?        → log warning, ActionResult(success=False, adjudication_failed=True), invent nothing
 Provider read failure?                    → return empty result, log warning
 Provider write failure?                   → log error, do not swallow
 Field-level LLM output parsing?           → core.coerce silent correction, no log needed
@@ -751,7 +757,7 @@ immersion and reasoning.
 
 - Any `name or id` fallback chain is a leak by this test: fall back to a **descriptive referent**
   ("某人", "那个地方"), not the id.
-- **Known, accepted compromise**: ambient text lets bystanders read the names of actors they don't
+- **Known, accepted compromise**: ambient text lets bystanders read the names of doers they don't
   know. A name is a legitimate narrative reference, just shown to the wrong audience — a compromise
   within the narrative layer, milder than an id leak, and accepted for now. Don't "fix" it in passing
   under this rule.
@@ -789,7 +795,7 @@ not "step 47".
 
 > **Every executor outcome or tick must identify who is acting, where, and what they are doing. A terminal outcome must also describe the result.**
 
-`outcome` is third-person and observable (the bystander perception channel); `factual_memory` is first-person (the actor's own memory channel). They must not be mixed; first-person cognition paths read only `factual_memory`.
+`outcome` is third-person and observable (the bystander perception channel); `factual_memory` is first-person (the doer's own memory channel). They must not be mixed; first-person cognition paths read only `factual_memory`.
 
 ---
 
@@ -832,7 +838,7 @@ gender shows. If any of these applies, it **must** be included:
   never becomes narrative.
 - When the person is only a **routing key** in the prompt (location/item menus, or an id list
   used just to align indices).
-- When gender is **already** present via `to_prompt_context()` (the executor's actor, target and both
+- When gender is **already** present via `to_prompt_context()` (the executor's doer, target and both
   dialogue parties go through it) — don't add it twice.
 - **No bracketed annotations in memory prose or dialogue**: that's natural narration, and
   `person_referent` is for rosters only (which is why names resolved for memory text are bare).
@@ -898,11 +904,11 @@ Every action type exists to do at least one of:
 Executors only execute and return results (`ActionResult` / `ActionExecutionState`). They must never directly mutate agent-internal state.
 
 **Agent state** — personality, goals, emotion, needs, relations, memory, vitality, trait drifts — is exclusively updated by the feedback layer on `Agent`:
-- the action-completion feedback path for the acting agent
+- the action-completion feedback path for the doer
 - `apply_target_effect` for the target agent
 
 **Two canonical update paths:**
-- `ActionResult.relation_updates` → the acting agent's feedback applies relation deltas.
+- `ActionResult.relation_updates` → the doer's feedback applies relation deltas.
 - `ActionResult.target_effects` → `apply_target_effect` applies effects on the target agent.
 
 Executors must never call `relation_system`, `memory_system`, `personality`, or `need_engine` for mutation. If an executor needs to express a state change, it declares the delta in `ActionResult` fields and leaves application to the feedback layer.
@@ -938,7 +944,7 @@ immutable identity information, ask the directory. Otherwise, don't reach for it
 3. **Mutable-state questions** — item ownership/location/state come from `EnvironmentSystem`, agent
    location/emotion from `Agent`; never add a mutable-state query to the directory (a second source
    of truth).
-4. **Offline snapshot paths** (web server / replayer) — keep using snapshot metadata; don't build a
+4. **Offline snapshot paths** (web server / reactor) — keep using snapshot metadata; don't build a
    directory for offline use.
 
 **How to use it:**
@@ -1005,6 +1011,85 @@ Dependencies: `phaser/` may use `lib/`; `lib/` and `hooks/` may use `api/`; none
 
 ## Agent Cognition Rules
 
+### Actor mode
+
+**Terminology** (a theatre crew: keep these apart in code, comments and docs):
+- **character** (角色): a person in the world — identity, body, memory, relations, situation.
+  The world and the narrative know only characters; how a character comes to think is no part
+  of the story. A character is passive on its own: it has state but forms no intent.
+- **Agent**: a character's cognition, AI-driven, and the default for every character. The
+  `Agent` class carries the character with its AI cognition; `agent_id` is the character's id.
+- **actor** (演员): a character's secondary cognition, driven by a person (the user in actor
+  mode) instead of AI, for at most one character per world. Both are code-layer solutions for
+  making a character think, never narrative concepts.
+- **director** (导演): the user in director mode, who performs no character and steers the world.
+- **doer** (行动者): whoever performs a given action, as executors and feedback see it
+  (`doer_id`; `doer_ids` may include Npcs, `doer_agent_ids` is the subset with cognition). Not
+  "actor" or "acting agent": both collide with the theatre vocabulary above.
+
+Both cognitions follow the one loop `perception → motivation → decision → action → feedback`.
+Perception is identical, actions are adjudicated identically, and feedback is computed and
+written identically. The actor takes over **motivation and decision** (goals, actions, whether
+to break off an action in progress) and may amend the subjective part of feedback.
+
+- **The runtime never asks who drives a character.** It calls every character the same way, and
+  the character asks its actor (`Agent.actor`, the `agent.actor.Actor` protocol) where one
+  performs it: `Agent.plan_step` yields the same `AgentStepPlan`, `Agent.evaluate_interrupt`
+  the same verdict, `Agent.decides_this_step` sets its own pace in place of the scheduler's
+  cadence, and `Agent.reads_world_pressure` turns off the world-pressure judgment, which is
+  motivation. The actor is wired once, when the runtime is built
+  (`NarrativeRuntime.cast_actor`); a test keeps the step loop and its stages free of it.
+- The actor is not a rule path and does not conflict with Design Principle 5: no cognition gate
+  switches to rules. For its character the AI's decision, goal generation, world-pressure
+  goals and LLM interrupt judgment don't run; everything else does.
+- `engine/actor_coordinator.py` implements the actor: it asks the person through its
+  `ActorChannel`, and the step suspends there until they answer:
+  - **Interrupt**: break off or not, and why (`ActorInterruptAnswer`). The teardown is the
+    engine's, as for anyone.
+  - **Decision**: the decision and goals (`ActorDecision`). Words about what to do next, said
+    with a break-off, are read only at that step's decision stage, where the lists exist, and
+    come back as the turn's `proposal`.
+- What reaches the actor is what the character perceived, defined once in `engine/signals.py`:
+  the same signals that put an AI character before the world-pressure judgment (messages,
+  broadcasts where it stands, others' acts it saw; not mere co-location). The actor replaces
+  that judgment, so no threshold filters them. Being acted on reaches a character through
+  feedback, not perception, so the runtime tells every character it was acted on
+  (`Agent.note_acted_upon`) and the actor hears of it.
+- The actor's action (`ActorAction`) has the decision's own flat slots, with ids where the model
+  gives indices, and is bound by the same per-type binders (`DecisionEngine.bind_actor_action`).
+  Its ids must come from the lists in the turn's `ActorBriefing`, the ones the AI's decision
+  binds against (`agent.decision.candidate_lists`), so the actor reaches exactly what the
+  character perceives. A refused answer raises at submit and the turn stays open.
+- The actor answers in their own words; the engine reads them into an answer
+  (`ActorCoordinator.interpret`: a decision on those lists, with goals only where the words
+  state them, or whether to break off), and the actor confirms before it is submitted. The
+  reading is a functional translation: it decides nothing for the character and writes nothing.
+  Its prompt sees an instruction about the character and the character's situation, never the
+  actor: "actor" is a code-layer concept, and naming it there makes the model reason about who
+  is playing whom.
+- The actor may amend the subjective part of feedback the next decision turn lists
+  (`ActorFeedback`: experiential memories, insights, changed relations): emotion, those
+  memories (rewrite or forget) and trust/affection. Factual memories, outcomes, body and
+  belongings are not amendable: they are what happened. Relation labels and summaries aren't
+  either: they are a third-person reading (`RelationEvolution`), not the character's feeling.
+- Planning stays write-free as for the AI, except the actor's goals and amendments: they land
+  at the decision stage, since they stand whether or not that step's action happens.
+- A suspended step is never committed. Restore resumes at the last committed step and rolls back
+  what the uncommitted step wrote (memories after that step, relations from its snapshot).
+  Stopping a run withdraws an open turn (`StepWithdrawn`); the application then drops the
+  session, and the next restore picks up from there.
+- Casting belongs to the world's setup: it is chosen in the act of confirming the world
+  (`POST /confirm` with `character_id`), so a confirmed world (every bundled example among
+  them) takes no actor. It lives in the catalog (`ActorCasting`): the cast character is built
+  main tier, and the runtime is built with the actor wired to it. The actor's exit is one-way:
+  the character returns to AI cognition, keeps its tier, and nobody can be cast again.
+- The API reaches the actor through `interaction/api/actor.py`: the open turn (also pushed over
+  the WebSocket as `actor_turn` frames), reading the actor's words, and answering a turn named
+  by its `turn_id`, so an answer meant for a closed turn never lands on the next one (step and
+  kind don't name a turn: a step replayed after a restore asks them again). While an
+  actor performs, the director's routes are closed behind the one gate
+  `ApiServices.require_director`; run control stays open.
+
 The cognition loop is `perception → motivation → decision → action → feedback`. Each subsystem in `agent/` is distinct and cooperates through explicit state — do not collapse them into one convenience object.
 
 - Do not mix scheduler, environment, or event logic into `agent/`.
@@ -1027,7 +1112,7 @@ Specialized subsystem agents live in `.claude/agents/` (Claude Code) and `.codex
 | `infrastructure-provider-engineer` | Work in `providers/` — LLM, embedding, vector store, snapshot |
 | `runtime-engine-builder` | Work in `engine/` — clock, scheduler, environment, messaging, events |
 | `world-builder-engineer` | Work in `world/` — builder, initializer, models |
-| `interaction-observer-engineer` | Work in `interaction/` — observer, replayer, CLI |
+| `interaction-observer-engineer` | Work in `interaction/` — observer, reactor, CLI |
 | `platform-deployment-engineer` | Deployment, Docker, environment setup, health checks |
 | `qa-simulation-guardian` | Test strategy, fixtures, regression coverage |
 | `agent-operations-governor` | When recurring coordination failures or ownership gaps appear |

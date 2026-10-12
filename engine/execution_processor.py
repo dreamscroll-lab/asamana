@@ -350,16 +350,16 @@ class ExecutionProcessor:
         """Landing order within a group: feedback on someone's own action lands before others'
         actions on him.
 
-        Topological sort: if result j hits X, every result whose actor is X lands before j.
+        Topological sort: if result j hits X, every result whose doer is X lands before j.
         Each round takes the first ready result in input order (deterministic); a cycle (mutual
         strikes) falls back to the first remaining one. Groups are small, so O(n²) is fine.
         """
-        actor_of = [result.action.agent_id for _eid, result in members]
+        doer_of = [result.action.agent_id for _eid, result in members]
         before: List[set[int]] = [set() for _ in members]
         for j, (_eid, result) in enumerate(members):
-            hit = {e.agent_id for e in result.target_effects} - {actor_of[j]}
-            for i, actor in enumerate(actor_of):
-                if i != j and actor in hit:
+            hit = {e.agent_id for e in result.target_effects} - {doer_of[j]}
+            for i, doer in enumerate(doer_of):
+                if i != j and doer in hit:
                     before[j].add(i)
 
         ordered: List[int] = []
@@ -414,7 +414,7 @@ class ExecutionProcessor:
                 )
         for change in result.entity_state_changes:
             try:
-                self._environment.change_entity_state(change, acting_agent_id=result.action.agent_id)
+                self._environment.change_entity_state(change, doer_id=result.action.agent_id)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "entity_state_change_failed",
@@ -424,9 +424,9 @@ class ExecutionProcessor:
             try:
                 # A refusal is legitimate, but memory already says "I made it", so log at error
                 # like a Rule 6 write failure.
-                actor_id = result.action.agent_id
+                doer_id = result.action.agent_id
                 if not self._environment.spawn_entity(
-                    spawn, ground=self._environment.get_body_location(actor_id), actor_id=actor_id,
+                    spawn, ground=self._environment.get_body_location(doer_id), doer_id=doer_id,
                 ):
                     logger.error(
                         "entity_spawn_refused",
@@ -487,7 +487,7 @@ class ExecutionProcessor:
         """Pull someone out of every active execution, by a force outside the world (death, or
         the director moving him).
 
-        Not an interrupt (``InterruptCoordinator._apply_interrupt``), where the agent decides
+        Not an interrupt (``InterruptCoordinator.apply_interrupt``), where the agent decides
         to stop: ``thought`` is empty, the subject's own writeback is skipped (he neither
         remembers nor failed anything), and the execution is removed even if ``interrupt``
         raises, since a leftover would keep driving a corpse. Surviving participants get their

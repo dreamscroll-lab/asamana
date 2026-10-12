@@ -107,9 +107,10 @@ class MemorySystem:
        error, not swallowed.
     4. Asymmetric writes. `record_event` always writes factual, and experiential only when
        _should_write_experiential passes, linked by event_group_id.
-    5. Only Compression and Forget events may delete memories. Decay never deletes.
+    5. Only Compression and Forget events may delete memories, besides an actor forgetting what
+       the engine wrote for their character (``forget_experiential``). Decay never deletes.
        _is_emotional_anchor protects CRITICAL memories, insights and high-|valence| experiential
-       memories from every deletion path.
+       memories from every engine deletion path.
     6. kind has three values: event (a concrete experience), insight (from reflection) and
        summary (from compression). event_group_id links the two streams of one event;
        source_ids lists the memories a memory was derived from.
@@ -962,10 +963,13 @@ class MemorySystem:
                 dimension=self._embedding.dimension,
             )
 
-    async def purge_runtime_memories(self) -> int:
-        """On reset, delete runtime memories (``created_step > 0``) and keep the build-time
-        backstory seeds (``created_step <= 0``, see ``_write_historical_memories``). Returns the
-        count removed."""
+    async def purge_memories_after(self, step: int) -> int:
+        """Delete memories created after ``step``; returns the count removed.
+
+        A restore resumes at the last persisted step, so memories written by a step that never
+        committed (a crash, or a run stopped while waiting on an actor) would otherwise repeat when
+        that step runs again. With ``step=0`` this is a reset: the build-time backstory seeds
+        (``created_step <= 0``, see ``_write_historical_memories``) stay."""
         removed = 0
         for stream in MemoryStream:
             collection = self._namespace(stream)
@@ -974,13 +978,13 @@ class MemorySystem:
             except Exception as exc:
                 # Error, not warning: the reset then keeps this stream's runtime memories.
                 logger.error(
-                    "purge_runtime_list_failed",
+                    "purge_memories_list_failed",
                     extra={"agent_id": self._agent_id, "stream": stream.value, "error": str(exc)},
                 )
                 continue
             for result in results:
                 created = int(result.payload.get("created_step", result.payload.get("step", 0)) or 0)
-                if created <= 0:
+                if created <= step:
                     continue
                 try:
                     await self._vector_store.delete(collection, result.id)
@@ -988,10 +992,71 @@ class MemorySystem:
                     removed += 1
                 except Exception as exc:
                     logger.warning(
-                        "purge_runtime_memory_failed",
+                        "purge_memory_failed",
                         extra={"agent_id": self._agent_id, "memory_id": result.id, "error": str(exc)},
                     )
         return removed
+
+    async def experiential_since(self, step: int) -> List[Memory]:
+        """The experiential stream's memories written at or after ``step``, oldest first: how
+        the character took things, which an actor may amend.
+
+        Pending rewrites land first, so the text listed is the text that stays; amending a
+        provisional text would be overwritten by its own rewrite.
+        """
+        await self.drain_writes()
+        try:
+            results = await self._vector_store.list_all(self._namespace(MemoryStream.EXPERIENTIAL))
+        except Exception as exc:
+            logger.warning(
+                "experiential_memories_list_failed",
+                extra={"agent_id": self._agent_id, "error": str(exc)},
+            )
+            return []
+        memories = [
+            memory for result in results
+            if (memory := self._memory_from_result(result)) is not None and memory.created_step >= step
+        ]
+        return sorted(memories, key=lambda m: (m.created_step, m.id))
+
+    async def revise_experiential(self, memory_id: str, text: str) -> None:
+        """Rewrite an experiential memory's text, as the actor puts it; re-embedded for recall."""
+        memory = await self._find(MemoryStream.EXPERIENTIAL, memory_id)
+        if memory is None:
+            logger.warning("experiential_memory_missing", extra={"agent_id": self._agent_id, "memory_id": memory_id})
+            return
+        memory.stored_content = text.strip()
+        if not await self._persist(memory):
+            logger.error("experiential_memory_revise_failed", extra={"agent_id": self._agent_id, "memory_id": memory_id})
+
+    async def forget_experiential(self, memory_id: str) -> None:
+        """Delete an experiential memory the actor says their character never had."""
+        try:
+            await self._vector_store.delete(self._namespace(MemoryStream.EXPERIENTIAL), memory_id)
+        except Exception as exc:
+            logger.error(
+                "experiential_memory_forget_failed",
+                extra={"agent_id": self._agent_id, "memory_id": memory_id, "error": str(exc)},
+            )
+            return
+        self._entries.pop(memory_id, None)
+
+    async def _find(self, stream: MemoryStream, memory_id: str) -> Memory | None:
+        cached = self._entries.get(memory_id)
+        if cached is not None:
+            return cached if cached.stream is stream else None
+        try:
+            results = await self._vector_store.list_all(self._namespace(stream))
+        except Exception as exc:
+            logger.warning(
+                "memory_lookup_failed",
+                extra={"agent_id": self._agent_id, "memory_id": memory_id, "error": str(exc)},
+            )
+            return None
+        return next(
+            (m for r in results if r.id == memory_id and (m := self._memory_from_result(r)) is not None),
+            None,
+        )
 
     async def seed_factual_memory(
         self,

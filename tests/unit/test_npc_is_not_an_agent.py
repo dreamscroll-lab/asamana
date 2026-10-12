@@ -367,11 +367,11 @@ def test_a_trace_it_leaves_never_enters_the_identity_index() -> None:
 
     env.record_carry_observation(
         location_id="hall", observation="在大殿，王二把木匣搁下了。",
-        actor_ids=(npc_id, "a1"),
+        doer_ids=(npc_id, "a1"),
     )
     event = env._carry_annotations["hall"][0]
-    assert event.actor_ids == (npc_id, "a1")       # who did it: both tiers
-    assert event.agent_actor_ids == ("a1",)        # which people: only those with cognition
+    assert event.doer_ids == (npc_id, "a1")       # who did it: both tiers
+    assert event.doer_agent_ids == ("a1",)        # which people: only those with cognition
 
 
 def _environment_functions():

@@ -244,7 +244,7 @@ def _message_from_dict(data: dict) -> Message:
         # treated as a person who forms relations, and execution members would receive their own
         # act again.
         sender_is_agent=bool(data.get("sender_is_agent", True)),
-        actor_ids=tuple(data.get("actor_ids") or ()),
+        doer_ids=tuple(data.get("doer_ids") or ()),
         metadata=dict(data.get("metadata", {})),
     )
 

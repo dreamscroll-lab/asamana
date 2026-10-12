@@ -28,7 +28,9 @@ from typing import NamedTuple
 from core.context import GivenFacts
 from core.prompts import (
     EMOTION_INTENSITY_DEFINITION,
+    EMOTION_INTENSITY_RANGE,
     EMOTION_VALENCE_DEFINITION,
+    EMOTION_VALENCE_RANGE,
     URGENCY_SCALE_DESCRIPTION,
     SituationVoice,
     condition_line,
@@ -210,8 +212,8 @@ def emotion_from_payload(data: dict, *, triggered_by: str) -> EmotionState | Non
         return None
     return EmotionState(
         primary=parse_emotion_type(str(raw_emotion)),
-        intensity=clamp(float(data.get("intensity", 0.3)), 0.0, 1.0),
-        valence=clamp(float(data.get("valence", 0.0)), -1.0, 1.0),
+        intensity=clamp(float(data.get("intensity", 0.3)), *EMOTION_INTENSITY_RANGE),
+        valence=clamp(float(data.get("valence", 0.0)), *EMOTION_VALENCE_RANGE),
         triggered_by=triggered_by,
     )
 

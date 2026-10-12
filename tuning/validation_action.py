@@ -92,13 +92,13 @@ def _deterministic_checks(phase: dict, agent_ids: set[str]) -> dict[str, Any]:
 
     if outputs.get("kind") == "arbitration":
         verdicts = outputs.get("verdicts", [])
-        actors = [vd.get("actor") for vd in verdicts]
-        if len(actors) != len(set(actors)):
-            v.append("仲裁: 同一 actor 出现多条裁决(疑似双占)")
+        doers = [vd.get("doer") for vd in verdicts]
+        if len(doers) != len(set(doers)):
+            v.append("仲裁: 同一 doer 出现多条裁决(疑似双占)")
         for vd in verdicts:
-            _scan_text(f"仲裁/{vd.get('actor')}", str(vd.get("outcome") or ""))
+            _scan_text(f"仲裁/{vd.get('doer')}", str(vd.get("outcome") or ""))
             if vd.get("kind") == "被拒" and vd.get("succeeded"):
-                v.append(f"仲裁/{vd.get('actor')}: 被拒却 succeeded=True")
+                v.append(f"仲裁/{vd.get('doer')}: 被拒却 succeeded=True")
         return {"passed": not v, "field_violations": v}
 
     # lifecycle

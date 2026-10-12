@@ -314,6 +314,9 @@ class LLMScene(str, Enum):
     # A human director's sentence → injection plan. Translation, not authoring: worth a different
     # tier than the editor's pacing gate / event authoring, so each is tuned separately.
     DIRECTIVE = "directive"
+    # An actor's words → the answer to their character's turn (a decision, or whether to break
+    # off), for them to confirm. Translation like DIRECTIVE, per character, while a turn is open.
+    ACTOR_INTENT = "actor_intent"
     PERSONA_GENERATION = "persona_generation"
     WORLD_BUILDING = "world_building"
     # Pick an installed map for the theme. Separate from WORLD_BUILDING because the two are worth

@@ -199,7 +199,7 @@ export default function ActionRow({
         )}
         {/* An interrupt adds WHO CUT IT, which matters for a joint action (the initiator
             walking out differs from the other man walking out). A solo action omits it: the
-            interrupter is the actor himself. The why is his 心声 below. */}
+            interrupter is the doer himself. The why is his 心声 below. */}
         {isInterrupt && breaker && parts.length > 1 && (
           <span className="text-[10px] px-1.5 py-0.5 rounded-md text-slate-300 bg-slate-800/50 border border-slate-600/60">
             被 <Who cast={cast} id={breaker} name={cast.nameOf(breaker) || "某人"} /> 打断

@@ -1,7 +1,7 @@
 // Visual FX for the world map: impacts, shockwaves, message arcs. Leaf effects that spawn
 // ephemeral objects and tween them out, through an `FxHost` (the scene).
 //
-// No connector LINES between actor and target, by design: see "The language of FORCE" below.
+// No connector LINES between doer and target, by design: see "The language of FORCE" below.
 
 import Phaser from "phaser";
 
@@ -413,7 +413,7 @@ export function physicalEffect(host: FxHost, tok: AgentToken, act: ActionSummary
   }
 }
 
-// Take a thing: no violence. A gold gleam gathers INWARD onto the actor, the opposite of a smash.
+// Take a thing: no violence. A gold gleam gathers INWARD onto the doer, the opposite of a smash.
 function seizeEffect(host: FxHost, tok: AgentToken, act: ActionSummary): void {
   for (const eid of act.affected_entity_ids) {
     const m = host.entityMarkers.get(eid);
@@ -470,7 +470,7 @@ function missEffect(host: FxHost, tok: AgentToken, targetIds: string[]): void {
   const victims = targetIds.map((id) => host.token(id)).filter((v): v is AgentToken => !!v && v !== tok);
   for (const vt of victims) {
     const axis = axisBetween(tok, vt);
-    // The actor OVERSHOOTS; the victim slips SIDEWAYS off the axis, not back along it: dodged,
+    // The doer OVERSHOOTS; the victim slips SIDEWAYS off the axis, not back along it: dodged,
     // not pushed.
     lunge(host, tok, axis, 13, 130);
     lunge(host, vt, axis + Math.PI / 2, 6, 120);
@@ -496,7 +496,7 @@ function subdueEffect(host: FxHost, tok: AgentToken, targetIds: string[]): void 
 }
 
 // A blow that LANDS: the whole impact is at the VICTIM, debris flying away from the blow. Don't
-// put it on the actor: that reads as "the attacker exploded". The two bodies perform the axis.
+// put it on the doer: that reads as "the attacker exploded". The two bodies perform the axis.
 function combatStrike(host: FxHost, tok: AgentToken, targetIds: string[]): Promise<void> {
   const victims = targetIds.map((id) => host.token(id)).filter((v): v is AgentToken => !!v && v !== tok);
   if (!victims.length) {
@@ -528,7 +528,7 @@ function turnToward(host: FxHost, tok: AgentToken, x: number, y: number): void {
   host.reface(tok);
 }
 
-// Turn the actor and its primary target to face each other, until either moves. The strongest
+// Turn the doer and its primary target to face each other, until either moves. The strongest
 // carrier of "who is acting on whom".
 //
 // Returns whether anyone turned (the target may be off the map), so the caller can fall through.
@@ -555,7 +555,7 @@ export function faceOnlooker(host: FxHost, tok: AgentToken, towardIds: string[])
   return false;
 }
 
-// Turn the actor toward the THING he acts on (entities live in affected_entity_ids, so they never
+// Turn the doer toward the THING he acts on (entities live in affected_entity_ids, so they never
 // reach faceInteraction).
 //
 // Relies on the marker still being on the map: renderStep withholds a deed's changes until after

@@ -113,7 +113,7 @@ class TestPresentListeners:
             anchor_id="agent-a", exclude={"agent-a", "agent-b"},
         ) == ["agent-c"]
 
-    def test_drops_the_actor_and_the_interlocutor(self, container) -> None:
+    def test_drops_the_doer_and_the_interlocutor(self, container) -> None:
         agents = self._agents(container)
         assert _present_listeners(
             ["agent-a", "agent-b", "agent-c"], environment=_env(), agents=agents,
@@ -200,7 +200,7 @@ class TestSocialExecutorListeners:
         effect = effects[0]
         assert effect.overheard is True
         # Opt-outs: a listener said nothing, so no relation moves and nothing was done to it.
-        assert effect.relation_toward_actor is None
+        assert effect.relation_toward_doer is None
         assert effect.vitality_damage == 0
         # The listener's own first-person line — not the raw transcript dumped into memory.
         assert effect.factual_memory == "我听见他们议定了明早入宫的说辞。"

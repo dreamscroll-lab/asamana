@@ -5,17 +5,19 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List
+from dataclasses import dataclass, field, replace
+from typing import Any, Dict, Iterable, List, Sequence
 
 _PERCEPTION_MEMORY_TOP_K = 5  # memories per stream (factual + experiential) entering LLM context
 
+from agent.actor import Actor
+from agent.actor_briefing import build_actor_briefing, build_actor_feedback
 from agent.decision import DecisionEngine, DecisionStatus
 from agent.memory import MemorySystem
 from agent.memory_types import Memory, MemoryImportance, MemoryStream
 from agent.reflection import ReflectionEngine
 from agent.relation_evolution import RelationEvolution
-from agent.goals import GoalEntity, GoalStatus
+from agent.goals import GoalEntity, GoalStatus, replace_live_goals
 from agent.need import NeedEngine, NeedEvaluation, NeedType
 from agent.perception import InternalContext, PerceptionPacket, RetrievalQuery
 from agent.perception_emotion import (
@@ -44,10 +46,19 @@ from agent.relation import (
     render_relation_context,
 )
 from core.interfaces.action import ActionResult, ActionType, AgentAction, TargetAgentEffect
+from core.interfaces.actor import (
+    ActorAction,
+    ActorAmendments,
+    ActorAnswerRejected,
+    ActorBriefing,
+    ActorDecision,
+    ActorFeedback,
+    ActorInterruptAnswer,
+)
 from core.interfaces.agent_store import AgentRelation, AgentState, AgentStoreProvider
 from core.interfaces.condition import condition_to_dict
 from core.interfaces.message import Message
-from core.interfaces.perception import Broadcast, PerceivedIdentity, Situation, SpatialPerception
+from core.interfaces.perception import Broadcast, PerceivedIdentity, PerceivedSignals, Situation, SpatialPerception
 from core.prompts import (
     EMOTION_INTENSITY_DEFINITION,
     EMOTION_VALENCE_DEFINITION,
@@ -65,10 +76,15 @@ from core.prompts import (
     render_situation_header,
     situation_location,
 )
+from core.validate import require_member
 from agent.perception_layer import PerceptionMemoryLayer
 
 
 logger = get_logger(__name__)
+
+# What reached nobody: the default for callers with no step signals (an AI-driven character
+# reads its perception instead).
+_NO_SIGNALS = PerceivedSignals()
 
 _KNOWN_RELATION_LIMIT = 8  # max related-but-absent people merged into perception per step, by salience
 _GOAL_EVAL_RECENT_FACTUAL_K = 6  # recent factual memories fed to short-term goal completion (trajectory evidence for multi-step completion)
@@ -182,6 +198,10 @@ class Agent:
     # Narrative tier, not a cognition-mode switch: every agent's cognition gates use the LLM
     # (CLAUDE.md §5).
     is_main_character: bool = False
+    # The character's secondary cognition: when a person performs it, the actor supplies its
+    # motivation and decisions in place of the AI (see agent.actor). Perception, adjudication
+    # and feedback still run here as for anyone; no cognition gate switches to rules.
+    actor: "Actor | None" = None
     # Turns memory created_step into relative recency (render_memory).
     seconds_per_step: int = 3600
     # The memory prefix's "today/yesterday" counts midnights crossed, which a duration alone can't give.
@@ -335,13 +355,20 @@ class Agent:
         spatial: SpatialPerception,
         inbox: List[Message],
         broadcasts: List[Broadcast],
+        signals: PerceivedSignals = _NO_SIGNALS,
     ) -> AgentStepPlan:
         """Plan one cognition/action loop without persistence side effects.
 
         ``step`` comes from the world clock; the agent keeps no step counter of its own, so
-        planning can't drift from the clock after a restore.
+        planning can't drift from the clock after a restore. ``signals`` is what reached the
+        character this step, which only an actor reads here: the AI's perception covers it.
         """
 
+        if self.actor is not None:
+            return await self._plan_with_actor(
+                self.actor, step=step, spatial=spatial, inbox=inbox, broadcasts=broadcasts,
+                signals=signals,
+            )
         plan_start = time.perf_counter()
         current_step = step
         inbox_list = list(inbox)
@@ -408,6 +435,187 @@ class Agent:
             decision_status=decision.status,
             consumed_external_goals=consumed_external_goals,
             foiled_misses=self._foiled_misses_for(action, current_step),
+        )
+
+    async def _plan_with_actor(
+        self,
+        actor: "Actor",
+        *,
+        step: int,
+        spatial: SpatialPerception,
+        inbox: List[Message],
+        broadcasts: List[Broadcast],
+        signals: PerceivedSignals,
+    ) -> AgentStepPlan:
+        """``plan_step`` with the actor deciding. The goals and amendments land here, at the
+        decision stage, as explicit updates: they stand whether or not this step's action
+        happens, unlike generated goals, which are committed with the action they were formed
+        for. Nothing else writes goals while the step waits on the actor."""
+        packet = await self._actor_packet(step=step, spatial=spatial, inbox=inbox, broadcasts=broadcasts)
+        decision = await actor.decide(self, step=step, packet=packet, signals=signals)
+        if decision.amendments is not None:
+            await self._amend_feedback(decision.amendments, step=step)
+        self._adopt_actor_goals(
+            step=step,
+            long_term_goals=decision.long_term_goals,
+            short_term_goals=decision.short_term_goals,
+        )
+        action = self.bind_actor_action(decision.action, packet) if decision.action is not None else None
+        return self._actor_plan(step=step, packet=packet, action=action)
+
+    async def _actor_packet(
+        self,
+        *,
+        step: int,
+        spatial: SpatialPerception,
+        inbox: List[Message],
+        broadcasts: List[Broadcast],
+    ) -> PerceptionPacket:
+        """The engine's half of an actor's decision: perception emotion, need scoring and memory
+        recall, without generating goals (the actor owns motivation). The packet is what the AI
+        would decide on."""
+        inbox_list = list(inbox)
+        broadcasts_list = list(broadcasts)
+        context = await self._build_internal_context(
+            spatial=spatial,
+            inbox=inbox_list,
+            broadcasts=broadcasts_list,
+            current_step=step,
+            consumed_external_goals=[],
+            generate_goals=False,
+        )
+        return PerceptionPacket(
+            agent_id=self.agent_id,
+            step=step,
+            spatial=spatial,
+            inbox=inbox_list,
+            broadcasts=broadcasts_list,
+            internal_context=context,
+        )
+
+    def actor_briefing(self, packet: PerceptionPacket) -> ActorBriefing:
+        return build_actor_briefing(self.personality, packet, seconds_per_step=self.seconds_per_step)
+
+    def bind_actor_action(self, action: ActorAction, packet: PerceptionPacket) -> AgentAction:
+        """The actor's form as this character's action; raises ``ActorAnswerRejected``."""
+        bound = self.decision_engine.bind_actor_action(
+            action, personality=self.personality, packet=packet,
+        )
+        bound.agent_id = self.agent_id
+        return bound
+
+    async def interpret_actor_decision(self, text: str, packet: PerceptionPacket) -> ActorDecision | None:
+        return await self.decision_engine.interpret_actor_decision(
+            text, personality=self.personality, packet=packet,
+        )
+
+    async def interpret_actor_interrupt(self, text: str) -> ActorInterruptAnswer | None:
+        return await self.decision_engine.interpret_actor_interrupt(
+            text, personality=self.personality, doing=self.personality.state.current_action or "",
+        )
+
+    async def actor_feedback(self, *, since_step: int, already_listed: frozenset[str]) -> ActorFeedback:
+        """The subjective feedback written for this character since ``since_step`` that the
+        actor hasn't been shown (``already_listed`` memory ids)."""
+        memories = [
+            m for m in await self.memory_system.experiential_since(since_step)
+            if m.id not in already_listed
+        ]
+        return build_actor_feedback(memories, await self.relation_system.changed_since(since_step))
+
+    def check_amendments(self, amendments: ActorAmendments, feedback: ActorFeedback) -> None:
+        """Refuse an amendment to anything ``feedback`` didn't list (``ActorAnswerRejected``)."""
+        # A value check, but EmotionType lives in agent/, out of reach of the contract in core/.
+        if amendments.emotion is not None:
+            try:
+                require_member(amendments.emotion.emotion, (e.value for e in EmotionType), "emotion")
+            except ValueError as exc:
+                raise ActorAnswerRejected("unknown_emotion") from exc
+        listed_memories = {m.memory_id for m in feedback.memories}
+        if any(a.memory_id not in listed_memories for a in amendments.memories):
+            raise ActorAnswerRejected("memory_not_listed")
+        listed_people = {r.agent_id for r in feedback.relations}
+        if any(a.agent_id not in listed_people for a in amendments.relations):
+            raise ActorAnswerRejected("relation_not_listed")
+
+    async def _amend_feedback(self, amendments: ActorAmendments, *, step: int) -> None:
+        """Apply the actor's amendments to this character's feedback (checked by
+        ``check_amendments``)."""
+        if amendments.emotion is not None:
+            self.personality.update_emotion(
+                primary=EmotionType(amendments.emotion.emotion),
+                intensity=amendments.emotion.intensity,
+                valence=amendments.emotion.valence,
+                triggered_by=self.personality.state.emotion.triggered_by,
+            )
+        for memory in amendments.memories:
+            if memory.text is None:
+                await self.memory_system.forget_experiential(memory.memory_id)
+            else:
+                await self.memory_system.revise_experiential(memory.memory_id, memory.text)
+        for relation in amendments.relations:
+            await self.relation_system.set_trust_affection(
+                relation.agent_id, trust=relation.trust, affection=relation.affection, step=step,
+            )
+
+    def _adopt_actor_goals(
+        self,
+        *,
+        step: int,
+        long_term_goals: Sequence[str] | None,
+        short_term_goals: Sequence[str] | None,
+    ) -> None:
+        """Apply the actor's goals for this character; ``None`` leaves that list unchanged."""
+        if long_term_goals is not None:
+            self.personality.set_long_term_goals(list(long_term_goals))
+        if short_term_goals is not None:
+            self.personality.set_short_term_goal_entities(
+                replace_live_goals(
+                    self.personality.state.short_term_goal_entities,
+                    short_term_goals,
+                    current_step=step,
+                ),
+                step=step,
+            )
+
+    def _actor_plan(
+        self,
+        *,
+        step: int,
+        packet: PerceptionPacket,
+        action: AgentAction | None,
+    ) -> AgentStepPlan:
+        """This step's plan from the actor's action (``None``: they chose to wait). The commit
+        path applies it, as for the AI's plan. The goals carried are the character's current
+        ones, which the actor owns."""
+        state = self.personality.state
+        need_evaluation = replace(
+            packet.internal_context.need_evaluation,
+            long_term_goals=[g.text for g in state.long_term_goal_entities],
+            short_term_goals=list(state.short_term_goals),
+            short_term_goal_entities=list(state.short_term_goal_entities),
+        )
+        if action is not None:
+            action.agent_id = self.agent_id
+            action.step = step
+        logger.info(
+            "agent_actor_plan_step",
+            extra={
+                "agent_id": self.agent_id,
+                "step": step,
+                "action_type": action.action_type.value if action is not None else None,
+            },
+        )
+        return AgentStepPlan(
+            agent_id=self.agent_id,
+            step=step,
+            spatial=packet.spatial,
+            inbox=list(packet.inbox),
+            broadcasts=list(packet.broadcasts),
+            need_evaluation=need_evaluation,
+            action=action,
+            decision_status=DecisionStatus.ACTED if action is not None else DecisionStatus.NO_ACTION,
+            foiled_misses=self._foiled_misses_for(action, step),
         )
 
     async def _perceive_relevant_relations(
@@ -513,6 +721,7 @@ class Agent:
         broadcasts: List[Broadcast],
         current_step: int,
         consumed_external_goals: List[ExternalGoal] | None = None,
+        generate_goals: bool = True,
     ) -> InternalContext:
         retrieval_query = self._build_retrieval_query(
             spatial=spatial,
@@ -586,6 +795,7 @@ class Agent:
                 recent_foiled_texts=recent_foiled,
                 external_goals=external_goals_raw,
                 perceived_relations=perceived_relations,
+                generate_goals=generate_goals,
             )
         logger.debug(
             "agent_motivation",
@@ -776,11 +986,11 @@ class Agent:
                 result.vitality_damage, step=result.action.step, death_cause="生命耗尽。"
             )
 
-        # The actor's own ongoing condition: same three states and set-over-clear precedence as
+        # The doer's own ongoing condition: same three states and set-over-clear precedence as
         # apply_target_effect. This is the only place a bound agent who breaks free can clear it.
-        if result.actor_condition_set is not None:
-            self.personality.set_condition(result.actor_condition_set)
-        elif result.actor_condition_cleared:
+        if result.doer_condition_set is not None:
+            self.personality.set_condition(result.doer_condition_set)
+        elif result.doer_condition_cleared:
             self.personality.clear_condition()
 
     async def _record_completion(
@@ -866,6 +1076,9 @@ class Agent:
         NeedEngine doesn't touch personality and MemorySystem doesn't enter NeedEngine; Agent
         assembles the memory text and owns need → personality consistency.
         """
+        if self.actor is not None:
+            # The actor owns this character's motivation.
+            return
         recent = await self.memory_system.sample_recent(step, lookback=30, top_k=15)
         if not recent:
             return
@@ -1044,6 +1257,32 @@ class Agent:
             note_active_call_adoption(False, "unusable_payload")
             return None
 
+    def decides_this_step(self, *, step: int, signals: PerceivedSignals) -> bool | None:
+        """Whether this idle character decides this step, when it sets its own pace; ``None``
+        when the engine's cadence decides, as for the AI."""
+        if self.actor is None:
+            return None
+        return self.actor.decides_this_step(step=step, signals=signals)
+
+    @property
+    def reads_world_pressure(self) -> bool:
+        """Whether the world's pressure becomes this character's external goals. Not when an
+        actor performs it: motivation is the actor's."""
+        return self.actor is None
+
+    def note_acted_upon(self) -> None:
+        """Someone else's action, or a world event, landed on this character this step. The AI
+        meets it through feedback; an actor is told."""
+        if self.actor is not None:
+            self.actor.acted_upon()
+
+    def weighs_interrupt(self, *, step: int, reasons: Sequence[str], signals: PerceivedSignals) -> bool:
+        """Whether to weigh breaking off the action in progress: when the engine's signal
+        thresholds raised ``reasons``, or for an actor, when anything reached the character."""
+        if self.actor is not None:
+            return self.actor.weighs_interrupt(step=step, signals=signals)
+        return bool(reasons)
+
     async def evaluate_interrupt(
         self,
         *,
@@ -1052,12 +1291,13 @@ class Agent:
         current_action_desc: str,
         intent: str,
         progress_hint: str,
+        signals: PerceivedSignals = _NO_SIGNALS,
     ) -> tuple[bool, str]:
         """Decide in character whether to interrupt the current ongoing action.
 
         Returns (should_interrupt, thought); ``thought`` is the first-person deliberation the
         verdict falls out of, and it colors the interrupt outcome narrative. ``progress_hint`` is
-        narrative text, never a step count.
+        narrative text, never a step count. An actor answers from ``signals`` instead.
 
         ``intent`` (``participant_intent``; empty when conscripted) shows the action's aim: without
         it, someone already heading somewhere would abandon the trip on "come here at once".
@@ -1066,6 +1306,8 @@ class Agent:
         ``current_action_desc``, and here it would only expose a stale FIFO. Recent factual memory
         is injected instead: whether the event escalates or is noise turns on what just happened.
         """
+        if self.actor is not None:
+            return await self.actor.evaluate_interrupt(self, step=step, signals=signals)
         llm = self.llm_router
         persona = self.personality.to_prompt_context(include_goals=False, include_emotion=True)
         recent_factuals = self._recent_factual_lines(step, top_k=_INTERRUPT_RECENT_FACTUAL_K)
@@ -1318,7 +1560,7 @@ class Agent:
         ``effect.overheard``: content B merely heard; its importance is judged rather than
         asserted HIGH.
 
-        ``from_agent_id=None``: an impersonal force (e.g. the director); no actor name or relation,
+        ``from_agent_id=None``: an impersonal force (e.g. the director); no doer name or relation,
         but B is still hurt and still remembers. Director wounds must go through here too: a
         private vitality write would skip the memory, giving one event two sets of physics.
         """
@@ -1332,9 +1574,9 @@ class Agent:
         # An empty fact is a producer that failed (Rule 1 tier-1): record nothing, or the
         # experiential rewrite would invent what happened from an empty event.
         if effect.factual_memory:
-            # Display names keep the experiential rewrite from inventing the actor.
-            actors = [from_agent_id] if from_agent_id else []
-            related_names, relation_ctx = await self._event_people_context(actors)
+            # Display names keep the experiential rewrite from inventing the doer.
+            doers = [from_agent_id] if from_agent_id else []
+            related_names, relation_ctx = await self._event_people_context(doers)
             await self.memory_system.record_event(
                 current_step=step,
                 raw_content=effect.factual_memory,
@@ -1346,10 +1588,10 @@ class Agent:
                 importance=None if effect.overheard else MemoryImportance.HIGH,
                 situation=situation if situation is not None else self._situation,
             )
-        if effect.relation_toward_actor is not None:
-            actor_id, trust_d, affection_d = effect.relation_toward_actor
+        if effect.relation_toward_doer is not None:
+            doer_id, trust_d, affection_d = effect.relation_toward_doer
             await self.relation_system.apply_interaction(
-                actor_id,
+                doer_id,
                 trust_delta=trust_d,
                 affection_delta=affection_d,
                 step=step,

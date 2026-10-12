@@ -360,7 +360,7 @@ class WorldMutationChannel:
                 location_id=location,
                 observation=observed.text,
                 strength=observed.strength,
-                actor_ids=audience.principals,
+                doer_ids=audience.principals,
             )
             reached.extend(self._onlookers_at(location, audience.principals, agents))
         return MutationOutcome(
@@ -390,7 +390,7 @@ class WorldMutationChannel:
         """The living people standing there who will read this ambient next step.
 
         The criterion must match ``spatial_for``'s ambient delivery (at the location, not in
-        ``actor_ids``). The dead don't count. Whether he remembers it (write threshold) is a
+        ``doer_ids``). The dead don't count. Whether he remembers it (write threshold) is a
         separate question; don't anticipate it here.
         """
         return [

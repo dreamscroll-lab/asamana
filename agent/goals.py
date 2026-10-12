@@ -7,7 +7,7 @@ what a goal is and how the queue holding them behaves.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from enum import Enum
 from typing import TYPE_CHECKING, Iterable, List, Optional, Sequence
@@ -325,6 +325,45 @@ def enqueue_goals(
         seq += 1
         live_texts.add(text)
         _evict_over_cap(result, current_step)
+    trim_goal_history(result)
+    return result
+
+
+def replace_live_goals(
+    entities: Sequence[GoalEntity],
+    texts: Sequence[str],
+    *,
+    current_step: int,
+) -> List[GoalEntity]:
+    """Make ``texts`` the live short-term queue, as an actor states it; pure.
+
+    A text matching a live goal keeps that entity (status, due time, progress). A live goal the
+    actor dropped is marked FAILED rather than deleted, so it stays in the history like any
+    goal let go of. The actor's list is taken as given: no dedup and no cap eviction.
+    """
+    wanted = [text.strip() for text in texts if text.strip()]
+    live_by_text = {g.text: g for g in entities if is_live_goal(g)}
+    result: List[GoalEntity] = []
+    for goal in entities:
+        if not is_live_goal(goal):
+            result.append(goal)
+        elif goal.text not in wanted:
+            result.append(replace(
+                goal, status=GoalStatus.FAILED, last_evaluated_step=current_step,
+            ))
+    seq = _next_short_term_seq(entities)
+    for text in wanted:
+        kept = live_by_text.get(text)
+        if kept is not None:
+            result.append(kept)
+            continue
+        result.append(GoalEntity(
+            id=f"stg-{current_step}-{seq}",
+            text=text,
+            goal_type="short_term",
+            created_step=current_step,
+        ))
+        seq += 1
     trim_goal_history(result)
     return result
 

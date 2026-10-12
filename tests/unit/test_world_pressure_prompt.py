@@ -50,11 +50,13 @@ def _stub_agent(
     agent_id: str | None = None,
     condition=None,
     is_active: bool = True,
+    reads_world_pressure: bool = True,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         world_id="w",
         agent_id=agent_id or name,
         is_active=is_active,
+        reads_world_pressure=reads_world_pressure,
         agent_store=_StubStore(),
         personality=SimpleNamespace(
             soul=SimpleNamespace(
@@ -399,6 +401,20 @@ async def test_evaluate_skips_dead_agent_even_on_global_broadcast() -> None:
               "a2": _stub_agent(name="乙", role="无", location="hall", is_active=False)}
     result = await ev.evaluate(agents=agents, agent_inboxes={"a1": [], "a2": []},
                                broadcasts=[_bc("丙已身亡", severity="high")], world_time_label="辰时",
+                               agent_spatials={"a1": _spatial(location="hall"), "a2": _spatial(location="hall")})
+    assert llm.calls == 1
+    assert "a2" not in result
+
+
+@pytest.mark.asyncio
+async def test_evaluate_skips_a_character_whose_motivation_is_its_actors() -> None:
+    """External goals are motivation, which an actor supplies for their character."""
+    llm = _RecordingLLM()
+    ev = WorldPressureEvaluator(llm_router=llm)
+    agents = {"a1": _stub_agent(name="甲", role="无", location="hall"),
+              "a2": _stub_agent(name="乙", role="无", location="hall", reads_world_pressure=False)}
+    result = await ev.evaluate(agents=agents, agent_inboxes={"a1": [], "a2": []},
+                               broadcasts=[_bc("宫门失火", severity="high")], world_time_label="辰时",
                                agent_spatials={"a1": _spatial(location="hall"), "a2": _spatial(location="hall")})
     assert llm.calls == 1
     assert "a2" not in result

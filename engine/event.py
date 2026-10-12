@@ -44,6 +44,7 @@ from core.prompts import (
     vitality_label,
 )
 from core.logging import get_logger
+from core.validate import require_at_least, require_positive
 from engine.clock import WorldTime
 from engine.injection import (
     Author,
@@ -114,12 +115,9 @@ class EventSettings:
     check_interval: int = 5
 
     def __post_init__(self) -> None:
-        if self.check_interval <= 0:
-            raise ValueError("check_interval must be positive")
-        if self.max_events_per_window < 0:
-            raise ValueError("max_events_per_window must be non-negative")
-        if self.quota_window <= 0:
-            raise ValueError("quota_window must be positive")
+        require_positive(self.check_interval, "check_interval")
+        require_at_least(self.max_events_per_window, 0, "max_events_per_window")
+        require_positive(self.quota_window, "quota_window")
 
 
 def _step_deeds(actions: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -585,7 +583,7 @@ class EventSystem:
                 for ev in scope_events or []:
                     if not isinstance(ev, Mapping):
                         continue
-                    if any(a in main_ids for a in (ev.get("actor_ids") or [])):
+                    if any(a in main_ids for a in (ev.get("doer_ids") or [])):
                         continue
                     content = ev.get("content")
                     if content:

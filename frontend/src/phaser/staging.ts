@@ -24,7 +24,7 @@ const ENGAGE_PULL = 0.55;
 // Unordered pair key, so a relation or an encounter is one entry however it is named.
 const pairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`);
 /**
- * The PEOPLE a beat is about — who its actor turns toward and stands beside, primary first.
+ * The PEOPLE a beat is about — who its doer turns toward and stands beside, primary first.
  *
  * Agents before NPCs, so a deed naming both turns to the one who can answer; receivers last: a
  * hand-over is done to the thing, and its receiver is the only person it names.
@@ -33,7 +33,7 @@ export const subjectPeopleIds = (act: ActionSummary): string[] => [
   ...actedOnAgents(act.target), ...actedOnNpcs(act.target), ...reachedAgents(act.target),
 ];
 /**
- * The THINGS a beat is about — what its actor turns toward and stands beside.
+ * The THINGS a beat is about — what its doer turns toward and stands beside.
  *
  * Aim first, effect second: `affected_entity_ids` (what the step changed) is empty when a man
  * heaved at a gate and it held, while `target.acts_on` survives failure. The fallback is still
@@ -125,7 +125,7 @@ export class Staging {
     // Who is dealing with whom this step, symmetric. A not_executed action draws no one: pulling
     // him toward someone he never reached would assert the opposite of what happened.
     const engaged = new Set<string>();
-    // Where the thing he is about to act on stands, for an actor acting on a thing, not a person.
+    // Where the thing he is about to act on stands, for a doer acting on a thing, not a person.
     const anchor = new Map<string, { gx: number; gy: number }>();
     for (const a of actions) {
       if (a.not_executed) continue;

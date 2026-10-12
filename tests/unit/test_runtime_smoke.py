@@ -460,7 +460,7 @@ async def test_runtime_interrupts_executor_owned_action(container) -> None:
     # Drive the real production apply path directly (the decide step is covered by
     # test_agent_interrupt / test_runtime_interrupt_eval). Asserts the executor
     # interrupt tears down the ongoing action and writes back a failed result.
-    await runtime._interrupts._apply_interrupt(
+    await runtime._interrupts.apply_interrupt(
         agent_id=agent.agent_id,
         # Only the thought crosses into the executor — the triggering signals stopped at the
         # decision (see ActionExecutor.interrupt).
@@ -533,7 +533,7 @@ async def test_interrupted_agent_re_decides_in_the_same_step(container) -> None:
     Natural completion means his own action used this step; an interrupt means something more
     urgent stopped him. Freezing him a step would cancel that urgency and lose this step's
     pending_external_goals and perception appraisal, neither recoverable. It's safe: the interrupt's
-    feedback has already landed synchronously in _apply_interrupt.
+    feedback has already landed synchronously in apply_interrupt.
     """
     from core.interfaces.llm import LLMScene
 
@@ -1023,7 +1023,7 @@ async def test_carry_skips_adjudication_failed_null_step(container) -> None:
     from engine.clock import WorldTime
     world_id = "world-carry-null"
     env = EnvironmentSystem(TiledWorldConfig(template="changan_iso"))
-    env.place_agent(agent_id="agent-a", location_id="palace")  # actor
+    env.place_agent(agent_id="agent-a", location_id="palace")  # doer
     env.place_agent(agent_id="agent-b", location_id="palace")  # bystander
     a = _build_agent(container, world_id=world_id, agent_id="agent-a", name="李世民", is_main_character=True)
     b = _build_agent(container, world_id=world_id, agent_id="agent-b", name="李建成", is_main_character=False)
@@ -1078,7 +1078,7 @@ async def test_the_one_acted_upon_does_not_read_a_third_person_copy_of_it(contai
     victim = [ev.content for ev in env.spatial_for(agent_id="agent-b").ambient_events]
     [seen] = [ev for ev in env.spatial_for(agent_id="agent-c").ambient_events if "制服" in ev.content]
     assert not any("制服" in c for c in victim)
-    assert "agent-b" in seen.agent_actor_ids
+    assert "agent-b" in seen.doer_agent_ids
 
 
 def test_acted_upon_lists_landed_effects_but_not_listeners(container) -> None:
@@ -1153,15 +1153,15 @@ async def test_collaborative_action_ambient_carried_once_for_bystander(container
 
 @pytest.mark.asyncio
 async def test_covert_undetected_carries_nothing_detected_exposes_publicly(container) -> None:
-    """COVERT has no private perception channel: the actor knows what it did from factual_memory,
+    """COVERT has no private perception channel: the doer knows what it did from factual_memory,
     not perception.
     - not exposed → bystanders get no ambient (observation is empty, nothing carried);
-    - exposed → bystanders get a public "[秘密行动暴露] …" ambient; the exposed actor filters itself out
-      via actor_ids."""
+    - exposed → bystanders get a public "[秘密行动暴露] …" ambient; the exposed doer filters itself out
+      via doer_ids."""
     from engine.clock import WorldTime
     world_id = "world-covert-carry"
     env = EnvironmentSystem(TiledWorldConfig(template="changan_iso"))
-    env.place_agent(agent_id="agent-a", location_id="vault")   # actor
+    env.place_agent(agent_id="agent-a", location_id="vault")   # doer
     env.place_agent(agent_id="agent-b", location_id="vault")   # bystander
     a = _build_agent(container, world_id=world_id, agent_id="agent-a", name="李世民", is_main_character=True)
     b = _build_agent(container, world_id=world_id, agent_id="agent-b", name="李建成", is_main_character=False)
@@ -1203,9 +1203,9 @@ async def test_covert_undetected_carries_nothing_detected_exposes_publicly(conta
 
 
 @pytest.mark.asyncio
-async def test_arbitrate_acting_actor_cannot_be_enrolled(container) -> None:
+async def test_arbitrate_acting_doer_cannot_be_enrolled(container) -> None:
     """A body already used this step (B doing its own WORK) can't also be conscripted into A's TALK
-    (no double consumption). A vetoed TALK isn't an immediate failure result but an actor-only
+    (no double consumption). A vetoed TALK isn't an immediate failure result but a doer-only
     failed execution (born at zero): the failure is stored in extra["completed_result"] and lands as
     feedback in the same-step sweep. The rejection text uses names, not ids, and no steps."""
     world_id = "world-arb-double"
@@ -1230,11 +1230,11 @@ async def test_arbitrate_acting_actor_cannot_be_enrolled(container) -> None:
     assert b_aa.is_passive_join is False
     assert b_aa.action_result.action.action_type == ActionType.WORK
     assert b_aa.action_result.action.action_description == "批阅文书"
-    # A's TALK is vetoed → an actor-only failed execution (B isn't a participant, wasn't
+    # A's TALK is vetoed → a doer-only failed execution (B isn't a participant, wasn't
     # conscripted).
     a_exec = rt._executor_registry.get_active_for_agent("agent-a")  # noqa: SLF001
     assert a_exec is not None
-    assert a_exec.participant_ids == ["agent-a"]              # actor-only, B not conscripted
+    assert a_exec.participant_ids == ["agent-a"]              # doer-only, B not conscripted
     rejection = a_exec.extra["completed_result"]
     assert rejection.succeeded is False
     assert "李建成" in rejection.outcome                       # name, not id
@@ -1371,8 +1371,8 @@ async def test_deeper_starvation_goes_first_between_two_starved_agents(container
     agents = {"agent-a": a, "agent-b": b, "agent-c": c}
     rt = _arb_runtime(container, world_id, agents, env)
 
-    def talk_to_c(actor):
-        return AgentAction(agent_id=actor, step=1, action_type=ActionType.TALK,
+    def talk_to_c(doer):
+        return AgentAction(agent_id=doer, step=1, action_type=ActionType.TALK,
                            action_description="上前攀谈",
                            target=ActionTarget(acts_on=[Ref.agent("agent-c")], claims=[Ref.agent("agent-c")]), estimated_steps=2)
 
@@ -1587,7 +1587,7 @@ async def test_critical_pressure_keeps_own_body_against_conscription(container) 
     assert arb["agent-b"].is_passive_join is False
     b_exec = rt._executor_registry.get_active_for_agent("agent-b")  # noqa: SLF001
     assert b_exec is not None and b_exec.action_type == ActionType.WORK
-    # The conscripter fails: an actor-only failed execution, with the reason naming B (name, not id)
+    # The conscripter fails: a doer-only failed execution, with the reason naming B (name, not id)
     a_exec = rt._executor_registry.get_active_for_agent("agent-a")  # noqa: SLF001
     assert a_exec is not None and a_exec.participant_ids == ["agent-a"]
     rejection = a_exec.extra["completed_result"]
@@ -1680,7 +1680,7 @@ async def test_step_start_in_progress_body_cannot_be_conscripted(container) -> N
     arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, {"agent-a"})  # noqa: SLF001
     # A wasn't conscripted: no arbitration entry (no passive join, no second feedback run).
     assert "agent-a" not in arb
-    # B's TALK is vetoed as an actor-only failure: A is busy and not a participant.
+    # B's TALK is vetoed as a doer-only failure: A is busy and not a participant.
     b_aa = arb["agent-b"]
     assert b_aa.is_passive_join is False
     b_exec = rt._executor_registry.get_active_for_agent("agent-b")  # noqa: SLF001
@@ -1692,7 +1692,7 @@ async def test_step_start_in_progress_body_cannot_be_conscripted(container) -> N
 
 
 @pytest.mark.asyncio
-async def test_denied_actor_stays_invitable_same_step(container) -> None:
+async def test_denied_doer_stays_invitable_same_step(container) -> None:
     """A body whose own action was rejected did nothing; later arrivals can still engage it, and it
     mustn't count as "busy".
 
@@ -1749,8 +1749,8 @@ async def test_a_body_one_initiator_could_not_take_is_taken_by_the_next(containe
     }
     rt = _arb_runtime(container, world_id, agents, env)
 
-    def talk(actor, other, desc):
-        return AgentAction(agent_id=actor, step=1, action_type=ActionType.TALK, action_description=desc,
+    def talk(doer, other, desc):
+        return AgentAction(agent_id=doer, step=1, action_type=ActionType.TALK, action_description=desc,
                            target=ActionTarget(acts_on=[Ref.agent(other)], claims=[Ref.agent(other)]),
                            estimated_steps=1)
 
@@ -1799,7 +1799,7 @@ async def test_a_body_one_initiator_could_not_take_is_taken_by_the_next(containe
 
 
 @pytest.mark.asyncio
-async def test_denied_actor_settles_when_nobody_invites_him(container) -> None:
+async def test_denied_doer_settles_when_nobody_invites_him(container) -> None:
     """If nobody engages him, the rejected action still settles as a failure on this step; deferring
     the record isn't skipping it."""
     world_id = "world-arb-denied-settle"
@@ -2165,9 +2165,9 @@ async def test_conscripted_participant_record_carries_no_monologue(container) ->
 @pytest.mark.asyncio
 async def test_finalize_skips_self_targeted_effect(container) -> None:
     """Self-target guard: a self-targeted action's target_effect must not be applied back to
-    the actor. Otherwise the actor gets its own feedback via finalize_ongoing_action and a second
+    the doer. Otherwise the doer gets its own feedback via finalize_ongoing_action and a second
     write as a target via apply_target_effect (vitality deducted twice / two memories).
-    _finalize_execution must skip effects where effect.agent_id == the actor."""
+    _finalize_execution must skip effects where effect.agent_id == the doer."""
     from core.interfaces.action import ActionResult, ActionTarget, TargetAgentEffect
     world_id = "world-selfguard"
     env = EnvironmentSystem(TiledWorldConfig(template="changan_iso"))
@@ -2183,7 +2183,7 @@ async def test_finalize_skips_self_targeted_effect(container) -> None:
     rt._executor_registry.add_active(exec_state)  # noqa: SLF001
     stub = AgentAction(agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL,
                        action_description="自伤", target=ActionTarget(acts_on=[Ref.agent("agent-a")]))
-    # The result points a target_effect at the actor itself (vitality_damage=0.5); the actor's own
+    # The result points a target_effect at the doer itself (vitality_damage=0.5); the doer's own
     # result.vitality_damage=0.0.
     self_effect = TargetAgentEffect(agent_id="agent-a", factual_memory="x", vitality_damage=0.5)
     result = ActionResult(action=stub, expected_outcome="", outcome="在宫中，李世民自伤。",
@@ -2982,8 +2982,8 @@ async def test_same_target_apply_serialized_no_lost_update(container) -> None:
     rt = _arb_runtime(container, world_id, agents, env)
     from core.interfaces.action import ActionResult, ActionTarget, TargetAgentEffect
 
-    def _hit(actor: str) -> ActionResult:
-        stub = AgentAction(agent_id=actor, step=1, action_type=ActionType.PHYSICAL, action_description="击打",
+    def _hit(doer: str) -> ActionResult:
+        stub = AgentAction(agent_id=doer, step=1, action_type=ActionType.PHYSICAL, action_description="击打",
                            target=ActionTarget(acts_on=[Ref.agent("victim")]))
         return ActionResult(action=stub, expected_outcome="", outcome="击中", observations=[Observed(location_id="palace", text="击中")], succeeded=True,
                             target_effects=[TargetAgentEffect(agent_id="victim", factual_memory="被击", vitality_damage=0.3)])
@@ -3006,10 +3006,10 @@ async def test_same_target_apply_serialized_no_lost_update(container) -> None:
     b.finalize_ongoing_action = _noop_finalize  # type: ignore[method-assign]
 
     es_list = []
-    for actor in ("agent-a", "agent-b"):
+    for doer in ("agent-a", "agent-b"):
         es = ActionExecutionState.create(
             target=ActionTarget(),
-            action_type=ActionType.PHYSICAL, initiator_id=actor, participant_ids=[actor],
+            action_type=ActionType.PHYSICAL, initiator_id=doer, participant_ids=[doer],
             purpose="击打", started_step=1, estimated_steps=1, opening_outcome="")
         rt._executor_registry.add_active(es)  # noqa: SLF001
         es_list.append(es)
@@ -3106,10 +3106,10 @@ async def test_same_execution_shared_key_results_land_in_order(container) -> Non
     assert landed == ["agent-b", "agent-a"]
 
 
-def _landing_result(actor: str, *hit: str) -> ActionResult:
+def _landing_result(doer: str, *hit: str) -> ActionResult:
     from core.interfaces.action import TargetAgentEffect
 
-    stub = AgentAction(agent_id=actor, step=1, action_type=ActionType.PHYSICAL, action_description="x")
+    stub = AgentAction(agent_id=doer, step=1, action_type=ActionType.PHYSICAL, action_description="x")
     return ActionResult(action=stub, expected_outcome="", outcome="x", succeeded=True,
                         target_effects=[TargetAgentEffect(agent_id=t, factual_memory="x") for t in hit])
 
@@ -3291,7 +3291,7 @@ async def test_elsewhere_observations_are_routed_by_the_single_owner(container) 
     assert "离开此地" in stayed, "记录落在 IN_TRANSIT 不该连累它声明的别处痕迹"
     assert "赶路" not in stayed, "IN_TRANSIT 那份本身仍不可 carry（没人在「途中」）"
 
-    # Self-exclusion: the actor shouldn't read third-person text about itself as an external signal.
+    # Self-exclusion: the doer shouldn't read third-person text about itself as an external signal.
     assert "离开此地" not in "".join(
         e.content for e in environment.spatial_for(agent_id="mover").ambient_events
     )

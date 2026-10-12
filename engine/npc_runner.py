@@ -332,7 +332,7 @@ class NpcRunner:
                     owner_id=order.recipient_id if addressed else None,
                     location_id=None if addressed else here,
                     perception=scene_line(place, handed if addressed else dropped),
-                ), acting_agent_id=npc.npc_id)
+                ), doer_id=npc.npc_id)
                 reports.append(
                     f"{item_name}已交到{to_name}手上。" if addressed
                     else f"{item_name}已放在{place}。"
@@ -379,7 +379,7 @@ class NpcRunner:
                     sender_is_agent=False,
                     # Include the dictating sender, or standing there he'd receive his own order
                     # as someone forging his words.
-                    actor_ids=(npc.npc_id, requester_id),
+                    doer_ids=(npc.npc_id, requester_id),
                     metadata={"source": "errand"},
                 ))
                 if addressed:

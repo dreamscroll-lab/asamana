@@ -358,7 +358,7 @@ export class MapHud {
   // Each turn types out on its speaker's token, dwells, then fades as the next begins. Awaited:
   // the step does not finish until the exchange does.
   //
-  // `party` is everyone in the exchange, the counterpart right after the record's actor. Each
+  // `party` is everyone in the exchange, the counterpart right after the record's doer. Each
   // speaker and whoever he answers (the last speaker, else the first other) face each other; the
   // rest of the party look at the speaker.
   async playDialogue(

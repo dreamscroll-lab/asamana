@@ -286,7 +286,7 @@ def _action_input_line(r: dict, name: str, said: str) -> str:
     return "  行动｜输入：" + "｜".join(parts)
 
 
-def _action_output_lines(ar: dict, actor: str, target: Any, tag: str = "") -> list[str]:
+def _action_output_lines(ar: dict, doer: str, target: Any, tag: str = "") -> list[str]:
     """Action output rendering: lay out field by field, never dump raw JSON. Key names (fact / achieved
     / detected) are code-layer identity; the judge should read "own memory", "was it detected".
 
@@ -301,10 +301,10 @@ def _action_output_lines(ar: dict, actor: str, target: Any, tag: str = "") -> li
     mark = "[成功] " if succ is True else ("[失败] " if succ is False else "")
     out = [f"  行动｜输出(结果){tag}：{mark}{ar.get('outcome') or ''}".rstrip()]
     if ar.get("fact"):
-        out.append(f"    记忆(己方)：{ar['fact']}")  # actor's first person, with the other party's view removed
+        out.append(f"    记忆(己方)：{ar['fact']}")  # doer's first person, with the other party's view removed
     dlg = ar.get("dialogue")
     if isinstance(dlg, list) and dlg:
-        out.append(f"    对话：{len(dlg)} 轮（{actor}↔{str(target) if target else '对方'}）")
+        out.append(f"    对话：{len(dlg)} 轮（{doer}↔{str(target) if target else '对方'}）")
     if (det := ar.get("detected")) is not None:
         out.append(f"    {'被人察觉了' if det else '未被察觉'}")
     return out
@@ -393,7 +393,7 @@ _SCALES: dict[str, Any] = {
     "时间": lambda sps: _time_legend(sps),
     # Goal statuses in raw output are English enums (sams/mass already translate them; sass lays out the raw text, so it needs the mapping).
     "目标状态": lambda sps: "、".join(f"{k}={v}" for k, v in _GOAL_STATUS_LABELS.items()),
-    # The relation field in adjudication output: the actor's sentiment toward the others involved (output schema of engine/executors/*).
+    # The relation field in adjudication output: the doer's sentiment toward the others involved (output schema of engine/executors/*).
     "关系走向": lambda sps: "裁决输出的 relation 字段 —— positive=观感转好、negative=观感转坏、"
                             "neutral=没有变化",
 }
@@ -1194,7 +1194,7 @@ def _mams_phase_lines(s: dict[str, Any], name: str, *, sps: Any) -> list[str]:
     return lines
 
 
-def _mams_script_lines(actor: str, s: dict[str, Any]) -> list[str]:
+def _mams_script_lines(doer: str, s: dict[str, Any]) -> list[str]:
     """God's-eye script: TALK's actual dialogue (speaker 1 = initiator, 2 = other party, resolved to names).
     mams is the director's view and needs to read what was actually said to judge the narrative, so
     there's no viewpoint filtering here; every line is laid out. Words sent out (letters / messages
@@ -1214,7 +1214,7 @@ def _mams_script_lines(actor: str, s: dict[str, Any]) -> list[str]:
     else:
         dlg = None
     if isinstance(dlg, list) and dlg:
-        who = {1: actor, 2: str(target) if target else "对方"}
+        who = {1: doer, 2: str(target) if target else "对方"}
         out = ["      · 对话："]
         for turn in dlg:
             if not isinstance(turn, dict):

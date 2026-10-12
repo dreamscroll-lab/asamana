@@ -29,14 +29,14 @@ def _msg(
     deliver_step: int = 1,
     content: str = "hello",
     urgency: Urgency = Urgency.NORMAL,
-    actor_ids: tuple[str, ...] = (),
+    doer_ids: tuple[str, ...] = (),
 ) -> Message:
     return Message(
         id=mid, world_id="w1",
         sender_id=sender, content=content,
         recipients=recipients, location_scope=location_scope,
         deliver_step=deliver_step, created_step=deliver_step,
-        urgency=urgency, actor_ids=actor_ids,
+        urgency=urgency, doer_ids=doer_ids,
     )
 
 
@@ -173,7 +173,7 @@ async def test_every_member_of_the_acting_body_is_left_out_of_all_four_combos(co
     ):
         await system.publish(_msg(
             mid=mid, sender="mouth", recipients=recipients,
-            location_scope=scope, deliver_step=1, actor_ids=body,
+            location_scope=scope, deliver_step=1, doer_ids=body,
         ))
 
     delivery = await system.deliver_for_agents(step=1, agent_ids=agent_ids, environment=env)
@@ -194,10 +194,10 @@ def test_the_delivery_rules_survive_a_snapshot_round_trip() -> None:
     original = Message(
         id="m1", world_id="w1", sender_id="mouth", content="城门今夜不开",
         recipients=None, location_scope="loc_a", deliver_step=3, created_step=2,
-        sender_name="王二", sender_is_agent=False, actor_ids=("mouth", "a2"),
+        sender_name="王二", sender_is_agent=False, doer_ids=("mouth", "a2"),
     )
     restored = _message_from_dict(json.loads(dump_json(dataclasses.asdict(original))))
-    assert restored.actor_ids == ("mouth", "a2")
+    assert restored.doer_ids == ("mouth", "a2")
     assert restored.sender_is_agent is False
 
 

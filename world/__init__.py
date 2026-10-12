@@ -8,7 +8,7 @@ The three build-time narrative invariants (``core_tension`` / ``narrative_theme`
 during build, deliberately **not** consumed by runtime cognition prompts.
 """
 
-from world.catalog import DEFAULT_CATALOG_PATH, WorldCatalog
+from world.catalog import DEFAULT_CATALOG_PATH, ActorCasting, WorldCatalog
 from world.models import (
     AgentDefinition,
     AgentTier,
@@ -24,6 +24,7 @@ from world.models import (
 )
 
 __all__ = [
+    "ActorCasting",
     "AgentDefinition",
     "AgentTier",
     "HistoricalEventSeed",

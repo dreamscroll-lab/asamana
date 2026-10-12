@@ -73,7 +73,7 @@ def _event_seed_snapshots(
         step = base + i
         actions: list[dict[str, Any]] = []
         for a in entry.get("actions", []) or []:
-            aid = resolve_ref(str(a.get("actor", "")), id_by_name, valid_ids)
+            aid = resolve_ref(str(a.get("doer", "")), id_by_name, valid_ids)
             agent = world.agents.get(aid)
             actions.append({
                 "agent_id": aid,
@@ -92,10 +92,10 @@ def _event_seed_snapshots(
         annotations: dict[str, list[dict[str, Any]]] = {}
         for ann in entry.get("annotations", []) or []:
             scope = str(ann.get("location", ""))
-            actor = ann.get("actor")
+            doer = ann.get("doer")
             annotations.setdefault(scope, []).append({
                 "content": str(ann.get("content", "")),
-                "actor_id": resolve_ref(str(actor), id_by_name, valid_ids) if actor else None,
+                "doer_id": resolve_ref(str(doer), id_by_name, valid_ids) if doer else None,
             })
         agent_relations = (
             _event_relations_block(scenario, id_by_name, valid_ids, name_by_id)

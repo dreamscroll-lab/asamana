@@ -317,7 +317,7 @@ class SocialExecutor(ActionExecutor):
         return state
 
     def _failed_result(self, action: AgentAction, step: int, outcome: str, location: str) -> ActionExecutionState:
-        """A TALK feasibility failure as an actor-only ``create_failed`` execution."""
+        """A TALK feasibility failure as a doer-only ``create_failed`` execution."""
         stub = AgentAction(
             agent_id=action.agent_id,
             step=step,
@@ -325,12 +325,12 @@ class SocialExecutor(ActionExecutor):
             action_description=action.action_description or "talk",
             target=action.target,
         )
-        actor_name = self._directory.agent_name(action.agent_id)
+        doer_name = self._directory.agent_name(action.agent_id)
         failure = ActionResult(
             action=stub,
             expected_outcome=action.expected_outcome,
             # Quoted: unquoted, his first-person words render as "甲本想我去劝他…".
-            outcome=scene_line(location, f"{actor_name}本想做「{action.action_description}」，{outcome}"),
+            outcome=scene_line(location, f"{doer_name}本想做「{action.action_description}」，{outcome}"),
             # Nothing happened, and the intent is private.
             observations=[],
             succeeded=False,
@@ -738,7 +738,7 @@ class SocialExecutor(ActionExecutor):
 严格输出以下 JSON,不要任何多余内容:
 {"fact": "一句话（不超过36字）"}
 """
-        actor_condition = condition_line(
+        doer_condition = condition_line(
             agent.personality.state.condition, voice=SituationVoice.FIRST,
             now_step=now_step, seconds_per_step=self._seconds_per_step,
         )
@@ -751,7 +751,7 @@ class SocialExecutor(ActionExecutor):
         header_part = f"{situation_header}\n\n" if situation_header else ""
         user = f"""\
 {header_part}【我是谁】
-{agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{actor_condition}
+{agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{doer_condition}
 
 【刚刚发生的事】
 {initiator_line}，正就「{purpose}」交谈，已谈了{elapsed_label}，{situation}。{relation_part}{scene_part}
@@ -763,7 +763,7 @@ class SocialExecutor(ActionExecutor):
             with observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
                 given_facts=GivenFacts()  # same source as user above
                 .add("此刻何时何地", situation_header)
-                .add("我的处境", actor_condition)
+                .add("我的处境", doer_condition)
                 .add("刚刚发生的事",
                      f"{initiator_line}，正就「{purpose}」交谈，已谈了{elapsed_label}，{situation}。")
                 .add("我与在场者的关系", relation_block)
@@ -1063,13 +1063,13 @@ class SocialExecutor(ActionExecutor):
 
 落笔写上面那句 fact 之前,还有一条:
 """ + ABSOLUTE_TIME_RULE_FIRST_PERSON
-        actor_condition = condition_line(
+        doer_condition = condition_line(
             agent.personality.state.condition, voice=SituationVoice.FIRST,
             now_step=now_step, seconds_per_step=self._seconds_per_step,
         )
         user = f"""\
 {header_part}【我是谁】
-{agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{actor_condition}
+{agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{doer_condition}
 
 【刚结束的对话】
 {initiator_line}，话题是「{purpose}」。{relation_part}{expected_part}
@@ -1082,7 +1082,7 @@ class SocialExecutor(ActionExecutor):
             call_annotations = {
                 "given_facts": GivenFacts()  # same source as user above
                 .add("此刻何时何地", situation_header)
-                .add("我的处境", actor_condition)
+                .add("我的处境", doer_condition)
                 .add("刚结束的对话", f"{initiator_line}，话题是「{purpose}」。")
                 .add("我与在场者的关系", rels)
                 # The addressee never saw the initiator's expectation; declaring it would blind
@@ -1138,7 +1138,7 @@ class SocialExecutor(ActionExecutor):
         if agent is None:
             return None
 
-        actor_condition = condition_line(
+        doer_condition = condition_line(
             agent.personality.state.condition, voice=SituationVoice.FIRST,
             now_step=now_step, seconds_per_step=self._seconds_per_step,
         )
@@ -1172,7 +1172,7 @@ class SocialExecutor(ActionExecutor):
 """ + ABSOLUTE_TIME_RULE_FIRST_PERSON
         user = f"""\
 {header_part}【我是谁】
-{agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{actor_condition}
+{agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{doer_condition}
 
 【我在旁边听到的对话】
 说话的是{initiator_name}与{target_name}，我在一旁听着。
@@ -1185,7 +1185,7 @@ class SocialExecutor(ActionExecutor):
             with observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
                 given_facts=GivenFacts()  # same source as user above
                 .add("此刻何时何地", situation_header)
-                .add("我的处境", actor_condition)
+                .add("我的处境", doer_condition)
                 .add("我在旁边听到的", f"说话的是{initiator_name}与{target_name}")
                 .add("对话记录", transcript),
                 talk_role="listener", action_owner=agent.personality.soul.name,

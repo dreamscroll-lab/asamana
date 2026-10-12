@@ -58,7 +58,7 @@ _SYSTEM = (
 def _persona_lines(p: dict[str, Any], prefix: str = "  ") -> list[str]:
     tier = "主角" if p.get("is_main_character") else "背景"
     traits = "、".join(p.get("core_traits") or []) or "—"
-    out = [f"{prefix}{p.get('actor_name')}（{tier}；性格：{traits}）"]
+    out = [f"{prefix}{p.get('doer_name')}（{tier}；性格：{traits}）"]
     if p.get("core_values"):
         out.append(f"{prefix}  价值观：" + "、".join(p["core_values"]))
     if p.get("self_image"):

@@ -10,7 +10,7 @@
       ],
       "description": "独自推敲玄武门设伏方略,顺利理出可行部署(低落差成功)。",
       "expect": "情绪应是与人设相称的踏实/笃定一类正向,强度不必夸张;experiential 记忆第一人称、有主观加工不复读 outcome;need 若与 self_actualization 相关应略缓解。无 id/step 泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "result": {
         "type": "work",
         "description": "独自推敲玄武门设伏的部署细节",
@@ -35,7 +35,7 @@
       ],
       "description": "试图争取一名摇摆的禁军将领,被婉拒(高落差失败)。",
       "expect": "情绪效价应偏负(挫败/焦灼一类),与失败+高 gap 相称;gap 描述应织入记忆;social need 不应因失败而缓解(更可能加压)。情绪不必歇斯底里。无泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "result": {
         "type": "talk",
         "target": "尉迟恭",
@@ -68,7 +68,7 @@
       ],
       "description": "与死忠尉迟恭密议起事,谈得投契(正向关系互动)。",
       "expect": "对尉迟恭的信任/好感应正向变动、方向与互动一致;情绪应是被巩固的安定/暖意一类;记忆贴合君臣同谋。无泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "result": {
         "type": "talk",
         "target": "尉迟恭",
@@ -103,7 +103,7 @@
       ],
       "description": "连日筹谋体力濒竭,独处稍歇后精力略有恢复。",
       "expect": "physiological 需求应缓解、vitality 略升(休整恢复);情绪平复一类;记忆体现『独处稍歇』。无泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "result": {
         "type": "rest",
         "description": "在静室闭目养神，平复连日的疲惫",
@@ -131,7 +131,7 @@
       ],
       "description": "亲身搏斗夺下要地,自身也挂了彩(非致命受创)。",
       "expect": "vitality 应下降但 is_active 仍 True;情绪可复杂(惨胜/后怕/决绝皆可),不必单一;记忆贴合带伤。无泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "result": {
         "type": "physical",
         "target": "李建成",
@@ -164,7 +164,7 @@
       ],
       "description": "夜探东宫窃听,中途被察觉(暴露的失败)。",
       "expect": "情绪应偏向警觉/懊恼一类,与暴露相称;gap 偏高;记忆贴合『被察觉』而非得手。情绪不必夸张。无泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "result": {
         "type": "covert",
         "description": "潜近东宫廊下窃听密议",
@@ -188,7 +188,7 @@
       ],
       "description": "移步赶往玄武门布防处,顺利抵达。",
       "expect": "情绪应平淡或带轻微紧张/专注,不该为一次普通移动生出剧烈情绪;记忆带地点与自然时长感、无『第N步』。",
-      "actor": "李世民",
+      "doer": "李世民",
       "result": {
         "type": "move",
         "description": "赶往玄武门查看布防",
@@ -213,7 +213,7 @@
       ],
       "description": "当廷议事被父皇当众驳斥,颜面受挫(尊严受挫)。",
       "expect": "情绪应偏负且与 esteem 相关(羞愤/不甘/隐忍皆可,视人设);esteem need 不应因受挫而缓解;记忆第一人称、不把心事直说尽。无泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "result": {
         "type": "talk",
         "target": "李建成",
@@ -246,8 +246,8 @@
         "emotion_type": "fear",
         "emotion_intensity": 0.85,
         "emotion_valence": -0.8,
-        "relation_toward_actor": {
-          "actor": "李世民",
+        "relation_toward_doer": {
+          "doer": "李世民",
           "trust_delta": -0.3,
           "affection_delta": -0.6
         },
@@ -275,8 +275,8 @@
         "emotion_type": "trust",
         "emotion_intensity": 0.6,
         "emotion_valence": 0.6,
-        "relation_toward_actor": {
-          "actor": "李世民",
+        "relation_toward_doer": {
+          "doer": "李世民",
           "trust_delta": 0.1,
           "affection_delta": 0.12
         },
@@ -303,8 +303,8 @@
         "emotion_type": "fear",
         "emotion_intensity": 0.95,
         "emotion_valence": -0.95,
-        "relation_toward_actor": {
-          "actor": "李世民",
+        "relation_toward_doer": {
+          "doer": "李世民",
           "trust_delta": -0.4,
           "affection_delta": -0.7
         },
@@ -324,7 +324,7 @@
       ],
       "description": "完成一件推进起事大计的实事,验证目标推进判定。",
       "expect": "目标判定应与结果相称:真正达成某短期目标才标 completed,只是推进则保持 active——不该把一次成功一律判成完成。情绪正向、与人设相称。无泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "result": {
         "type": "work",
         "description": "调度府中甲士、落定起事当日的部署",
@@ -348,7 +348,7 @@
       ],
       "description": "短期目标天然需多步推进;本次行动只推进了其中一环,远未竟全功。",
       "expect": "目标应判为仍 active(只推进一环、未达成)——绝不能因这一次成功就判 completed。情绪可有进展的踏实但不宜是大功告成。无泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "result": {
         "type": "work",
         "description": "为玄武门设伏做准备",
@@ -372,7 +372,7 @@
       ],
       "description": "短期目标本就一举可成;本次行动当场达成了它。",
       "expect": "目标应判为 completed(这一次行动已完整达成它),并写入达成记忆;情绪应是了却一桩的踏实。无泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "result": {
         "type": "talk",
         "target": "尉迟恭",
@@ -407,7 +407,7 @@
       ],
       "description": "短期目标因本次行动彻底落空、再无机会(失败终局)。",
       "expect": "目标应判为 failed(此计已无可挽回),而非仍 active 或 completed;情绪应与重大挫败相称;失败的落差应入记忆。无泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "result": {
         "type": "covert",
         "description": "趁夜潜入东宫刺杀李建成",
@@ -438,7 +438,7 @@
       ],
       "description": "短期目标本次推进受挫(行动失败),但目标本身仍可继续争取、远未到失败终局。",
       "expect": "目标应仍判为 active——一次受挫、对方并未彻底拒绝、日后仍可再争取,不该因这一次失败就判 failed 或 interrupted;情绪可偏负(受挫/不甘)但非绝望。无泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "result": {
         "type": "talk",
         "target": "尉迟恭",
@@ -473,7 +473,7 @@
       ],
       "description": "短期目标推进到一半被突发变故打断、被迫暂时搁置(中断,非失败)。",
       "expect": "目标宜判为 interrupted(被打断、暂无法继续,但未失败也未完成);情绪应有被打断的焦躁/挂心;记忆点明因故中断。无泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "result": {
         "type": "work",
         "description": "连夜核定玄武门设伏的全盘部署",
@@ -505,8 +505,8 @@
         "emotion_type": "anger",
         "emotion_intensity": 0.8,
         "emotion_valence": -0.75,
-        "relation_toward_actor": {
-          "actor": "李世民",
+        "relation_toward_doer": {
+          "doer": "李世民",
           "trust_delta": -0.3,
           "affection_delta": -0.5
         },
@@ -536,8 +536,8 @@
         "emotion_type": "surprise",
         "emotion_intensity": 0.6,
         "emotion_valence": 0.3,
-        "relation_toward_actor": {
-          "actor": "李世民",
+        "relation_toward_doer": {
+          "doer": "李世民",
           "trust_delta": 0.1,
           "affection_delta": 0.15
         },

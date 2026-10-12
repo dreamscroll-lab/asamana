@@ -115,19 +115,19 @@ def test_destroy_removes_from_live_world_but_keeps_tombstone() -> None:
 def test_destroy_propagates_perception_to_bystanders() -> None:
     env = _env_with_hall()
     env.register_entity(_item("sword", "剑", "hall", takeable=False))
-    env.place_agent(agent_id="actor", location_id="hall")
+    env.place_agent(agent_id="doer", location_id="hall")
     env.place_agent(agent_id="witness", location_id="hall")
 
     env.change_entity_state(
         EntityStateChange(entity_id="sword", new_state="destroyed", destroyed=True, perception="剑被砸碎了"),
-        acting_agent_id="actor",
+        doer_id="doer",
     )
-    # Carry flips into next step's ambient; the witness (not the actor) perceives it.
+    # Carry flips into next step's ambient; the witness (not the doer) perceives it.
     env.begin_step(step=2, world_time=WorldTime.from_step(1, WorldTimeConfig()))
     witnessed = [ev.content for ev in env.spatial_for(agent_id="witness").ambient_events]
     assert any("剑被砸碎了" in c for c in witnessed)
-    # The actor excludes their own action (self-exclusion).
-    assert all("剑被砸碎了" not in ev.content for ev in env.spatial_for(agent_id="actor").ambient_events)
+    # The doer excludes their own action (self-exclusion).
+    assert all("剑被砸碎了" not in ev.content for ev in env.spatial_for(agent_id="doer").ambient_events)
 
 
 def test_destroy_wins_over_pickup_and_location() -> None:
@@ -202,7 +202,7 @@ def test_spawn_lands_in_the_makers_hands() -> None:
 
     assert env.spawn_entity(
         EntitySpawn(name="换防部署令", description="圈定亲信的名单", holder_id="a1"),
-        ground=env.get_body_location("a1"), actor_id="a1",
+        ground=env.get_body_location("a1"), doer_id="a1",
     )
 
     made = env.all_live_entities()[0]
@@ -216,7 +216,7 @@ def test_spawn_without_a_holder_falls_to_the_makers_feet() -> None:
     env = _env_with_hall()
     env.place_agent(agent_id="a1", location_id="hall")
 
-    env.spawn_entity(EntitySpawn(name="一面木牌"), ground=env.get_body_location("a1"), actor_id="a1")
+    env.spawn_entity(EntitySpawn(name="一面木牌"), ground=env.get_body_location("a1"), doer_id="a1")
 
     made = env.all_live_entities()[0]
     assert made.presence is EntityPresence.AT_LOCATION
@@ -231,7 +231,7 @@ def test_a_private_product_is_visible_only_to_its_maker() -> None:
     env.place_agent(agent_id="a2", location_id="hall")
 
     env.spawn_entity(
-        EntitySpawn(name="换防部署令", holder_id="a1", is_public=False), ground=env.get_body_location("a1"), actor_id="a1",
+        EntitySpawn(name="换防部署令", holder_id="a1", is_public=False), ground=env.get_body_location("a1"), doer_id="a1",
     )
 
     assert [e.name for e in env.spatial_for(agent_id="a1").visible_entities] == ["换防部署令"]
@@ -244,8 +244,8 @@ def test_spawn_ids_are_deterministic_and_never_collide() -> None:
     env = _env_with_hall()
     env.place_agent(agent_id="a1", location_id="hall")
 
-    env.spawn_entity(EntitySpawn(name="密信"), ground=env.get_body_location("a1"), actor_id="a1")
-    env.spawn_entity(EntitySpawn(name="密信"), ground=env.get_body_location("a1"), actor_id="a1")
+    env.spawn_entity(EntitySpawn(name="密信"), ground=env.get_body_location("a1"), doer_id="a1")
+    env.spawn_entity(EntitySpawn(name="密信"), ground=env.get_body_location("a1"), doer_id="a1")
 
     ids = sorted(e.entity_id for e in env.all_live_entities())
     assert len(ids) == 2
@@ -256,7 +256,7 @@ def test_a_nameless_spawn_creates_nothing() -> None:
     env = _env_with_hall()
     env.place_agent(agent_id="a1", location_id="hall")
 
-    assert env.spawn_entity(EntitySpawn(name="   "), ground=env.get_body_location("a1"), actor_id="a1") is False
+    assert env.spawn_entity(EntitySpawn(name="   "), ground=env.get_body_location("a1"), doer_id="a1") is False
     assert env.all_live_entities() == []
 
 
@@ -266,8 +266,8 @@ def test_one_place_fills_up() -> None:
     env.begin_step(step=1, world_time=WorldTime.from_step(1, WorldTimeConfig()))
     env.place_agent(agent_id="a1", location_id="hall")
 
-    assert env.spawn_entity(EntitySpawn(name="第一件"), ground=env.get_body_location("a1"), actor_id="a1") is True
-    assert env.spawn_entity(EntitySpawn(name="第二件"), ground=env.get_body_location("a1"), actor_id="a1") is False
+    assert env.spawn_entity(EntitySpawn(name="第一件"), ground=env.get_body_location("a1"), doer_id="a1") is True
+    assert env.spawn_entity(EntitySpawn(name="第二件"), ground=env.get_body_location("a1"), doer_id="a1") is False
     assert [e.name for e in env.all_live_entities()] == ["第一件"]
 
 
@@ -281,9 +281,9 @@ def test_a_crowded_room_does_not_stop_the_next_room() -> None:
     env.place_agent(agent_id="a1", location_id="hall")
     env.place_agent(agent_id="a2", location_id="garden")
 
-    assert env.spawn_entity(EntitySpawn(name="第一件"), ground=env.get_body_location("a1"), actor_id="a1") is True
-    assert env.spawn_entity(EntitySpawn(name="第二件"), ground=env.get_body_location("a1"), actor_id="a1") is False   # hall is full
-    assert env.spawn_entity(EntitySpawn(name="第三件"), ground=env.get_body_location("a2"), actor_id="a2") is True    # garden is unaffected
+    assert env.spawn_entity(EntitySpawn(name="第一件"), ground=env.get_body_location("a1"), doer_id="a1") is True
+    assert env.spawn_entity(EntitySpawn(name="第二件"), ground=env.get_body_location("a1"), doer_id="a1") is False   # hall is full
+    assert env.spawn_entity(EntitySpawn(name="第三件"), ground=env.get_body_location("a2"), doer_id="a2") is True    # garden is unaffected
 
 
 def test_a_full_floor_does_not_fill_a_pair_of_hands() -> None:
@@ -293,10 +293,10 @@ def test_a_full_floor_does_not_fill_a_pair_of_hands() -> None:
     env.begin_step(step=1, world_time=WorldTime.from_step(1, WorldTimeConfig()))
     env.place_agent(agent_id="a1", location_id="hall")
 
-    assert env.spawn_entity(EntitySpawn(name="地上那件"), ground=env.get_body_location("a1"), actor_id="a1") is True
-    assert env.spawn_entity(EntitySpawn(name="再一件"), ground=env.get_body_location("a1"), actor_id="a1") is False
+    assert env.spawn_entity(EntitySpawn(name="地上那件"), ground=env.get_body_location("a1"), doer_id="a1") is True
+    assert env.spawn_entity(EntitySpawn(name="再一件"), ground=env.get_body_location("a1"), doer_id="a1") is False
     assert env.spawn_entity(
-        EntitySpawn(name="手上那件", holder_id="a1"), ground=env.get_body_location("a1"), actor_id="a1",
+        EntitySpawn(name="手上那件", holder_id="a1"), ground=env.get_body_location("a1"), doer_id="a1",
     ) is True
 
 
@@ -307,12 +307,12 @@ def test_a_destroyed_thing_gives_its_place_back() -> None:
     env.space.register_place(_location("hall", "大殿"))
     env.begin_step(step=1, world_time=WorldTime.from_step(1, WorldTimeConfig()))
     env.place_agent(agent_id="a1", location_id="hall")
-    env.spawn_entity(EntitySpawn(name="第一件"), ground=env.get_body_location("a1"), actor_id="a1")
+    env.spawn_entity(EntitySpawn(name="第一件"), ground=env.get_body_location("a1"), doer_id="a1")
     doomed = env.all_live_entities()[0].entity_id
 
     env.change_entity_state(EntityStateChange(entity_id=doomed, new_state="destroyed", destroyed=True))
 
-    assert env.spawn_entity(EntitySpawn(name="第二件"), ground=env.get_body_location("a1"), actor_id="a1") is True
+    assert env.spawn_entity(EntitySpawn(name="第二件"), ground=env.get_body_location("a1"), doer_id="a1") is True
 
 
 def test_a_spawn_carries_its_observation_to_bystanders() -> None:
@@ -321,7 +321,7 @@ def test_a_spawn_carries_its_observation_to_bystanders() -> None:
     env.place_agent(agent_id="a2", location_id="hall")
 
     env.spawn_entity(
-        EntitySpawn(name="一面木牌", perception="在大殿，常何立起一面木牌。"), ground=env.get_body_location("a1"), actor_id="a1",
+        EntitySpawn(name="一面木牌", perception="在大殿，常何立起一面木牌。"), ground=env.get_body_location("a1"), doer_id="a1",
     )
     env.begin_step(step=2, world_time=WorldTime.from_step(2, WorldTimeConfig()))
 
@@ -338,7 +338,7 @@ def test_a_runtime_made_thing_survives_restore_whole() -> None:
     env.place_agent(agent_id="a1", location_id="hall")
     env.spawn_entity(
         EntitySpawn(name="换防部署令", description="圈定亲信的名单", holder_id="a1", is_public=False),
-        ground=env.get_body_location("a1"), actor_id="a1",
+        ground=env.get_body_location("a1"), doer_id="a1",
     )
     made_id = env.all_live_entities()[0].entity_id
 
@@ -360,9 +360,9 @@ def test_a_runtime_made_thing_survives_restore_whole() -> None:
 def test_a_placed_thing_needs_real_ground() -> None:
     """While traveling or unregistered, get_body_location returns a placeholder location. Creating
     nothing is better than attaching an item to a place that doesn't exist."""
-    env = _env_with_hall()   # the actor was never placed with place_agent
+    env = _env_with_hall()   # the doer was never placed with place_agent
 
-    assert env.spawn_entity(EntitySpawn(name="一道栅栏"), ground=env.get_body_location("nobody"), actor_id="nobody") is False
+    assert env.spawn_entity(EntitySpawn(name="一道栅栏"), ground=env.get_body_location("nobody"), doer_id="nobody") is False
     assert env.all_live_entities() == []
 
 
@@ -371,7 +371,7 @@ def test_a_held_thing_needs_no_ground() -> None:
     env = _env_with_hall()
 
     assert env.spawn_entity(
-        EntitySpawn(name="一封密信", holder_id="wanderer"), ground=env.get_body_location("wanderer"), actor_id="wanderer",
+        EntitySpawn(name="一封密信", holder_id="wanderer"), ground=env.get_body_location("wanderer"), doer_id="wanderer",
     ) is True
     assert env.all_live_entities()[0].owner_id == "wanderer"
 
@@ -384,7 +384,7 @@ def test_a_placed_thing_announces_itself_where_it_lands() -> None:
     env.place_agent(agent_id="a2", location_id="hall")
 
     env.spawn_entity(
-        EntitySpawn(name="一道栅栏", perception="在大殿，甲把一道栅栏留在了此处。"), ground=env.get_body_location("a1"), actor_id="a1",
+        EntitySpawn(name="一道栅栏", perception="在大殿，甲把一道栅栏留在了此处。"), ground=env.get_body_location("a1"), doer_id="a1",
     )
     env.begin_step(step=2, world_time=WorldTime.from_step(2, WorldTimeConfig()))
 

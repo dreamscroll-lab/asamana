@@ -1,7 +1,7 @@
 """How an executed act is worded — the shared skeletons and conventions of outcome and memory text.
 
 Every executor phrases its third-person outcomes and first-person memories through these, so each
-convention (the place prefix, a named actor, how an interrupt's reason is attributed) is stated
+convention (the place prefix, a named doer, how an interrupt's reason is attributed) is stated
 once. Outside ``engine.executors`` for the same reason as ``engine.scene``.
 """
 
@@ -56,8 +56,8 @@ def observed_here(
     return [Observed(location_id=environment.get_body_location(agent_id), text=text, strength=strength)]
 
 
-def ensure_actor_named(body: str, actor_name: str) -> str:
-    """Prepend the actor's name when the judge's third-person narration doesn't mention it;
+def ensure_doer_named(body: str, doer_name: str) -> str:
+    """Prepend the doer's name when the judge's third-person narration doesn't mention it;
     "who" is guaranteed by code, not by prompt compliance.
 
     A prompt instruction alone breaks: a passer-by framing yields "二人低语匆匆" (the two whisper
@@ -67,14 +67,14 @@ def ensure_actor_named(body: str, actor_name: str) -> str:
     A colon, not concatenation: body may carry another subject ("对方早有防备"), and
     concatenation would produce "李世民对方早有防备".
     """
-    name = (actor_name or "").strip()
+    name = (doer_name or "").strip()
     if not name or name in body:
         return body
     return f"{name}：{body}"
 
 
 def format_intent_clause(expected_outcome: str) -> str:
-    """The actor's own "what I'm after", as the opening sentence of factual_memory.
+    """The doer's own "what I'm after", as the opening sentence of factual_memory.
 
     Marked as intent ("我打算", I intend), not "我原本期望" (I had expected): the latter implies it
     failed, and success hasn't been ruled on yet. Omitted when empty.
@@ -87,15 +87,15 @@ def format_intent_clause(expected_outcome: str) -> str:
 
 
 def format_interrupt_thought(thought: str) -> str:
-    """Format the acting agent's first-person interrupt reaction as a trailing clause.
+    """Format the doer's first-person interrupt reaction as a trailing clause.
 
-    The em-dash keeps the actor's subjective ``thought`` (from Agent.evaluate_interrupt) apart
+    The em-dash keeps the doer's subjective ``thought`` (from Agent.evaluate_interrupt) apart
     from the objective record. Empty when there is no thought."""
     t = (thought or "").strip()
     return f"——心想：{t}" if t else ""
 
 
-def format_interrupt_reason_3p(actor_name: str, thought: str) -> str:
+def format_interrupt_reason_3p(doer_name: str, thought: str) -> str:
     """The interrupter's reason, ATTRIBUTED, for the third-person authoritative ``outcome``.
 
     ``outcome`` is the god-view full record (``observation`` is the bystander one), and every
@@ -106,4 +106,4 @@ def format_interrupt_reason_3p(actor_name: str, thought: str) -> str:
     cognition, and they would adopt the interrupter's thoughts as their own business.
     """
     t = (thought or "").strip()
-    return f"\n{actor_name}当时的心思：{t}" if t else ""
+    return f"\n{doer_name}当时的心思：{t}" if t else ""

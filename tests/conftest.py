@@ -83,7 +83,7 @@ def test_config() -> object:
 # `adjudication_failed=True` null step and tests would never reach the executors' normal path.
 #
 # One combined payload serves all four; each parser reads only its own keys:
-#   physical: reason / success / outcome / fact / relation / actor_damage / target_damage
+#   physical: reason / success / outcome / fact / relation / doer_damage / target_damage
 #             / new_entity_state / deed / condition / condition_steps / frees_target
 #             (the three condition keys are left out on purpose: absent means no ongoing
 #             condition, which is what most physical actions leave. Condition tests supply their own.)
@@ -107,7 +107,7 @@ MOCK_ADJUDICATION_RESPONSE = json.dumps({
     "why": "",
     "observation": "两人说了几句便各自散了。",
     "relation": "neutral",
-    "actor_damage": 0.0,
+    "doer_damage": 0.0,
     "target_damage": 0.0,
     "new_entity_state": "被动过",
     "deed": "operate",

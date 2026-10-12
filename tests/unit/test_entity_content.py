@@ -150,7 +150,7 @@ def test_the_physical_target_block_carries_no_content() -> None:
     env.register_entity(letter)
     router = LLMRouter({scene: MockLLMProvider() for scene in LLMScene})
     executor = PhysicalExecutor(router, LiveWorldDirectory.from_agents({}, env))
-    assert SECRET not in executor._entity_target_block(letter, actor_id="a2")
+    assert SECRET not in executor._entity_target_block(letter, doer_id="a2")
 
 
 # --------------------------------------------------------------------------- #
@@ -166,7 +166,7 @@ def test_render_entity_prints_content_only_when_handed_it() -> None:
 def test_spawned_content_lands_on_the_thing() -> None:
     env = _env()
     spawn = EntitySpawn(name="密信", content=SECRET, holder_id="a1", is_public=False)
-    assert env.spawn_entity(spawn, ground=env.get_body_location("a1"), actor_id="a1")
+    assert env.spawn_entity(spawn, ground=env.get_body_location("a1"), doer_id="a1")
     assert env.get_entity(spawn.entity_id).content == SECRET
 
 
@@ -175,7 +175,7 @@ def test_content_survives_restore_for_made_and_seeded_things_alike() -> None:
     env.register_entity(_letter(content=""))
     env.change_entity_state(EntityStateChange(entity_id="letter", new_content=SECRET))
     made = EntitySpawn(name="账册", content="欠粮三百石", holder_id="a1")
-    env.spawn_entity(made, ground=env.get_body_location("a1"), actor_id="a1")
+    env.spawn_entity(made, ground=env.get_body_location("a1"), doer_id="a1")
     snapshot = env.snapshot_state()
 
     fresh = _env()

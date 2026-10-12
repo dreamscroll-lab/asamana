@@ -201,11 +201,11 @@ class MessageSystem:
             None         | None           | all agent_ids = world-wide broadcast
             list[str]    | str (L)        | list ∩ (agents at location L)
 
-        All four cells then subtract ``{sender_id} ∪ actor_ids``: nobody receives, over an
+        All four cells then subtract ``{sender_id} ∪ doer_ids``: nobody receives, over an
         external channel, what they did themselves. The exclusion is applied once outside the
         matrix, since it is orthogonal to addressing and four copies drift apart.
         """
-        excluded = {message.sender_id, *message.actor_ids}
+        excluded = {message.sender_id, *message.doer_ids}
         if message.recipients is not None:
             candidates = [aid for aid in message.recipients if aid not in excluded]
             if message.location_scope is None or environment is None:

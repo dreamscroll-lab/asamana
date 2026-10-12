@@ -17,6 +17,7 @@ with no catalog) never touch the on-disk ``./data/worlds.json``.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,18 @@ DEFAULT_CATALOG_PATH = "./data/worlds.json"
 # lives with it; the API rejects anything longer rather than truncating (a name is
 # the user's own text — silently shortening it is worse than saying no).
 MAX_WORLD_NAME_LEN = 40
+
+
+@dataclass(frozen=True)
+class ActorCasting:
+    """The character a world's actor plays, and whether the actor has stepped out for good.
+
+    Chosen once, before the world is confirmed; after an exit the character goes back to AI
+    cognition and stays there.
+    """
+
+    character_id: str
+    exited: bool = False
 
 
 class WorldCatalog:
@@ -125,6 +138,33 @@ class WorldCatalog:
             return
         entry["confirmed"] = bool(value)
         self._flush()
+
+    def set_actor_casting(self, world_id: str, casting: ActorCasting) -> None:
+        """Record which character the world's actor plays, and whether the actor has exited.
+
+        Same re-read-before-write guard as ``register``. A no-op if the world is not cataloged.
+        The rules on when casting may change belong to the caller.
+        """
+
+        if not self._refreshed_for_write(world_id, "set_actor_casting"):
+            return
+        entry = self._entries.get(world_id)
+        if entry is None:
+            return
+        entry["actor_character_id"] = casting.character_id
+        entry["actor_exited"] = casting.exited
+        self._flush()
+
+    def actor_casting(self, world_id: str) -> ActorCasting | None:
+        """The world's casting, or None for a world nobody has been cast in."""
+
+        entry = self._entries.get(world_id)
+        if entry is None or not entry.get("actor_character_id"):
+            return None
+        return ActorCasting(
+            character_id=str(entry["actor_character_id"]),
+            exited=bool(entry.get("actor_exited", False)),
+        )
 
     def set_name(self, world_id: str, world_name: str) -> None:
         """Rename a world's display name.

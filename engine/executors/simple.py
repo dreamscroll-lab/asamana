@@ -64,12 +64,12 @@ class SimpleExecutor(ActionExecutor):
         duration = action.estimated_steps
         purpose = action.action_description or action.action_type.value
         duration_label = describe_duration(duration, self._seconds_per_step)
-        actor_name = self._directory.agent_name(action.agent_id)
+        doer_name = self._directory.agent_name(action.agent_id)
         location = observe_location(environment, action.agent_id)
         if action.action_type == ActionType.REST:
-            opening = scene_line(location, f"{actor_name}休息，打算歇{duration_label}。")
+            opening = scene_line(location, f"{doer_name}休息，打算歇{duration_label}。")
         else:
-            opening = scene_line(location, f"{actor_name}开始着手做「{strip_end_punct(purpose)}」。")
+            opening = scene_line(location, f"{doer_name}开始着手做「{strip_end_punct(purpose)}」。")
         return ActionExecutionState.create(
             action_type=action.action_type,
             initiator_id=action.agent_id,
@@ -93,7 +93,7 @@ class SimpleExecutor(ActionExecutor):
         environment: "EnvironmentSystem",
         message_system: "MessageSystem",
     ) -> List[TickResult]:
-        actor_name = self._directory.agent_name(state.initiator_id)
+        doer_name = self._directory.agent_name(state.initiator_id)
         location = observe_location(environment, state.initiator_id)
         elapsed = state.estimated_steps - state.remaining_steps
         elapsed_label = describe_duration(elapsed, self._seconds_per_step)
@@ -101,14 +101,14 @@ class SimpleExecutor(ActionExecutor):
         if state.action_type == ActionType.REST:
             if elapsed <= 0:
                 planned = describe_duration(state.estimated_steps, self._seconds_per_step)
-                body = f"{actor_name}正在休息，刚歇下，打算歇{planned}。"
+                body = f"{doer_name}正在休息，刚歇下，打算歇{planned}。"
             elif state.remaining_steps > 0:
-                body = f"{actor_name}正在休息，已歇{elapsed_label}，打算再歇{remaining_label}。"
+                body = f"{doer_name}正在休息，已歇{elapsed_label}，打算再歇{remaining_label}。"
             else:
-                body = f"{actor_name}正在休息，已歇{elapsed_label}。"
+                body = f"{doer_name}正在休息，已歇{elapsed_label}。"
         else:
             tail = f"，预计还需{remaining_label}" if state.remaining_steps > 0 else ""
-            body = f"{actor_name}「{state.purpose}」仍在进行，已持续{elapsed_label}{tail}。"
+            body = f"{doer_name}「{state.purpose}」仍在进行，已持续{elapsed_label}{tail}。"
         narrative = scene_line(location, body)
         return [TickResult(
             agent_id=state.initiator_id, outcome=narrative,
@@ -197,16 +197,16 @@ class SimpleExecutor(ActionExecutor):
         # Quoted in the 3p line: unquoted, his first-person words read as the narrator's.
         quoted_intent = strip_end_punct(intent_text)
         place = observe_location(environment, action.agent_id)
-        actor_name = self._directory.agent_name(action.agent_id)
+        doer_name = self._directory.agent_name(action.agent_id)
         if directed:
             recipient_text = "、".join(self._directory.agent_name(aid) for aid in recipient_ids)
             factual = f"我成功在{place}传讯给{recipient_text}：{intent_text}"
-            outcome = scene_line(place, f"{actor_name}成功向{recipient_text}传讯：「{quoted_intent}」。")
+            outcome = scene_line(place, f"{doer_name}成功向{recipient_text}传讯：「{quoted_intent}」。")
         else:
             # Name everyone: the memory must later answer "who heard this".
             heard_text = "、".join(self._directory.agent_name(aid) for aid in receivers)
             factual = f"我在{place}当着{heard_text}的面宣告：{intent_text}"
-            outcome = scene_line(place, f"{actor_name}成功向在场的{heard_text}宣告：「{quoted_intent}」。")
+            outcome = scene_line(place, f"{doer_name}成功向在场的{heard_text}宣告：「{quoted_intent}」。")
         stub = AgentAction(
             agent_id=action.agent_id,
             step=step,
@@ -239,15 +239,15 @@ class SimpleExecutor(ActionExecutor):
         intent_text = action.action_description or "（无明确内容）"
         quoted_intent = strip_end_punct(intent_text)
         place = observe_location(environment, action.agent_id)
-        actor_name = self._directory.agent_name(action.agent_id)
+        doer_name = self._directory.agent_name(action.agent_id)
         if directed:
             reason = "没有能送到的人"
             factual = f"我在{place}传讯：{intent_text}，但没有一个人收得到"
-            outcome = scene_line(place, f"{actor_name}发出传讯「{quoted_intent}」，但没有一个人收得到。")
+            outcome = scene_line(place, f"{doer_name}发出传讯「{quoted_intent}」，但没有一个人收得到。")
         else:
             reason = "此处无人"
             factual = f"我在{place}宣告：{intent_text}，但此处无人，没有人听见"
-            outcome = scene_line(place, f"{actor_name}向四下宣告「{quoted_intent}」，但此处无人，没有人听见。")
+            outcome = scene_line(place, f"{doer_name}向四下宣告「{quoted_intent}」，但此处无人，没有人听见。")
         stub = AgentAction(
             agent_id=action.agent_id,
             step=step,
@@ -294,9 +294,9 @@ class SimpleExecutor(ActionExecutor):
                 action_description=state.purpose,
                 target=state.target,
             )
-            actor_name = self._directory.agent_name(agent_id)
+            doer_name = self._directory.agent_name(agent_id)
             location = observe_location(environment, agent_id) if environment is not None else "此处"
-            reason_3p = format_interrupt_reason_3p(actor_name, thought)
+            reason_3p = format_interrupt_reason_3p(doer_name, thought)
             if state.action_type == ActionType.REST:
                 # Intent only in 1p (see _completed_outcome).
                 intent = format_intent_clause(self._rest_activity(state.purpose) or "")
@@ -306,9 +306,9 @@ class SimpleExecutor(ActionExecutor):
                     else f"刚要休息就{cut}{thought_part}"
                 )
                 gist = scene_line(location, (
-                    f"{actor_name}休息了{elapsed_label}，{cut}。"
+                    f"{doer_name}休息了{elapsed_label}，{cut}。"
                     if elapsed > 0
-                    else f"{actor_name}刚要休息就{cut}。"
+                    else f"{doer_name}刚要休息就{cut}。"
                 ))
             else:
                 factual = (
@@ -317,9 +317,9 @@ class SimpleExecutor(ActionExecutor):
                     else f"刚着手「{state.purpose}」就{cut}{thought_part}"
                 )
                 gist = scene_line(location, (
-                    f"{actor_name}的「{state.purpose}」进行了{elapsed_label}便{cut}。"
+                    f"{doer_name}的「{state.purpose}」进行了{elapsed_label}便{cut}。"
                     if elapsed > 0
-                    else f"{actor_name}刚着手「{state.purpose}」就{cut}。"
+                    else f"{doer_name}刚着手「{state.purpose}」就{cut}。"
                 ))
             results.append(ActionResult(
                 action=stub,
@@ -347,12 +347,12 @@ class SimpleExecutor(ActionExecutor):
         Don't append ``action_description``: it's a first-person sentence and after his name
         reads as if he said it aloud.
         """
-        actor_name = self._directory.agent_name(initiator_id)
+        doer_name = self._directory.agent_name(initiator_id)
         location = observe_location(environment, initiator_id)
         if action_type == ActionType.REST:
             label = describe_duration(duration, self._seconds_per_step)
-            return scene_line(location, f"{actor_name}歇息，前后歇了{label}。")
-        return scene_line(location, f"{actor_name}做完了：「{strip_end_punct(purpose)}」。")
+            return scene_line(location, f"{doer_name}歇息，前后歇了{label}。")
+        return scene_line(location, f"{doer_name}做完了：「{strip_end_punct(purpose)}」。")
 
     def _completed_factual(
         self,

@@ -36,7 +36,7 @@ def spatials_for(world: World, run_step: int, world_time_label: str) -> dict:
 
 
 def resolve_ref(ref: str, id_by_name: dict, valid_ids) -> str:
-    """Resolve a scenario actor reference (agent name or id) to an agent id."""
+    """Resolve a scenario doer reference (agent name or id) to an agent id."""
     ref = str(ref or "")
     if ref in valid_ids:
         return ref
@@ -98,7 +98,7 @@ def apply_ambient_from_scenario(
 
     Appends AmbientEvents into matching agents' spatials in place. No target → global.
     ``exclude`` (agent name/id) drops that agent even if otherwise matched — used to keep
-    a location-scoped event off its own actor (e.g. a bystander-reaction test).
+    a location-scoped event off its own doer (e.g. a bystander-reaction test).
     """
     id_by_name = {v: k for k, v in name_by_id.items()}
     for a in (scenario or {}).get("ambient", []):
@@ -176,9 +176,9 @@ async def apply_action_scene(scenario: dict, world: World, run_step: int, id_by_
     memories. Test scaffolding only — no production change."""
     env = world.environment
     valid_ids = list(world.agents.keys())
-    actor_ref = scenario.get("actor") or (scenario.get("actions", [{}])[0].get("actor", ""))
-    actor_id = resolve_ref(actor_ref, id_by_name, valid_ids)
-    base_loc = env.get_body_location(actor_id)
+    doer_ref = scenario.get("doer") or (scenario.get("actions", [{}])[0].get("doer", ""))
+    doer_id = resolve_ref(doer_ref, id_by_name, valid_ids)
+    base_loc = env.get_body_location(doer_id)
     scene = scenario.get("scene", {}) or {}
 
     for ref in scene.get("colocate", []):
@@ -193,10 +193,10 @@ async def apply_action_scene(scenario: dict, world: World, run_step: int, id_by_
             etype = WorldEntityType.ITEM
         # placement uses discriminated coordinates (presence + presence_ref). Don't pass location_id=: it's
         # a read-only property, and any scenario with scene.items would raise TypeError.
-        # holder: put this thing in someone's hands. "self" means the actor (which is what delivery scenarios need).
+        # holder: put this thing in someone's hands. "self" means the doer (which is what delivery scenarios need).
         holder_ref = it.get("holder")
         holder = (
-            actor_id if holder_ref in ("self", "me")
+            doer_id if holder_ref in ("self", "me")
             else resolve_ref(str(holder_ref), id_by_name, valid_ids)
         ) if holder_ref else None
         env.register_entity(WorldEntity(
@@ -265,8 +265,8 @@ async def apply_action_scene(scenario: dict, world: World, run_step: int, id_by_
             location_id=base_loc, outcome=str(text),
             # Laid back in listed order, the last one a beat before this run starts (matching the runtime window).
             step=run_step - len(happenings) + i,
-            # Empty member set: these things were done by others in the scenario, and the actor shouldn't count as already holding them.
-            actor_ids=(),
+            # Empty member set: these things were done by others in the scenario, and the doer shouldn't count as already holding them.
+            doer_ids=(),
         )
 
     # Best-effort memory seeding (only social TALK retrieves vector memories; relation +

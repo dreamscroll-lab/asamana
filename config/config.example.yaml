@@ -33,7 +33,7 @@
 #   default_provider  the vendor for any scene not listed under scenes
 #   scenes            only the scenes that differ from the default
 #
-# There are 15 scenes (see LLMScene in core/interfaces/llm.py); most need nothing written.
+# There are 16 scenes (see LLMScene in core/interfaces/llm.py); most need nothing written.
 #
 # [Resolution rules] one per field:
 #   provider = scenes[s].provider          else default_provider

@@ -58,6 +58,27 @@ class WorldMeta:
     # Whether the user has reviewed and locked initialization. Unconfirmed worlds
     # sit in the creation-review stage and cannot start their narrative run.
     confirmed: bool = False
+    # The character an actor performs (chosen at confirmation), None if nobody was cast. Once
+    # the actor exits, ``actor_exited`` is set and the character is back with AI cognition.
+    actor_character_id: str | None = None
+    actor_exited: bool = False
+
+
+@dataclass(frozen=True)
+class CastCandidate:
+    """A character as anyone could know them at a glance: whom an actor may choose to perform.
+
+    Nothing of the inner life (traits, values, goals, secret) or of relations: choosing a
+    character must not tell the actor about the others.
+    """
+
+    agent_id: str
+    name: str
+    gender: str
+    age: int | None
+    role: str
+    color: str
+    is_main_character: bool
 
 
 @dataclass(frozen=True)
@@ -219,7 +240,7 @@ class ActionSummary:
     # conscripted participant's outcome only restates the intent). Code-layer ids, never rendered.
     execution_id: str = ""
     initiator_id: str = ""
-    # How long the actor expects it to take, as a natural duration ("about 2 hours") — already
+    # How long the doer expects it to take, as a natural duration ("about 2 hours") — already
     # rendered by the producer, because a step count is a code-layer coordinate and must not
     # reach a narrative surface. Empty unless ``phase`` is "begin".
     duration_label: str = ""
@@ -381,7 +402,7 @@ class InterventionRecord:
 
 @dataclass(frozen=True)
 class NpcStateSummary:
-    """An actor with a body but no mind, as an observer sees it.
+    """A body with no mind (an Npc), as an observer sees it.
 
     Kept out of ``agent_states`` because it isn't an agent, so the relation graph, character
     cards and agent profiles exclude it without any filtering.
@@ -534,6 +555,7 @@ class StepEvent:
             },
             events_this_step=coerce_list(payload.get("events")),
             actions_this_step=coerce_list(payload.get("actions")),
+            perceptions=coerce_dict(payload.get("perceptions")),
             metadata=metadata,
         )
         return cls.from_snapshot(snapshot)
@@ -618,6 +640,8 @@ def build_world_meta(
         main_agent_names=main_agent_names,
         seconds_per_step=seconds_per_step,
         confirmed=bool(catalog_entry.get("confirmed", False)) if catalog_entry else False,
+        actor_character_id=(catalog_entry.get("actor_character_id") or None) if catalog_entry else None,
+        actor_exited=bool(catalog_entry.get("actor_exited", False)) if catalog_entry else False,
     )
 
 

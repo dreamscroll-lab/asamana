@@ -278,7 +278,7 @@ class BodyKind(str, Enum):
 
 @dataclass
 class Npc:
-    """NPC: an actor with a body and no cognition, the middle of the world's three tiers.
+    """NPC: a body with no cognition, the middle of the world's three tiers.
 
     It takes up space, is perceived as a "who", can hold things, and can take a task and see it
     through. It doesn't perceive, remember, form needs, build relations or decide.

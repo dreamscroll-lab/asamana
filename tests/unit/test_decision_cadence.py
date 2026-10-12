@@ -71,6 +71,9 @@ class _StubAgent:
     need_intensity: float = 0.3          # _NEED_REST_BASELINE: noticeable but not urgent
     emotion_intensity: float = 0.2       # EmotionState's own default
 
+    def decides_this_step(self, *, step: int, signals) -> None:
+        return None   # paced by the engine's cadence, as the AI is
+
     def __post_init__(self) -> None:
         self.personality = _StubPersonality(StateLayer(
             agent_id=self.agent_id,

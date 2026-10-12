@@ -62,7 +62,7 @@ def _agent_state_view(agent, target_ids: list[str], name_by_id: dict) -> dict[st
     }
 
 
-def _build_result_from_spec(actor_id: str, spec: dict, run_step: int, id_by_name: dict, valid_ids) -> ActionResult:
+def _build_result_from_spec(doer_id: str, spec: dict, run_step: int, id_by_name: dict, valid_ids) -> ActionResult:
     """Construct an executor-style ActionResult from a scenario spec (the feedback INPUT)."""
     atype = ActionType(spec.get("type", "work"))
     target = ActionTarget()
@@ -75,7 +75,7 @@ def _build_result_from_spec(actor_id: str, spec: dict, run_step: int, id_by_name
     for e in spec.get("target_effects", []) or []:
         effects.append(_build_effect_from_spec(e, id_by_name, valid_ids))
     action = AgentAction(
-        agent_id=actor_id, step=run_step, action_type=atype,
+        agent_id=doer_id, step=run_step, action_type=atype,
         action_description=spec.get("description", ""),
         expected_outcome=spec.get("expected_outcome", ""),
         estimated_steps=1, target=target,
@@ -95,9 +95,9 @@ def _build_result_from_spec(actor_id: str, spec: dict, run_step: int, id_by_name
 
 def _build_effect_from_spec(spec: dict, id_by_name: dict, valid_ids) -> TargetAgentEffect:
     rel = None
-    if spec.get("relation_toward_actor"):
-        r = spec["relation_toward_actor"]
-        rel = (resolve_ref(str(r.get("actor", "")), id_by_name, valid_ids),
+    if spec.get("relation_toward_doer"):
+        r = spec["relation_toward_doer"]
+        rel = (resolve_ref(str(r.get("doer", "")), id_by_name, valid_ids),
                float(r.get("trust_delta", 0.0)), float(r.get("affection_delta", 0.0)))
     return TargetAgentEffect(
         agent_id=resolve_ref(str(spec.get("agent", "")), id_by_name, valid_ids),
@@ -105,7 +105,7 @@ def _build_effect_from_spec(spec: dict, id_by_name: dict, valid_ids) -> TargetAg
         emotion_type=spec.get("emotion_type"),
         emotion_intensity=float(spec.get("emotion_intensity", 0.0)),
         emotion_valence=float(spec.get("emotion_valence", 0.0)),
-        relation_toward_actor=rel,
+        relation_toward_doer=rel,
         vitality_damage=float(spec.get("vitality_damage", 0.0)),
         # Restore the three states per the contract: condition given = apply, condition_cleared = clear, neither = leave alone.
         condition_set=(
@@ -165,8 +165,8 @@ def _rel_targets_of_result(result: ActionResult) -> list[str]:
 async def _run_feedback_self(
     scenario, world, run_step, name_by_id, id_by_name, valid_ids, sink, world_id,
 ) -> None:
-    actor_id = resolve_ref(scenario["actor"], id_by_name, valid_ids)
-    agent = world.agents[actor_id]
+    doer_id = resolve_ref(scenario["doer"], id_by_name, valid_ids)
+    agent = world.agents[doer_id]
     isolate_agent(agent, name_by_id)
     # Optional: plant explicit short-term goals so a scenario can probe goal-progress
     # judgment (a multi-action goal should stay active; a single-action one should complete).
@@ -182,7 +182,7 @@ async def _run_feedback_self(
     spec = scenario["result"]
     dom = spec.get("dominant_need")
     dominant_need = NeedType(dom) if dom else None
-    result = _build_result_from_spec(actor_id, spec, run_step, id_by_name, valid_ids)
+    result = _build_result_from_spec(doer_id, spec, run_step, id_by_name, valid_ids)
     rel_targets = _rel_targets_of_result(result)
 
     before = _agent_state_view(agent, rel_targets, name_by_id)
@@ -190,10 +190,10 @@ async def _run_feedback_self(
     before_mem = set(agent.memory_system._entries.keys())  # noqa: SLF001
 
     active_needs = [n for n in agent.personality.current_needs() if not n.is_hidden]
-    sp = world.environment.spatial_for(agent_id=actor_id, step=run_step)
+    sp = world.environment.spatial_for(agent_id=doer_id, step=run_step)
     state = agent.personality.state  # reflects any short-term goals planted above
     plan = AgentStepPlan(
-        agent_id=actor_id, step=run_step, spatial=sp, inbox=[], broadcasts=[],
+        agent_id=doer_id, step=run_step, spatial=sp, inbox=[], broadcasts=[],
         need_evaluation=NeedEvaluation(
             dominant_need=dominant_need, scores={},
             active_needs=active_needs,
@@ -209,7 +209,7 @@ async def _run_feedback_self(
         await agent.finalize_ongoing_action(result=result, step=run_step)
         error = None
     except Exception as exc:  # noqa: BLE001
-        logger.warning("feedback_self_failed", extra={"world_id": world_id, "actor": actor_id, "error": str(exc)})
+        logger.warning("feedback_self_failed", extra={"world_id": world_id, "doer": doer_id, "error": str(exc)})
         error = str(exc)
 
     after = _agent_state_view(agent, rel_targets, name_by_id)
@@ -220,7 +220,7 @@ async def _run_feedback_self(
     ]
     inputs = _feedback_input_view(agent, spec, dominant_need, name_by_id, kind="self")
     sink.record_phase(PhaseTrace(
-        world_id=world_id, phase="stage.feedback", step=run_step, agent_id=actor_id,
+        world_id=world_id, phase="stage.feedback", step=run_step, agent_id=doer_id,
         inputs=inputs,
         outputs={"kind": "self", "before": before, "after": after,
                  "deltas": _compute_deltas(before, after), "new_memories": new_memories,
@@ -278,7 +278,7 @@ def _feedback_input_view(agent, spec: dict, dominant_need, name_by_id: dict, *, 
     soul = agent.personality.soul
     base = {
         "kind": kind,
-        "actor_name": name_by_id.get(agent.agent_id, agent.agent_id),
+        "doer_name": name_by_id.get(agent.agent_id, agent.agent_id),
         "is_main_character": agent.is_main_character,
         "core_traits": list(getattr(soul, "core_traits", [])),
         "core_values": list(getattr(soul, "core_values", [])),

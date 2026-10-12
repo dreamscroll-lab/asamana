@@ -32,7 +32,7 @@ NEUTRAL_AFFECTION: float = 0.0   # affection ∈ [-1,1]; 0.0 = indifferent
 
 
 class RelationDirection(str, Enum):
-    """Direction of the actor→target relation in an executor adjudication (the LLM's value for
+    """Direction of the doer→target relation in an executor adjudication (the LLM's value for
     the relation field)."""
 
     POSITIVE = "positive"
@@ -351,6 +351,29 @@ class RelationSystem:
         what makes a relation one ``RelationEvolution`` weighs (``relation_has_substance``)."""
         relation = await self.get_or_create(target_agent_id)
         relation.interaction_count += 1
+        relation.updated_step = step
+        await self._store.save_relation(relation)
+
+    async def changed_since(self, step: int) -> List[AgentRelation]:
+        """Relations whose trust, affection, labels or summary changed at or after ``step``."""
+        relations = await self._store.load_all_relations(self._world_id, self._agent_id)
+        return [r for r in relations if r.updated_step >= step]
+
+    async def set_trust_affection(
+        self,
+        target_agent_id: str,
+        *,
+        trust: float | None,
+        affection: float | None,
+        step: int,
+    ) -> None:
+        """Set trust/affection outright; ``None`` keeps a value. Unlike ``apply_interaction`` this
+        moves no delta and counts no interaction: it is a correction, not an exchange."""
+        relation = await self.get_or_create(target_agent_id)
+        if trust is not None:
+            relation.trust_objective = _clamp_trust(trust)
+        if affection is not None:
+            relation.affection_objective = _clamp_affection(affection)
         relation.updated_step = step
         await self._store.save_relation(relation)
 

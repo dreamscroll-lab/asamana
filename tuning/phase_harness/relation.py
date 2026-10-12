@@ -95,7 +95,7 @@ async def _relation_evolve(agent, scenario: dict, step: int, id_by_name, valid_i
     """Drive the production RelationEvolution.evaluate; capture each candidate target's before/after labels + summary and the recent evidence."""
     if agent.relation_evolution is None:
         return {"kind": "evolve", "targets": [], "applied_count": 0,
-                "error": "actor 无 relation_evolution(生产 agent 恒有;此为非生产构造的最小 agent)"}
+                "error": "doer 无 relation_evolution(生产 agent 恒有;此为非生产构造的最小 agent)"}
 
     # Collect expectations per target name (must_keep_labels / expect_no_change) for the outputs echo and deterministic checks.
     expect_by_name: dict[str, dict] = {}
@@ -181,13 +181,13 @@ async def run_relation(
     kind = scenario.get("kind", "evolve")
     step = int(scenario.get("step", 60))
 
-    actor_id = resolve_ref(scenario["actor"], id_by_name, valid_ids)
-    agent = world.agents[actor_id]
+    doer_id = resolve_ref(scenario["doer"], id_by_name, valid_ids)
+    agent = world.agents[doer_id]
     isolate_agent(agent, name_by_id)
     await _apply_relation_setup(agent, scenario, id_by_name, valid_ids, name_by_id)
     seeded = await seed_memories(agent, world_id, scenario, step, id_by_name, valid_ids)
 
-    set_log_context(world_id=world_id, agent_id=actor_id, step=str(step))
+    set_log_context(world_id=world_id, agent_id=doer_id, step=str(step))
     if kind == "perceive":
         outputs = await _relation_perceive(agent, scenario, id_by_name, valid_ids, name_by_id)
     else:
@@ -195,13 +195,13 @@ async def run_relation(
     clear_log_context()
 
     inputs = {
-        "kind": kind, "actor_name": name_by_id.get(actor_id, actor_id),
+        "kind": kind, "doer_name": name_by_id.get(doer_id, doer_id),
         "is_main_character": agent.is_main_character, "step": step, "seeded": seeded,
         "relation_setup": scenario.get("relation_setup", []),
         "seed_memories": [{**seed_view(m), "content": m.stored_content} for m in agent.memory_system._entries.values()],  # noqa: SLF001
     }
     trace_sink.record_phase(PhaseTrace(
-        world_id=world_id, phase="stage.relation", step=step, agent_id=actor_id,
+        world_id=world_id, phase="stage.relation", step=step, agent_id=doer_id,
         inputs=inputs, outputs=outputs, timestamp=datetime.now().isoformat()))
     logger.info("tuning_relation_dry_run_complete",
                 extra={"world_id": world_id, "step": step, "kind": kind, "seeded": seeded})

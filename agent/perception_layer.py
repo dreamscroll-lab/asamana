@@ -135,10 +135,10 @@ class PerceptionMemoryLayer:
             items.append(PerceptionItem(
                 content=ev.content,
                 source="ambient",
-                # agent_actor_ids, not actor_ids: cognition-less bodies must not enter the identity
+                # doer_agent_ids, not doer_ids: cognition-less bodies must not enter the identity
                 # index or they become relation-evolution candidates. Left empty, observed memories
                 # have no owner and identity-scoped retrieval misses them.
-                related_agents=list(ev.agent_actor_ids),
+                related_agents=list(ev.doer_agent_ids),
                 signal_strength=ev.strength if ev.strength is not None else self._tuning.ambient_default_strength,
                 metadata={"source": "ambient", "explicit_strength": ev.strength is not None},
             ))

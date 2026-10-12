@@ -552,7 +552,7 @@ def test_expected_outcome_covert(container) -> None:
     known before.
 
     "Achieve the goal without drawing attention" alone describes covert action as quietly getting
-    something done, but it gets nothing done. It doesn't change the world, only the actor's model
+    something done, but it gets nothing done. It doesn't change the world, only the doer's model
     of it. Without the "what was learned" part, the gap would measure whether it was done quietly
     instead of what was gained.
     """

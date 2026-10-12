@@ -55,7 +55,7 @@
     },
     {
       "name": "ambient_person",
-      "description": "location 级旁观者测试：一处可见的人身威胁在某地点上演，在场众人皆可目睹，但施压者本人(actor)被排除——检验同处旁观者是否对可见威胁应激。",
+      "description": "location 级旁观者测试：一处可见的人身威胁在某地点上演，在场众人皆可目睹，但施压者本人(doer)被排除——检验同处旁观者是否对可见威胁应激。",
       "criteria_focus": [
         "reasonableness",
         "boundary"

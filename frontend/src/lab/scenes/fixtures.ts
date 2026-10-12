@@ -47,7 +47,7 @@ import type {
 } from "../../types";
 
 /** A figure in the bench's cast. Gender + age pick the BODY (skins.bodyFor). */
-export interface LabActor {
+export interface LabCharacter {
   id: string;
   name: string;
   color: string;
@@ -63,7 +63,7 @@ export interface LabActor {
  *
  * Ids use the engine's `agent-<hex>` shape so nothing comes to depend on a legible id.
  */
-export const CAST: LabActor[] = [
+export const CAST: LabCharacter[] = [
   { id: "agent-3f9c1ab204", name: "阿墨", color: "#e8b13d", gender: "男", age: 24, main: true },
   { id: "agent-7b21e5d0c8", name: "阿石", color: "#5fa8d3", gender: "男", age: 27, main: false },
   { id: "agent-c4d8027fa1", name: "阿霖", color: "#c96f8e", gender: "男", age: 22, main: false },
@@ -80,10 +80,10 @@ export const [MO, SHI, LIN, LAN, YAN, CHE] = CAST;
  * One figure per (gender, age bracket): the whole body table at once. Ages sit well clear of the
  * bracket edges (skins.BRACKETS).
  *
- * Ordinary actors with ordinary demographics: the body must arrive as a real agent's does, through
+ * Ordinary characters with ordinary demographics: the body must arrive as a real agent's does, through
  * `setCast`, never through a bench-only override.
  */
-export const BODIES: LabActor[] = [
+export const BODIES: LabCharacter[] = [
   { id: "agent-9a1b0c2d31", name: "男童", color: "#e8b13d", gender: "男", age: 8, main: false },
   { id: "agent-9a1b0c2d32", name: "男青", color: "#5fa8d3", gender: "男", age: 24, main: false },
   { id: "agent-9a1b0c2d33", name: "男壮", color: "#7fbf7f", gender: "男", age: 45, main: false },
@@ -162,19 +162,19 @@ export const nextSeq = (): number => (seqCounter += 1);
 let execCounter = 0;
 
 /** `talk_agent-80375bf6a1_1_bfedd5` — the engine's own execution-id shape. */
-export function execId(type: string, actor: LabActor, step: number): string {
+export function execId(type: string, character: LabCharacter, step: number): string {
   execCounter += 1;
-  return `${type}_${actor.id}_${step}_${execCounter.toString(16).padStart(6, "0")}`;
+  return `${type}_${character.id}_${step}_${execCounter.toString(16).padStart(6, "0")}`;
 }
 
 export function who(
-  actor: LabActor,
+  character: LabCharacter,
   room: Room,
   over: Partial<AgentStateSummary> = {},
 ): AgentStateSummary {
   return {
-    agent_id: actor.id,
-    agent_name: actor.name,
+    agent_id: character.id,
+    agent_name: character.name,
     location: room.name,
     location_id: room.id,
     emotion: Emotion.neutral,
@@ -183,8 +183,8 @@ export function who(
     activity_label: "",
     dominant_need_label: "",
     dominant_need: Need.safety,
-    is_main_character: actor.main,
-    color: actor.color,
+    is_main_character: character.main,
+    color: character.color,
     long_term_goals: [],
     short_term_goals: [],
     emotion_intensity: 0.35,
@@ -234,12 +234,12 @@ export const aimNothing = (): ActionTarget => ({ acts_on: [], claims: [], reache
 
 
 export function did(
-  actor: LabActor,
+  character: LabCharacter,
   over: Partial<ActionSummary> & Pick<ActionSummary, "action_type" | "deed">,
 ): ActionSummary {
   return {
-    agent_id: actor.id,
-    agent_name: actor.name,
+    agent_id: character.id,
+    agent_name: character.name,
     action_description: "",
     outcome: "",
     succeeded: true,
@@ -248,8 +248,8 @@ export function did(
     not_executed: false,
     // The common case; a multi-step beat overrides it (begin / ongoing_tick / …).
     phase: Phase.settled,
-    execution_id: execId(over.action_type || "act", actor, 0),
-    initiator_id: actor.id,
+    execution_id: execId(over.action_type || "act", character, 0),
+    initiator_id: character.id,
     duration_label: "",
     elapsed_steps: 0,
     total_steps: 0,
@@ -257,7 +257,7 @@ export function did(
     target: aimNothing(),
     affected_entity_ids: [],
     inner_monologue: "",
-    is_main_character: actor.main,
+    is_main_character: character.main,
     dialogue: [],
     seq: nextSeq(),
     ...over,

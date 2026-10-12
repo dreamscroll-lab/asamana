@@ -35,6 +35,7 @@ from collections import deque
 from collections.abc import Awaitable, Callable
 
 from core.logging import get_logger
+from core.validate import require_at_least, require_positive
 
 logger = get_logger(__name__)
 
@@ -92,14 +93,13 @@ class RateGate:
         now: Callable[[], float] | None = None,
         sleep: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
-        if base_cooldown <= 0 or max_cooldown < base_cooldown:
-            raise ValueError("require 0 < base_cooldown <= max_cooldown")
-        if max_retry_after <= 0:
-            raise ValueError("max_retry_after must be > 0")
-        if rpm_limit < 0 or tpm_limit < 0:
-            raise ValueError("rpm_limit / tpm_limit must be >= 0 (0 = disabled)")
-        if window_seconds <= 0:
-            raise ValueError("window_seconds must be > 0")
+        require_positive(base_cooldown, "base_cooldown")
+        require_at_least(max_cooldown, base_cooldown, "max_cooldown")
+        require_positive(max_retry_after, "max_retry_after")
+        # 0 disables a limit.
+        require_at_least(rpm_limit, 0, "rpm_limit")
+        require_at_least(tpm_limit, 0, "tpm_limit")
+        require_positive(window_seconds, "window_seconds")
         self._base = base_cooldown
         self._max = max_cooldown
         self._max_retry_after = max_retry_after

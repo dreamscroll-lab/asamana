@@ -125,7 +125,7 @@ class ErrandExecutor(ActionExecutor):
             purpose=action.action_description or "派人办事",
             started_step=step,
             # Giving an order takes one beat however far the bearer goes (see
-            # test_executor_duration_authority). Don't trust the actor's estimate: one sentence
+            # test_executor_duration_authority). Don't trust the doer's estimate: one sentence
             # would pin him in place.
             estimated_steps=1,
             opening_outcome="",
@@ -171,7 +171,7 @@ class ErrandExecutor(ActionExecutor):
             )
             return [self._null_step(state, step=step, location=location)]
 
-        actor_name = self._directory.agent_name(state.initiator_id)
+        doer_name = self._directory.agent_name(state.initiator_id)
         bearer = npc.name or "那人"
         errand_clause = "，".join(_render_errand(
             order, environment=environment, directory=self._directory,
@@ -184,14 +184,14 @@ class ErrandExecutor(ActionExecutor):
         ) else []
 
         # Three channels written separately: the observation must not contain what was ordered.
-        outcome = scene_line(location, f"{actor_name}派{bearer}{errand_clause}。")
+        outcome = scene_line(location, f"{doer_name}派{bearer}{errand_clause}。")
         item = environment.get_entity(order.item_id) if order.item_id else None
         handover_clause = f"把{(item.name if item is not None else '') or '某物'}交到他手上，" if (
             order.item_id
         ) else ""
         observation = scene_line(
             location,
-            f"{actor_name}叫住{bearer}交代了几句，{handover_clause}{bearer}随即动身。",
+            f"{doer_name}叫住{bearer}交代了几句，{handover_clause}{bearer}随即动身。",
         )
         return [ActionResult(
             action=self._stub(state, step),
@@ -224,8 +224,8 @@ class ErrandExecutor(ActionExecutor):
         """Can't send it: unavailable, not unwilling (an Npc has no will to reject with). A real
         world event, remembered normally; ``reason`` is a structured fact."""
         location = observe_location(environment, action.agent_id)
-        actor_name = self._directory.agent_name(action.agent_id)
-        outcome = scene_line(location, f"{actor_name}本想派人跑一趟，却因{reason}未能成行。")
+        doer_name = self._directory.agent_name(action.agent_id)
+        outcome = scene_line(location, f"{doer_name}本想派人跑一趟，却因{reason}未能成行。")
         return ActionExecutionState.create_failed(
             action_type=ActionType.ERRAND,
             initiator_id=action.agent_id,

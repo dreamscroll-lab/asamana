@@ -116,6 +116,7 @@ class ActionStatus(str, Enum):
 
 
 from core.numeric import clamp  # noqa: E402
+from core.prompts import EMOTION_INTENSITY_RANGE, EMOTION_VALENCE_RANGE  # noqa: E402
 
 
 # Emotion intensity band edges, the single source (``summary()`` wording derives from them).
@@ -480,8 +481,8 @@ class PersonalityLayer:
 
         self._state.emotion = EmotionState(
             primary=primary,
-            intensity=clamp(intensity, 0.0, 1.0),
-            valence=clamp(valence, -1.0, 1.0),
+            intensity=clamp(intensity, *EMOTION_INTENSITY_RANGE),
+            valence=clamp(valence, *EMOTION_VALENCE_RANGE),
             triggered_by=triggered_by,
         )
 

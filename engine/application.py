@@ -12,6 +12,7 @@ from config.models import Config
 from core.container import Container
 from core.context import get_log_context, observe_stage, set_log_context
 from core.factory import ComponentKind, ProviderFactory
+from core.interfaces.actor import ActorDecision, ActorInterruptAnswer, ActorTurn
 from core.interfaces.trace import Stage
 from core.interfaces.world_config import WorldConfig
 from core.logging import get_logger
@@ -24,11 +25,11 @@ from engine.director import DirectivePrompt, DirectiveResult, DirectorChannel, N
 from engine.event import EventSettings
 from engine.executors import build_default_registry
 from engine.message_system import MessageSystem
-from engine.run_control import RunController, RunState
+from engine.run_control import RunController, RunState, StepWithdrawn
 from engine.runtime import NarrativeRuntime, RuntimeStepResult
 from engine.scheduler import AgentScheduler
 from engine.world_pressure import WorldPressureEvaluator
-from world import World, WorldBuilder, WorldCatalog
+from world import ActorCasting, World, WorldBuilder, WorldCatalog
 from world.initializer import WorldInitializer
 
 logger = get_logger(__name__)
@@ -194,11 +195,13 @@ class NarrativeApplication:
             existing = self._sessions.get(world_id)
             if existing is not None:
                 return existing.world
-            return await self._restore_session_locked(world_id)
+            return await self._restore_session_locked(world_id, casting=self._casting(world_id))
 
-    async def _restore_session_locked(self, world_id: str) -> World:
+    async def _restore_session_locked(
+        self, world_id: str, *, casting: ActorCasting | None,
+    ) -> World:
         initializer = WorldInitializer(self._container, max_npcs=self._config.engine.max_npcs)
-        world = await initializer.restore(world_id)
+        world = await initializer.restore(world_id, casting=casting)
         steps = await self._container.snapshot.list_steps(world_id)
         latest_step = max((s for s in steps if s > 0), default=0)
         fired_events = await self._collect_fired_events(world_id, steps)
@@ -214,6 +217,7 @@ class NarrativeApplication:
             world=world,
             runtime=self._build_runtime(
                 world,
+                casting=casting,
                 start_step=latest_step,
                 fired_events=fired_events,
                 start_event_seq=start_event_seq,
@@ -270,12 +274,10 @@ class NarrativeApplication:
         # Traces rewind with the clock (see TraceSink.delete_run_traces).
         self._container.trace_sink.delete_run_traces(world_id)
 
-        world = await initializer.restore(world_id)
-
-        # restore() warmed from the still-polluted collection, hence the re-warm after the purge.
-        for agent in world.agents.values():
-            await agent.memory_system.purge_runtime_memories()
-            await agent.memory_system.warm_recent_memories(current_step=0)
+        # restore() resumes at step 0 and purges every memory written after it. The casting
+        # stands: it belongs to the world's setup, not to its run.
+        casting = self._casting(world_id)
+        world = await initializer.restore(world_id, casting=casting)
 
         # Also stops in-flight event generation, written for the step-N world.
         if existing is not None:
@@ -283,11 +285,121 @@ class NarrativeApplication:
 
         self._sessions[world_id] = RuntimeSession(
             world=world,
-            runtime=self._build_runtime(world, start_step=0),
+            runtime=self._build_runtime(world, casting=casting, start_step=0),
         )
         logger.info(
             "world_session_reset",
             extra={"world_id": world_id, "world_name": world.analysis.world_name},
+        )
+        return world
+
+    # ------------------------------------------------------------------
+    # Actor casting. Chosen once while the world is still being set up; afterwards the only
+    # change is the actor's one-way exit.
+    # ------------------------------------------------------------------
+
+    def _casting(self, world_id: str) -> ActorCasting | None:
+        return self._catalog.actor_casting(world_id) if self._catalog is not None else None
+
+    async def cast_actor(self, world_id: str, character_id: str) -> World:
+        """Have the actor perform ``character_id``; every other character stays with AI cognition.
+
+        Only before the world is confirmed: confirming locks its setup, the cast included, so a
+        confirmed world (every bundled example among them) can't take an actor. Until then the
+        choice may be changed.
+        """
+        async with self._lifecycle_lock(world_id):
+            if self._catalog is None or (entry := self._catalog.get(world_id)) is None:
+                raise ValueError(f"World {world_id!r} is not cataloged.")
+            if entry.get("confirmed"):
+                raise ValueError(f"World {world_id!r} is confirmed; its cast is locked.")
+            if (casting := self._casting(world_id)) is not None and casting.exited:
+                raise ValueError(f"The actor has left world {world_id!r} and can't return.")
+            # The API can't run an unconfirmed world, but run_world isn't gated.
+            if any(step > 0 for step in await self._container.snapshot.list_steps(world_id)):
+                raise ValueError(f"World {world_id!r} has already run; its cast is locked.")
+            return await self._recast_locked(world_id, ActorCasting(character_id=character_id))
+
+    async def release_actor(self, world_id: str) -> World:
+        """The actor steps out for good; the character goes back to AI cognition.
+
+        It stays main tier, and nobody can be cast in this world again. Stop the run first: a
+        step suspended on the actor's turn is discarded by the stop (see ``stop_run``).
+        """
+        async with self._lifecycle_lock(world_id):
+            casting = self._casting(world_id)
+            if casting is None or casting.exited:
+                raise ValueError(f"No actor is performing a character in world {world_id!r}.")
+            return await self._recast_locked(
+                world_id, ActorCasting(character_id=casting.character_id, exited=True),
+            )
+
+    def performing_character(self, world_id: str) -> str | None:
+        """The character an actor performs in this world now; None once nobody does."""
+        casting = self._casting(world_id)
+        return casting.character_id if casting is not None and not casting.exited else None
+
+    def actor_turn(self, world_id: str) -> ActorTurn | None:
+        """The turn waiting for the actor, if this world's live session has one."""
+        session = self._sessions.get(world_id)
+        return session.runtime.actor.pending_turn if session is not None else None
+
+    async def interpret_actor_answer(
+        self, world_id: str, text: str,
+    ) -> tuple[ActorTurn, ActorDecision | ActorInterruptAnswer | None]:
+        """The actor's words read against the open turn, and that turn: the reading is an
+        answer to it alone, and the answer names it by ``turn_id`` (``answer_actor_turn``).
+
+        Raises ``ActorAnswerRejected`` for an action the character can't take, ``ValueError``
+        when no turn is waiting.
+        """
+        turn = self.actor_turn(world_id)
+        if turn is None:
+            raise ValueError("No turn is waiting for the actor")
+        return turn, await self.get_session(world_id).runtime.interpret_actor_answer(text)
+
+    def answer_actor_turn(
+        self,
+        world_id: str,
+        *,
+        turn_id: str,
+        answer: ActorDecision | ActorInterruptAnswer,
+    ) -> None:
+        """Answer the open turn, which must be ``turn_id``: an answer meant for a turn that has
+        since closed must not land on the next one.
+
+        Raises ``ActorAnswerRejected`` when the turn refuses the answer (it stays open), and
+        ``ValueError`` when that turn is no longer waiting.
+        """
+        turn = self.actor_turn(world_id)
+        if turn is None or turn.turn_id != turn_id:
+            raise ValueError("That turn is no longer waiting for the actor")
+        self.get_session(world_id).runtime.actor.submit(answer)
+
+    async def _recast_locked(self, world_id: str, casting: ActorCasting) -> World:
+        """Rebuild the session under ``casting``, then record it.
+
+        Rebuilt, not patched: whether a character is actor-controlled, and its tier, are set
+        when it is constructed, the same way on every restore. The new session is built first,
+        so a casting the world can't take (an unknown character) changes nothing.
+        """
+        existing = self._sessions.get(world_id)
+        if existing is not None and self._run_is_live(existing):
+            raise ValueError(
+                f"World {world_id!r} is running — stop the run before changing who performs a character."
+            )
+        world = await self._restore_session_locked(world_id, casting=casting)
+        if existing is not None:
+            await existing.runtime.aclose()
+        assert self._catalog is not None
+        self._catalog.set_actor_casting(world_id, casting)
+        logger.info(
+            "actor_casting_changed",
+            extra={
+                "world_id": world_id,
+                "agent_id": casting.character_id,
+                "exited": casting.exited,
+            },
         )
         return world
 
@@ -382,6 +494,15 @@ class NarrativeApplication:
         except asyncio.CancelledError:
             self._set_status(world_id, session, RunState.COMPLETED)
             raise
+        except StepWithdrawn:
+            # The step stopped halfway, at the actor's turn: what it wrote is in this session's
+            # memory and partly in the stores. Drop the session; the next restore resumes at the
+            # last committed step and rolls the rest back.
+            self._set_status(world_id, session, RunState.COMPLETED)
+            if self._sessions.get(world_id) is session:
+                del self._sessions[world_id]
+            await session.runtime.aclose()
+            logger.info("world_run_abandoned_at_actor_turn", extra={"world_id": world_id})
         except Exception as exc:  # noqa: BLE001 — surface any run failure as FAILED status
             self._set_status(world_id, session, RunState.FAILED)
             logger.error(
@@ -576,6 +697,9 @@ class NarrativeApplication:
         if session.controller is None:
             raise ValueError(f"World {world_id!r} is not running.")
         session.controller.stop()
+        # A step waiting on the actor would never reach the boundary: withdraw the turn, and
+        # the run loop discards the half-run step.
+        session.runtime.actor.abandon()
         self._set_status(world_id, session, RunState.STOPPING)
         logger.info("world_run_stopping", extra={"world_id": world_id})
 
@@ -604,6 +728,7 @@ class NarrativeApplication:
         if session is not None and session.task is not None and not session.task.done():
             if session.controller is not None:
                 session.controller.stop()
+            session.runtime.actor.abandon()
             try:
                 await session.task
             except asyncio.CancelledError:
@@ -657,6 +782,7 @@ class NarrativeApplication:
         self,
         world: World,
         *,
+        casting: ActorCasting | None = None,
         start_step: int = 0,
         fired_events: list[dict[str, object]] | None = None,
         start_event_seq: int = 0,
@@ -717,6 +843,9 @@ class NarrativeApplication:
             start_event_seq=start_event_seq,
             fired_events=fired_events or (),
         )
+        # Wired here, once: the step loop never asks who performs a character.
+        if casting is not None and not casting.exited:
+            runtime.cast_actor(world.agents[casting.character_id])
         return runtime
 
 

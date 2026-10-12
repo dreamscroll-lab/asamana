@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List
+from typing import TYPE_CHECKING, List
 
 from core.interfaces.phenomenon import Phenomenon, parse_phenomenon
 from core.interfaces.severity import Severity, parse_severity
+
+if TYPE_CHECKING:
+    from core.interfaces.message import Message
 
 
 class BroadcastType(str, Enum):
@@ -98,7 +101,7 @@ class AmbientEvent:
     strength:
         None          → PerceptionLayer uses the default ambient strength (0.2, a weak background signal)
         float ∈ [0,1] → strength set by the producer, e.g. a strong social signal like covert exposure
-    actor_ids:
+    doer_ids:
         ()            → a generic trace in the environment (every agent at the location sees it)
         non-empty     → produced by the acting body these agents belong to (one id for a solo
                         action; all participants for a group action like TALK), plus anyone the
@@ -107,8 +110,8 @@ class AmbientEvent:
                         action as a third-party observation. A set, because a group action can
                         be recorded under another participant's id (a TALK passive-join).
 
-    agent_actor_ids:
-        The subset of ``actor_ids`` with cognition, derived in ``record_carry_observation``
+    doer_agent_ids:
+        The subset of ``doer_ids`` with cognition, derived in ``record_carry_observation``
         (``agent/`` can't reach ``EnvironmentSystem._npcs``). A memory's ``related_agents`` may
         only come from this: an Npc there would get relation labels, though it has no relations.
 
@@ -117,8 +120,8 @@ class AmbientEvent:
 
     content: str
     strength: float | None = None
-    actor_ids: tuple[str, ...] = ()
-    agent_actor_ids: tuple[str, ...] = ()
+    doer_ids: tuple[str, ...] = ()
+    doer_agent_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -239,3 +242,20 @@ class Broadcast:
             self.severity = parse_severity(self.severity)
         if not isinstance(self.phenomenon, Phenomenon):
             self.phenomenon = parse_phenomenon(self.phenomenon)
+
+
+@dataclass(frozen=True)
+class PerceivedSignals:
+    """What reached one character this step: messages to it, broadcasts reaching where it
+    stands, and others' acts it saw (``engine.signals`` builds it, one definition for every
+    consumer).
+
+    Standing beside someone who did nothing is not a signal: pure co-location stays out.
+    """
+
+    messages: tuple["Message", ...] = ()
+    broadcasts: tuple[Broadcast, ...] = ()
+    ambient: tuple[AmbientEvent, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.messages or self.broadcasts or self.ambient)

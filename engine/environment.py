@@ -60,7 +60,7 @@ MAX_ENTITIES_PER_PLACE = 12
 # per-place cap normally bounds it already.
 MAX_VISIBLE_ENTITIES = 15
 
-# Larger than the actor's menu: a judge missing a thing rules as if it weren't in the room.
+# Larger than the doer's menu: a judge missing a thing rules as if it weren't in the room.
 MAX_SCENE_ENTITIES = 30
 
 # The most Npcs a world can hold (prompt space: each crowds the co-located list). Per world
@@ -95,8 +95,8 @@ def _ambient_payload(event: AmbientEvent) -> dict[str, object]:
     return {
         "content": event.content,
         "strength": event.strength,
-        "actor_ids": list(event.actor_ids),
-        "agent_actor_ids": list(event.agent_actor_ids),
+        "doer_ids": list(event.doer_ids),
+        "doer_agent_ids": list(event.doer_agent_ids),
     }
 
 
@@ -105,8 +105,8 @@ def _ambient_from_payload(payload: Mapping[str, object]) -> AmbientEvent:
     return AmbientEvent(
         content=str(payload.get("content", "")),
         strength=float(strength) if isinstance(strength, (int, float)) else None,
-        actor_ids=tuple(str(a) for a in payload.get("actor_ids") or ()),
-        agent_actor_ids=tuple(str(a) for a in payload.get("agent_actor_ids") or ()),
+        doer_ids=tuple(str(a) for a in payload.get("doer_ids") or ()),
+        doer_agent_ids=tuple(str(a) for a in payload.get("doer_agent_ids") or ()),
     )
 
 
@@ -158,12 +158,12 @@ class FeasibilityResult:
 class _Happening:
     """The full ``ActionResult.outcome`` of something that surfaced at a place; ``AmbientEvent``
     is the degraded string onlookers perceive of it. Outcomes nobody could see aren't included.
-    ``actor_ids`` already have it and are excluded on read.
+    ``doer_ids`` already have it and are excluded on read.
     """
 
     step: int
     content: str
-    actor_ids: tuple[str, ...]
+    doer_ids: tuple[str, ...]
 
 
 class EnvironmentSystem:
@@ -452,12 +452,12 @@ class EnvironmentSystem:
             self._items[entity.entity_id] = entity
 
     def spawn_entity(
-        self, spawn: EntitySpawn, *, ground: str, actor_id: str | None = None,
+        self, spawn: EntitySpawn, *, ground: str, doer_id: str | None = None,
     ) -> bool:
         """The one way to put a new thing into the world. Returns False when nothing was
         created (no name, no real ground, or the place is full); that's not an error.
 
-        ``ground`` is where it lands unless born in someone's hands. ``actor_id`` is only for
+        ``ground`` is where it lands unless born in someone's hands. ``doer_id`` is only for
         self-filtering. The quota is enforced here, not in ``register_entity``, so restore never
         loses things. ids are deterministic name slugs for replay. An empty ``perception`` means
         nobody saw it (a private item), not a missed delivery.
@@ -473,7 +473,7 @@ class EnvironmentSystem:
             # ``"location"`` lands here too: places must not be created this way.
             logger.warning(
                 "spawn_unknown_kind",
-                extra={"entity_name": name, "kind": spawn.entity_type, "actor_id": actor_id},
+                extra={"entity_name": name, "kind": spawn.entity_type, "doer_id": doer_id},
             )
             return False
         if holder_id and entity_type.is_takeable:
@@ -483,7 +483,7 @@ class EnvironmentSystem:
             if not ground or ground in (IN_TRANSIT, UNPLACED):
                 logger.warning(
                     "spawn_without_ground",
-                    extra={"entity_name": name, "actor_id": actor_id, "ground": ground},
+                    extra={"entity_name": name, "doer_id": doer_id, "ground": ground},
                 )
                 return False
             presence, presence_ref = EntityPresence.AT_LOCATION, ground
@@ -500,7 +500,7 @@ class EnvironmentSystem:
                 "entity_place_full",
                 extra={
                     "cap": self._max_entities_per_place, "entity_name": name,
-                    "actor_id": actor_id, "place": presence_ref,
+                    "doer_id": doer_id, "place": presence_ref,
                 },
             )
             return False
@@ -529,10 +529,10 @@ class EnvironmentSystem:
         # The observer needs the assigned id.
         spawn.entity_id = entity_id
         if spawn.perception and ground and ground not in (IN_TRANSIT, UNPLACED):
-            # actor_ids keeps the maker from perceiving his own product as a third party.
+            # doer_ids keeps the maker from perceiving his own product as a third party.
             self.record_carry_observation(
                 location_id=ground, observation=spawn.perception,
-                actor_ids=(actor_id,) if actor_id else (),
+                doer_ids=(doer_id,) if doer_id else (),
             )
         return True
 
@@ -540,7 +540,7 @@ class EnvironmentSystem:
         self,
         change: EntityStateChange,
         *,
-        acting_agent_id: str | None = None,
+        doer_id: str | None = None,
     ) -> bool:
         """The ONLY runtime path for mutating entity placement/state, so the placement invariant
         lives in one place. Returns True if the entity was found.
@@ -581,17 +581,17 @@ class EnvironmentSystem:
         if change.perception:
             scope = (
                 change.perception_scope
-                or (acting_agent_id and self._locations.get(acting_agent_id))
+                or (doer_id and self._locations.get(doer_id))
                 or prior_location
                 or ""
             )
             if scope:
                 # Carry, not the current layer: this step's perception is already taken.
-                # actor_ids keeps the actor from perceiving his own change.
+                # doer_ids keeps the doer from perceiving his own change.
                 self.record_carry_observation(
                     location_id=scope,
                     observation=change.perception,
-                    actor_ids=(acting_agent_id,),
+                    doer_ids=(doer_id,),
                 )
 
         return True
@@ -803,14 +803,14 @@ class EnvironmentSystem:
         location_id: str,
         observation: str,
         strength: float | None = None,
-        actor_ids: tuple[str, ...] = (),
+        doer_ids: tuple[str, ...] = (),
     ) -> None:
         """Queue a location-scoped AmbientEvent for the NEXT step's ambient_events.
 
         strength:
             None  → ordinary ambient (PerceptionMemoryLayer's default)
             float → used as is, for something that matters to onlookers
-        actor_ids:
+        doer_ids:
             Every member of the producing execution plus whoever the act landed on; spatial_for
             hides the ambient from them so nobody reads a third-person account of their own act.
             ``()`` for environment / system ambient.
@@ -819,13 +819,13 @@ class EnvironmentSystem:
             return None
         self._carry_annotations.setdefault(location_id, []).append(
             AmbientEvent(
-                content=observation, strength=strength, actor_ids=tuple(actor_ids),
-                agent_actor_ids=self._cognizant(actor_ids),
+                content=observation, strength=strength, doer_ids=tuple(doer_ids),
+                doer_agent_ids=self._cognizant(doer_ids),
             )
         )
 
     def record_happening(
-        self, *, location_id: str, outcome: str, step: int, actor_ids: tuple[str, ...] = (),
+        self, *, location_id: str, outcome: str, step: int, doer_ids: tuple[str, ...] = (),
     ) -> None:
         """Record the full-fidelity version of something that surfaced at ``location_id``, for
         lurkers; ``record_carry_observation`` gives onlookers the degraded one. The caller
@@ -835,7 +835,7 @@ class EnvironmentSystem:
             return None
         bucket = self._happenings.setdefault(location_id, [])
         bucket.append(_Happening(
-            step=step, content=outcome, actor_ids=tuple(actor_ids),
+            step=step, content=outcome, doer_ids=tuple(doer_ids),
         ))
         cutoff = step - HAPPENINGS_WINDOW_STEPS
         if bucket[0].step <= cutoff:
@@ -860,7 +860,7 @@ class EnvironmentSystem:
         return [
             (t.step, t.content)
             for t in sorted(self._happenings.get(location_id, []), key=lambda t: t.step)
-            if t.step >= since_step and not excluded.intersection(t.actor_ids)
+            if t.step >= since_step and not excluded.intersection(t.doer_ids)
         ]
 
     def _cognizant(self, ids: tuple[str, ...]) -> tuple[str, ...]:
@@ -919,7 +919,7 @@ class EnvironmentSystem:
         }
         # Never show an agent a third-person account of an act he was part of.
         ambient_events: list[AmbientEvent] = [
-            ev for ev in self._step_annotations.get(location_id, []) if agent_id not in ev.actor_ids
+            ev for ev in self._step_annotations.get(location_id, []) if agent_id not in ev.doer_ids
         ]
         # is_public hides things in other people's hands, never in one's own.
         visible_entities = [

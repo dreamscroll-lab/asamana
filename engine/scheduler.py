@@ -6,12 +6,14 @@ import random
 from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Collection, List, Optional, Sequence
+from typing import TYPE_CHECKING, Collection, List, Mapping, Optional, Sequence
 
 from agent.need import NEED_URGENT_INTENSITY
 from agent.personality import EMOTION_STRONG_INTENSITY
+from core.interfaces.perception import PerceivedSignals
 from core.interfaces.urgency import Urgency
 from core.logging import get_logger
+from core.validate import require_positive
 
 if TYPE_CHECKING:
     from agent.agent import Agent
@@ -30,6 +32,7 @@ class CadenceReason(str, Enum):
     NEED = "need"                    # a need is driving it
     EMOTION = "emotion"              # an emotion has it
     STARVED = "starved"              # nothing pressing, but it has gone too long
+    OWN_PACE = "own_pace"            # the character sets its own pace and asked to decide
 
 
 # Cadence defaults, a world-time argument with no other anchor: at one world hour per step, a
@@ -111,8 +114,8 @@ class AgentScheduler:
         main_max_idle_steps: int = DEFAULT_MAIN_MAX_IDLE_STEPS,
         background_max_idle_steps: int = DEFAULT_BACKGROUND_MAX_IDLE_STEPS,
     ) -> None:
-        if main_max_idle_steps <= 0 or background_max_idle_steps <= 0:
-            raise ValueError("max_idle_steps must be positive")
+        require_positive(main_max_idle_steps, "main_max_idle_steps")
+        require_positive(background_max_idle_steps, "background_max_idle_steps")
         # Initiative-fairness seed: each batch is shuffled so no agent permanently
         # out-initiatives a same-tier peer (a fixed agent_id order starves conscription).
         # Seeded per (seed, step) so order reproduces across restarts without persisting RNG
@@ -128,6 +131,7 @@ class AgentScheduler:
         step: int,
         in_progress_at_step_start: Collection[str],
         interrupters: Collection[str] = (),
+        signals: "Mapping[str, PerceivedSignals] | None" = None,
     ) -> StepExecutionPlan:
         """Build an explicit execution plan for the given step.
 
@@ -141,18 +145,27 @@ class AgentScheduler:
 
         Pressure is read off ``pending_external_goals``, already written by the pressure phase,
         so this stays a pure policy over agent state.
+
+        A character that sets its own pace (``Agent.decides_this_step``: one a person performs)
+        bypasses the cadence gate and decides exactly when it says so, on what reached it this
+        step (``signals``).
         """
         candidates = [
             agent for agent in agents
             if agent.is_active and agent.agent_id not in in_progress_at_step_start
         ]
         interrupter_ids = set(interrupters)
-        verdicts = {
-            agent.agent_id: self._should_decide(
-                agent, step=step, interrupted=agent.agent_id in interrupter_ids,
+        signals = signals or {}
+
+        def verdict(agent: "Agent") -> CadenceReason | None:
+            own = agent.decides_this_step(
+                step=step, signals=signals.get(agent.agent_id, PerceivedSignals()),
             )
-            for agent in candidates
-        }
+            if own is not None:
+                return CadenceReason.OWN_PACE if own else None
+            return self._should_decide(agent, step=step, interrupted=agent.agent_id in interrupter_ids)
+
+        verdicts = {agent.agent_id: verdict(agent) for agent in candidates}
         deciders = [agent for agent in candidates if verdicts[agent.agent_id] is not None]
         self._log_cadence(
             step=step,

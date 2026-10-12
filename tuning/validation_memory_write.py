@@ -108,7 +108,7 @@ def _deterministic_checks(phase: dict, agent_ids: set[str]) -> dict[str, Any]:
     if outputs.get("writes") is not None:  # contrast / emotion_contrast — per-writer checks
         for w in outputs.get("writes", []) or []:
             cur = (w.get("persona") or {}).get("current_emotion") or {}
-            v += _check_one_write(event, w, cur, agent_ids, tag=(w.get("persona") or {}).get("actor_name", ""))
+            v += _check_one_write(event, w, cur, agent_ids, tag=(w.get("persona") or {}).get("doer_name", ""))
     else:
         v += _check_one_write(event, outputs, inputs.get("current_emotion") or {}, agent_ids)
     return {"passed": not v, "field_violations": v}

@@ -62,10 +62,10 @@ def _make_spatial(
     *,
     ambient_events: list[str] | None = None,
     ambient_event_strengths: list[float | None] | None = None,
-    ambient_actor_ids: list[tuple[str, ...]] | None = None,
+    ambient_doer_ids: list[tuple[str, ...]] | None = None,
     visible_agent_ids: list[str] | None = None,
 ) -> SpatialPerception:
-    """Test helper: takes a list of strings plus optional parallel strength/actor lists and zips
+    """Test helper: takes a list of strings plus optional parallel strength/doer lists and zips
     them into AmbientEvent.
 
     Production code never builds SpatialPerception from list[str]; this only keeps test assertions
@@ -73,18 +73,18 @@ def _make_spatial(
     """
     events = ambient_events or []
     strengths = ambient_event_strengths or [None] * len(events)
-    actors = ambient_actor_ids or [()] * len(events)
+    doers = ambient_doer_ids or [()] * len(events)
     return SpatialPerception(
         location_id="palace",
         location_view=LocationView(name="Palace", description="A grand palace."),
         reachable_locations=[],
         visible_agents={aid: PerceivedPresence() for aid in visible_agent_ids or []},
         ambient_events=[
-            # Every actor in this helper counts as having cognition; the split between the two body
+            # Every acting body in this helper counts as having cognition; the split between the two body
             # tiers is derived by record_carry_observation and not tested here (see
             # test_npc_is_not_an_agent).
-            AmbientEvent(content=text, strength=s, actor_ids=a, agent_actor_ids=a)
-            for text, s, a in zip(events, strengths, actors)
+            AmbientEvent(content=text, strength=s, doer_ids=a, doer_agent_ids=a)
+            for text, s, a in zip(events, strengths, doers)
         ],
         world_time_label="morning",
         current_step=1,
@@ -276,12 +276,12 @@ async def test_ambient_explicit_strength_overrides_default(container) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ambient_memory_records_actor_in_identity_index(container) -> None:
-    """Ambient memories from observation must carry actor ids (AmbientEvent.actor_ids →
+async def test_ambient_memory_records_doer_in_identity_index(container) -> None:
+    """Ambient memories from observation must carry the doers' ids (AmbientEvent.doer_agent_ids →
     Memory.related_agents).
 
     Ambient is "I watch someone doing something", the main channel for knowing others. Dropping
-    actor_ids leaves every observed memory ownerless and the identity index useless, so "what I know
+    doer_ids leaves every observed memory ownerless and the identity index useless, so "what I know
     about someone" falls back to semantic neighbors and reliably recalls the wrong person.
     """
     layer, memory = _make_layer(container, agent_id="agent-1", is_main_character=True)
@@ -290,7 +290,7 @@ async def test_ambient_memory_records_actor_in_identity_index(container) -> None
     spatial = _make_spatial(
         ambient_events=["李元吉快步穿过宫门"],
         ambient_event_strengths=[0.7],
-        ambient_actor_ids=[("agent-yuanji",)],
+        ambient_doer_ids=[("agent-yuanji",)],
     )
     await layer.record(spatial=spatial, inbox=[], broadcasts=[], personality=personality, step=1)
 

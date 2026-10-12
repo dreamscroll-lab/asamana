@@ -209,7 +209,7 @@ class ActionExecutionState:
         started_step: int,
         purpose: str = "",
     ) -> "ActionExecutionState":
-        """A feasibility/rejection failure as an actor-only, same-step-completing execution
+        """A feasibility/rejection failure as a doer-only, same-step-completing execution
         carrying its result in ``extra["completed_result"]``, so it flows through the one
         completion path."""
         # A "couldn't execute" non-event, not a defeat; the renderer mutes it.

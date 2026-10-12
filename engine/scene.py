@@ -1,4 +1,4 @@
-"""The adjudication scene — who and what is at an actor's location, rendered for executor prompts.
+"""The adjudication scene — who and what is at a doer's location, rendered for executor prompts.
 
 Narrative-layer text only: names and descriptions, never ids. It lives outside ``engine.executors``
 because modules that are not executors assemble scenes too (``npc_runner``), and importing anything
@@ -146,7 +146,7 @@ def assemble_scene_context(
     it had happened. Turn it off for any judge whose output others read or that enters memory.
 
     ``reveal_all_content`` is NOT implied by the god view: what a thing *says* stays at what
-    ``agent_id`` can read unless this is set. Set it only when the verdict is the actor learning
+    ``agent_id`` can read unless this is set. Set it only when the verdict is the doer learning
     what something says (COVERT); a judge whose prose reaches others (PHYSICAL, TALK) would leak a
     sealed letter's words.
 
@@ -221,7 +221,7 @@ def assemble_scene_context(
     first_person = voice is SituationVoice.FIRST
     own_eyes = visibility is SceneVisibility.OWN_EYES
     # Ordering and truncation share ``reachable_in_order`` with the perception layer, or the judge
-    # could rule on something the actor never saw. Filtering stays separate on purpose.
+    # could rule on something the doer never saw. Filtering stays separate on purpose.
     present = environment.items_present_at(loc_id)
     own_entities = (
         environment.reachable_in_order(
@@ -302,7 +302,7 @@ def _person_current_intent(agent: "Agent | None") -> str:
 
 
 def observe_location(environment: "EnvironmentSystem", agent_id: str) -> str:
-    """The narrative name of the actor's current location; the single entry point for every
+    """The narrative name of the doer's current location; the single entry point for every
     executor resolving "where".
 
     Room name; in transit → "途中" (on the way); unknown → "此处" (here); never a bare id.

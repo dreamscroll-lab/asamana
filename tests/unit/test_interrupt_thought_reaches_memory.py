@@ -73,7 +73,7 @@ async def test_an_exposed_covert_leaks_the_deed_but_never_the_thought(container)
     """COVERT is the one interrupt path whose outcome doubles as the bystanders' observation.
 
     So the reason must hang off ``outcome`` alone: appending it to the shared string would publish
-    the actor's private thought to everyone who saw him. The two channels are built separately.
+    the doer's private thought to everyone who saw him. The two channels are built separately.
     """
     from tests.unit.test_action_executors import _make_agent
     from engine.executors.covert import CovertExecutor

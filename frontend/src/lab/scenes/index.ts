@@ -20,7 +20,7 @@ import { buildBodyScenes } from "./bodies";
 import { buildWeatherScenes } from "./weather";
 
 export { CAST, castDemographics } from "./fixtures";
-export type { LabActor, LabScene } from "./fixtures";
+export type { LabCharacter, LabScene } from "./fixtures";
 
 /**
  * Every scene, built for this map's places (see places.ts). The order is the sidebar's and also the

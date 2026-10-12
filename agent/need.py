@@ -487,12 +487,14 @@ class NeedEngine:
         external_goals: "List[ExternalGoal] | None" = None,
         need_relevance: dict[NeedType, float] | None = None,
         perceived_relations: "List[PerceivedRelation] | None" = None,
+        generate_goals: bool = True,
     ) -> NeedEvaluation:
         """Evaluate motivations against the current context — **reads personality, writes nothing**.
 
         The returned ``NeedEvaluation`` carries the (possibly topped-up) short-term goal entities;
         the agent commits them via a personality mutator. ``need_relevance`` is the perception
-        appraisal's per-need activation (see ``_score_needs``).
+        appraisal's per-need activation (see ``_score_needs``). ``generate_goals=False`` is for a
+        actor-controlled character, whose goals come from the actor: needs are still scored.
         """
 
         state = personality.state
@@ -551,7 +553,7 @@ class NeedEngine:
         recently_completed_goals = [g for g in entities if g.status == GoalStatus.COMPLETED]
         recently_failed_goals = [g for g in entities if g.status == GoalStatus.FAILED]
 
-        should_generate = (
+        should_generate = generate_goals and (
             force_goal_update
             or prepotent_need is not None
             or self._should_update_goals(dominant_need, entities, agent_id=state.agent_id)

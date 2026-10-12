@@ -35,6 +35,7 @@ from core.interfaces.world_config import WorldConfig
 from worlds.tiled import CAST_ART_FIELDS, CHARACTERS_FILENAME
 
 from core.coerce import coerce_int
+from world.catalog import ActorCasting
 from world.models import AgentDefinition, AgentTier, HistoricalEventSeed, ThemeAnalysis, World, WorldEntity, WorldEntityType
 from world.stored_config import StoredWorldConfig, serialize_world_config
 
@@ -47,7 +48,7 @@ class WorldInitializer:
 
     def __init__(self, container: Container, *, max_npcs: int = DEFAULT_MAX_NPCS) -> None:
         self._container = container
-        # How many cognition-less actors a world can have. The default is a module constant; application
+        # How many cognition-less doers a world can have. The default is a module constant; application
         # injects the real value from config. How busy a world should be is tuned per world, not a universal law.
         self._max_npcs = max_npcs
 
@@ -171,7 +172,12 @@ class WorldInitializer:
         )
 
     def _instantiate_agent(
-        self, *, world_id: str, definition: AgentDefinition, clock_config: WorldTimeConfig = WorldTimeConfig()
+        self,
+        *,
+        world_id: str,
+        definition: AgentDefinition,
+        clock_config: WorldTimeConfig = WorldTimeConfig(),
+        casting: ActorCasting | None = None,
     ) -> Agent:
         seconds_per_step = clock_config.seconds_per_step
         # Closure from step → the world calendar's time label, injected into MemorySystem to render time
@@ -215,7 +221,10 @@ class WorldInitializer:
                 need_intensities={n.type.value: n.intensity for n in active_innate},
             ),
         )
-        is_main = definition.tier == AgentTier.MAIN
+        cast = casting is not None and casting.character_id == definition.agent_id
+        # The character an actor plays is main tier from then on, exit or not: the user lives the
+        # story through it, so it gets full perception fidelity, memory and retries.
+        is_main = definition.tier == AgentTier.MAIN or cast
         memory_system = MemorySystem(
             self._container.llm_router,
             self._container.embedding,
@@ -443,13 +452,17 @@ class WorldInitializer:
                     )
                     raise result
 
-    async def restore(self, world_id: str) -> World:
+    async def restore(self, world_id: str, *, casting: ActorCasting | None = None) -> World:
         """Restore a previously built world from persisted storage.
 
         Loads the world's persisted config asset and the step-0 manifest,
         reconstructs agents from their definitions, applies the latest
         AgentState from agent_store, and returns a runtime-ready World.
         The code template in the container is never consulted here.
+
+        ``casting`` is kept outside the world's stores (in the catalog), so the caller passes it;
+        the cast character is built main tier. Who performs it is the runtime's to wire
+        (``NarrativeRuntime.cast_actor``).
         """
         config_data = await self._container.snapshot.load_world_config(world_id)
         if config_data is None:
@@ -474,6 +487,10 @@ class WorldInitializer:
         agent_definitions = [
             AgentDefinition.from_dict(d) for d in manifest["agent_definitions"]
         ]
+        if casting is not None and casting.character_id not in {d.agent_id for d in agent_definitions}:
+            raise ValueError(
+                f"World {world_id!r} has no character {casting.character_id!r} to cast the actor as"
+            )
 
         environment = EnvironmentSystem(active_world_config, max_npcs=self._max_npcs)
         await self._instantiate_entity_seeds(analysis, environment, active_world_config)
@@ -492,15 +509,19 @@ class WorldInitializer:
             (s for s in await self._container.snapshot.list_steps(world_id) if s > 0),
             default=0,
         )
+        await self._rollback_relations(world_id, resume_step)
 
         for definition in agent_definitions:
             agent = self._instantiate_agent(
                 world_id=world_id,
                 definition=definition,
                 clock_config=clock_config,
+                casting=casting,
             )
             agents[agent.agent_id] = agent
             await agent.memory_system.ensure_collections()
+            # Before warming: an uncommitted step's memories must not come back with the rest.
+            await agent.memory_system.purge_memories_after(resume_step)
 
             stored = await self._container.agent_store.load_agent_state(world_id, agent.agent_id)
             if stored is not None:
@@ -541,6 +562,26 @@ class WorldInitializer:
             directory=directory,
             current_step=resume_step,
         )
+
+    async def _rollback_relations(self, world_id: str, resume_step: int) -> None:
+        """Make the relation store match the snapshot the world resumes from.
+
+        Relations are written during a step (perception, feedback), but only a completed step's
+        snapshot is authoritative; a step that never committed would otherwise leave its
+        relation changes behind and apply them twice. An empty snapshot table is the read-failure
+        fallback of the step that wrote it, not "no relations", so it is left alone.
+        """
+        snapshot = await self._container.snapshot.load(world_id, resume_step)
+        if snapshot is None or not snapshot.agent_relations:
+            logger.warning(
+                "relation_rollback_skipped",
+                extra={"world_id": world_id, "step": resume_step},
+            )
+            return
+        store = self._container.agent_store
+        await store.clear_relations(world_id)
+        for payload in snapshot.agent_relations.values():
+            await store.save_relation(AgentRelation(**payload))
 
     def _repatriate_transit_agents(
         self,

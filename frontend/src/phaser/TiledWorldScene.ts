@@ -986,7 +986,7 @@ export class TiledWorldScene
   }
 
   // Partition agents+actions into groups connected by shared participants
-  // (actor, targets, dialogue speakers). Disjoint groups render concurrently.
+  // (doer, targets, dialogue speakers). Disjoint groups render concurrently.
   private partition(
     states: AgentStateSummary[],
     actions: ActionSummary[],
@@ -1204,7 +1204,7 @@ export class TiledWorldScene
       }
       // Non-talk: transient effect, then the intent caption, then the persistent result chip.
       if (act.action_type === ActionType.physical) physicalEffect(this, tok, act);
-      // Covert: a shadow closes in around him (red if spotted) — about the actor, since COVERT has
+      // Covert: a shadow closes in around him (red if spotted) — about the doer, since COVERT has
       // no structured target. Only where he enters concealment; the closing beat is him leaving it.
       else if (act.action_type === ActionType.covert && act.phase !== Phase.ongoing_complete)
         stealthVeil(this, tok, act.detected);

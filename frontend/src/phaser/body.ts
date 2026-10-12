@@ -156,7 +156,7 @@ export class BodyRig {
   // mid-swing. Restoration goes through delayP, which resolves even when a scrub supersedes
   // the step, so a token is never stranded mid-blow.
 
-  /** Act out one action: the actor's deed, and the reaction of anyone it was aimed at. */
+  /** Act out one action: the doer's deed, and the reaction of anyone it was aimed at. */
   playDeed(tok: AgentToken, act: ActionSummary, tokens: Map<string, AgentToken>): void {
     const body = deedBody(act.deed, act.succeeded !== false);
     if (!body) return; // nothing was adjudicated → nothing was done → draw nothing
@@ -164,8 +164,8 @@ export class BodyRig {
     // let go. Re-entering it would leave him stuck in it (sustained poses have no timer) and
     // strand a covert's shroud.
     const done = act.phase === Phase.ongoing_complete;
-    if (body.actor === "attack") this.swing(tok);
-    else this.holdPose(tok, body.actor, body.sustained && !done);
+    if (body.doer === "attack") this.swing(tok);
+    else this.holdPose(tok, body.doer, body.sustained && !done);
     this.setShroud(tok, done ? 1 : body.shroud ?? 1);
     if (!body.target) return;
     // The TARGET's pose is always a beat: sustained-ness describes the ACTOR's deed, not the

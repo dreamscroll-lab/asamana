@@ -5,8 +5,10 @@ graph). No coordinates/layout — a client lays it out. A 2D renderer turns the
 symbolic state into a map on the client; a text view ignores the geometry.
 
 The WebSocket pushes off the in-process event bus (subscribe, not poll): on
-connect it sends the latest persisted step and current run state, then forwards
-each live ``step`` and ``status`` event for its world.
+connect it sends the current run state, the turn waiting for the actor (if one is),
+and the latest persisted step, then forwards each live ``step``, ``status`` and
+``actor_turn`` event for its world. An ``actor_turn`` frame carries the whole turn
+when one opens and null when it closes, so it reads the same however many are missed.
 """
 
 from __future__ import annotations
@@ -169,6 +171,9 @@ def build_observe_router(services: ApiServices) -> Any:
         await websocket.send_json(
             {"type": "status", "data": {"world_id": world_id, "status": state.value if state else None}}
         )
+        turn = application.actor_turn(world_id)
+        if turn is not None:
+            await websocket.send_json({"type": "actor_turn", "data": to_jsonable(turn)})
         steps = await manager.list_steps(world_id)
         # Skip the step the initial snapshot already covered (subscribing first causes this overlap).
         sent_step = -1
@@ -195,6 +200,10 @@ def build_observe_router(services: ApiServices) -> Any:
                         if se.step <= sent_step:
                             continue
                         await websocket.send_json({"type": "step", "data": to_jsonable(se)})
+                    elif etype == "actor_turn":
+                        await websocket.send_json(
+                            {"type": "actor_turn", "data": to_jsonable(event.get("turn"))}
+                        )
                     elif etype == "status":
                         await websocket.send_json(
                             {"type": "status",

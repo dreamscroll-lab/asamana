@@ -588,7 +588,7 @@ class ExecutionArbiter:
         """The initiator's record for a newly admitted execution's first beat.
 
         Surfaces the executor's opening_outcome, else a generic marker that also names the
-        actor. The real outcome lands at complete().
+        doer. The real outcome lands at complete().
         """
         marker = exec_state.opening_outcome or (
             f"{self._directory.agent_name(plan.agent_id)}着手{exec_state.purpose}"
@@ -717,7 +717,7 @@ class ExecutionArbiter:
 
         Carried into a create_failed execution, so it takes the one completion path like any
         other failure. Nothing happened in the world, so onlookers see nothing."""
-        actor_name = self._directory.agent_name(plan.agent_id)
+        doer_name = self._directory.agent_name(plan.agent_id)
         desc = plan.action.action_description
         stub = AgentAction(
             agent_id=plan.agent_id,
@@ -726,13 +726,13 @@ class ExecutionArbiter:
             action_description=desc,
             target=plan.action.target,
         )
-        # desc is the actor's own first-person wording: quote it and strip its end punctuation,
+        # desc is the doer's own first-person wording: quote it and strip its end punctuation,
         # or it renders as "我本想我走到他面前…细节。，却因".
         quoted = strip_end_punct(desc)
         return ActionResult(
             action=stub,
             expected_outcome=plan.action.expected_outcome,
-            outcome=f"{actor_name}本想做「{quoted}」，却因{reason}未能如愿。",
+            outcome=f"{doer_name}本想做「{quoted}」，却因{reason}未能如愿。",
             observations=[],
             succeeded=False,
             failure_reason=reason,

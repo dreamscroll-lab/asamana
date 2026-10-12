@@ -190,11 +190,11 @@ async def test_an_unrelated_blow_leaves_a_standing_condition_alone(container) ->
 
 
 # ---------------------------------------------------------------------------
-# Feedback landing: the actor's own axis
+# Feedback landing: the doer's own axis
 # ---------------------------------------------------------------------------
 
 def _own_result(**kw) -> ActionResult:
-    """The actor's own PHYSICAL result — the condition lands on himself, not via target_effects."""
+    """The doer's own PHYSICAL result — the condition lands on himself, not via target_effects."""
     return ActionResult(
         action=AgentAction(
             agent_id="a2", step=12, action_type=ActionType.PHYSICAL,
@@ -205,30 +205,30 @@ def _own_result(**kw) -> ActionResult:
 
 
 @pytest.mark.asyncio
-async def test_a_condition_can_land_on_the_actor_himself(container) -> None:
-    """Others usually do the pinning, yet the one restrained is the actor — this consequence
-    doesn't go through a target; only the actor's own axis can carry it."""
+async def test_a_condition_can_land_on_the_doer_himself(container) -> None:
+    """Others usually do the pinning, yet the one restrained is the doer — this consequence
+    doesn't go through a target; only the doer's own axis can carry it."""
     agent = _make_agent(container)
     await agent._apply_feedback(
-        result=_own_result(actor_condition_set=BOUND), dominant_need=None, emotion=None,
+        result=_own_result(doer_condition_set=BOUND), dominant_need=None, emotion=None,
     )
     assert agent.personality.state.condition == BOUND
 
 
 @pytest.mark.asyncio
-async def test_the_actor_can_free_himself(container) -> None:
+async def test_the_doer_can_free_himself(container) -> None:
     """A bound man breaking free is the escape valve's legitimate ending; without this axis no one
     could ever undo his ropes."""
     agent = _make_agent(container)
     agent.personality.set_condition(BOUND)
     await agent._apply_feedback(
-        result=_own_result(actor_condition_cleared=True), dominant_need=None, emotion=None,
+        result=_own_result(doer_condition_cleared=True), dominant_need=None, emotion=None,
     )
     assert agent.personality.state.condition is None
 
 
 @pytest.mark.asyncio
-async def test_an_ordinary_action_leaves_the_actors_condition_alone(container) -> None:
+async def test_an_ordinary_action_leaves_the_doers_condition_alone(container) -> None:
     """Default "unchanged" — same rule as the target axis; the silent state is the easiest to
     write as "not given means clear"."""
     agent = _make_agent(container)

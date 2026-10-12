@@ -25,6 +25,8 @@ from core.interfaces.condition import BodyCondition, npc_condition_fallback_step
 from core.prompts import (
     render_npc,
     CLOSED_WORLD_FACT_RULE,
+    EMOTION_INTENSITY_RANGE,
+    EMOTION_VALENCE_RANGE,
     VITALITY_DAMAGE_DEFINITION,
     VITALITY_RELIEF_CAP,
     VITALITY_RELIEF_DEFINITION,
@@ -43,7 +45,7 @@ from engine.executors.base import (
     ActionExecutor,
 )
 from engine.environment import SALIENT_AMBIENT_STRENGTH
-from engine.narration import SAME_PLACE_VERDICT_RULE, ensure_actor_named, observed_here, scene_line
+from engine.narration import SAME_PLACE_VERDICT_RULE, ensure_doer_named, observed_here, scene_line
 from engine.scene import (
     IDLE_BYSTANDER_VERDICT_RULE, SceneVisibility, assemble_scene_context, observe_location,
     scene_npc_view,
@@ -86,7 +88,7 @@ def _relation_delta(direction: str, succeeded: bool) -> tuple[float, float] | No
 def _affected_person_id(
     deed: Deed,
     *,
-    actor_id: str,
+    doer_id: str,
     prior_owner_id: str | None,
     recipient_id: str | None,
 ) -> str | None:
@@ -97,17 +99,17 @@ def _affected_person_id(
     """
     if deed is Deed.RELINQUISH:
         return recipient_id or None
-    if prior_owner_id and prior_owner_id != actor_id:
+    if prior_owner_id and prior_owner_id != doer_id:
         return prior_owner_id
     return None
 
 
 #: The affected person's second-person event line per deed, for the reaction stage.
 _POSSESSION_EVENT_LINES: dict[Deed, str] = {
-    Deed.SEIZE:      "{actor}要从你手里夺走{item}",
-    Deed.DESTROY:    "{actor}要毁掉你手里的{item}",
-    Deed.RELINQUISH: "{actor}要把{item}交到你手上",
-    Deed.OPERATE:    "{actor}动了你手里的{item}",
+    Deed.SEIZE:      "{doer}要从你手里夺走{item}",
+    Deed.DESTROY:    "{doer}要毁掉你手里的{item}",
+    Deed.RELINQUISH: "{doer}要把{item}交到你手上",
+    Deed.OPERATE:    "{doer}动了你手里的{item}",
 }
 
 
@@ -146,8 +148,8 @@ def _bystander_strength(verdict: "_Verdict") -> float | None:
     - Any other strike, even a miss: one tier lower.
     - restrain alone and relief don't count: they also cover helping someone.
     """
-    hurt = max(verdict.target_damage, verdict.actor_damage)
-    if hurt >= 0.3 or verdict.target_condition_desc or verdict.actor_condition_desc:
+    hurt = max(verdict.target_damage, verdict.doer_damage)
+    if hurt >= 0.3 or verdict.target_condition_desc or verdict.doer_condition_desc:
         return SALIENT_AMBIENT_STRENGTH
     if verdict.deed == Deed.STRIKE:
         return _LIGHT_VIOLENCE_STRENGTH
@@ -161,7 +163,7 @@ class _Subject:
     disagree; those facts are derived properties, never stored copies.
     """
 
-    actor_id:        str
+    doer_id:        str
     item_type:       str                  # routing key code derives from the slot, not an LLM label (§6)
     target_id:       str
     target_block:    str                  # the rendered 【目标】 block (narrative layer, no ids)
@@ -189,14 +191,14 @@ class _Subject:
         return self.item.owner_id if self.item is not None else None
 
     @property
-    def actor_holds(self) -> bool:
-        return self.prior_owner_id is not None and self.prior_owner_id == self.actor_id
+    def doer_holds(self) -> bool:
+        return self.prior_owner_id is not None and self.prior_owner_id == self.doer_id
 
     @property
     def seize_available(self) -> bool:
         """Takeable and not already in his own hands; read by both the judge menu and
         ``_resolve_deed``."""
-        return self.item is not None and self.item.is_takeable and not self.actor_holds
+        return self.item is not None and self.item.is_takeable and not self.doer_holds
 
     @property
     def needs_relation(self) -> bool:
@@ -205,7 +207,7 @@ class _Subject:
         return (
             (self.is_person and not self.is_npc)
             or bool(self.recipient_id)
-            or (self.prior_owner_id is not None and not self.actor_holds)
+            or (self.prior_owner_id is not None and not self.doer_holds)
         )
 
 
@@ -214,37 +216,37 @@ class _Verdict:
     """World facts adjudicated by the functional judge (single source of truth)."""
 
     success: bool
-    # outcome: third person, names actor + target, full authority. Physical acts are fully
+    # outcome: third person, names doer + target, full authority. Physical acts are fully
     # public, so it doubles as the onlooker observation channel.
     outcome: str
-    fact: str                  # first person (actor's view), the actor's own memory channel
+    fact: str                  # first person (doer's view), the doer's own memory channel
     failure_reason: str        # 3p "why it failed" (≤20 chars, "" on success); never in observation
-    relation_dir: str          # "positive" | "negative" | "neutral" — actor toward target
-    # Don't add an actor relief slot: nothing gates it, so self-healing would skip REST's time cost.
-    actor_damage: float
+    relation_dir: str          # "positive" | "negative" | "neutral" — doer toward target
+    # Don't add a doer relief slot: nothing gates it, so self-healing would skip REST's time cost.
+    doer_damage: float
     # Kept separate, not netted at parse time: narrative channels read each direction.
     target_damage: float       # only meaningful when target is a person
     target_relief: float       # only meaningful when target is a person
     new_entity_state: str      # only meaningful when target is a tracked entity
-    deed: Deed                 # what the actor was doing, regardless of success; the judge's
+    deed: Deed                 # what the doer was doing, regardless of success; the judge's
     # call because only it reads the intent ("掰开" vs "砸烂" the same gate). Drives the
     # entity mutation and the observer's picture.
     #
-    # Lasting conditions, split by person (see ActionResult.actor_condition_set). The only
+    # Lasting conditions, split by person (see ActionResult.doer_condition_set). The only
     # defaults in the class: most acts leave none, while every field above must be answered.
     target_condition_desc: str = ""
     target_condition_steps: int = 0    # >0 = lifts on expiry; 0 = needs outside help
     frees_target: bool = False         # this act lifted the target's existing condition
-    actor_condition_desc: str = ""
-    actor_condition_steps: int = 0
-    frees_actor: bool = False          # lifted the actor's existing condition (broke free / let go)
+    doer_condition_desc: str = ""
+    doer_condition_steps: int = 0
+    frees_doer: bool = False          # lifted the doer's existing condition (broke free / let go)
 
 
 class PhysicalExecutor(ActionExecutor):
     """Executor for PHYSICAL actions: a two-stage pipeline in complete() (born-zero).
 
     1. ``_judge`` (functional referee) adjudicates world facts: success, damage, entity state.
-       The actor's personality is evidence, not the viewpoint.
+       The doer's personality is evidence, not the viewpoint.
     2. ``_llm_target_reaction`` (in-character) writes the counterpart's subjective experience
        from the judged facts; it never decides physical facts.
 
@@ -276,7 +278,7 @@ class PhysicalExecutor(ActionExecutor):
         message_system: "MessageSystem",
     ) -> ActionExecutionState:
         agent_id = action.agent_id
-        actor_name = self._directory.agent_name(agent_id)
+        doer_name = self._directory.agent_name(agent_id)
         location = observe_location(environment, agent_id)
         # Fixed by which decision slot was filled, never a self-reported category (§6).
         item_type = action.target.acted_on_kind
@@ -309,7 +311,7 @@ class PhysicalExecutor(ActionExecutor):
                 action_description=description,
                 target=action.target,
             )
-            outcome = scene_line(location, f"{actor_name}本想做「{description}」，却因{reason}未能做成。")
+            outcome = scene_line(location, f"{doer_name}本想做「{description}」，却因{reason}未能做成。")
             failure = ActionResult(
                 action=stub,
                 expected_outcome=action.expected_outcome,
@@ -378,13 +380,13 @@ class PhysicalExecutor(ActionExecutor):
             )
         else:
             # Look up first, don't whitelist type strings: a missed type would silently be judged
-            # as an abstract noun. Scope the name lookup to the actor's location so a namesake
+            # as an abstract noun. Scope the name lookup to the doer's location so a namesake
             # elsewhere can't answer.
             item = environment.find_item(
                 lookup_key, environment.get_body_location(agent_id)
             ) if lookup_key else None
             target_block = (
-                self._entity_target_block(item, actor_id=agent_id) if item is not None
+                self._entity_target_block(item, doer_id=agent_id) if item is not None
                 else self._unresolved_target_block(target_id, item_type)
             )
             # Holder and recipient need the same evidence as a person target (vitality, emotion,
@@ -402,7 +404,7 @@ class PhysicalExecutor(ActionExecutor):
                     )
 
         return _Subject(
-            actor_id=agent_id, item_type=item_type, target_id=target_id,
+            doer_id=agent_id, item_type=item_type, target_id=target_id,
             target_block=target_block, item=item,
             target_agent=target_agent, recipient_id=recipient_id,
             recipient_agent=agents.get(recipient_id) if recipient_id else None,
@@ -417,42 +419,42 @@ class PhysicalExecutor(ActionExecutor):
         item = subject.item
         if item is None or not verdict.success:
             return []
-        actor_name = self._directory.agent_name(subject.actor_id)
+        doer_name = self._directory.agent_name(subject.doer_id)
         if verdict.deed == Deed.DESTROY:
             return [EntityStateChange(
                 entity_id=item.entity_id,
                 new_state=verdict.new_entity_state or "destroyed",
                 destroyed=True,
-                perception=scene_line(location, f"{actor_name}摧毁了{item.name}。"),
+                perception=scene_line(location, f"{doer_name}摧毁了{item.name}。"),
             )]
         if verdict.deed == Deed.SEIZE:
             return [EntityStateChange(
                 entity_id=item.entity_id,
-                owner_id=subject.actor_id,
-                perception=scene_line(location, f"{actor_name}拿起了{item.name}。"),
+                owner_id=subject.doer_id,
+                perception=scene_line(location, f"{doer_name}拿起了{item.name}。"),
             )]
         if verdict.deed == Deed.RELINQUISH:
             recipient_id = subject.recipient_id
             return [EntityStateChange(
                 entity_id=item.entity_id,
                 owner_id=recipient_id or None,
-                location_id=None if recipient_id else environment.get_body_location(subject.actor_id),
+                location_id=None if recipient_id else environment.get_body_location(subject.doer_id),
                 perception=scene_line(location, (
-                    f"{actor_name}把{item.name}交到了{self._directory.agent_name(recipient_id)}手上。"
-                    if recipient_id else f"{actor_name}放下了{item.name}。"
+                    f"{doer_name}把{item.name}交到了{self._directory.agent_name(recipient_id)}手上。"
+                    if recipient_id else f"{doer_name}放下了{item.name}。"
                 )),
             )]
         return [EntityStateChange(
             entity_id=item.entity_id,
             new_state=verdict.new_entity_state or "used",
-            perception=scene_line(location, f"{actor_name}操作/使用了{item.name}。"),
+            perception=scene_line(location, f"{doer_name}操作/使用了{item.name}。"),
         )]
 
     def _resolve_counterpart(
         self, verdict: "_Verdict", subject: "_Subject", *,
         agents: dict[str, "Agent"], environment: "EnvironmentSystem",
     ) -> tuple[str | None, "Agent | None"]:
-        """Who besides the actor is materially affected: (id, live object). The target for an
+        """Who besides the doer is materially affected: (id, live object). The target for an
         act on a person; for a thing, whose hands it left or went into (by deed).
 
         Returned separately: the relation delta needs only the id, the reaction needs the
@@ -467,7 +469,7 @@ class PhysicalExecutor(ActionExecutor):
             return None, None
         candidate = _affected_person_id(
             verdict.deed,
-            actor_id=subject.actor_id,
+            doer_id=subject.doer_id,
             prior_owner_id=subject.prior_owner_id,
             recipient_id=subject.recipient_id or None,
         )
@@ -476,7 +478,7 @@ class PhysicalExecutor(ActionExecutor):
         if (
             other is None
             or not other.is_active
-            or environment.get_body_location(candidate) != environment.get_body_location(subject.actor_id)
+            or environment.get_body_location(candidate) != environment.get_body_location(subject.doer_id)
         ):
             return None, None
         return candidate, other
@@ -486,9 +488,9 @@ class PhysicalExecutor(ActionExecutor):
         step: int,
     ) -> TargetAgentEffect:
         """The counterpart's effect: experience from the reaction stage, harm from the judge."""
-        actor_name = self._directory.agent_name(subject.actor_id)
+        doer_name = self._directory.agent_name(subject.doer_id)
         is_person = subject.is_person
-        # The judge's 3p outcome, not the actor's first-person description: an embedded "I"
+        # The judge's 3p outcome, not the doer's first-person description: an embedded "I"
         # would be read as the receiver himself, and the intent may contradict the verdict.
         event_line = verdict.outcome
         template = (
@@ -497,13 +499,13 @@ class PhysicalExecutor(ActionExecutor):
         )
         if template and subject.item is not None:
             event_line = (
-                f"{template.format(actor=actor_name, item=subject.item.name)}"
+                f"{template.format(doer=doer_name, item=subject.item.name)}"
                 f"，结果：{'做成了' if verdict.success else '没能做成'}"
             )
         effect = await self._llm_target_reaction(
             target_agent=counterpart,
-            actor_id=subject.actor_id,
-            actor_name=actor_name,
+            doer_id=subject.doer_id,
+            doer_name=doer_name,
             event_line=event_line,
             succeeded=verdict.success,
             # Harm applies only to acts on people.
@@ -519,12 +521,12 @@ class PhysicalExecutor(ActionExecutor):
             and is_person
             and counterpart.personality.state.vitality - net_damage <= 0.0
         ):
-            effect.death_cause = f"被{actor_name}耗尽最后一滴生命力，已失去生命。"
+            effect.death_cause = f"被{doer_name}耗尽最后一滴生命力，已失去生命。"
         # Declared only; lands in Agent.apply_target_effect. Neither set = leave his condition alone.
         if verdict.target_condition_desc:
             effect.condition_set = BodyCondition(
                 description=verdict.target_condition_desc,
-                source_agent_id=subject.actor_id,
+                source_agent_id=subject.doer_id,
                 since_step=step,
                 # 0 = needs outside help, never expires on its own.
                 until_step=(
@@ -550,7 +552,7 @@ class PhysicalExecutor(ActionExecutor):
             return [stored]  # feasibility failure
 
         agent_id = state.initiator_id
-        actor_name = self._directory.agent_name(agent_id)
+        doer_name = self._directory.agent_name(agent_id)
         location = observe_location(environment, agent_id)
         target = state.target
         description = state.purpose
@@ -572,7 +574,7 @@ class PhysicalExecutor(ActionExecutor):
             is_person=subject.is_person,
             has_entity=subject.item is not None,
             seize_available=subject.seize_available,
-            actor_holds=subject.actor_holds,
+            doer_holds=subject.doer_holds,
             needs_relation=subject.needs_relation,
             recipient_line=self._recipient_line(subject.recipient_id, subject.recipient_agent),
             step=step,
@@ -628,15 +630,15 @@ class PhysicalExecutor(ActionExecutor):
                 ))
 
         # Same rules as the target's condition.
-        actor_condition_set: "BodyCondition | None" = None
-        if verdict.actor_condition_desc:
-            actor_condition_set = BodyCondition(
-                description=verdict.actor_condition_desc,
+        doer_condition_set: "BodyCondition | None" = None
+        if verdict.doer_condition_desc:
+            doer_condition_set = BodyCondition(
+                description=verdict.doer_condition_desc,
                 # No source agent: the verdict doesn't say who; don't guess.
                 since_step=step,
                 until_step=(
-                    (step + verdict.actor_condition_steps)
-                    if verdict.actor_condition_steps > 0 else None
+                    (step + verdict.doer_condition_steps)
+                    if verdict.doer_condition_steps > 0 else None
                 ),
             )
 
@@ -648,7 +650,7 @@ class PhysicalExecutor(ActionExecutor):
             target=target,
             estimated_steps=1,
         )
-        outcome = scene_line(location, ensure_actor_named(verdict.outcome, actor_name))
+        outcome = scene_line(location, ensure_doer_named(verdict.outcome, doer_name))
         return [ActionResult(
             action=stub,
             expected_outcome=state.expected_outcome,
@@ -658,13 +660,13 @@ class PhysicalExecutor(ActionExecutor):
             ),
             succeeded=verdict.success,
             failure_reason=verdict.failure_reason,   # 3p authoritative "why it failed"
-            factual_memory=verdict.fact,    # 1p → the actor's own memory channel
+            factual_memory=verdict.fact,    # 1p → the doer's own memory channel
             relation_updates=relation_updates,
             target_effects=target_effects,
             npc_effects=npc_effects,
-            vitality_damage=verdict.actor_damage,
-            actor_condition_set=actor_condition_set,
-            actor_condition_cleared=(actor_condition_set is None and verdict.frees_actor),
+            vitality_damage=verdict.doer_damage,
+            doer_condition_set=doer_condition_set,
+            doer_condition_cleared=(doer_condition_set is None and verdict.frees_doer),
             entity_state_changes=entity_state_changes,
             deed=verdict.deed.value,  # what he was seen doing — carried even when he failed
         )]
@@ -727,23 +729,23 @@ class PhysicalExecutor(ActionExecutor):
         return "\n".join(lines)
 
     def _unresolved_target_block(self, target_id: str, item_type: str) -> str:
-        """What the judge reads when the target isn't in the world: the actor's own words on the
+        """What the judge reads when the target isn't in the world: the doer's own words on the
         free-text branch, else a descriptive referent (``target_id`` is then a real id, which
         must never enter a prompt)."""
         if item_type == KIND_OBJECT:
             return target_id or "某物"
         return self._directory.entity_name(target_id)
 
-    def _entity_target_block(self, item: "WorldEntity", *, actor_id: str) -> str:
+    def _entity_target_block(self, item: "WorldEntity", *, doer_id: str) -> str:
         type_label = "物品" if item.is_takeable else "据点标记"
         # Ownership matters: taking or damaging someone else's thing is a contest or an offense.
         owner_name = self._directory.agent_name(item.owner_id) if item.owner_id else None
         # No content: the outcome goes verbatim to onlookers, and the whole room would read the
-        # letter. Takeable is from the actor's view, to match the deed options.
-        return f"【{type_label}】{render_entity(item, owner_name=owner_name, held_by_viewer=item.owner_id == actor_id)}"
+        # letter. Takeable is from the doer's view, to match the deed options.
+        return f"【{type_label}】{render_entity(item, owner_name=owner_name, held_by_viewer=item.owner_id == doer_id)}"
 
     def _recipient_line(self, recipient_id: str, recipient_agent: "Agent | None") -> str:
-        """The man the actor means to hand the thing to — a roster line, so it goes through
+        """The man the doer means to hand the thing to — a roster line, so it goes through
         ``person_referent`` like every other one. Empty when nobody was named."""
         if not recipient_id:
             return ""
@@ -771,24 +773,24 @@ class PhysicalExecutor(ActionExecutor):
         is_person: bool,
         has_entity: bool,
         seize_available: bool,
-        actor_holds: bool,
+        doer_holds: bool,
         needs_relation: bool,
         recipient_line: str,
         step: int,
     ) -> "_Verdict | None":
         """Neutral third-party adjudication of world facts. Returns ``None`` when adjudication
-        can't happen (LLM failure, missing actor), so the caller fabricates nothing."""
+        can't happen (LLM failure, missing doer), so the caller fabricates nothing."""
         if agent is None:
-            logger.warning("physical_judge_no_actor", extra={"description": description})
+            logger.warning("physical_judge_no_doer", extra={"description": description})
             return None
 
         expected_part = f"\n- 期望结果：{expected_outcome}" if expected_outcome else ""
         # Evidence for the escape hatch: whether a bound man struggling gets free.
-        actor_condition_line = condition_line(
+        doer_condition_line = condition_line(
             agent.personality.state.condition, voice=SituationVoice.THIRD,
             now_step=step, seconds_per_step=self._seconds_per_step,
         )
-        actor_vitality_line = vitality_line(
+        doer_vitality_line = vitality_line(
             agent.personality.state.vitality, voice=SituationVoice.THIRD, lead="",
         )
 
@@ -836,7 +838,7 @@ class PhysicalExecutor(ActionExecutor):
 """
             # Only needed when both groups exist; keep it next to the schema, not between them.
             condition_pairing_rule = (
-                "- 两个处境槽各写各的人，别串：落在**行动者**身上的写进 actor_condition，"
+                "- 两个处境槽各写各的人，别串：落在**行动者**身上的写进 doer_condition，"
                 "落在**目标**身上的才写进 target_condition。\n"
             )
             target_condition_fields = (
@@ -847,20 +849,20 @@ class PhysicalExecutor(ActionExecutor):
                 ' "target_condition_steps": 这个处境大约多少步之后会自行消退的整数'
                 '（须外力解除才会消失的填 0）'
             )
-        # Always present: it doesn't depend on the target, and frees_actor is the only way a
+        # Always present: it doesn't depend on the target, and frees_doer is the only way a
         # bound man gets free.
-        actor_condition_doc = f"""\
-- actor_condition：这一行动之后落在**行动者自己**身上的、一直成立的身体状态——**不论是谁造成的**：旁人当场把他制住的，也算在他身上。同样只有真跨越此刻的才算，没有就给空字符串；写旁人当面看得出来的样子，不是他的心绪。
-- actor_condition_steps：这个处境若会自行消退，按「一步{describe_duration(1, self._seconds_per_step)}」折成整数步；若须旁人动手或他自己挣脱才会消失，填 0。
-- frees_actor：仅当这一动**解开了**行动者原有的持续处境才为 true（他挣脱了、有人放开了他）；默认 false。
+        doer_condition_doc = f"""\
+- doer_condition：这一行动之后落在**行动者自己**身上的、一直成立的身体状态——**不论是谁造成的**：旁人当场把他制住的，也算在他身上。同样只有真跨越此刻的才算，没有就给空字符串；写旁人当面看得出来的样子，不是他的心绪。
+- doer_condition_steps：这个处境若会自行消退，按「一步{describe_duration(1, self._seconds_per_step)}」折成整数步；若须旁人动手或他自己挣脱才会消失，填 0。
+- frees_doer：仅当这一动**解开了**行动者原有的持续处境才为 true（他挣脱了、有人放开了他）；默认 false。
 - 他原有的处境若仍然成立，处境槽就**留空**：填了就是**替换**——别换个说法把它重述一遍。
 {condition_pairing_rule}"""
-        actor_condition_fields = (
-            ', "frees_actor": true或false（这一动是否解除了行动者原有的持续处境；'
+        doer_condition_fields = (
+            ', "frees_doer": true或false（这一动是否解除了行动者原有的持续处境；'
             '他本来就没有持续处境、或这一动与之无关，一律 false）,'
-            ' "actor_condition": "这一动之后落在行动者自己身上的、一直成立的身体状态（≤15字）；'
+            ' "doer_condition": "这一动之后落在行动者自己身上的、一直成立的身体状态（≤15字）；'
             '照实写你刚裁定的那一桩；没有就给空字符串",'
-            ' "actor_condition_steps": 这个处境大约多少步之后会自行消退的整数'
+            ' "doer_condition_steps": 这个处境大约多少步之后会自行消退的整数'
             '（须外力解除才会消失的填 0）'
         )
         entity_fields = ""
@@ -882,7 +884,7 @@ class PhysicalExecutor(ActionExecutor):
             # Narrow by ownership too: an impossible option only invites a verdict code must
             # downgrade. Handing over is an entity deed only, never restrain, or real transfers
             # would route to the one that mutates nothing.
-            extra_deed = ("seize",) if seize_available else ("relinquish",) if actor_holds else ()
+            extra_deed = ("seize",) if seize_available else ("relinquish",) if doer_holds else ()
             deed_field = (
                 ' "deed": "行动者在对它做什么，选一个：'
                 f'{deed_options(*extra_deed, "operate", "destroy")}",'
@@ -929,12 +931,12 @@ class PhysicalExecutor(ActionExecutor):
 - damage 字段的值一定要于fact, outcome自洽合理，比如如果fact, outcome中说目标已经没有生命力了，那target_damage就应该是1。
 - deed：行动者**在做的动作本身**，与成败无关——就算没做成，他做的仍是那个动作。
 - why：**仅当 success 为 false**时给出没成的缘由，第三人称、≤20字、只写外部可陈述的（如对方早有防备、那东西比看上去沉得多），不写行动者的心绪或懊丧；success 为 true 时给空字符串。
-{target_condition_doc}{actor_condition_doc}{{"reason": "一两句裁断依据（≤100字）",{deed_field} "success": true或false, "outcome": "第三人称、点名行动者与目标、客观描述实际发生（≤40字）", "fact": "第一人称、行动者「我」视角描述客观描述实际发生与结果（≤60字）", "why": "没成的缘由（≤20字）；成了给空字符串",{relation_field}{person_fields}{entity_fields} "actor_damage": 行动者自身的损耗，按上方 damage 刻度{target_condition_fields}{actor_condition_fields}}}
+{target_condition_doc}{doer_condition_doc}{{"reason": "一两句裁断依据（≤100字）",{deed_field} "success": true或false, "outcome": "第三人称、点名行动者与目标、客观描述实际发生（≤40字）", "fact": "第一人称、行动者「我」视角描述客观描述实际发生与结果（≤60字）", "why": "没成的缘由（≤20字）；成了给空字符串",{relation_field}{person_fields}{entity_fields} "doer_damage": 行动者自身的损耗，按上方 damage 刻度{target_condition_fields}{doer_condition_fields}}}
 """
         user = f"""\
 【行动者】（裁决输入：性格与状态影响行动水准，但你不站在他的立场）
 {agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}
-{actor_vitality_line}{actor_condition_line}
+{doer_vitality_line}{doer_condition_line}
 
 【目标】
 {target_block}
@@ -949,8 +951,8 @@ class PhysicalExecutor(ActionExecutor):
         # Same source as the user message above: every fact this adjudication can see.
         facts = (
             GivenFacts()
-            .add("行动者体力", actor_vitality_line)
-            .add("行动者处境", actor_condition_line)
+            .add("行动者体力", doer_vitality_line)
+            .add("行动者处境", doer_condition_line)
             .add("目标", target_block)
             .add("现场", scene or "情况不明")
             .add("意图", description)
@@ -968,9 +970,9 @@ class PhysicalExecutor(ActionExecutor):
                     # Estimate each target shape and size max_tokens by the larger:
                     # common: reason (≤100 chars ≈150) + deed (enum ~8) + success (~3)
                     #   + outcome (40 chars ≈60) + fact (60 chars ≈90) + why (≤20 chars ≈30)
-                    #   + actor_damage (~3) + keys (~45) ≈389 tok
-                    # actor condition group (always): actor_condition (≤15 chars ≈23) + steps (~3)
-                    #   + frees_actor (~3) + keys (~20) ≈438 tok
+                    #   + doer_damage (~3) + keys (~45) ≈389 tok
+                    # doer condition group (always): doer_condition (≤15 chars ≈23) + steps (~3)
+                    #   + frees_doer (~3) + keys (~20) ≈438 tok
                     # person shape: + relation (~8) + target_damage (~3) + target_relief (~3)
                     #   + target_condition (≤15 chars ≈23) + steps (~3) + frees_target (~3)
                     #   + keys (~25) ≈511 tok
@@ -990,7 +992,7 @@ class PhysicalExecutor(ActionExecutor):
             return None
 
         relation_dir = parse_relation_direction(str(data.get("relation", "neutral"))).value
-        actor_name = self._directory.agent_name(agent.agent_id)
+        doer_name = self._directory.agent_name(agent.agent_id)
         fact = str(data.get("fact", "")).strip() or description
         new_entity_state = str(data.get("new_entity_state", "")) if has_entity else ""
         succeeded = coerce_bool(data.get("success"), True)
@@ -1000,10 +1002,10 @@ class PhysicalExecutor(ActionExecutor):
             failure_reason=(str(data.get("why", "")).strip() if not succeeded else ""),
             # Third person, never first. description is first-person wording, so quote it in 「」;
             # raw it renders as "常何我不再挣扎…".
-            outcome=str(data.get("outcome", "")).strip() or f"{actor_name}着手做「{description}」",
+            outcome=str(data.get("outcome", "")).strip() or f"{doer_name}着手做「{description}」",
             fact=fact,
             relation_dir=relation_dir,
-            actor_damage=coerce_float(data.get("actor_damage", 0.0), default=0.0, minimum=0.0, maximum=1.0),
+            doer_damage=coerce_float(data.get("doer_damage", 0.0), default=0.0, minimum=0.0, maximum=1.0),
             target_damage=(
                 coerce_float(data.get("target_damage", 0.0), default=0.0, minimum=0.0, maximum=1.0)
                 if is_person else 0.0
@@ -1023,17 +1025,17 @@ class PhysicalExecutor(ActionExecutor):
                 if is_person else 0
             ),
             frees_target=(coerce_bool(data.get("frees_target"), False) if is_person else False),
-            actor_condition_desc=coerce_str(data.get("actor_condition", "")).strip(),
-            actor_condition_steps=coerce_int(
-                data.get("actor_condition_steps", 0), default=0, minimum=0
+            doer_condition_desc=coerce_str(data.get("doer_condition", "")).strip(),
+            doer_condition_steps=coerce_int(
+                data.get("doer_condition_steps", 0), default=0, minimum=0
             ),
-            frees_actor=coerce_bool(data.get("frees_actor"), False),
+            frees_doer=coerce_bool(data.get("frees_doer"), False),
             deed=self._resolve_deed(
                 data.get("deed", ""),
                 is_person=is_person,
                 has_entity=has_entity,
                 seize_available=seize_available,
-                actor_holds=actor_holds,
+                doer_holds=doer_holds,
                 target_damage=coerce_float(data.get("target_damage", 0.0), default=0.0, minimum=0.0, maximum=1.0),
                 new_entity_state=new_entity_state,
             ),
@@ -1042,7 +1044,7 @@ class PhysicalExecutor(ActionExecutor):
     @staticmethod
     def _resolve_deed(
         label: object, *, is_person: bool, has_entity: bool, seize_available: bool,
-        actor_holds: bool, target_damage: float, new_entity_state: str = "",
+        doer_holds: bool, target_damage: float, new_entity_state: str = "",
     ) -> Deed:
         """The judge's deed label, reconciled with the facts it also reported:
         - Reported damage makes it a STRIKE.
@@ -1072,7 +1074,7 @@ class PhysicalExecutor(ActionExecutor):
                 return Deed.DESTROY
             if deed == Deed.SEIZE and not seize_available:
                 return Deed.OPERATE
-            if deed == Deed.RELINQUISH and not actor_holds:
+            if deed == Deed.RELINQUISH and not doer_holds:
                 return Deed.OPERATE
             return (
                 deed
@@ -1108,8 +1110,8 @@ class PhysicalExecutor(ActionExecutor):
         self,
         *,
         target_agent: "Agent",
-        actor_id: str,
-        actor_name: str,
+        doer_id: str,
+        doer_name: str,
         event_line: str,
         succeeded: bool,
         target_damage: float,
@@ -1120,11 +1122,11 @@ class PhysicalExecutor(ActionExecutor):
         is the judge's input, never decided here.
 
         ``event_line`` is the complete sentence of what B went through and must never carry the
-        actor's first-person wording: a foreign 「我」 in a 「你」 frame is read as B himself.
+        doer's first-person wording: a foreign 「我」 in a 「你」 frame is read as B himself.
         """
         # Neutral wording: PHYSICAL on a person isn't necessarily an attack.
         rel = await target_agent.relation_system.perceive_existing(
-            actor_id, emotion=target_agent.personality.state.emotion,
+            doer_id, emotion=target_agent.personality.state.emotion,
         )
         relation_block = format_relation_block(
             labels=rel.labels if rel else [],
@@ -1172,18 +1174,18 @@ class PhysicalExecutor(ActionExecutor):
 
 【刚刚发生在你身上的事】
 - {event_line}{harm_line}
-- 你与{actor_name}的关系：{relation_block}
+- 你与{doer_name}的关系：{relation_block}
 
 依上面说定的 JSON 格式说出你的经历与反应，只输出 JSON、不写任何多余内容。"""
         # Only the certain part: event_line's viewpoint doesn't fit first-person memory.
-        fallback_fact = f"{actor_name}对我做了一件事。"
+        fallback_fact = f"{doer_name}对我做了一件事。"
         try:
             # Attribute the trace and memory to B, and mark his step as passive for the audit.
             with observe_stage(Stage.ACTION, agent_id=target_agent.agent_id), annotate_call(
                 given_facts=GivenFacts()  # same source as the user message above
                 .add("我的处境", target_condition_line)
                 .add("刚刚发生在我身上的事", f"{event_line}{harm_line}")
-                .add(f"我与{actor_name}的关系", relation_block),
+                .add(f"我与{doer_name}的关系", relation_block),
                 action_owner=target_agent.personality.soul.name,
                 acted_upon=event_line,
             ):
@@ -1220,9 +1222,15 @@ class PhysicalExecutor(ActionExecutor):
             agent_id=target_agent.agent_id,
             factual_memory=str(data.get("fact", "")).strip() or fallback_fact,
             emotion_type=emotion_type.value,
-            emotion_intensity=coerce_float(data.get("emotion_intensity", 0.3), default=0.0, minimum=0.0, maximum=1.0),
-            emotion_valence=coerce_float(data.get("emotion_valence", 0.0), default=0.0, minimum=-1.0, maximum=1.0),
-            relation_toward_actor=(actor_id, *delta) if delta is not None else None,
+            emotion_intensity=coerce_float(
+                data.get("emotion_intensity", 0.3), default=0.0,
+                minimum=EMOTION_INTENSITY_RANGE[0], maximum=EMOTION_INTENSITY_RANGE[1],
+            ),
+            emotion_valence=coerce_float(
+                data.get("emotion_valence", 0.0), default=0.0,
+                minimum=EMOTION_VALENCE_RANGE[0], maximum=EMOTION_VALENCE_RANGE[1],
+            ),
+            relation_toward_doer=(doer_id, *delta) if delta is not None else None,
             vitality_damage=net_vitality_damage,
         )
 

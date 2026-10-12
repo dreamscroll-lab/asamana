@@ -10,7 +10,7 @@
       ],
       "description": "心腹尉迟恭在场、当面密议起事;多步对话走完整四阶段。",
       "expect": "对话应贴合两人(主君/死忠)的人设与君臣关系、围绕密议自然展开;允许各有顾虑、并非一团和气。tick 进度叙事自然、无 step 泄漏;complete 产出对话与双方各自记忆。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "talk",
         "target": "尉迟恭",
@@ -44,7 +44,7 @@
       ],
       "description": "与尉迟恭密议到一半，急报骤至被迫中断。",
       "expect": "中断记忆应是两人各自第一人称、点明谁先开口、贴合『谈到一半被打断』;触发方见原因、被动方不必见。无 step 泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "talk",
         "target": "尉迟恭",
@@ -69,7 +69,7 @@
       ],
       "description": "尉迟恭不在场，需传讯催其备甲。",
       "expect": "对不在场者传讯(SEND_MESSAGE)即时完成;记忆以名字称呼收件人、不出 id。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "send_message",
         "target": "尉迟恭",
@@ -86,7 +86,7 @@
       ],
       "description": "连日筹谋、体力濒竭，独处稍歇。",
       "expect": "休整记忆应织入『独处稍歇』之意、点明地点与自然时长、体现精力恢复;无 step 泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "rest",
         "estimated_steps": 3,
@@ -108,7 +108,7 @@
       ],
       "description": "独自推敲起事方略,需专注完成。",
       "expect": "WORK 应以第一人称自评是否做成、贴合人设与精力;tick 进度自然时长;成败据实(不必一概成功)。无 step 泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "work",
         "estimated_steps": 3,
@@ -130,7 +130,7 @@
       ],
       "description": "手边有可用的卷宗，屋里却还杵着一个人：WORK 的成败该由这两样落定。",
       "expect": "裁定应落在现场证据上——用得上手边那份卷宗、或说清有人在跟前静不下心;做不成时 why 要指认出具体哪一样,不得写『思绪未定』这类无信息量的空话。绝不把 expected_outcome 照抄成已发生的事。无 step 泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "work",
         "estimated_steps": 2,
@@ -164,7 +164,7 @@
       ],
       "description": "要务在邻处,须移步前往。",
       "expect": "MOVE 应顺利启程/抵达,记忆带地点名与自然时长;若多步则 tick 进度无 step 泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "move",
         "target": "$ADJACENT",
@@ -181,7 +181,7 @@
       ],
       "description": "狭路相逢政敌李建成,当场动手。",
       "expect": "裁决应计入双方实力/处境,成败与伤害相称、不因身份强势就稳赢;若得手,李建成应有相应情绪与伤、关系转恶。无 id/step 泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "physical",
         "target": "李建成",
@@ -204,7 +204,7 @@
       ],
       "description": "心腹尉迟恭力战负伤、踉跄欲倒,李世民上前搀扶。",
       "expect": "PHYSICAL 对人未必是攻击——这是援手。裁决不应判出新伤害(target_damage 应为 0/极低),关系应正向或不恶化;尉迟恭的反应应是感激/安心一类,而非恐惧或被攻击。记忆/裁决不应出现『被躲开』『受创』等敌对预设。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "physical",
         "target": "尉迟恭",
@@ -230,7 +230,7 @@
       ],
       "description": "案上有调兵的兵符,伸手夺取。",
       "expect": "对可携带物的物理行动应判出物品新态/归属(拿起),记忆贴合;无 id/step 泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "physical",
         "target": "兵符",
@@ -259,7 +259,7 @@
       ],
       "description": "兵符在对方手里,当面伸手去夺 —— 成不成由裁判权衡,不由规则预先判死。",
       "expect": "此举不得被当作『属于他人、无法取用』一类的规则性不可行:同地即够得着,夺不夺得走须结合双方实力/戒备/现场权衡。裁定应认出被夺者是另一个人(关系走向随之变化),成败两种都要自洽——未遂时物品归属不变、why 指认具体缘由。无 id/step 泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "physical",
         "target": "兵符",
@@ -292,7 +292,7 @@
       ],
       "description": "把自己攥着的兵符交到在场那人手上 —— 对方接不接是他自己的事。",
       "expect": "裁定不得默认必然交到:据双方关系与性情权衡对方接过/推拒。交成则归属易主、受事有其自身反应;未交成则归属不变。绝不把这一动叙述成夺取或攻击。无 id/step 泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "physical",
         "target": "兵符",
@@ -326,7 +326,7 @@
       ],
       "description": "夜探东宫廊下窃听,旁有人往来。",
       "expect": "achieved 问的是「他这一趟探到了本来拿不到的东西吗」,不是「潜伏这个动作做完了吗」:据现场感知通道(位置/视线/声响/在场者注意力)裁断他从此处发生过的事里实际接住了哪些,接住了才判达成,守了一趟一无所获照实判未达成。fact 第一人称写「我看见/听见/读到了什么」、具体到要点,不用「暗中观察了一番」充数;outcome 只写行迹,一律不写他探到的内容。detected 与 achieved 两维独立,有人在场不必然暴露、也不必然安全。不得交出任何人的内心(性情来历、动机盘算、此刻意图本身)。无 id/step 泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "covert",
         "estimated_steps": 2,
@@ -359,7 +359,7 @@
       },
       "actions": [
         {
-          "actor": "李世民",
+          "doer": "李世民",
           "action": {
             "type": "talk",
             "target": "尉迟恭",
@@ -368,7 +368,7 @@
           }
         },
         {
-          "actor": "尉迟恭",
+          "doer": "尉迟恭",
           "action": {
             "type": "work",
             "estimated_steps": 1,
@@ -395,7 +395,7 @@
       },
       "actions": [
         {
-          "actor": "李世民",
+          "doer": "李世民",
           "action": {
             "type": "talk",
             "target": "尉迟恭",
@@ -404,7 +404,7 @@
           }
         },
         {
-          "actor": "李建成",
+          "doer": "李建成",
           "action": {
             "type": "talk",
             "target": "尉迟恭",
@@ -433,7 +433,7 @@
       ],
       "actions": [
         {
-          "actor": "尉迟恭",
+          "doer": "尉迟恭",
           "action": {
             "type": "work",
             "estimated_steps": 1,
@@ -442,7 +442,7 @@
           }
         },
         {
-          "actor": "李建成",
+          "doer": "李建成",
           "action": {
             "type": "talk",
             "target": "尉迟恭",
@@ -462,7 +462,7 @@
       ],
       "description": "对一个双手已被反绑、动弹不得的人再动手(目标身上带着持续处境)。",
       "expect": "裁决必须把「他已被缚」计入权衡——反绑双手的人几乎无从抵抗,判成势均力敌的角力即为未读处境;**不应再重复施加同一个处境**(condition 若仍写「双手被反绑」,等于把已成立的状态当成新战果);未致伤就不该有 target_damage。无 id/step 泄漏。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "physical",
         "target": "李元吉",
@@ -489,7 +489,7 @@
       ],
       "description": "替一个被反绑的人解开绳索(应当解除他的持续处境)。",
       "expect": "这是**解除**不是施加:frees_target 应为 true、condition 应留空;若反过来给出一个新的 condition,就是把「松绑」读成了「捆绑」。deed 应是 restrain(动手但不为伤人)而非 strike;不应有伤害。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "physical",
         "target": "李元吉",
@@ -515,7 +515,7 @@
       ],
       "description": "被反绑者自己奋力挣脱(行动者本人带着持续处境——逃生阀)。",
       "expect": "须据「绑了多久、绳索如何、身边有谁」判他挣不挣得脱,而**不是因为他被绑着就一律判失败**——那会让受制成为单向门、角色永久出局。成了才给 frees_target=true;没成就照实写没成,且不得凭空加重他的处境。",
-      "actor": "李元吉",
+      "doer": "李元吉",
       "action": {
         "type": "physical",
         "target": "李元吉",
@@ -541,7 +541,7 @@
       ],
       "description": "指派一个 NPC 工具人去邻处，带一句话给某人。",
       "expect": "这条路上**没有裁决**——指派了就是差出去了，所以 succeeded 必为 true、必带一条 errand_order。三条通道各就各位：outcome 是全量权威（去哪、带什么话都写进去）；observation 是旁观者降级，看得见他叫住那人、说了几句、那人走了，**绝不含交代的内容**；factual_memory 是指派者的第一人称。任何一条里都不许出现 id 或「第N步」。",
-      "actor": "李世民",
+      "doer": "李世民",
       "action": {
         "type": "errand",
         "target": "王二",

@@ -137,7 +137,7 @@ def isolate_agent(agent, name_by_id: dict | None = None) -> None:
     """Swap an agent's persistence to in-memory dry-run shadows (idempotent per harness).
 
     Also warms the agent's known-name cache from the directory: in production perception
-    populates _known_agents each step, so by finalize the actor knows co-cast names;
+    populates _known_agents each step, so by finalize the doer knows co-cast names;
     the dry-run skips perception, so without warming the experiential rewrite would fall back
     to raw ids and leak them into memory prose.
     """
