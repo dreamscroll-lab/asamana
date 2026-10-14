@@ -694,7 +694,10 @@ class NarrativeRuntime:
                     for aid in deliveries.inboxes
                 },
             ),
-            broadcasts=broadcast_events(broadcasts_this_step),
+            broadcasts=broadcast_events(
+                broadcasts_this_step,
+                where={aid: perceived_at[aid] for aid in agent_signals if aid in perceived_at},
+            ),
             actions=action_events(all_action_records, routes=routes),
             injections=injection_events(serialized_events),
         )

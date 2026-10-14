@@ -51,10 +51,11 @@ def test_named_recipients_are_a_private_letter_where_each_of_them_stands() -> No
     assert [(where, msg.receiver_ids) for where, msg in delivered] == [
         ("loc-gate", ["agent-b"]), ("loc-yard", ["agent-c"]),
     ]
-    # One message, so one seq; nobody outside it may read it.
+    # One message, so one seq. Each delivery is lived only by whoever received it there: the
+    # sender, or a co-recipient, would learn where it was received.
     assert {msg.seq for _, msg in delivered} == {4}
     assert all(msg.scope == "direct" for _, msg in delivered)
-    assert all(msg.audience == ["agent-a", "agent-b", "agent-c"] for _, msg in delivered)
+    assert [msg.audience for _, msg in delivered] == [["agent-b"], ["agent-c"]]
 
 
 def test_a_letter_reaching_a_traveler_lands_on_the_way() -> None:
@@ -64,12 +65,13 @@ def test_a_letter_reaching_a_traveler_lands_on_the_way() -> None:
     assert where == TRANSIT
 
 
-def test_no_recipients_plus_a_location_is_a_public_announcement_there() -> None:
+def test_no_recipients_plus_a_location_is_an_announcement_to_whoever_was_there() -> None:
+    """Heard as the step began: whoever arrives by its end did not hear it."""
     [(where, msg)] = events(_step(_message(
         recipients=None, location_scope="loc-gate", content="肃静",
     )), "message")
 
-    assert (where, msg.scope, msg.audience) == ("loc-gate", "place", None)
+    assert (where, msg.scope, msg.audience) == ("loc-gate", "place", ["agent-b", "agent-c"])
 
 
 def test_no_recipients_and_no_location_is_a_world_proclamation() -> None:
@@ -139,3 +141,21 @@ def test_a_broadcast_lands_in_the_scope_that_perceived_it() -> None:
     assert step.locations["loc-gate"].name == "玄武门"
     assert world[0] == WORLD  # no place at all — that IS "everyone heard it"
     assert world[1].severity == "high"
+
+
+def test_a_place_broadcast_names_who_heard_it_and_a_world_broadcast_nobody() -> None:
+    from engine.step_record import broadcast_events
+
+    where = {"agent-b": "loc-gate", "agent-c": "loc-yard"}
+    place, world = broadcast_events([
+        Broadcast(content="走水", source="system", broadcast_type=BroadcastType.WORLD_EVENT,
+                  deliver_step=1, location_scope="loc-gate", severity=Severity.LOW),
+        Broadcast(content="大赦", source="system", broadcast_type=BroadcastType.WORLD_EVENT,
+                  deliver_step=1, location_scope=None, severity=Severity.LOW),
+    ], where=where)
+    view = StepView.from_snapshot(snapshot_of(places=PLACES, events=[place, world]))
+
+    [(at, heard)] = [(s, e) for s, e in events(view, "broadcast") if e.content == "走水"]
+    [(_, everyone)] = [(s, e) for s, e in events(view, "broadcast") if e.content == "大赦"]
+    assert (at, heard.audience) == ("loc-gate", ["agent-b"])
+    assert everyone.audience is None

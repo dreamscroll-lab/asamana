@@ -47,7 +47,7 @@ export function figuresOf(index: StepIndex): Figure[] {
     agent_name: a.name,
     location_id: a.location_id,
     color: a.color,
-    is_main_character: a.is_main_character,
+    is_main_character: a.is_main_character ?? false,
     is_active: a.is_active,
     condition: a.public.condition,
     transit: a.private.transit,

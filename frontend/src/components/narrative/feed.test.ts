@@ -54,7 +54,7 @@ const act = (seq: number, over: Partial<ActionSummary> = {}): ActionSummary => (
 
 const letter = (receiver: string): MessageSummary => ({
   kind: "message", seq: 3, message_id: "m1", sender_id: "s", sender_name: "某人", receiver_ids: [receiver],
-  scope: "direct", content: "来", spoken: "来", audience: ["s", "b", "c"],
+  scope: "direct", content: "来", spoken: "来", audience: [receiver],
 });
 
 describe("bornInStep", () => {

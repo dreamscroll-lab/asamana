@@ -11,7 +11,7 @@ Events are JSON-native dicts, one ``kind`` each:
              (``location_id``), what each place observed (``observations``) and ``parts``,
              one per participant (their own description, outcome and thought).
   message    one delivered message, with where each receiver stood when it reached them.
-  broadcast  one delivered broadcast.
+  broadcast  one delivered broadcast; a place's broadcast lists who heard it (``receivers``).
   injection  one injection's record (``engine.injection.serialize_injection``), plus what
              onlookers at each place perceived of its world changes (``observations``).
 
@@ -21,6 +21,8 @@ Events are JSON-native dicts, one ``kind`` each:
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
+
+from engine.broadcast import BroadcastChannel
 
 if TYPE_CHECKING:
     from core.interfaces.perception import Broadcast
@@ -139,7 +141,13 @@ def message_events(
     ]
 
 
-def broadcast_events(broadcasts: Iterable["Broadcast"]) -> list[dict[str, Any]]:
+def broadcast_events(
+    broadcasts: Iterable["Broadcast"], *, where: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    """Each delivered broadcast. A place's broadcast is heard by whoever stood there when it
+    reached them (``where``: each living agent → the location they perceived from this step), and
+    may have left by the step's end, so its record names them. A world broadcast reaches
+    everyone and names nobody (``receivers`` None)."""
     return [
         {
             "kind": "broadcast",
@@ -151,6 +159,7 @@ def broadcast_events(broadcasts: Iterable["Broadcast"]) -> list[dict[str, Any]]:
             "severity": b.severity.value,
             # What the change looks like (fire/rain/…), orthogonal to severity.
             "phenomenon": b.phenomenon.value,
+            "receivers": BroadcastChannel.audience(b, where) if b.location_scope else None,
         }
         for b in broadcasts
     ]

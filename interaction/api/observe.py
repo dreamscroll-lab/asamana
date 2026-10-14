@@ -4,6 +4,9 @@ Render-neutral: every payload is semantic world state (steps, the relationship
 graph). No coordinates/layout — a client lays it out. A 2D renderer turns the
 symbolic state into a map on the client; a text view ignores the geometry.
 
+While an actor performs a character, every route here and the feed answer as that character
+perceived the world (``interaction.actor_view``); once the actor exits, they answer in full again.
+
 The WebSocket pushes off the in-process event bus (subscribe, not poll): on
 connect it sends the current run state, the turn waiting for the actor (if one is),
 and the latest persisted step (a ``latest_step`` frame), then forwards each live ``step``, ``status`` and
@@ -24,6 +27,7 @@ from core.logging import get_logger
 from fastapi import WebSocket, WebSocketDisconnect
 
 from interaction.api.app import ApiServices
+from interaction.actor_view import graph_for, profile_for, step_view_for
 from interaction.api.serialization import to_jsonable
 from interaction.models import (
     AgentProfile,
@@ -45,13 +49,21 @@ def build_observe_router(services: ApiServices) -> Any:
     container = services.container
     event_bus = container.event_bus
 
+    def _step(world_id: str, view: StepView) -> dict[str, Any]:
+        viewer = application.performing_character(world_id)
+        return to_jsonable(step_view_for(view, viewer) if viewer is not None else view)
+
+    def _profile(world_id: str, profile: AgentProfile) -> dict[str, Any]:
+        viewer = application.performing_character(world_id)
+        return to_jsonable(profile_for(profile, viewer) if viewer is not None else profile)
+
     async def _step_payload(world_id: str, step: int) -> dict[str, Any]:
         replayer = manager.create_replayer(world_id)
         try:
             view = await replayer.get_step(step)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return to_jsonable(view)
+        return _step(world_id, view)
 
     # ----- steps ----------------------------------------------------------
 
@@ -85,7 +97,9 @@ def build_observe_router(services: ApiServices) -> Any:
             )
             for aid, s in snapshot.state.agents.items()
         ]
-        return to_jsonable(WorldGraph(nodes=nodes, edges=relations_from_snapshot(snapshot)))
+        graph = WorldGraph(nodes=nodes, edges=relations_from_snapshot(snapshot))
+        viewer = application.performing_character(world_id)
+        return to_jsonable(graph_for(graph, viewer) if viewer is not None else graph)
 
     def _make_profile(agent_id: str, entry: dict[str, Any]) -> AgentProfile:
         return AgentProfile(
@@ -114,10 +128,7 @@ def build_observe_router(services: ApiServices) -> Any:
         is the same in every step, replay and session.
         """
         profiles = await manager.character_profiles(world_id)
-        return [
-            to_jsonable(_make_profile(agent_id, entry))
-            for agent_id, entry in sorted(profiles.items())
-        ]
+        return [_profile(world_id, _make_profile(agent_id, entry)) for agent_id, entry in sorted(profiles.items())]
 
     @router.get("/api/worlds/{world_id}/agents/{agent_id}/profile")
     async def get_profile(world_id: str, agent_id: str) -> dict[str, Any]:
@@ -131,7 +142,7 @@ def build_observe_router(services: ApiServices) -> Any:
         entry = profiles.get(agent_id)
         if entry is None:
             raise HTTPException(status_code=404, detail=f"Agent profile not found: {agent_id}")
-        return to_jsonable(_make_profile(agent_id, entry))
+        return _profile(world_id, _make_profile(agent_id, entry))
 
     # ----- live WebSocket feed (push) -------------------------------------
 
@@ -180,7 +191,7 @@ def build_observe_router(services: ApiServices) -> Any:
         if steps:
             try:
                 latest = await manager.create_replayer(world_id).get_step(max(steps))
-                await websocket.send_json({"type": "latest_step", "data": to_jsonable(latest)})
+                await websocket.send_json({"type": "latest_step", "data": _step(world_id, latest)})
                 sent_step = latest.step
             except ValueError:
                 pass
@@ -199,7 +210,7 @@ def build_observe_router(services: ApiServices) -> Any:
                         view = StepView.from_runtime_payload(event)
                         if view.step <= sent_step:
                             continue
-                        await websocket.send_json({"type": "step", "data": to_jsonable(view)})
+                        await websocket.send_json({"type": "step", "data": _step(world_id, view)})
                     elif etype == "actor_turn":
                         await websocket.send_json(
                             {"type": "actor_turn", "data": to_jsonable(event.get("turn"))}

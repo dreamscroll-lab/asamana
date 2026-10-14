@@ -195,9 +195,9 @@ export interface ObservationSummary {
 }
 
 // A message reaching the people in one scope. `scope` says how it was addressed:
-//   direct — named recipients; private (`audience`: sender and every recipient). A letter to
+//   direct — named recipients; private (`audience`: the receivers in this scope). A letter to
 //            people in several places appears in each of their scopes, under one seq.
-//   place  — an announcement to the room whose scope holds it; public.
+//   place  — an announcement to the room whose scope holds it; `audience`: whoever heard it there.
 //   world  — a proclamation, in the world scope; public.
 // For place/world the sender is the subject; listing recipients would make one proclamation
 // read as N private letters.
@@ -231,6 +231,8 @@ export interface BroadcastSummary {
   // severity. A closed vocabulary (core/interfaces/phenomenon.py); the renderer draws nothing
   // for a value it doesn't know.
   phenomenon: string;
+  // Who heard a place's broadcast as the step began; null for a world broadcast (everyone).
+  audience: string[] | null;
 }
 
 export type ScopeEvent = ActionSummary | ObservationSummary | MessageSummary | BroadcastSummary;
@@ -335,7 +337,8 @@ export interface AgentView {
   gender: string;
   age: number | null;
   color: string;
-  is_main_character: boolean;
+  // null: not known to this viewer (the actor's view).
+  is_main_character: boolean | null;
   is_active: boolean;
   public: AgentPublicView;
   private: AgentPrivateView;
@@ -484,7 +487,8 @@ export interface GraphNode {
   id: string;
   name: string;
   role: string;
-  is_main_character: boolean;
+  // null: not known to this viewer (the actor's view).
+  is_main_character: boolean | null;
   color: string;
 }
 
@@ -519,7 +523,8 @@ export interface AgentProfile {
   self_image: string;
   life_goal: string;
   secret: string;
-  is_main_character: boolean;
+  // null: not known to this viewer (the actor's view).
+  is_main_character: boolean | null;
 }
 
 // Map focus/selection: the user can follow one or more agents and/or spotlight a

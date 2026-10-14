@@ -1033,23 +1033,28 @@ Dependencies: `phaser/` may use `lib/`; `lib/` and `hooks/` may use `api/`; none
 - **doer** (行动者): whoever performs a given action, as executors and feedback see it
   (`doer_id`). Not "actor" or "acting agent": both collide with the vocabulary above.
 
-**Principles:**
-- **One loop for both.** Either cognition follows `perception → motivation → decision → action →
-  feedback`. Perception is identical, actions are adjudicated identically, and feedback is
-  computed and written identically. The actor takes over only motivation and decision, and may
-  amend the subjective part of feedback (emotion, experiential memories, trust/affection), never
-  what happened (facts, outcomes, body, belongings).
-- **The runtime never asks who drives a character.** It calls every character the same way; the
-  character consults its actor (`Agent.actor`) where one performs it. No `if actor` in the step
-  loop or its stages.
-- **Not a rule path.** The actor replaces the AI's motivation and decision for its character; no
-  cognition gate switches to rules (Design Principle 5).
-- **The actor knows only what the character perceives.** What it is offered at a turn comes from
-  the character's perception as the engine recorded it. What it sees of the world is a filter
-  over the step (`StepView`): the character's own body and mind, the public side of what is in
-  the place it ends the step in, and every event whose audience includes it. Visibility is
-  decided once, in what each event records (its public side and its audience); a filter that
-  shows too much or too little is fixed there, never by a second visibility rule downstream.
+**Core principle: AI and actor are two drivers of one cognition loop.** At the same stages
+(interrupt, motivation, decision), a character's cognition is driven either by AI or by the
+actor. Which one is an implementation choice: the world and the narrative know only
+characters, never actors or Agents, so nothing in world state, events or narrative text depends
+on, or reveals, who drives a character.
+
+Accepted deviations, each for its reason:
+- The actor amends the subjective part of feedback (emotion, experiential memories,
+  trust/affection) at its next decision, not at the feedback stage, so a step doesn't stop
+  twice. What happened (facts, outcomes, body, belongings) is never amendable.
+- The actor sets its own pace and is asked about every interrupt trigger: judging what matters
+  to the character is the actor's job.
+- The performed character is main tier for good: the user lives the story through it.
+
+What follows from the principle:
+- **The runtime never asks who drives a character.** The character consults its actor
+  (`Agent.actor`); no `if actor` in the step loop or its stages.
+- **Not a rule path.** No cognition gate switches to rules (Design Principle 5).
+- **The actor shares the character's information boundary, not the AI's input.** It knows only
+  what the character perceived. Visibility is decided once, in each event's public side and
+  audience; the actor's view of a step (`StepView`) is a filter over that, never a second
+  visibility rule.
 
 The cognition loop is `perception → motivation → decision → action → feedback`. Each subsystem in `agent/` is distinct and cooperates through explicit state — do not collapse them into one convenience object.
 

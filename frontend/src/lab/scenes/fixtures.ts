@@ -129,7 +129,7 @@ export interface RunnerRecord {
 export type LetterRecord = Omit<MessageSummary, "kind" | "audience"> & { location_id?: string };
 
 /** A delivered broadcast; `location_id` null = the whole world. */
-export type NoticeRecord = Omit<BroadcastSummary, "kind"> & { location_id: string | null };
+export type NoticeRecord = Omit<BroadcastSummary, "kind" | "audience"> & { location_id: string | null };
 
 /** A figure in the bench's cast. Gender + age pick the BODY (skins.bodyFor). */
 export interface LabCharacter {
@@ -564,22 +564,27 @@ export function step({
     if (m.scope === "world") {
       worldScopeEvents.push({ ...m, kind: "message", audience: null });
     } else if (m.scope === "place") {
-      scopeOf(location_id ?? "").events.push({ ...m, kind: "message", audience: null });
+      scopeOf(location_id ?? "").events.push({ ...m, kind: "message", audience: m.receiver_ids });
     } else {
       // A letter reaches a man, not a room: it lands wherever each recipient stands.
-      const audience = [...new Set([m.sender_id, ...m.receiver_ids])];
       const byRoom = new Map<string, string[]>();
       for (const rid of m.receiver_ids) {
         const at = where.get(rid) ?? "";
         (byRoom.get(at) ?? byRoom.set(at, []).get(at)!).push(rid);
       }
       for (const [at, receivers] of byRoom) {
-        scopeOf(at).events.push({ ...m, kind: "message", receiver_ids: receivers, audience });
+        scopeOf(at).events.push({ ...m, kind: "message", receiver_ids: receivers, audience: receivers });
       }
     }
   }
   for (const { location_id, ...b } of broadcasts) {
-    (location_id ? scopeOf(location_id).events : worldScopeEvents).push({ ...b, kind: "broadcast" });
+    if (!location_id) {
+      worldScopeEvents.push({ ...b, kind: "broadcast", audience: null });
+      continue;
+    }
+    // Heard by whoever stood there as the step began.
+    const heard = [...where].filter(([, at]) => at === location_id).map(([id]) => id);
+    scopeOf(location_id).events.push({ ...b, kind: "broadcast", audience: heard });
   }
 
   const bySeq = (a: ScopeEvent, b: ScopeEvent) => a.seq - b.seq;

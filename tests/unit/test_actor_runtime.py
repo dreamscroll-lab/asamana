@@ -26,9 +26,12 @@ from core.interfaces.actor import (
 from engine.run_control import StepWithdrawn
 from core.interfaces.llm import LLMScene
 from core.interfaces.message import Message
+from core.interfaces.perception import Broadcast, BroadcastType
 from core.interfaces.urgency import Urgency
 from tests.unit.test_runtime_smoke import _build_agent, _build_runtime, _set_work_decision
-from tests.unit.step_view import beats
+from interaction.actor_view import step_view_for
+from interaction.models import ActionSummary, MessageSummary, ObservationSummary, StepView
+from tests.unit.step_view import beats, events
 
 HERO = "agent-1"
 OTHER = "agent-2"
@@ -161,6 +164,63 @@ async def test_a_waiting_character_is_asked_again_when_it_sees_someone_act(conta
 
     assert turns[0].kind is TurnKind.DECIDE
     assert TriggerKind.AMBIENT in {t.kind for t in turns[0].triggers}
+
+
+@pytest.mark.asyncio
+async def test_what_reaches_the_actor_is_in_the_characters_view_of_the_step(container) -> None:
+    """The turn and the actor's view of a step come from the same engine facts: a trigger with
+    nothing behind it in the filtered StepView means two visibility rules have drifted apart.
+    What a character sees act is carried from the step before; a letter arrives in its own step."""
+    world_id = "world-actor-view-agrees"
+    runtime, message_system, agents = _setup(container, world_id, other_at="palace")
+
+    await _step_answering(runtime, agents, ActorDecision(wait=ActorWait()))
+    await _publish_to_hero(message_system, world_id, step=1, text="今夜子时，玄武门见")
+    _result, turns = await _step_answering(runtime, agents, ActorDecision(wait=ActorWait()))
+
+    async def seen(step: int) -> set[str]:
+        view = step_view_for(StepView.from_snapshot(await container.snapshot.load(world_id, step)), HERO)
+        texts: set[str] = set()
+        for _scope, event in events(view):
+            if isinstance(event, ActionSummary) and event.public is not None:
+                texts.add(event.public.text)
+            elif isinstance(event, ObservationSummary):
+                texts.add(event.text)
+            elif isinstance(event, MessageSummary):
+                texts.add(event.content)
+        return texts
+
+    triggers = turns[0].triggers
+    ambient = {t.text for t in triggers if t.kind is TriggerKind.AMBIENT}
+    letters = {t.text for t in triggers if t.kind is TriggerKind.MESSAGE}
+    assert ambient and letters
+    assert ambient <= await seen(1)
+    assert letters <= await seen(2)
+
+
+@pytest.mark.asyncio
+async def test_a_place_broadcast_stays_in_view_after_the_character_leaves(container) -> None:
+    """Heard where it stood as the step began, kept by audience after it walks off in that step;
+    the end-of-step place would lose it."""
+    world_id = "world-actor-broadcast-left"
+    runtime, environment, _ms = _build_runtime(container, world_id=world_id)
+    environment.place_agent(agent_id=HERO, location_id="donggong")
+    hero = _build_agent(container, world_id=world_id, agent_id=HERO, name="Li Shimin", is_main_character=True)
+    runtime.cast_actor(hero)
+    _set_work_decision(container)
+    runtime._broadcast_channel.publish(Broadcast(  # noqa: SLF001
+        content="东宫走水", source="system", broadcast_type=BroadcastType.WORLD_EVENT,
+        deliver_step=1, location_scope="donggong",
+    ))
+
+    _result, turns = await _step_answering(runtime, [hero], ActorDecision(action=ActorAction(
+        action_type=ActionType.MOVE, action_description="避往崇仁坊", destination_id="chongren_fang",
+    )))
+
+    assert [(t.kind, t.text) for t in turns[0].triggers] == [(TriggerKind.BROADCAST, "东宫走水")]
+    assert environment.get_body_location(HERO) == "chongren_fang"
+    view = step_view_for(StepView.from_snapshot(await container.snapshot.load(world_id, 1)), HERO)
+    assert "东宫走水" in {e.content for _scope, e in events(view, "broadcast")}
 
 
 @pytest.mark.asyncio

@@ -89,7 +89,8 @@ class GraphNode:
     id: str
     name: str
     role: str
-    is_main_character: bool
+    # None: not known to this viewer (the actor's view, ``interaction.actor_view``).
+    is_main_character: bool | None
     color: str
 
 
@@ -130,7 +131,8 @@ class AgentProfile:
     background: str
     appearance: str
     color: str
-    is_main_character: bool
+    # None: not known to this viewer (the actor's view, ``interaction.actor_view``).
+    is_main_character: bool | None
     core_traits: list[str] = field(default_factory=list)
     core_values: list[str] = field(default_factory=list)
     self_image: str = ""
@@ -407,11 +409,15 @@ class MessageSummary:
 
     ``scope`` is how it was addressed (MessageSystem resolves receivers from recipients ×
     location_scope):
-      direct — named recipients. Private: ``audience`` is the sender and every recipient. A letter
-               to people in several places appears in each of their scopes, under one ``seq``.
-      place  — no recipients, a location: an announcement to the room it sits in. Public.
+      direct — named recipients. A letter to people in several places appears in each of their
+               scopes, under one ``seq``. Private: ``audience`` is the receivers in this scope,
+               the only ones who lived this delivery. Don't add the sender or receivers
+               elsewhere: they would learn where the letter was received. The sender knows the
+               words from their own SEND_MESSAGE act.
+      place  — no recipients, a location: an announcement to the room it sits in. ``audience``
+               is whoever heard it there; someone who arrives by the step's end did not.
       world  — no recipients, no location: a proclamation, in the world scope. Public.
-    ``audience`` is None when the message is public to its scope.
+    ``audience`` is None when the message reached everyone (world scope).
     """
 
     seq: int
@@ -435,7 +441,9 @@ class BroadcastSummary:
     """A senderless change everyone in its scope perceives — a death, an injected change.
 
     ``phenomenon`` is what the change visibly looks like (``core.interfaces.phenomenon``),
-    orthogonal to ``severity``, which is how big it is.
+    orthogonal to ``severity``, which is how big it is. ``audience`` is who heard a place's
+    broadcast (it reached them as the step began; someone who arrives by the step's end did
+    not); None for a world broadcast, which reached everyone.
     """
 
     seq: int
@@ -443,6 +451,7 @@ class BroadcastSummary:
     broadcast_type: str = ""
     severity: str = ""
     phenomenon: str = ""
+    audience: list[str] | None = None
     kind: str = "broadcast"
 
 
@@ -556,7 +565,8 @@ class AgentView:
     gender: str = ""
     age: int | None = None
     color: str = ""  # fixed identity color (#RRGGBB)
-    is_main_character: bool = False
+    # None: not known to this viewer (the actor's view, ``interaction.actor_view``).
+    is_main_character: bool | None = False
     is_active: bool = True
     public: AgentPublicView = field(default_factory=lambda: AgentPublicView(activity_status=""))
     private: AgentPrivateView = field(default_factory=lambda: AgentPrivateView(emotion=""))
@@ -885,11 +895,10 @@ class _StepAssembler:
             if record.get("recipients") is None:
                 place = str(record.get("location_scope") or "")
                 if place:
-                    self._put(place, summary(receiver_ids, "place", None))
+                    self._put(place, summary(receiver_ids, "place", receiver_ids))
                 else:
                     self._world_scope_events.append(summary(receiver_ids, "world", None))
                 continue
-            audience = _unique([sender_id, *receiver_ids])
             by_place: dict[str, list[str]] = {}
             for receiver in receivers:
                 where = str(receiver.get("location_id") or "")
@@ -897,7 +906,7 @@ class _StepAssembler:
                     str(receiver.get("agent_id") or "")
                 )
             for place, ids in by_place.items():
-                self._put(place, summary(ids, "direct", audience))
+                self._put(place, summary(ids, "direct", _unique(ids)))
 
     def _broadcasts(self) -> None:
         for record in self._snapshot.events_of("broadcast"):
@@ -907,6 +916,10 @@ class _StepAssembler:
                 broadcast_type=str(record.get("broadcast_type") or ""),
                 severity=str(record.get("severity") or ""),
                 phenomenon=str(record.get("phenomenon") or ""),
+                audience=(
+                    [str(a) for a in coerce_list(record.get("receivers"))]
+                    if record.get("receivers") is not None else None
+                ),
             )
             place = str(record.get("location_scope") or "")
             if place:

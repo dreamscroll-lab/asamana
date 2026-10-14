@@ -109,7 +109,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
   // state is passed separately so the card shows the same rich layout as review.
   const roster: CardAgent[] = [...agents]
     .sort((a, b) => Number(b.is_main_character) - Number(a.is_main_character))
-    .map((a) => ({ id: a.agent_id, name: a.name, is_main_character: a.is_main_character, color: a.color }));
+    .map((a) => ({ id: a.agent_id, name: a.name, is_main_character: a.is_main_character ?? false, color: a.color }));
   const activeAgentId = focus.agents[focus.agents.length - 1] ?? roster[0]?.id ?? null;
   const activeAgent = roster.find((a) => a.id === activeAgentId);
 

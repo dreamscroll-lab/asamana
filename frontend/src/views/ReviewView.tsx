@@ -77,7 +77,7 @@ function WorldReview({ id }: { id: string }) {
         .map((n) => ({
           id: n.id,
           name: n.name,
-          is_main_character: n.is_main_character,
+          is_main_character: n.is_main_character ?? false,
           role: n.role,
           color: n.color, // identity color → avatar matches the map token + graph node
         })),

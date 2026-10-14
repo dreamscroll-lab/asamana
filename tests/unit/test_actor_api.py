@@ -199,3 +199,25 @@ async def test_turns_reach_the_websocket(mock_build_container, test_config) -> N
     assert opened["type"] == "actor_turn"
     assert (opened["data"]["step"], opened["data"]["kind"], opened["data"]["doing"]) == (3, "interrupt", "誊抄奏章")
     assert closed == {"type": "actor_turn", "data": None}
+
+
+@pytest.mark.asyncio
+async def test_observation_routes_answer_as_the_character_until_the_actor_exits(
+    mock_build_container, test_config,
+) -> None:
+    catalog = WorldCatalog(None)
+    world_id, character_id = await _unconfirmed_world(mock_build_container, test_config, catalog)
+
+    with _client(mock_build_container, test_config, catalog) as client:
+        client.post(f"/api/worlds/{world_id}/confirm", json={"character_id": character_id})
+        performing = client.get(f"/api/worlds/{world_id}/agents").json()
+        graph = client.get(f"/api/worlds/{world_id}/graph").json()
+        step = client.get(f"/api/worlds/{world_id}/steps/0").json()
+        client.post(f"/api/worlds/{world_id}/actor/exit")
+        released = client.get(f"/api/worlds/{world_id}/agents").json()
+
+    others = [p for p in performing if p["agent_id"] != character_id]
+    assert others and all(p["is_main_character"] is None and p["secret"] == "" for p in others)
+    assert all(e["from_id"] == character_id for e in graph["edges"])
+    assert step["observer"] == {"injections": []}
+    assert all(p["is_main_character"] is not None for p in released)
