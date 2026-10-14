@@ -3,13 +3,14 @@
  * A world shows only the deeds its cast happens to perform, so rare ones go unchecked; here the
  * deed table (deedPose.ts) is the checklist.
  *
- * Only the payload is made up: a StepEvent shaped exactly as the engine emits one. Geometry,
- * heading, pose and timing are left to the renderer; a fixture that positioned figures would be
- * testing itself.
+ * Only the payload is made up. Scenes write what the ENGINE records (the record builders in
+ * `engine/execution_processor.py`, `snapshot_agent_state`): one body record per agent, one action
+ * record per participant. `step` then files them into scopes the way the read model does
+ * (`interaction/models.py` StepView), so the renderer gets a StepView shaped as the wire's.
+ * Geometry, heading, pose and timing are left to the renderer; a fixture that positioned figures
+ * would be testing itself.
  *
- * Written against what the engine actually emits (`GET /api/worlds/{id}/steps/{n}`, the record
- * builders in `engine/execution_processor.py`), not the TypeScript types, which are a subset of the
- * wire. Every field the renderer reads must carry the engine's shape. Load-bearing:
+ * Every field the renderer reads must carry the engine's shape. Load-bearing:
  *
  *   - `world_time.hour` is the MACHINE clock the day/night wash reads; the narrative
  *     `world_time.label` is never parsed for it.
@@ -17,9 +18,8 @@
  *   - A body's place comes as a pair: `location` is the NAME (printed), `location_id`
  *     the ID (looked up). `transit.*` and `entity.presence_ref` are IDs.
  *   - A JOINT act emits one record PER PARTICIPANT sharing an `execution_id`;
- *     the initiator's carries the deed, the other's is boilerplate. The dialogue
- *     rides on BOTH closing records, identically — which is exactly what the
- *     renderer's `seenDialogue` guard is there to fold back into one exchange.
+ *     the initiator's carries the deed, the other's is boilerplate. `step` folds them into
+ *     one event told by the initiator's record, as the read model does.
  *   - A multi-step act's beats carry different counters: the opening beat is
  *     `begin`, `1/N`, with a `duration_label`; the ticks are `k/N` with no label; and the
  *     CLOSING beat resets to `0/0`.
@@ -30,21 +30,106 @@
  */
 
 import { Phase, RefKind } from "../../lib/contract";
+import type { PlacedEntity } from "../../lib/step";
 import type { ActionTarget } from "../../types";
 import type { Demographics } from "../../phaser/skins";
 import type { LabRoom } from "../places";
 import type {
   ActionSummary,
-  AgentStateSummary,
-  NpcStateSummary,
+  AgentView,
   BroadcastSummary,
+  DialogueTurn,
   EntityView,
   GraphEdge,
+  LocationScope,
   MessageSummary,
-  StepEvent,
+  NpcView,
+  GoalView,
+  ScopeEvent,
+  StepView,
   Transit,
-  WorldEventSummary,
+  InjectionSummary,
 } from "../../types";
+
+/** An agent's state as the engine records it (`snapshot_agent_state`), with the room he is in. */
+export interface BodyRecord {
+  agent_id: string;
+  agent_name: string;
+  gender: string;
+  age: number | null;
+  location: string;
+  location_id: string; // "" between two waypoints
+  emotion: string;
+  activity_status: string;
+  emotion_label: string;
+  activity_label: string;
+  dominant_need: string | null;
+  dominant_need_label: string;
+  is_main_character: boolean;
+  color: string;
+  long_term_goals: string[];
+  short_term_goals: GoalView[];
+  emotion_intensity: number | null;
+  emotion_valence: number | null;
+  vitality: number | null;
+  is_active: boolean;
+  condition?: string;
+  transit: Transit | null;
+  displaced?: boolean;
+}
+
+/** One participant's action record, as `completion_record` / the begin record write it. */
+export interface ActRecord {
+  agent_id: string;
+  agent_name: string;
+  action_description: string;
+  outcome: string;
+  gist: string;
+  succeeded: boolean;
+  failure_reason: string;
+  detected: boolean;
+  not_executed: boolean;
+  action_type: string;
+  phase: string;
+  deed: string;
+  execution_id: string;
+  initiator_id: string;
+  duration_label: string;
+  elapsed_steps: number;
+  total_steps: number;
+  interrupted_by: string;
+  target: ActionTarget;
+  affected_entity_ids: string[];
+  overheard_by: string[];
+  inner_monologue: string;
+  is_main_character: boolean;
+  dialogue: DialogueTurn[];
+  // The route walked, on the beat a MOVE ended.
+  route?: Transit | null;
+  seq: number;
+}
+
+/** A mindless body as the environment reports it, with the room it is in. */
+export interface RunnerRecord {
+  npc_id: string;
+  name: string;
+  location: string;
+  location_id: string;
+  color: string;
+  gender: string;
+  age: number | null;
+  description: string;
+  condition: string;
+  outcome: string;
+  ongoing: boolean;
+  displaced?: boolean;
+}
+
+/** A delivered message. `location_id` is the room a place-scoped one was announced to. */
+export type LetterRecord = Omit<MessageSummary, "kind" | "audience"> & { location_id?: string };
+
+/** A delivered broadcast; `location_id` null = the whole world. */
+export type NoticeRecord = Omit<BroadcastSummary, "kind"> & { location_id: string | null };
 
 /** A figure in the bench's cast. Gender + age pick the BODY (skins.bodyFor). */
 export interface LabCharacter {
@@ -122,8 +207,8 @@ export interface LabRunner {
 export function mindless(
   body: LabRunner,
   at: Room,
-  over: Partial<NpcStateSummary> = {},
-): NpcStateSummary {
+  over: Partial<RunnerRecord> = {},
+): RunnerRecord {
   return {
     ...body, location: at.name, location_id: at.id, condition: "", outcome: "", ongoing: false, ...over,
   };
@@ -170,11 +255,13 @@ export function execId(type: string, character: LabCharacter, step: number): str
 export function who(
   character: LabCharacter,
   room: Room,
-  over: Partial<AgentStateSummary> = {},
-): AgentStateSummary {
+  over: Partial<BodyRecord> = {},
+): BodyRecord {
   return {
     agent_id: character.id,
     agent_name: character.name,
+    gender: character.gender,
+    age: character.age,
     location: room.name,
     location_id: room.id,
     emotion: Emotion.neutral,
@@ -193,7 +280,6 @@ export function who(
     vitality: 0.994,
     is_active: true,
     transit: null,
-    arrival: null,
     ...over,
     ...(over.transit ? whereOnRoad(over.transit) : {}),
   };
@@ -235,8 +321,8 @@ export const aimNothing = (): ActionTarget => ({ acts_on: [], claims: [], reache
 
 export function did(
   character: LabCharacter,
-  over: Partial<ActionSummary> & Pick<ActionSummary, "action_type" | "deed">,
-): ActionSummary {
+  over: Partial<ActRecord> & Pick<ActRecord, "action_type" | "deed">,
+): ActRecord {
   return {
     agent_id: character.id,
     agent_name: character.name,
@@ -303,16 +389,18 @@ function whereOnRoad(transit: Transit): { location: string; location_id: string 
 }
 
 interface StepParts {
-  states: AgentStateSummary[];
-  npcs?: NpcStateSummary[];
-  actions?: ActionSummary[];
-  entities?: Record<string, EntityView>;
-  events?: WorldEventSummary[];
-  messages?: MessageSummary[];
-  broadcasts?: BroadcastSummary[];
+  states: BodyRecord[];
+  npcs?: RunnerRecord[];
+  actions?: ActRecord[];
+  entities?: Record<string, PlacedEntity>;
+  injections?: InjectionSummary[];
+  messages?: LetterRecord[];
+  broadcasts?: NoticeRecord[];
   /** Who is close to whom. Absent = everyone indifferent. */
   relations?: GraphEdge[];
   hour?: number;
+  /** This step's number when it must be a particular one (0: the world as built). */
+  at?: number;
   /**
    * Which of `entities` were made on this step (stamped with its number, which only `step` knows).
    * The rest keep step 0, so a later step shows the same thing as ordinary.
@@ -322,23 +410,181 @@ interface StepParts {
 
 let stepCounter = 0;
 
+const entityView = ({ presence: _p, presence_ref: _r, ...e }: PlacedEntity): EntityView => e;
+
 export function step({
   states,
   npcs = [],
   actions = [],
   entities = {},
-  events = [],
+  injections = [],
   messages = [],
   broadcasts = [],
   relations = [],
   hour = 10,
+  at,
   bornIds = [],
-}: StepParts): StepEvent {
+}: StepParts): StepView {
   stepCounter += 1;
-  const n = stepCounter;
+  const n = at ?? stepCounter;
   const table = Object.fromEntries(
     Object.entries(entities).map(([id, e]) => [id, bornIds.includes(id) ? { ...e, created_step: n } : e]),
   );
+
+  // Every room a body stands in, by id, named as its records name it.
+  const names = new Map<string, string>();
+  for (const b of [...states, ...npcs]) if (b.location_id) names.set(b.location_id, b.location);
+  const locations: Record<string, LocationScope> = {};
+  const transit: StepView["transit"] = { agents: [], npcs: [], events: [] };
+  const scopeOf = (id: string): { agents: AgentView[]; npcs: NpcView[]; events: ScopeEvent[] } => {
+    if (!id) return transit;
+    return (locations[id] ??= {
+      location_id: id, name: names.get(id) ?? "某地", agents: [], npcs: [], entities: {}, events: [],
+    });
+  };
+  const worldScopeEvents: ScopeEvent[] = [];
+  const belongings = (holder: string, open: boolean) => Object.fromEntries(
+    Object.entries(table)
+      .filter(([, e]) => e.presence === "held" && e.presence_ref === holder && e.is_public === open)
+      .map(([id, e]) => [id, entityView(e)]),
+  );
+  for (const [id, e] of Object.entries(table)) {
+    if (e.presence === "at_location") {
+      (scopeOf(e.presence_ref) as LocationScope).entities[id] = entityView(e);
+    }
+  }
+
+  // The read model's fold: one event per (execution, beat), told by the initiator's record.
+  const where = new Map(states.map((s) => [s.agent_id, s.location_id]));
+  const thoughts = new Map<string, { seq: number; execution_id: string; text: string }[]>();
+  const groups = new Map<string, ActRecord[]>();
+  actions.forEach((r, i) => {
+    const key = r.execution_id ? `${r.execution_id}|${r.phase}` : `#${i}`;
+    (groups.get(key) ?? groups.set(key, []).get(key)!).push(r);
+  });
+  for (const records of groups.values()) {
+    const initiator = records[0].initiator_id || records[0].agent_id;
+    const lead = records.find((r) => r.agent_id === initiator) ?? records[0];
+    const participants = [...new Set([initiator, ...records.map((r) => r.agent_id)])];
+    for (const r of records) {
+      if (!r.inner_monologue) continue;
+      (thoughts.get(r.agent_id) ?? thoughts.set(r.agent_id, []).get(r.agent_id)!)
+        .push({ seq: lead.seq, execution_id: lead.execution_id, text: r.inner_monologue });
+    }
+    const overheard = [...new Set(records.flatMap((r) => r.overheard_by))];
+    const event: ActionSummary = {
+      kind: "action",
+      seq: lead.seq,
+      execution_id: lead.execution_id,
+      initiator_id: initiator,
+      participant_ids: participants,
+      action_type: lead.action_type,
+      phase: lead.phase,
+      deed: lead.deed,
+      target: lead.target,
+      affected_entity_ids: [...new Set(records.flatMap((r) => r.affected_entity_ids))],
+      overheard_by: overheard,
+      interrupted_by: lead.interrupted_by,
+      succeeded: lead.succeeded,
+      failure_reason: lead.failure_reason,
+      detected: lead.detected,
+      not_executed: lead.not_executed,
+      public: null,
+      private: {
+        audience: [...participants, ...overheard],
+        outcome: lead.outcome,
+        gist: lead.gist,
+        dialogue: records.find((r) => r.dialogue.length)?.dialogue ?? [],
+        action_description: lead.action_description,
+        duration_label: lead.duration_label,
+        elapsed_steps: lead.elapsed_steps,
+        total_steps: lead.total_steps,
+        route: lead.route ?? null,
+      },
+    };
+    scopeOf(where.get(initiator) ?? "").events.push(event);
+  }
+
+  const edges = new Map<string, GraphEdge[]>();
+  for (const e of relations) (edges.get(e.from_id) ?? edges.set(e.from_id, []).get(e.from_id)!).push(e);
+  for (const s of states) {
+    scopeOf(s.location_id).agents.push({
+      agent_id: s.agent_id,
+      name: s.agent_name,
+      gender: s.gender,
+      age: s.age,
+      color: s.color,
+      is_main_character: s.is_main_character,
+      is_active: s.is_active,
+      public: {
+        // Someone acting covertly doesn't look like it, as the read model has it.
+        activity_status: s.activity_status === "covert" ? "" : s.activity_status,
+        activity_label: s.activity_status === "covert" ? "" : s.activity_label,
+        condition: s.condition ?? "",
+        displaced: s.displaced ?? false,
+        carrying: belongings(s.agent_id, true),
+      },
+      private: {
+        emotion: s.emotion,
+        emotion_label: s.emotion_label,
+        emotion_intensity: s.emotion_intensity,
+        emotion_valence: s.emotion_valence,
+        dominant_need: s.dominant_need,
+        dominant_need_label: s.dominant_need_label,
+        vitality: s.vitality,
+        activity_status: s.activity_status,
+        activity_label: s.activity_label,
+        transit: s.transit,
+        long_term_goals: s.long_term_goals,
+        short_term_goals: s.short_term_goals,
+        relations: edges.get(s.agent_id) ?? [],
+        thoughts: thoughts.get(s.agent_id) ?? [],
+        carrying: belongings(s.agent_id, false),
+      },
+    });
+  }
+  for (const r of npcs) {
+    scopeOf(r.location_id).npcs.push({
+      npc_id: r.npc_id,
+      name: r.name,
+      color: r.color,
+      gender: r.gender,
+      age: r.age,
+      description: r.description,
+      public: {
+        condition: r.condition,
+        displaced: r.displaced ?? false,
+        carrying: belongings(r.npc_id, true),
+      },
+      private: { outcome: r.outcome, ongoing: r.ongoing, carrying: belongings(r.npc_id, false) },
+    });
+  }
+
+  for (const { location_id, ...m } of messages) {
+    if (m.scope === "world") {
+      worldScopeEvents.push({ ...m, kind: "message", audience: null });
+    } else if (m.scope === "place") {
+      scopeOf(location_id ?? "").events.push({ ...m, kind: "message", audience: null });
+    } else {
+      // A letter reaches a man, not a room: it lands wherever each recipient stands.
+      const audience = [...new Set([m.sender_id, ...m.receiver_ids])];
+      const byRoom = new Map<string, string[]>();
+      for (const rid of m.receiver_ids) {
+        const at = where.get(rid) ?? "";
+        (byRoom.get(at) ?? byRoom.set(at, []).get(at)!).push(rid);
+      }
+      for (const [at, receivers] of byRoom) {
+        scopeOf(at).events.push({ ...m, kind: "message", receiver_ids: receivers, audience });
+      }
+    }
+  }
+  for (const { location_id, ...b } of broadcasts) {
+    (location_id ? scopeOf(location_id).events : worldScopeEvents).push({ ...b, kind: "broadcast" });
+  }
+
+  const bySeq = (a: ScopeEvent, b: ScopeEvent) => a.seq - b.seq;
+  for (const l of Object.values(locations)) l.events.sort(bySeq);
+  transit.events.sort(bySeq);
   return {
     world_id: "lab",
     step: n,
@@ -349,14 +595,10 @@ export function step({
       hour,
       minute: 0,
     },
-    actions,
-    messages,
-    world_events: events,
-    agent_states: Object.fromEntries(states.map((s) => [s.agent_id, s])),
-    npcs,
-    broadcasts,
-    entities: table,
-    relations,
+    locations,
+    transit,
+    world: { events: worldScopeEvents.sort(bySeq) },
+    observer: { injections },
   };
 }
 
@@ -365,13 +607,14 @@ export interface LabScene {
   group: string;
   title: string;
   watch: string;
-  steps: StepEvent[];
+  steps: StepView[];
 }
 
 // Props for the object deeds: one takeable, one fixed. Re-declared per step because the entity
-// snapshot is per-step state, and presence changes (at_location → held → destroyed) are what the
-// seize/destroy scenes show. `presence_ref` is a location id or a holder's agent id.
-export const crate = (where: string, over: Partial<EntityView> = {}): Record<string, EntityView> => ({
+// snapshot is per-step state, and presence changes (on the ground → held → gone) are what the
+// seize/destroy scenes show: a destroyed thing is simply absent from its step. `presence_ref` is a
+// location id or a holder's agent id.
+export const crate = (where: string, over: Partial<PlacedEntity> = {}): Record<string, PlacedEntity> => ({
   "seed_seed-91ac33be40": {
     name: "货箱",
     entity_type: "item",
@@ -380,7 +623,7 @@ export const crate = (where: string, over: Partial<EntityView> = {}): Record<str
     presence_ref: where,
     description: "",
     is_public: true,
-    content: "",
+    private: { content: "" },
     created_step: 0,
     ...over,
   },
@@ -391,7 +634,7 @@ export const CRATE = "seed_seed-91ac33be40";
  * Things in somebody's hands, the pocket's input, built directly since a real world rarely reaches
  * a man carrying five things. `[name, state]` pairs: the pocket shows the state too.
  */
-export const carried = (holder: string, items: [string, string][]): Record<string, EntityView> =>
+export const carried = (holder: string, items: [string, string][]): Record<string, PlacedEntity> =>
   Object.fromEntries(
     items.map(([name, state], i) => [
       // Ids are stable across a scene's steps (a changed id reads as one thing vanishing and another
@@ -406,13 +649,13 @@ export const carried = (holder: string, items: [string, string][]): Record<strin
         presence_ref: holder,
         description: "",
         is_public: true,
-        content: "",
+        private: { content: "" },
         created_step: 0,
       },
     ]),
   );
 
-export const gate = (where: string, over: Partial<EntityView> = {}): Record<string, EntityView> => ({
+export const gate = (where: string, over: Partial<PlacedEntity> = {}): Record<string, PlacedEntity> => ({
   "seed_seed-2b70df1c85": {
     name: "坊门",
     entity_type: "landmark",
@@ -421,7 +664,7 @@ export const gate = (where: string, over: Partial<EntityView> = {}): Record<stri
     presence_ref: where,
     description: "",
     is_public: true,
-    content: "",
+    private: { content: "" },
     created_step: 0,
     ...over,
   },

@@ -28,7 +28,7 @@ from engine.broadcast import BroadcastChannel
 from engine.clock import GlobalClock, WorldTimeConfig
 from engine.directory import LiveWorldDirectory
 from engine.environment import EnvironmentSystem
-from engine.event import EventSettings
+from engine.narrative_editor import NarrativeEditorSettings
 from engine.executors import build_default_registry
 from engine.executors.base import ActionExecutionState
 from engine.message_system import MessageDelivery, MessageSystem
@@ -97,7 +97,7 @@ def _build_runtime(container, world_id: str):
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=EventSettings(check_interval=2, max_events_per_window=0),
+        narrative_editor_settings=NarrativeEditorSettings(check_interval=2, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
         agent_store=container.agent_store,
         event_bus=container.event_bus,
@@ -523,19 +523,20 @@ async def test_interrupt_emits_display_record(container) -> None:
     # The action is actually torn down (the state transition happened).
     assert not registry.is_agent_active("mc")
 
-    # The record maps to a valid ActionSummary → it really reaches step_event / the snapshot display
-    # layer.
-    from interaction.models import _action_from_record
+    # The record maps to a valid ActionSummary → it really reaches the StepView.
+    from tests.unit.step_view import the_action
 
-    summary = _action_from_record(rec)
+    summary = the_action(rec)
     assert summary.phase == "interrupt"
-    assert summary.agent_id == "mc"
+    assert summary.initiator_id == "mc"
     assert summary.succeeded is False
     assert summary.interrupted_by == "mc"
-    assert "我必须立刻动身" in summary.outcome
+    # The thought is the participants' to know, not the onlookers'.
+    assert summary.public is None
+    assert "我必须立刻动身" in summary.private.outcome
     # The gist reaches the read model without the thought.
-    assert "打断" in summary.gist and "我必须立刻动身" not in summary.gist
-    assert "城门失守" not in summary.outcome  # trigger stays out of narrative
+    assert "打断" in summary.private.gist and "我必须立刻动身" not in summary.private.gist
+    assert "城门失守" not in summary.private.outcome  # trigger stays out of narrative
 
 
 @pytest.mark.asyncio

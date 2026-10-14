@@ -6,17 +6,28 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { NpcStateSummary } from "../types";
-import { npcStandingLine, npcTipLines } from "./npc";
+import type { NpcView } from "../types";
+import { npcStandingLine as standingLine, npcTipLines } from "./npc";
 
-function npc(over: Partial<NpcStateSummary> = {}): NpcStateSummary {
+interface Spec {
+  gender?: string; age?: number | null; description?: string; condition?: string; outcome?: string;
+}
+
+function npc(over: Spec = {}): NpcView {
   return {
-    npc_id: "npc_x", name: "东宫典膳", location: "东宫", location_id: "loc-east-palace", color: "#8a93a6",
-    gender: "男", age: 45, description: "掌酒食采办", condition: "",
-    outcome: "", ongoing: false,
-    ...over,
+    npc_id: "npc_x", name: "东宫典膳", color: "#8a93a6",
+    gender: over.gender ?? "男", age: over.age === undefined ? 45 : over.age,
+    description: over.description ?? "掌酒食采办",
+    public: {
+      condition: over.condition ?? "", displaced: false,
+      carrying: {},
+    },
+    private: { outcome: over.outcome ?? "", ongoing: false, carrying: {} },
   };
 }
+
+// He stands in the East Palace.
+const npcStandingLine = (n: NpcView, roll = false) => standingLine(n, "东宫", roll);
 
 describe("状态行", () => {
   it("什么也没发生就不出声 —— 一具闲着的身体每步一行会埋掉整条流", () => {

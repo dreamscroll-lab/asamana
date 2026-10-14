@@ -23,7 +23,7 @@ from engine.broadcast import BroadcastChannel
 from engine.clock import GlobalClock, WorldTimeConfig
 from engine.directory import LiveWorldDirectory
 from engine.environment import EnvironmentSystem
-from engine.event import EventSettings
+from engine.narrative_editor import NarrativeEditorSettings
 from engine.executors import build_default_registry
 from engine.message_system import MessageSystem
 from engine.runtime import NarrativeRuntime
@@ -69,14 +69,14 @@ async def test_run_step_records_stage_tagged_traces(container) -> None:
     environment = EnvironmentSystem(TiledWorldConfig(template="changan_iso"))
     message_system = MessageSystem(container.message_provider, world_id=world_id)
     broadcast_channel = BroadcastChannel()
-    event_settings = EventSettings(check_interval=2, max_events_per_window=1)
+    narrative_editor_settings = NarrativeEditorSettings(check_interval=2, max_injections_per_window=1)
     runtime = NarrativeRuntime(
         world_id=world_id,
         clock=GlobalClock(WorldTimeConfig(start_hour=6, seconds_per_step=60)),
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=event_settings,
+        narrative_editor_settings=narrative_editor_settings,
         snapshot_provider=container.snapshot,
         agent_store=container.agent_store,
         event_bus=container.event_bus,
@@ -115,7 +115,7 @@ async def test_run_step_records_stage_tagged_traces(container) -> None:
     # Every step-loop phase is timed and captured in the per-phase breakdown.
     phase_ms = summaries[0].phase_ms
     assert set(phase_ms) == {
-        "event_check", "message", "pressure", "perceive", "interrupt",
+        "injection", "message", "pressure", "perceive", "interrupt",
         "executor", "plan", "exec", "cognition", "snapshot",
     }
     assert all(v >= 0 for v in phase_ms.values())

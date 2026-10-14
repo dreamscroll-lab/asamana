@@ -160,8 +160,11 @@ def _msg(sender_id, sender_name, content):
     return SimpleNamespace(sender_id=sender_id, sender_name=sender_name, content=content)
 
 
-def _bc(content: str) -> Broadcast:
-    return Broadcast(content=content, source="system", broadcast_type=BroadcastType.WORLD_EVENT, deliver_step=1)
+def _bc(content: str, location_scope: str | None = None) -> Broadcast:
+    return Broadcast(
+        content=content, source="system", broadcast_type=BroadcastType.WORLD_EVENT, deliver_step=1,
+        location_scope=location_scope,
+    )
 
 
 def test_render_perceived_signals_labels_each_channel() -> None:
@@ -174,7 +177,13 @@ def test_render_perceived_signals_labels_each_channel() -> None:
     assert "同处一地的人：甲" in joined   # stative, so not read as an entrance
     assert "环境观察：远处有动静" in joined
     assert "收到来自乙的消息：速来" in joined
-    assert "世界广播：城门已闭" in joined
+    assert "全局广播：城门已闭" in joined
+
+
+def test_render_perceived_signals_labels_a_local_broadcast_local() -> None:
+    lines = render_perceived_signals(spatial=_spatial(), inbox=[], broadcasts=[_bc("东宫落雨", "donggong")])
+    assert "本地广播：东宫落雨" in lines
+    assert not any("donggong" in line for line in lines)
 
 
 def test_render_perceived_signals_narrator_message_labels_unknown_source() -> None:

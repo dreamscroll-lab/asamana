@@ -1,9 +1,10 @@
+import type { Scoped } from "../../lib/step";
 import type { MessageSummary } from "../../types";
 import type { StepCast } from "./cast";
 import Who from "./Who";
 
 /**
- * A letter LANDING: step.messages is delivery, not sending (the "传信" action card already
+ * A letter LANDING: a message event is delivery, not sending (the "传信" action card already
  * told the sending), so don't lead with the sender.
  *
  * WHO the subject is depends on how it was addressed (MessageSummary.scope):
@@ -11,7 +12,7 @@ import Who from "./Who";
  *   place/world → the SENDER. Listing every hearer would shred one public act into private
  *     letters.
  */
-export default function MessageRow({ m, cast }: { m: MessageSummary; cast: StepCast }) {
+export default function MessageRow({ m, cast }: { m: Scoped<MessageSummary>; cast: StepCast }) {
   const to = m.receiver_ids.map(cast.nameOf).filter(Boolean);
   const sender = <Who cast={cast} id={m.sender_id} name={m.sender_name || "不知来源"} />;
   const heard = m.receiver_ids.length;
@@ -23,10 +24,10 @@ export default function MessageRow({ m, cast }: { m: MessageSummary; cast: StepC
           <>
             {sender}
             <span className="text-slate-600">
-              {m.scope === "world" ? " 世界广播" : ` 在${m.place}广播`}
+              {m.scope === "world" ? " 世界广播" : ` 在${m.location_name}广播`}
               {heard > 0 ? `（${heard} 人听见）` : "（无人在侧）"} ·{" "}
             </span>
-            {m.perceived_summary}
+            {m.content}
           </>
         ) : to.length > 0 ? (
           <>
@@ -40,7 +41,7 @@ export default function MessageRow({ m, cast }: { m: MessageSummary; cast: StepC
             <span className="text-slate-600"> 收到 </span>
             {sender}
             <span className="text-slate-600"> 的传讯 · </span>
-            {m.perceived_summary}
+            {m.content}
           </>
         ) : (
           // Addressed to someone, delivered to nobody (the recipient was gone); don't dress
@@ -48,7 +49,7 @@ export default function MessageRow({ m, cast }: { m: MessageSummary; cast: StepC
           <span className="text-slate-500">
             {sender}
             <span className="text-slate-600"> 的传讯无人收到 · </span>
-            {m.perceived_summary}
+            {m.content}
           </span>
         )}
       </span>

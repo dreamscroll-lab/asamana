@@ -1,9 +1,9 @@
-"""Sparse narrative event injection: the automatic LLM editor.
+"""Sparse narrative injections: the automatic LLM narrative editor.
 
 Design charter:
 - Only pacing + channel adaptation. Never mutates agent state; agents react to the perception
   signals on their own.
-- No event type enums: the LLM declares the channels (broadcast / message / object changes)
+- No injection type enums: the LLM declares the channels (broadcast / message / object changes)
   in its plan, possibly several at once.
 - Object changes go through ``WorldMutationChannel`` as ``Author.SYSTEM``, which only allows
   putting a new thing down or changing / destroying an unheld thing on the ground. People and
@@ -53,7 +53,7 @@ from engine.injection import (
     InjectionDispatcher,
     InjectionLedger,
     MessageSpec,
-    WorldEvent,
+    InjectionRecord,
     normalize_is_positive,
     parse_broadcast_spec,
     parse_message_spec,
@@ -71,7 +71,7 @@ logger = get_logger(__name__)
 # Narrative briefing bounds (the gate also consumes this briefing, so it must stay bounded).
 _BRIEF_LOOKBACK_STEPS = 6        # steps the dynamic "recent events" block looks back
 _BRIEF_MAX_RELATIONS = 8         # max relation pairs listed (main-character pairs first)
-_BRIEF_MAX_PRIOR_EVENTS = 5      # max most-recent injected events listed
+_BRIEF_MAX_PRIOR_INJECTIONS = 5  # max most-recent injections listed
 
 # Unoccupied places the plan menu may list on top of the occupied ones. A few elsewhere are
 # enough to pull the story out of one spot; more only dilutes the menu.
@@ -84,7 +84,7 @@ _MAX_BARE_PLACES = 3             # with nothing on them, a different draw each s
 
 
 @dataclass(frozen=True)
-class _EventPlan:
+class _InjectionPlan:
     narrative_desc: str
     is_positive: bool | None
     broadcast: BroadcastSpec | None
@@ -99,53 +99,41 @@ class _EventPlan:
 
 
 @dataclass(frozen=True)
-class EventSettings:
+class NarrativeEditorSettings:
     """Pacing and narrative anchors for editing one world.
 
     ``core_tension`` / ``narrative_theme`` go only into the editor's briefing, never into agent
-    cognition. The quota is a sliding window (``max_events_per_window`` per ``quota_window``
+    cognition. The quota is a sliding window (``max_injections_per_window`` per ``quota_window``
     steps): it bounds density, not a lifetime total that a long world would spend early.
     """
 
     core_tension: str = ""
     narrative_theme: str = ""
     enabled: bool = True
-    max_events_per_window: int = 2
+    max_injections_per_window: int = 2
     quota_window: int = 20
     check_interval: int = 5
 
     def __post_init__(self) -> None:
         require_positive(self.check_interval, "check_interval")
-        require_at_least(self.max_events_per_window, 0, "max_events_per_window")
+        require_at_least(self.max_injections_per_window, 0, "max_injections_per_window")
         require_positive(self.quota_window, "quota_window")
 
 
-def _step_deeds(actions: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-    """This step's action records eligible for the briefing: filter out non-deeds, then fold
-    a joint action's per-participant records into the initiator's (by ``execution_id``), or
-    the same dialogue would double the density the pacing gate sees.
-
-    Fold after filtering: a group whose initiator was filtered out falls back to its first
-    record rather than vanishing. Fold only within this step: a multi-step execution's start
-    and end beats both belong.
+def _step_deeds(snapshot: WorldSnapshot) -> list[Mapping[str, Any]]:
+    """This step's deeds a main character took part in, eligible for the briefing. Each action
+    event is one execution's beat already (the step record folds participants), so a dialogue
+    counts once and the pacing gate sees the real density.
     """
-    grouped: dict[Any, list[Mapping[str, Any]]] = {}
-    for index, action in enumerate(actions):
-        if not action.get("is_main_character"):
-            continue
+    agents = snapshot.state.agents
+    return [
+        event for event in snapshot.events_of("action")
+        if any(agents.get(pid, {}).get("is_main_character") for pid in event.get("participant_ids") or [])
         # Progress notes aren't deeds; they'd repeat one act per step it spans.
-        if action.get("phase") == "ongoing_tick":
-            continue
+        and event.get("phase") != "ongoing_tick"
         # Never engaged the world (precondition failed); the editor would react to something
         # that never happened. An adjudicated failure stays: "he tried and was beaten" is a deed.
-        if action.get("not_executed"):
-            continue
-        # No execution_id: its own group, never merged.
-        key: Any = str(action.get("execution_id") or "") or index
-        grouped.setdefault(key, []).append(action)
-    return [
-        next((r for r in records if r.get("agent_id") == r.get("initiator_id")), records[0])
-        for records in grouped.values()
+        and not event.get("not_executed")
     ]
 
 
@@ -159,7 +147,7 @@ def _menu_places(
     broadcast reaches), the unoccupied places with the most unheld things on the ground, and a few
     bare ones drawn by ``rng``. Don't pick the bare ones by a fixed rule such as nearness: while
     people stay put the same few would always win, and the rest of the map could never host
-    an event."""
+    an injection."""
     unoccupied = [loc for loc in locations if not headcount.get(loc.place_id)]
     stocked = sorted(
         (loc for loc in unoccupied if things.get(loc.place_id)),
@@ -205,7 +193,7 @@ def _parse_destroy(raw: Any, entity_ref: IndexedRef) -> EntityMutation | None:
     return EntityMutation(observation=observation, entity_id=which[0], destroyed=True)
 
 
-class EventSystem:
+class NarrativeEditor:
     """Narrative pacing controller + channel adapter (see the module docstring's charter):
     a rule gate + LLM gate decide whether to inject, the LLM writes the plan, and the shared
     dispatcher delivers it."""
@@ -217,7 +205,7 @@ class EventSystem:
         snapshot_provider: SnapshotProvider,
         dispatcher: InjectionDispatcher,
         directory: WorldDirectory,
-        settings: EventSettings,
+        settings: NarrativeEditorSettings,
     ) -> None:
         self.llm_router = llm_router
         self.snapshot_provider = snapshot_provider
@@ -227,15 +215,15 @@ class EventSystem:
         self._ledger = InjectionLedger(Author.SYSTEM)
         # At most one background generation at a time: bounds cost and prevents quota races
         # (the ledger is written only at commit).
-        self._inflight: "asyncio.Task[_EventPlan | None] | None" = None
+        self._inflight: "asyncio.Task[_InjectionPlan | None] | None" = None
 
-    def list_events(self) -> list[WorldEvent]:
+    def list_injections(self) -> list[InjectionRecord]:
         return self._ledger.all()
 
-    def restore_state(self, fired_events: Iterable[Mapping[str, Any]]) -> None:
-        """Rehydrate the quota window from persisted events, so a restore doesn't grant a fresh
-        quota. The ledger keeps only this system's events; the director's are filtered out."""
-        self._ledger.restore(fired_events)
+    def restore_state(self, landed_injections: Iterable[Mapping[str, Any]]) -> None:
+        """Rehydrate the quota window from persisted injections, so a restore doesn't grant a fresh
+        quota. The ledger keeps only this editor's injections; the director's are filtered out."""
+        self._ledger.restore(landed_injections)
 
     def _passes_rule_check(self, current_step: int) -> bool:
         settings = self.settings
@@ -243,11 +231,11 @@ class EventSystem:
             return False
         if current_step <= 0 or current_step % settings.check_interval != 0:
             return False
-        if self._ledger.count_since(current_step - settings.quota_window) >= settings.max_events_per_window:
+        if self._ledger.count_since(current_step - settings.quota_window) >= settings.max_injections_per_window:
             return False
         return True
 
-    async def poll_event(
+    async def poll_injection(
         self,
         *,
         current_step: int,
@@ -257,7 +245,7 @@ class EventSystem:
         locations: Sequence["Place"],
         entities: Sequence["WorldEntity"],
     ) -> CommittedInjection | None:
-        """The step loop's single event entry point: commit a finished background generation
+        """The step loop's single injection entry point: commit a finished background generation
         and return it, or start one and return None. Never blocks on the LLM.
 
         ``locations`` / ``entities`` are read-only (the author layer doesn't hold EnvironmentSystem).
@@ -303,7 +291,7 @@ class EventSystem:
         try:
             plan = task.result()
         except Exception as exc:  # noqa: BLE001 — Rule 1: a failed background generation means no injection
-            logger.warning("event_generation_failed", extra={"error": str(exc)})
+            logger.warning("injection_generation_failed", extra={"error": str(exc)})
             return None
         if plan is None:
             return None
@@ -317,7 +305,7 @@ class EventSystem:
         all_agents: Mapping[str, "Agent"],
         locations: Sequence["Place"],
         entities: Sequence["WorldEntity"],
-    ) -> "_EventPlan | None":
+    ) -> "_InjectionPlan | None":
         """Gate + generation, returning a plan or None. No side effects: committing lives in
         _commit_plan, keeping background execution apart from deterministic consumption."""
         narrative_summary = await self._build_narrative_summary(
@@ -326,7 +314,7 @@ class EventSystem:
         should_inject = await self._passes_llm_check(world_time, narrative_summary)
         if not should_inject:
             return None
-        return await self._generate_event_plan(
+        return await self._generate_injection_plan(
             current_step=current_step,
             world_time=world_time,
             narrative_summary=narrative_summary,
@@ -337,7 +325,7 @@ class EventSystem:
 
     async def _commit_plan(
         self,
-        plan: "_EventPlan",
+        plan: "_InjectionPlan",
         current_step: int,
         all_agents: Mapping[str, "Agent"],
     ) -> CommittedInjection | None:
@@ -354,12 +342,12 @@ class EventSystem:
             is_positive=plan.is_positive,
         )
         if committed is not None:
-            self._ledger.record(committed.event)
+            self._ledger.record(committed.record)
         return committed
 
     async def aclose(self) -> None:
         """Cancel the in-flight generation at shutdown. A finished task is awaited too: skipping
-        it on ``done()`` would lose an unread exception that explains why no events appeared."""
+        it on ``done()`` would lose an unread exception that explains why no injections appeared."""
         task = self._inflight
         self._inflight = None
         if task is None:
@@ -369,7 +357,7 @@ class EventSystem:
         try:
             await task
         except (asyncio.CancelledError, Exception) as exc:  # noqa: BLE001 — shutdown cleanup swallows everything
-            logger.debug("event_generation_discarded_on_close", extra={"error": str(exc)})
+            logger.debug("injection_generation_discarded_on_close", extra={"error": str(exc)})
 
     async def _passes_llm_check(
         self,
@@ -379,7 +367,7 @@ class EventSystem:
         """Pacing gate: should the world make something happen on its own right now?
 
         Any gate failure means "don't inject": better to miss a beat than force in an unfounded
-        event.
+        injection.
         """
         system = """\
 【角色】你是开放世界叙事的节奏编辑,从第三方视角观察故事走向,判断此刻世界该不该发生一件带来重大改变的事。
@@ -405,7 +393,7 @@ class EventSystem:
 依上面说定的 JSON 格式判断（reason 在前、inject 在后），只输出 JSON、不写任何多余内容。"""
         try:
             response = await self.llm_router.complete(
-                LLMScene.EVENT_TIMING,
+                LLMScene.NARRATIVE_EDITOR,
                 [
                     LLMMessage(role="system", content=system),
                     LLMMessage(role="user", content=user),
@@ -418,11 +406,11 @@ class EventSystem:
             )
             data = extract_json(response.content)
         except Exception as exc:
-            logger.warning("event_timing_gate_failed", extra={"error": str(exc)})
+            logger.warning("narrative_editor_gate_failed", extra={"error": str(exc)})
             return False
         inject = coerce_bool(data.get("inject"), False)
         logger.debug(
-            "event_timing_gate",
+            "narrative_editor_gate",
             extra={
                 "inject": inject,
                 "reason": str(data.get("reason") or "")[:120],
@@ -437,7 +425,7 @@ class EventSystem:
         all_agents: Mapping[str, "Agent"],
     ) -> str:
         """The narrative briefing the editor decides from. Characters and relations use the
-        latest frame; recent and injected events are a step sequence, because pacing momentum
+        latest frame; recent events and injections are a step sequence, because pacing momentum
         exists only in the time series. No step numbers or ids in the text."""
         recent_snapshots: list[WorldSnapshot] = []
         for step in range(max(0, current_step - _BRIEF_LOOKBACK_STEPS), current_step):
@@ -452,7 +440,7 @@ class EventSystem:
             self._brief_characters(all_agents),
             self._brief_relations(latest, main_ids),
             self._brief_recent(recent_snapshots, main_ids),
-            self._brief_prior_events(),
+            self._brief_prior_injections(),
         ]
         return "\n\n".join(b for b in blocks if b)
 
@@ -524,10 +512,10 @@ class EventSystem:
     ) -> str:
         """Labeled relations from the latest frame, main-character pairs first. No trust /
         affection numbers: those are first-person perception the editor shouldn't read."""
-        if latest is None or not latest.agent_relations:
+        if latest is None or not latest.state.relations:
             return ""
         scored: list[tuple[int, str]] = []
-        for rel in latest.agent_relations.values():
+        for rel in latest.state.relations.values():
             labels = rel.get("labels") or []
             if not labels:
                 continue
@@ -556,28 +544,26 @@ class EventSystem:
         lines: list[str] = []
         for snapshot in recent_snapshots:
             when = snapshot.time_label
-            for action in _step_deeds(snapshot.actions_this_step):
-                name = action.get("agent_name") or "某人"
+            for action in _step_deeds(snapshot):
+                initiator = str(action.get("initiator_id") or "")
+                # The snapshot's own name for him: it is whole, and names are frozen at build.
+                name = str(snapshot.state.agents.get(initiator, {}).get("agent_name") or "某人")
                 where = self.directory.location_name(str(action.get("location_id") or ""))
-                outcome = (
-                    action.get("outcome")
-                    or action.get("summary")
-                    or action.get("action_description")
-                    or ""
+                # The initiator's own part speaks for the deed.
+                lead = next(
+                    (p for p in action.get("parts") or [] if p.get("agent_id") == initiator), {},
                 )
+                outcome = lead.get("outcome") or lead.get("action_description") or ""
                 if outcome:
                     lines.append(f"- {when}·{where}:{name} {outcome}")
-            for bc in snapshot.metadata.get("broadcasts", []) or []:
-                if not isinstance(bc, Mapping):
-                    continue
+            for bc in snapshot.events_of("broadcast"):
                 content = bc.get("content")
                 if not content:
                     continue
                 scope = bc.get("location_scope")
                 where = self.directory.location_name(str(scope)) if scope else "全域"
                 lines.append(f"- {when}·{where}广播:{content}")
-            env = snapshot.metadata.get("environment") or {}
-            annotations = env.get("step_annotations") if isinstance(env, Mapping) else None
+            annotations = snapshot.engine.environment.get("step_annotations")
             for scope, scope_events in (annotations or {}).items():
                 where = self.directory.location_name(str(scope)) if scope else ""
                 for ev in scope_events or []:
@@ -593,27 +579,27 @@ class EventSystem:
             return "【近况】\n近期无显著进展。"
         return "【近况】\n" + "\n".join(lines)
 
-    def _brief_prior_events(self) -> str:
+    def _brief_prior_injections(self) -> str:
         """The last few injections with whom they touched and where, so the editor avoids
         repeating people / place / trope. Only the last few: the ledger grows without bound."""
         if not len(self._ledger):
             return ""
         rows: list[str] = []
-        for ev in self._ledger.recent(_BRIEF_MAX_PRIOR_EVENTS):
-            if not ev.narrative_desc:
+        for record in self._ledger.recent(_BRIEF_MAX_PRIOR_INJECTIONS):
+            if not record.narrative_desc:
                 continue
             tags: list[str] = []
-            if ev.affected_names:
-                tags.append(f"波及{'、'.join(ev.affected_names)}")
-            if ev.location_label:
-                tags.append(f"在{ev.location_label}")
+            if record.affected_names:
+                tags.append(f"波及{'、'.join(record.affected_names)}")
+            if record.location_label:
+                tags.append(f"在{record.location_label}")
             suffix = f"（{'；'.join(tags)}）" if tags else ""
-            rows.append(f"- {ev.narrative_desc}{suffix}")
+            rows.append(f"- {record.narrative_desc}{suffix}")
         if not rows:
             return ""
         return "【已注入事件】(勿对同一批人 / 同一地点 / 同类梗重复)\n" + "\n".join(rows)
 
-    async def _generate_event_plan(
+    async def _generate_injection_plan(
         self,
         *,
         current_step: int,
@@ -622,8 +608,8 @@ class EventSystem:
         all_agents: Mapping[str, "Agent"],
         locations: Sequence["Place"],
         entities: Sequence["WorldEntity"],
-    ) -> _EventPlan | None:
-        """The LLM generates an event and declares its channels (spawn / alter / destroy /
+    ) -> _InjectionPlan | None:
+        """The LLM generates an injection and declares its channels (spawn / alter / destroy /
         broadcast / message).
 
         The editor sees beyond where people stand: the menu is every occupied place plus some
@@ -748,7 +734,7 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
 
         try:
             response = await self.llm_router.complete(
-                LLMScene.EVENT_TIMING,
+                LLMScene.NARRATIVE_EDITOR,
                 [
                     LLMMessage(role="system", content=system),
                     LLMMessage(role="user", content=user),
@@ -770,7 +756,7 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
             )
         except Exception as exc:
             logger.warning(
-                "event_plan_llm_failed",
+                "injection_plan_llm_failed",
                 extra={"step": current_step, "error": str(exc)},
             )
             return None
@@ -779,17 +765,17 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
             data = extract_json(response.content)
         except Exception as exc:
             logger.warning(
-                "event_plan_parse_failed",
+                "injection_plan_parse_failed",
                 extra={"step": current_step, "error": str(exc)},
             )
             return None
 
         plan = self._parse_plan(data, agent_id_list, location_ref, entity_ref)
         if plan is None:
-            logger.warning("event_plan_invalid", extra={"step": current_step})
+            logger.warning("injection_plan_invalid", extra={"step": current_step})
             return None
         if plan.broadcast is None and plan.message is None and not plan.mutations:
-            logger.warning("event_plan_no_valid_channel", extra={"step": current_step})
+            logger.warning("injection_plan_no_valid_channel", extra={"step": current_step})
             return None
         return plan
 
@@ -799,7 +785,7 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
         agent_id_list: list[str],
         location_ref: IndexedRef,
         entity_ref: IndexedRef,
-    ) -> _EventPlan | None:
+    ) -> _InjectionPlan | None:
         if not isinstance(data, dict):
             return None
         narrative_desc = str(data.get("narrative_desc", "")).strip()
@@ -810,7 +796,7 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
         broadcast = parse_broadcast_spec(data.get("broadcast"), location_ref)
         message = parse_message_spec(data.get("message"), agent_id_list)
 
-        return _EventPlan(
+        return _InjectionPlan(
             narrative_desc=narrative_desc,
             is_positive=is_positive,
             broadcast=broadcast,

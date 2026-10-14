@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import json
 import pathlib
-from datetime import datetime
 
 from core.interfaces.action import ErrandOrder
 from engine.npc_runner import NpcRunner
@@ -21,6 +20,7 @@ from agent.personality import SoulLayer
 from engine.presence import attach_presence
 from world.models import ActiveErrand, EntityPresence, NpcSeed, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
+from tests.unit.env_state import restore, saved
 
 
 def _location(entity_id: str, name: str, **connections: int) -> Place:
@@ -139,11 +139,11 @@ def test_a_body_and_its_errand_survive_a_restore_whole() -> None:
         done=("话已带到。",), assigned_step=41,
     )
 
-    payload = env.snapshot_state()
+    payload = saved(env)
     json.dumps(payload, ensure_ascii=False)      # payloads leaving the sim must be JSON-native
 
     fresh = _world()
-    fresh.restore_state(payload)
+    restore(fresh, payload)
     back = fresh.get_npc(npc.npc_id)
     assert back is not None
     assert fresh.get_body_location(npc.npc_id) == "gate"
@@ -156,7 +156,7 @@ def test_a_body_and_its_errand_survive_a_restore_whole() -> None:
     assert back.errand.seen == "那里空无一人"
     assert back.errand.done == ("话已带到。",)
     assert (back.errand.order.recipient_id, back.errand.order.message) == ("a1", "殿下召见")
-    assert fresh.snapshot_state()["npc_states"] == payload["npc_states"]
+    assert fresh.world_state()["npcs"] == payload["npcs"]
 
 
 def test_a_half_written_errand_is_dropped_not_thrown(caplog) -> None:
@@ -167,19 +167,16 @@ def test_a_half_written_errand_is_dropped_not_thrown(caplog) -> None:
     whole world's restore.
     """
     env = _world()
-    payload = {
-        "npc_states": {
-            "npc_x": {
-                "name": "王二", "gender": "男", "age": 34,
-                # Only the NPC, no destination: a hand-written fixture / a truncated write / an old
-                # save predating the field
-                "errand": {"order": {"npc_id": "npc_x"}, "requester_id": "a1"},
-            }
-        },
-        "body_locations": {"npc_x": "gate"},
+    npcs = {
+        "npc_x": {
+            "name": "王二", "gender": "男", "age": 34, "location_id": "gate",
+            # Only the NPC, no destination: a hand-written fixture / a truncated write / an old
+            # save predating the field
+            "errand": {"order": {"npc_id": "npc_x"}, "requester_id": "a1"},
+        }
     }
 
-    env.restore_state(payload)          # passes if it doesn't raise
+    env.restore_state(npcs=npcs, entities={}, engine={})          # passes if it doesn't raise
 
     back = env.get_npc("npc_x")
     assert back is not None             # the person is restored
@@ -194,7 +191,7 @@ def test_restore_does_not_re_apply_the_quota() -> None:
         env.spawn_npc(_seed(name), location_id="hall")
 
     fresh = _world(max_npcs=1)
-    fresh.restore_state(env.snapshot_state())
+    restore(fresh, saved(env))
     assert len(fresh.all_npcs()) == 3
 
 
@@ -401,43 +398,36 @@ def test_what_he_is_up_to_reads_off_which_axes_were_filled() -> None:
 
 
 def test_the_observer_gets_the_sentence_the_runner_wrote_and_the_place_he_stands() -> None:
-    """The read model only carries: sentences are copied as-is, location is joined from the
-    body-location table; it composes nothing.
+    """The read model only carries: sentences are copied as-is, and the body stands in the scope
+    the body-location table puts it in; it composes nothing.
 
     Location isn't written into the sentence too, which would give two place names; the same-place
     invariant makes one enough.
     """
-    from core.interfaces.snapshot import WorldSnapshot
-    from interaction.models import _npcs_from_snapshot
+    from interaction.models import StepView
+    from tests.unit.step_view import npcs, snapshot_of
 
-    snap = WorldSnapshot(
-        world_id="w", step=7, timestamp=datetime(2026, 1, 1), metadata={"environment": {
-            "npc_states": {"npc_x": {"name": "王二", "gender": "男", "age": 34}},
-            "body_locations": {"npc_x": "gate"},
-            "location_names": {"gate": "宫门"},
-            "npc_outcomes": {"npc_x": {"text": "把书信交给了阿石", "ongoing": False}},
-        }},
-    )
-    summary = _npcs_from_snapshot(snap)[0]
-    assert (summary.location, summary.outcome, summary.ongoing) == (
-        "宫门", "把书信交给了阿石", False,
+    npc = {"name": "王二", "gender": "男", "age": 34, "location_id": "gate",
+           "outcome": {"text": "把书信交给了阿石", "ongoing": False}}
+    snap = snapshot_of(places={"gate": "宫门"}, npcs={"npc_x": npc})
+    where, summary = npcs(StepView.from_snapshot(snap))["npc_x"]
+    # Private: no onlooker's perception carries an Npc's doings, and no one performs it.
+    assert (where, summary.private.outcome, summary.private.ongoing) == (
+        "gate", "把书信交给了阿石", False,
     )
     # Nothing happened this step: an empty sentence, while identity and location are still reported.
-    snap.metadata["environment"]["npc_outcomes"] = {}
-    quiet = _npcs_from_snapshot(snap)[0]
-    assert (quiet.location, quiet.outcome, quiet.ongoing) == ("宫门", "", False)
+    snap = snapshot_of(places={"gate": "宫门"}, npcs={"npc_x": {**npc, "outcome": None}})
+    where, quiet = npcs(StepView.from_snapshot(snap))["npc_x"]
+    assert (where, quiet.name, quiet.private.outcome, quiet.private.ongoing) == ("gate", "王二", "", False)
 
 
 def test_the_observer_is_told_which_npcs_were_displaced_this_step() -> None:
-    from core.interfaces.snapshot import WorldSnapshot
-    from interaction.models import _npcs_from_snapshot
+    from interaction.models import StepView
+    from tests.unit.step_view import npcs, snapshot_of
 
-    snap = WorldSnapshot(
-        world_id="w", step=7, timestamp=datetime(2026, 1, 1), metadata={"environment": {
-            "npc_states": {"npc_x": {"name": "王二"}, "npc_y": {"name": "阿石"}},
-            "body_locations": {"npc_x": "gate", "npc_y": "gate"},
-            "npc_displaced": ["npc_x"],
-        }},
-    )
-    flags = {n.npc_id: n.displaced for n in _npcs_from_snapshot(snap)}
+    snap = snapshot_of(npcs={
+        "npc_x": {"name": "王二", "location_id": "gate", "displaced": True},
+        "npc_y": {"name": "阿石", "location_id": "gate", "displaced": False},
+    })
+    flags = {npc_id: n.public.displaced for npc_id, (_, n) in npcs(StepView.from_snapshot(snap)).items()}
     assert flags == {"npc_x": True, "npc_y": False}

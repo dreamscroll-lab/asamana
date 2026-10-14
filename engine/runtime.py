@@ -20,27 +20,28 @@ from core.interfaces.actor import ActorDecision, ActorInterruptAnswer, ActorTurn
 from core.interfaces.perception import PerceivedSignals
 from core.interfaces.agent_store import AgentStoreProvider, relations_snapshot
 from core.interfaces.directory import WorldDirectory
-from core.interfaces.snapshot import SnapshotProvider, WorldSnapshot
+from core.interfaces.snapshot import EngineState, SnapshotProvider, WorldSnapshot, WorldState
 from core.interfaces.trace import Stage, StepTrace, TraceSink
 from core.duration import describe_duration
 from core.logging import get_logger
 from core.validate import require_at_least
 from engine.actor_channel import ActorChannel
 from engine.actor_coordinator import ActorCoordinator
-from engine.signals import perceived_signals, perception_record
+from engine.signals import perceived_signals
 from engine.broadcast import BroadcastChannel
 from engine.presence import attach_presence
 from engine.clock import GlobalClock
 from engine.cognition_maintenance import CognitionMaintenance
 from engine.environment import IN_TRANSIT, UNPLACED, EnvironmentSystem
-from engine.event import EventSettings, EventSystem
+from engine.narrative_editor import NarrativeEditorSettings, NarrativeEditor
 from engine.event_seq import EventSequencer
+from engine.step_record import action_events, broadcast_events, injection_events, message_events
 from engine.arbiter import ArbitratedAction, ExecutionArbiter
 from engine.death_handler import DeathHandler
 from engine.director import DirectorChannel
-from engine.injection import Author, InjectionDispatcher, serialize_world_event
+from engine.injection import Author, InjectionDispatcher, serialize_injection
 from engine.intervention_receipt import build_receipt
-from engine.executors.base import ActionExecutionState, action_semantics
+from engine.executors.base import action_semantics
 from engine.world_mutation import WorldMutationChannel
 from engine.execution_processor import ExecutionProcessor
 from engine.interrupt_coordinator import InterruptCoordinator
@@ -64,7 +65,7 @@ class RuntimeStepResult:
     step: int
     world_time: str
     action_summaries: List[str]
-    event_summaries: List[str]
+    injection_summaries: List[str]
     delivered_message_count: int = 0
     scheduled_agent_ids: List[str] = field(default_factory=list)
 
@@ -74,7 +75,7 @@ class NarrativeRuntime:
 
     Boundary: the Runtime talks to subsystems through channels.
     - Event signals flow in from BroadcastChannel / MessageSystem and are consumed by perception.
-    - The two authors (EventSystem / DirectorChannel) hand back landed injections as
+    - The two authors (NarrativeEditor / DirectorChannel) hand back landed injections as
       CommittedInjection; the Runtime only serializes and assembles them.
     - Each piece of information takes one channel and is perceived once: action outcomes via
       carry → ambient; events via broadcast/message the same step, never carried again.
@@ -88,7 +89,7 @@ class NarrativeRuntime:
         scheduler: AgentScheduler,
         environment: EnvironmentSystem,
         message_system: MessageSystem,
-        event_settings: EventSettings,
+        narrative_editor_settings: NarrativeEditorSettings,
         snapshot_provider: SnapshotProvider,
         agent_store: AgentStoreProvider,
         event_bus: NarrativeEventBus,
@@ -100,7 +101,7 @@ class NarrativeRuntime:
         llm_router: LLMRouter,
         trace_sink: TraceSink | None = None,
         start_event_seq: int = 0,
-        fired_events: Iterable[Mapping[str, Any]] = (),
+        landed_injections: Iterable[Mapping[str, Any]] = (),
     ) -> None:
         self._world_id = world_id
         self._clock = clock
@@ -128,7 +129,7 @@ class NarrativeRuntime:
         # double-fire the shutdown in run()'s finally. Guarded on the state's owner so no
         # caller can bypass it.
         self._running: bool = False
-        self._event_seqs = EventSequencer(directory=self._directory, start_seq=start_event_seq)
+        self._event_seqs = EventSequencer(start_seq=start_event_seq)
         # Advances ongoing executions (tick) and lands completions/feedback; the main sweep,
         # death teardown and interrupts all land through it. Shares the same executor_registry.
         self._processor = ExecutionProcessor(
@@ -191,12 +192,12 @@ class NarrativeRuntime:
             mutation_channel=mutations,
             directory=self._directory,
         )
-        self._event_system = EventSystem(
+        self._narrative_editor = NarrativeEditor(
             llm_router=llm_router,
             snapshot_provider=self._snapshot_provider,
             dispatcher=dispatcher,
             directory=self._directory,
-            settings=event_settings,
+            settings=narrative_editor_settings,
         )
         self._director = DirectorChannel(
             llm_router=llm_router,
@@ -205,8 +206,8 @@ class NarrativeRuntime:
         )
         # Both get the same history and each keeps only its own (separate ledgers, see
         # engine/injection.py).
-        fired = list(fired_events)
-        self._event_system.restore_state(fired)
+        fired = list(landed_injections)
+        self._narrative_editor.restore_state(fired)
         self._director.restore_state(fired)
 
     @property
@@ -275,9 +276,9 @@ class NarrativeRuntime:
                 results.append(await self.run_step(agents))
                 step_index += 1
         finally:
-            # Don't close the event system here: generation spans steps (started at N, consumed
+            # Don't close the narrative editor here: generation spans steps (started at N, consumed
             # by _consume_ready at N+k), and single-step advancing (the director's "inject one,
-            # step, look") returns from run() every step, so it would never consume an event
+            # step, look") returns from run() every step, so it would never consume an injection
             # while still paying for gate + generation calls. aclose() closes it at real shutdown.
             #
             # Drain each agent's memory-write worker so a clean shutdown loses no trailing
@@ -307,7 +308,7 @@ class NarrativeRuntime:
         Handles only the cross-step state that run()'s finally deliberately leaves alone: the
         in-flight event-generation task.
         """
-        await self._event_system.aclose()
+        await self._narrative_editor.aclose()
 
     async def run_step(self, agents: List[Agent]) -> RuntimeStepResult:
         step_start = time.perf_counter()
@@ -339,20 +340,22 @@ class NarrativeRuntime:
         # The broadcast channel is a deliver_step queue, so it needs no clearing; collect()
         # below dequeues this step's due broadcasts.
 
-        # Event injection: consume events ready for this step. They enter perception through
+        # Injection: land the injections ready for this step. They enter perception through
         # the channels; the returned CommittedInjection is only assembled into the snapshot.
-        # observe_stage also covers background generation tasks started inside.
+        # Director first, then the narrative editor: a person's intent shouldn't queue behind
+        # automatic generation. This is the world's only injection point and its position is
+        # relied on (see "Where it lands" in engine/world_mutation.py). Each author runs under
+        # its own stage, so a trace tells a human's beat from the editor's.
         _t0 = time.perf_counter()
-        with observe_stage(Stage.EVENT):
-            # Director first, then the LLM editor: a person's intent shouldn't queue behind
-            # automatic generation. This is the world's only injection point and its position is
-            # relied on (see "Where it lands" in engine/world_mutation.py). The queue holds
-            # validated plans, so this is pure dispatch with no LLM.
+        with observe_stage(Stage.DIRECTOR):
+            # The queue holds validated plans, so this is pure dispatch with no planning LLM.
             with annotate_call(settles_prior_action=True):
                 # A director move tears down what the person was doing: start-of-step
                 # settlement, which review separates from new cognition (same marker below).
                 director_injections = await self._director.drain(step=step, agents=agents_dict)
-            fired_event = await self._event_system.poll_event(
+        # observe_stage also covers background generation tasks started inside.
+        with observe_stage(Stage.NARRATIVE_EDITOR):
+            editor_injection = await self._narrative_editor.poll_injection(
                 current_step=step,
                 world_time=world_time,
                 world_id=self._world_id,
@@ -366,8 +369,8 @@ class NarrativeRuntime:
         await self._deaths.process_new_deaths(agents, pre_step_active, step)
         pre_step_active = {aid for aid in pre_step_active if agents_dict[aid].is_active}
         self._sync_dead_ids(agents_dict)
-        event_check_ms = round((time.perf_counter() - _t0) * 1000, 1)
-        logger.debug("event_check_done", extra={"step": step, "elapsed_ms": event_check_ms, "event_fired": fired_event is not None})
+        injection_ms = round((time.perf_counter() - _t0) * 1000, 1)
+        logger.debug("injection_check_done", extra={"step": step, "elapsed_ms": injection_ms, "director_injections": len(director_injections), "editor_injected": editor_injection is not None})
 
         _t1 = time.perf_counter()
         deliveries = await self._message_system.deliver_for_agents(
@@ -398,8 +401,8 @@ class NarrativeRuntime:
         # This step's due broadcasts: events injected above and death notices published during
         # the previous step's execution.
         broadcasts_this_step = self._broadcast_channel.collect(step=step)
-        # What reached each living agent this step; one definition for pressure, each
-        # character's own reading of it and the persisted perception record.
+        # What reached each living agent this step; one definition for pressure and each
+        # character's own reading of it.
         agent_signals = {
             agent.agent_id: perceived_signals(
                 location_id=agent_spatials[agent.agent_id].location_id,
@@ -612,11 +615,17 @@ class NarrativeRuntime:
         interrupted_ids = {r["agent_id"] for r in interrupt_records}
         # Receipts only for the director: they answer "who did this push move", and the reader is
         # whoever gave the order.
-        injections = [*director_injections, *([fired_event] if fired_event is not None else [])]
+        injections = [*director_injections, *([editor_injection] if editor_injection is not None else [])]
         serialized_events: list[dict[str, Any]] = []
         for injection in injections:
-            payload = serialize_world_event(injection.event)
-            if injection.event.authored_by is Author.DIRECTOR:
+            payload = serialize_injection(injection.record)
+            # What onlookers at each place were given to perceive of the change, in the shape of
+            # an action's observations: the place's record shows what happened there.
+            payload["observations"] = [
+                {"location_id": o.location_id, "text": o.text, "strength": o.strength}
+                for o in injection.observations
+            ]
+            if injection.record.authored_by is Author.DIRECTOR:
                 payload["receipt"] = build_receipt(
                     injection.target_ids,
                     agents=agents_dict,
@@ -625,18 +634,14 @@ class NarrativeRuntime:
                     interrupted_ids=interrupted_ids,
                 )
             serialized_events.append(payload)
-        agent_states = {
-            agent_id: snapshot_agent_state(agent)
-            for agent_id, agent in agents_dict.items()
+        displaced_ids = {aid for injection in injections for aid in injection.displaced_ids}
+        agent_records_now = self._agent_records(agents_dict, displaced_ids=displaced_ids)
+        # The way each mover walked, by initiator; it belongs to the beat his MOVE ended.
+        routes = {
+            exec_state.initiator_id: view
+            for exec_state in [*settling, *pending]
+            if (view := arrival_view(exec_state, self._environment)) is not None
         }
-        self._enrich_agent_states(
-            agent_states,
-            finished=[*settling, *pending],
-            displaced_ids={
-                aid for injection in injections
-                for aid in injection.displaced_ids
-            },
-        )
 
         # Multi-step executions reach observers as three beats: opening → in progress → result.
         # Without the middle one there are hours of silence and both ends restate the purpose.
@@ -648,8 +653,8 @@ class NarrativeRuntime:
             and r.get("agent_id") not in agent_ids_in_records
         ]
         # Interrupt records (phase="interrupt") are display only; restore doesn't read them. An
-        # interrupted agent may also have a new agent_record; execution_ids differ and the read
-        # model groups by execution_id, so there's no clash.
+        # interrupted agent may also have a new agent_record; execution_ids differ and the step
+        # record folds by execution_id, so there's no clash.
         #
         # Failed adjudications are dropped from the display stream: nothing happened in the
         # world. Don't add a frontend flag instead: the display only knows real failure /
@@ -677,47 +682,49 @@ class NarrativeRuntime:
 
         self._note_acted_upon(agents_dict, all_action_records, injections)
 
-        # Stamp the monotonic event seq on every event channel; ordering lives in
-        # EventSequencer.assign_event_seqs. The returned payloads are shared by snapshot and
-        # step_event so both carry identical ordinals.
-        messages_payload, broadcast_records = self._event_seqs.assign_event_seqs(
-            action_records=all_action_records,
-            deliveries=deliveries,
-            broadcasts=broadcasts_this_step,
-            events=serialized_events,
+        # The step's record: each event once, in emission order, stamped with its seq. Message
+        # receivers are placed where they perceived from this step (the delivery reached them
+        # there, before anyone moved).
+        perceived_at = {aid: spatial.location_id for aid, spatial in agent_spatials.items()}
+        events = self._event_seqs.order_events(
+            messages=message_events(
+                deliveries,
+                where={
+                    aid: perceived_at.get(aid) or self._environment.get_body_location(aid)
+                    for aid in deliveries.inboxes
+                },
+            ),
+            broadcasts=broadcast_events(broadcasts_this_step),
+            actions=action_events(all_action_records, routes=routes),
+            injections=injection_events(serialized_events),
         )
 
         await self._persist_agent_states(agents, step)
-        agent_relations = await self._build_relation_snapshot(agents_dict.keys())
-        perceptions = {
-            agent_id: perception_record(agent_spatials[agent_id], signals)
-            for agent_id, signals in agent_signals.items()
-        }
+        environment_state = self._environment.world_state()
         snapshot = WorldSnapshot(
             world_id=self._world_id,
             step=step,
             timestamp=datetime.now(),
             world_time=world_time.clock_payload(),
-            agent_states=agent_states,
-            agent_relations=agent_relations,
-            pending_messages=pending_messages,
-            # Broadcasts not yet due. Death notices (deliver_step = next step) straddle this
-            # boundary; unsaved, nobody would know of the death after a restore. Not
-            # metadata["broadcasts"].
-            pending_broadcasts=self._broadcast_channel.peek_pending(),
-            events_this_step=serialized_events,
-            actions_this_step=all_action_records,
-            perceptions=perceptions,
-            metadata={
-                "schedule": plan.as_dict(),
-                "messages": messages_payload,
-                "environment": self._environment.snapshot_state(),
-                # The broadcasts perceived this step, matching replay and perception.
-                "broadcasts": broadcast_records,
+            state=WorldState(
+                places=environment_state["places"],
+                agents=agent_records_now,
+                npcs=environment_state["npcs"],
+                entities=environment_state["entities"],
+                relations=await self._build_relation_snapshot(agents_dict.keys()),
+            ),
+            events=events,
+            engine=EngineState(
+                pending_messages=pending_messages,
+                # Broadcasts not yet due. Death notices (deliver_step = next step) straddle this
+                # boundary; unsaved, nobody would know of the death after a restore.
+                pending_broadcasts=self._broadcast_channel.peek_pending(),
                 # Next seq to assign; restore (NarrativeApplication._build_runtime →
                 # start_event_seq) resumes strictly increasing.
-                "event_seq": self._event_seqs.next_seq,
-            },
+                event_seq=self._event_seqs.next_seq,
+                environment=self._environment.engine_state(),
+                schedule=plan.as_dict(),
+            ),
         )
         _t_snapshot = time.perf_counter()
         try:
@@ -729,29 +736,16 @@ class NarrativeRuntime:
             )
         snapshot_ms = round((time.perf_counter() - _t_snapshot) * 1000, 1)
 
-        step_event = {
-            "type": "step",
-            "world_id": self._world_id,
-            "step": step,
-            "world_time": world_time.clock_payload(),
-            "schedule": plan.as_dict(),
-            # Same seq-tagged payloads as the snapshot.
-            "messages": messages_payload,
-            "agent_states": agent_states,
-            "agent_relations": agent_relations,
-            "actions": all_action_records,
-            "events": serialized_events,
-            "broadcasts": broadcast_records,
-            "perceptions": perceptions,
-            "environment": self._environment.snapshot_state(),
-        }
-        self._event_bus.publish(step_event)
+        # Live observers get the very record that was saved, so live and replay read one shape.
+        self._event_bus.publish({
+            "type": "step", "world_id": self._world_id, "step": step, "snapshot": snapshot,
+        })
 
         tick_narratives = [r["outcome"] for r in tick_records]
         step_elapsed_ms = (time.perf_counter() - step_start) * 1000.0
         # Per-phase wall-clock, shared by the step_complete log and the persisted StepTrace.
         phase_ms = {
-            "event_check": event_check_ms,
+            "injection": injection_ms,
             "message": message_ms,
             "pressure": pressure_ms,
             "perceive": perceive_ms,
@@ -798,48 +792,54 @@ class NarrativeRuntime:
                 record["outcome"] for record in agent_records
                 if not record.get("adjudication_failed")
             ] + tick_narratives,
-            event_summaries=[event["narrative_desc"] for event in serialized_events],
+            injection_summaries=[event["narrative_desc"] for event in serialized_events],
             delivered_message_count=len(deliveries.delivered_messages),
             scheduled_agent_ids=[agent.agent_id for agent in plan.ordered_agents()],
         )
 
-    def _enrich_agent_states(
+    def _agent_records(
         self,
-        agent_states: Dict[str, Dict[str, Any]],
+        agents_dict: Dict[str, "Agent"],
         *,
-        finished: list[ActionExecutionState],
         displaced_ids: "set[str]",
-    ) -> None:
-        """Enrich the per-agent observation DTO (god-view read model) in place.
+    ) -> Dict[str, Dict[str, Any]]:
+        """Every agent at the end of the step, for ``WorldState.agents``.
 
-        ``snapshot_agent_state`` builds the base from what the agent knows (id-only); this adds
-        fields needing the directory or live executor states, which agent/ must never see.
-        ``agent_states`` feeds both the step event and the snapshot.
-
-        The single home for such fields: one belongs here iff it is god-view derived,
-        read-model only (never persisted write-state), and per agent.
+        ``snapshot_agent_state`` is what the agent knows of itself; this adds what only the world
+        knows, which agent/ must never see: where the body is (a waypoint room, or IN_TRANSIT
+        between two; the agent's own ``current_location`` changes only on arrival), the route of
+        an execution still under way, and whether the director moved it this step.
         """
-        # location_id (code-layer) → narrative name (ids never reach narrative text): agent/
-        # can't touch the directory, so the god-view resolves the display name here.
-        for state in agent_states.values():
-            state["location_name"] = self._directory.location_name(state["location_id"])
-        # In-flight movers get {from,to,elapsed,total} so a renderer walks them along the edge
-        # instead of teleporting. transit_view (movement executor) owns the extra keys.
+        records: Dict[str, Dict[str, Any]] = {}
+        for agent_id, agent in agents_dict.items():
+            record = snapshot_agent_state(agent)
+            body = self._environment.get_body_location(agent_id)
+            # The dead are taken off the map (UNPLACED); the body lies where he fell, which is his
+            # own last location.
+            if body != UNPLACED:
+                record["location_id"] = body
+            records[agent_id] = record
+        # In-flight movers get {from,to,path,arrivals,elapsed,total} so a renderer walks them
+        # along the route instead of teleporting. transit_view (movement executor) owns the keys.
+        # Whoever he carries rides the same trip, but only while still beside him: one let go
+        # on the way is no longer on it.
         for exec_state in self._executor_registry.all_active():
             view = transit_view(exec_state)
-            if view is not None and (state := agent_states.get(exec_state.initiator_id)) is not None:
-                state["transit"] = view
-        # Movers who landed this step get the route they walked (see arrival_view).
-        for exec_state in finished:
-            view = arrival_view(exec_state, self._environment)
-            if view is not None and (state := agent_states.get(exec_state.initiator_id)) is not None:
-                state["arrival"] = view
-        # People the director moved this step: transit's counterpart, "he didn't walk at all".
-        # Without it the renderer sees a changed location_id and walks him along the route like
-        # a real MOVE.
+            if view is None:
+                continue
+            here = self._environment.get_body_location(exec_state.initiator_id)
+            for agent_id in exec_state.participant_ids or [exec_state.initiator_id]:
+                if agent_id != exec_state.initiator_id and (
+                    self._environment.get_body_location(agent_id) != here
+                ):
+                    continue
+                if (record := records.get(agent_id)) is not None:
+                    record["transit"] = view
+        # Moved by the director this step: transit's counterpart, "he didn't walk at all".
         for agent_id in displaced_ids:
-            if (state := agent_states.get(agent_id)) is not None:
-                state["displaced"] = True
+            if (record := records.get(agent_id)) is not None:
+                record["displaced"] = True
+        return records
 
     async def _persist_agent_states(self, agents: List[Agent], step: int) -> None:
         """Save every agent's state at the step's commit point, right before its snapshot.
@@ -1460,16 +1460,14 @@ class NarrativeRuntime:
             # — facts only, never render instructions.
             **action_semantics(record_action, resolved.action_result),
             # Deed and result stay two fields: the read model renders the prose as the card body
-            # and the outcome under it. Don't send `summary` (a glued code-layer digest for the
-            # event system and last_action): the feed would print its scaffolding and repeat the
-            # outcome.
+            # and the outcome under it. Don't glue them into one digest: the feed would print its
+            # scaffolding and repeat the outcome.
             "action_description": record_action.action_description,
             # Why he chose it: the only channel out of the sim for the deliberation. Rides this
             # record because the decision happened on this beat. Empty for a conscript:
             # ``record_action`` is then the initiator's, and would print one man's thought under
             # another's name.
             "inner_monologue": "" if resolved.is_passive_join else record_action.inner_monologue,
-            "summary": f"行动内容：{record_action.action_description}，行动结果（成功）：{resolved.action_result.outcome}",
             "outcome": resolved.action_result.outcome,
             "gist": resolved.action_result.gist,
             # Degraded onlooker view, one per place (carry reads this); a JSON-native dict, no

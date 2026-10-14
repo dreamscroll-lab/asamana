@@ -188,7 +188,8 @@ export function buildPhysicalScenes({ open: OPEN }: LabPlaces): LabScene[] {
         step({ states: [who(MO, OPEN)], entities: crate(OPEN.id) }),
         step({
           states: [who(MO, OPEN, { emotion: Emotion.anger, emotion_valence: -0.7 })],
-          entities: crate(OPEN.id, { presence: "destroyed", presence_ref: null, state: "destroyed" }),
+          // Destroyed: no longer in the world, so this step lists no crate at all.
+          entities: {},
           actions: [
             did(MO, {
               action_type: ActionType.physical,

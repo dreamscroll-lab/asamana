@@ -112,7 +112,7 @@ class WorldManager:
         if world_id not in self._profile_cache:
             initial = await self._snapshot_provider.load(world_id, 0)
             self._profile_cache[world_id] = (
-                dict(initial.metadata.get("character_profiles", {})) if initial else {}
+                dict(initial.build.get("character_profiles", {})) if initial else {}
             )
         return self._profile_cache[world_id]
 

@@ -240,10 +240,10 @@ world:
 engine:
   max_concurrent_llm: 16       # process-wide cap on in-flight calls; orthogonal to rate_limit
   decay_interval: 5
-  event_system_enabled: true
-  max_events_per_window: 2     # injection density is a sliding-window quota: at most M in the last N steps
-  event_quota_window: 20
-  event_check_interval: 6
+  narrative_editor_enabled: true
+  max_injections_per_window: 2     # injection density is a sliding-window quota: at most M in the last N steps
+  injection_quota_window: 20
+  injection_check_interval: 6
   # An idle agent (no pressure, no urgent need, no strong emotion) is pulled back into the
   # decision loop at least every this many steps. One step ≈ one world hour and a waking day
   # is ~16 hours; both numbers are set in world time.

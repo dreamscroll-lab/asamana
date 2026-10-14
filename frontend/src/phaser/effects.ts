@@ -5,7 +5,7 @@
 
 import Phaser from "phaser";
 
-import type { ActionSummary } from "../types";
+import type { Beat } from "./figures";
 import { toHex } from "../lib/color";
 import { Deed, actedOnAgents } from "../lib/contract";
 import type { Dir } from "./skins";
@@ -348,7 +348,7 @@ export function directedMessages(host: FxHost, tok: AgentToken, targetIds: strin
 }
 
 /**
- * A letter with NO SENDER (the EventSystem posts as narrator: "不知来源"), landing on its reader.
+ * A letter with NO SENDER (the NarrativeEditor posts as narrator: "不知来源"), landing on its reader.
  * With no origin on the map, it arcs in from beyond the world, in neutral slate, marked ？.
  *
  * This idiom means only that: a signed letter is drawn once, when it leaves its sender's hand
@@ -383,7 +383,7 @@ export function localAnnounce(host: FxHost, tok: AgentToken): Promise<void> {
 //
 // Failure is a modifier: whatever the deed, the world shows "nothing landed" (missEffect),
 // while the body still performs the deed (deedBody).
-export function physicalEffect(host: FxHost, tok: AgentToken, act: ActionSummary): void {
+export function physicalEffect(host: FxHost, tok: AgentToken, act: Beat): void {
   if (act.succeeded === false) {
     missEffect(host, tok, actedOnAgents(act.target));
     return;
@@ -414,7 +414,7 @@ export function physicalEffect(host: FxHost, tok: AgentToken, act: ActionSummary
 }
 
 // Take a thing: no violence. A gold gleam gathers INWARD onto the doer, the opposite of a smash.
-function seizeEffect(host: FxHost, tok: AgentToken, act: ActionSummary): void {
+function seizeEffect(host: FxHost, tok: AgentToken, act: Beat): void {
   for (const eid of act.affected_entity_ids) {
     const m = host.entityMarkers.get(eid);
     if (!m || !m.visible) continue;
@@ -427,7 +427,7 @@ function seizeEffect(host: FxHost, tok: AgentToken, act: ActionSummary): void {
 
 // Work a thing where it stands: it pulses in place. No shards (nothing broke), no gleam (nothing
 // changed hands).
-function operateEffect(host: FxHost, act: ActionSummary): void {
+function operateEffect(host: FxHost, act: Beat): void {
   for (const eid of act.affected_entity_ids) {
     const m = host.entityMarkers.get(eid);
     if (!m || !m.visible) continue;
@@ -439,7 +439,7 @@ function operateEffect(host: FxHost, act: ActionSummary): void {
 }
 
 // Wreck an object: shards, a shockwave, a crack ring. No red, no victim flash.
-function smashEffect(host: FxHost, tok: AgentToken, act: ActionSummary): void {
+function smashEffect(host: FxHost, tok: AgentToken, act: Beat): void {
   // As in combatStrike: debris erupts from the THING along the blow, never from the man.
   let struck = false;
   for (const eid of act.affected_entity_ids) {

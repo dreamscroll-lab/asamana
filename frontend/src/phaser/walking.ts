@@ -6,7 +6,7 @@
 
 import Phaser from "phaser";
 
-import type { AgentStateSummary } from "../types";
+import type { Transit } from "../types";
 import { type FxHost, footDust } from "./effects";
 import { astar, computeMainComponent, foldStairs, snap } from "./pathfinding";
 import { routeFraction } from "./transitProgress";
@@ -84,7 +84,7 @@ export class Walker {
   // each leg's pixel length and the step it ends on. Falls back to a direct from→to
   // route (one leg, reached at total_steps) if any leg is unroutable.
   private transitRoutePixels(
-    t: NonNullable<AgentStateSummary["transit"]>,
+    t: Transit,
   ): { pts: { x: number; y: number }[]; legLengths: number[]; arrivals: number[] } | null {
     const direct = () => {
       const leg = this.transitPixelPath(t.from_location_id ?? "", t.to_location_id ?? "");
@@ -111,7 +111,7 @@ export class Walker {
   walkTransit(
     tok: AgentToken,
     agentId: string,
-    t: NonNullable<AgentStateSummary["transit"]>,
+    t: Transit,
     standAt: { x: number; y: number } | null = null,
   ): Promise<void> {
     const { path, curP, trip } = this.progressOf(t);
@@ -155,7 +155,7 @@ export class Walker {
   placeOnTransit(
     tok: AgentToken,
     agentId: string,
-    t: NonNullable<AgentStateSummary["transit"]>,
+    t: Transit,
   ): void {
     const { path, curP, trip } = this.progressOf(t);
     this.host.killTweens(tok.container);
@@ -171,7 +171,7 @@ export class Walker {
     this.placed.add(agentId);
   }
 
-  private progressOf(t: NonNullable<AgentStateSummary["transit"]>): {
+  private progressOf(t: Transit): {
     path: { x: number; y: number }[] | null;
     curP: number;
     trip: string;

@@ -1,5 +1,5 @@
 // Live world feed over WebSocket. Reconnects on drop. The backend pushes
-// status / snapshot / step frames (see interaction/api/observe.py).
+// status / latest_step / step frames (see interaction/api/observe.py).
 
 import type { WsFrame } from "../types";
 import { API_BASE } from "./client";

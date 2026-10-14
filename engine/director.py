@@ -1,6 +1,6 @@
 """Director channel: the only way a human author reaches into this world.
 
-``EventSystem`` (the automatic LLM editor) is bound by a pacing gate, a quota and no-resolution
+``NarrativeEditor`` (the automatic LLM editor) is bound by a pacing gate, a quota and no-resolution
 rules because an automatic LLM shouldn't have god powers; the director is bound by none of
 them. The two share only the record, channel specs and dispatcher (``engine/injection.py``).
 
@@ -284,7 +284,7 @@ def _without_npc_recipients(
 class DirectorChannel:
     """Queue, parsing and dispatch for director instructions, plus its own injection ledger.
 
-    The ledger is separate from ``EventSystem``'s so the editor's quota structurally can't see
+    The ledger is separate from ``NarrativeEditor``'s so the editor's quota structurally can't see
     director injections.
     """
 
@@ -304,9 +304,9 @@ class DirectorChannel:
     def pending_count(self) -> int:
         return len(self._queue)
 
-    def restore_state(self, fired_events: Iterable[Mapping[str, Any]]) -> None:
+    def restore_state(self, landed_injections: Iterable[Mapping[str, Any]]) -> None:
         """Restore the director's past injections. Gates nothing; it's only for complete replay."""
-        self._ledger.restore(fired_events)
+        self._ledger.restore(landed_injections)
 
     async def submit(
         self,
@@ -782,6 +782,6 @@ class DirectorChannel:
                 directive_text=plan.directive_text,
             )
             if committed is not None:
-                self._ledger.record(committed.event)
+                self._ledger.record(committed.record)
                 drained.append(committed)
         return drained

@@ -11,7 +11,8 @@ import { dyePixels, hsvOf } from "../lib/dye";
 import { type FrameRect, loadAtlasFrames } from "../lib/atlasFrames";
 import { loadCast } from "../phaser/mapSource";
 import type { CharacterSet, Demographics } from "../phaser/skins";
-import type { AgentProfile, AgentStateSummary, WorldGraph } from "../types";
+import type { Placed } from "../lib/step";
+import type { AgentProfile, AgentView, WorldGraph } from "../types";
 import type { CardAgent } from "./CharacterCard";
 
 // Facing the viewer and slightly right, so the callouts on both sides read as one chart. A
@@ -212,7 +213,7 @@ export default function CharacterBody({
 }: {
   worldId: string;
   agent: CardAgent;
-  live?: AgentStateSummary;
+  live?: Placed<AgentView>;
   graph: WorldGraph | null;
 }) {
   const [profile, setProfile] = useState<AgentProfile | null>(null);
@@ -251,8 +252,8 @@ export default function CharacterBody({
     };
   }, [worldId, profile, agent.color]);
 
-  const dead = live ? reportedDead(live) : false;
-  const { planned, owed } = useMemo(() => unfinishedGoals(live), [live]);
+  const dead = live ? reportedDead(live.is_active, live.private.vitality) : false;
+  const { planned, owed } = useMemo(() => unfinishedGoals(live?.private), [live]);
 
   // Ties held by this person, strongest first: how much they lean on someone either way.
   const ties = useMemo(() => {
@@ -277,25 +278,25 @@ export default function CharacterBody({
     aim: (
       <>
         <Section label="人生目标">{profile?.life_goal || "—"}</Section>
-        <Section label="长期目标"><Numbered items={live?.long_term_goals ?? []} /></Section>
+        <Section label="长期目标"><Numbered items={live?.private.long_term_goals ?? []} /></Section>
       </>
     ),
     mood: live ? (
       <>
         <Section label="此刻情绪">
-          <span className={`text-sm font-semibold ${emotionColor(live.emotion_valence)}`}>{live.emotion_label}</span>
+          <span className={`text-sm font-semibold ${emotionColor(live.private.emotion_valence)}`}>{live.private.emotion_label}</span>
         </Section>
-        {live.emotion_intensity != null && (
-          <Section label={`强度 ${pct(live.emotion_intensity)}`}>
-            <Meter value={live.emotion_intensity} tone="bg-amber-400/80" />
+        {live.private.emotion_intensity != null && (
+          <Section label={`强度 ${pct(live.private.emotion_intensity)}`}>
+            <Meter value={live.private.emotion_intensity} tone="bg-amber-400/80" />
           </Section>
         )}
-        {live.emotion_valence != null && (
-          <Section label={`正负值 ${pct(live.emotion_valence)}`}>
+        {live.private.emotion_valence != null && (
+          <Section label={`正负值 ${pct(live.private.emotion_valence)}`}>
             <Meter
-              value={live.emotion_valence}
+              value={live.private.emotion_valence}
               min={-1}
-              tone={live.emotion_valence < 0 ? "bg-rose-400/80" : "bg-teal-400/80"}
+              tone={live.private.emotion_valence < 0 ? "bg-rose-400/80" : "bg-teal-400/80"}
             />
           </Section>
         )}
@@ -335,8 +336,8 @@ export default function CharacterBody({
       ),
     need: (
       <Section label="当前需求">
-        {live?.dominant_need ? (
-          <span className="text-sm font-semibold text-orange-300">{live.dominant_need_label}</span>
+        {live?.private.dominant_need ? (
+          <span className="text-sm font-semibold text-orange-300">{live.private.dominant_need_label}</span>
         ) : (
           "—"
         )}
@@ -344,15 +345,15 @@ export default function CharacterBody({
     ),
     hands: (
       <>
-        <Section label="状态">{live ? live.activity_label || "—" : "—"}</Section>
+        <Section label="状态">{live ? live.private.activity_label || "—" : "—"}</Section>
         <Section label="短期目标"><Numbered items={planned} /></Section>
         {owed.length > 0 && <Section label="待办事项"><Numbered items={owed} /></Section>}
       </>
     ),
     feet: (
       <>
-        <Section label="地点">{live?.location || "—"}</Section>
-        {live?.condition && <Section label="处境"><span className="text-amber-300">{live.condition}</span></Section>}
+        <Section label="地点">{live?.location_name || "—"}</Section>
+        {live?.public.condition && <Section label="处境"><span className="text-amber-300">{live.public.condition}</span></Section>}
       </>
     ),
   };
@@ -427,13 +428,13 @@ export default function CharacterBody({
             <div className="text-[11px] text-slate-400 truncate max-w-full">
               {[role, profile?.gender, profile?.age != null ? `${profile.age} 岁` : ""].filter(Boolean).join(" · ")}
             </div>
-            {live?.vitality != null && (
+            {live?.private.vitality != null && (
               <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
                 <span>生命值</span>
                 <div className="w-24">
-                  <Meter value={live.vitality} tone={live.vitality < 0.3 ? "bg-rose-500" : "bg-emerald-500/80"} />
+                  <Meter value={live.private.vitality} tone={live.private.vitality < 0.3 ? "bg-rose-500" : "bg-emerald-500/80"} />
                 </div>
-                <span className="font-mono">{pct(live.vitality)}</span>
+                <span className="font-mono">{pct(live.private.vitality)}</span>
               </div>
             )}
           </div>

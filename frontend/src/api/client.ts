@@ -9,7 +9,7 @@ import type {
   Intervention,
   MapTemplate,
   ThemePreset,
-  StepEvent,
+  StepView,
   WorldGraph,
   WorldMeta,
 } from "../types";
@@ -95,13 +95,13 @@ export const api = {
 
   listSteps: (id: string) => req<number[]>(`/api/worlds/${id}/steps`),
   getStep: (id: string, step: number) =>
-    req<StepEvent>(`/api/worlds/${id}/steps/${step}`),
+    req<StepView>(`/api/worlds/${id}/steps/${step}`),
   graph: (id: string, step?: number) =>
     req<WorldGraph>(
       `/api/worlds/${id}/graph${step != null ? `?step=${step}` : ""}`,
     ),
   // The whole cast as persisted at step 0 — stable for the world's life, unlike a
-  // StepEvent's agent_states, so stable things (character-skin dealing) key off this.
+  // StepView's agents, so stable things (character-skin dealing) key off this.
   agents: (id: string) => req<AgentProfile[]>(`/api/worlds/${id}/agents`),
   agentProfile: (id: string, agentId: string) =>
     req<AgentProfile>(`/api/worlds/${id}/agents/${agentId}/profile`),

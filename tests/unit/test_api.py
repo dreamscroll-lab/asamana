@@ -7,7 +7,7 @@ from datetime import datetime
 import pytest
 from fastapi.testclient import TestClient
 
-from core.interfaces.snapshot import WorldSnapshot
+from core.interfaces.snapshot import WorldSnapshot, WorldState
 from engine.clock import WorldTime, WorldTimeConfig
 from world import WorldCatalog
 from world.catalog import MAX_WORLD_NAME_LEN
@@ -27,12 +27,15 @@ def _snapshot(world_id: str, step: int, relations: dict, *, profiles: dict | Non
         step=step,
         timestamp=datetime.now(),
         world_time=WorldTime.from_step(step, WorldTimeConfig()).clock_payload(),
-        agent_states={
-            "agent-1": {"agent_id": "agent-1", "agent_name": "甲", "is_main_character": True, "current_location": "宫"},
-            "agent-2": {"agent_id": "agent-2", "agent_name": "乙", "is_main_character": False, "current_location": "宫"},
-        },
-        agent_relations=relations,
-        metadata={"character_profiles": profiles} if profiles else {},
+        state=WorldState(
+            places={"palace": "宫"},
+            agents={
+                "agent-1": {"agent_id": "agent-1", "agent_name": "甲", "is_main_character": True, "location_id": "palace"},
+                "agent-2": {"agent_id": "agent-2", "agent_name": "乙", "is_main_character": False, "location_id": "palace"},
+            },
+            relations=relations,
+        ),
+        build={"character_profiles": profiles} if profiles else {},
     )
 
 
@@ -133,7 +136,7 @@ async def test_delete_world_removes_it(container, test_config) -> None:
 
 
 @pytest.mark.asyncio
-async def test_websocket_sends_initial_status_and_snapshot(container, test_config) -> None:
+async def test_websocket_sends_initial_status_and_latest_step(container, test_config) -> None:
     # `from __future__ import annotations` + a function-local `WebSocket` import
     # makes FastAPI mis-read `websocket` as a query param and reject every
     # handshake (close 1008). The connection must accept and stream.
@@ -144,7 +147,7 @@ async def test_websocket_sends_initial_status_and_snapshot(container, test_confi
         first = ws.receive_json()
         assert first["type"] == "status"
         second = ws.receive_json()
-        assert second["type"] == "snapshot"
+        assert second["type"] == "latest_step"
         assert second["data"]["step"] == 0
 
 
@@ -173,7 +176,7 @@ async def test_a_step_published_while_connecting_is_not_lost(
     async def publish_mid_flight(self, wid: str):
         # The engine advances a step just while the initial frame is still being sent.
         container.event_bus.publish(
-            {"type": "step", "world_id": world_id, "step": 1, "world_time": {}, "agents": {}}
+            {"type": "step", "world_id": world_id, "step": 1, "snapshot": _snapshot(world_id, 1, {})}
         )
         return await original(self, wid)
 
@@ -182,29 +185,28 @@ async def test_a_step_published_while_connecting_is_not_lost(
     client = _client(container, test_config)
     with client.websocket_connect(f"/ws/{world_id}") as ws:
         assert ws.receive_json()["type"] == "status"
-        assert ws.receive_json()["type"] == "snapshot"
+        assert ws.receive_json()["type"] == "latest_step"
         pushed = ws.receive_json()
         assert pushed["type"] == "step" and pushed["data"]["step"] == 1
 
 
 @pytest.mark.asyncio
-async def test_the_step_the_initial_snapshot_carried_is_not_pushed_twice(
+async def test_the_step_the_initial_frame_carried_is_not_pushed_twice(
     container, test_config
 ) -> None:
     """Subscribing first costs a little overlap: the pump needn't re-send the step the initial
-    snapshot already delivered."""
+    ``latest_step`` frame already delivered."""
     world_id = "world-api"
     await container.snapshot.save(world_id, 0, _snapshot(world_id, 0, {}))
     client = _client(container, test_config)
     with client.websocket_connect(f"/ws/{world_id}") as ws:
         assert ws.receive_json()["type"] == "status"
-        assert ws.receive_json()["type"] == "snapshot"      # step 0
-        container.event_bus.publish(
-            {"type": "step", "world_id": world_id, "step": 0, "world_time": {}, "agents": {}}
-        )
-        container.event_bus.publish(
-            {"type": "step", "world_id": world_id, "step": 1, "world_time": {}, "agents": {}}
-        )
+        assert ws.receive_json()["type"] == "latest_step"      # step 0
+        for step in (0, 1):
+            container.event_bus.publish(
+                {"type": "step", "world_id": world_id, "step": step,
+                 "snapshot": _snapshot(world_id, step, {})}
+            )
         nxt = ws.receive_json()
         assert nxt["type"] == "step" and nxt["data"]["step"] == 1   # 0 is skipped
 

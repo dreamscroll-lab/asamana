@@ -29,8 +29,8 @@ from engine.execution_processor import ExecutionProcessor
 from engine.directory import LiveWorldDirectory
 from engine.executors.registry import ActionExecutorRegistry
 from engine.executors.base import ActionExecutionState
-from interaction.models import _action_from_record, _agent_states_from_snapshot
-from core.interfaces.snapshot import WorldSnapshot
+from interaction.models import StepView
+from tests.unit.step_view import agent as agent_view, snapshot_of, the_action
 
 
 def _enum_leaks(obj: Any, path: str = "payload") -> list[str]:
@@ -113,7 +113,7 @@ def test_live_path_action_type_is_the_value_not_the_enum_name() -> None:
     NO json round-trip (see the module docstring): the enum NAME matches none of the renderers'
     "talk"/"move"/"physical"… comparisons.
     """
-    summary = _action_from_record(_talk_completion_record())
+    summary = the_action(_talk_completion_record())
 
     assert summary.action_type == "talk"
     assert "ActionType" not in summary.action_type
@@ -130,20 +130,16 @@ def test_live_path_emotion_label_is_the_value_not_the_enum_name(container) -> No
     agent.personality.update_emotion(
         primary=EmotionType.FRUSTRATION, intensity=0.8, valence=-0.6
     )
-    snapshot = WorldSnapshot(
-        world_id="w",
-        step=1,
-        timestamp="2026-07-13 00:00:00",
-        agent_states={"agent-a": snapshot_agent_state(agent)},
+    snapshot = snapshot_of(agents={"agent-a": snapshot_agent_state(agent)},
     )
 
-    states = _agent_states_from_snapshot(snapshot, actions=[])
+    state = agent_view(StepView.from_snapshot(snapshot), "agent-a")
 
-    assert states["agent-a"].emotion == "frustration"
-    assert "EmotionType" not in states["agent-a"].emotion
+    assert state.private.emotion == "frustration"
+    assert "EmotionType" not in state.private.emotion
     # The narrative-layer names come from the backend's own tables, not the client's.
-    assert states["agent-a"].emotion_label == EmotionType.FRUSTRATION.label
-    assert states["agent-a"].activity_label == AgentActivityStatus.IDLE.label
+    assert state.private.emotion_label == EmotionType.FRUSTRATION.label
+    assert state.public.activity_label == AgentActivityStatus.IDLE.label
 
 
 def test_every_emotion_activity_and_need_has_a_label() -> None:
@@ -154,24 +150,22 @@ def test_every_emotion_activity_and_need_has_a_label() -> None:
 
 
 def test_an_unknown_value_reads_as_no_label() -> None:
-    snapshot = WorldSnapshot(
-        world_id="w", step=1, timestamp="2026-07-13 00:00:00",
-        agent_states={"agent-a": {
+    snapshot = snapshot_of(agents={"agent-a": {
             "agent_id": "agent-a", "emotion": "elation", "activity_status": "", "dominant_need": "fame",
         }},
     )
 
-    state = _agent_states_from_snapshot(snapshot, actions=[])["agent-a"]
+    state = agent_view(StepView.from_snapshot(snapshot), "agent-a")
 
-    assert (state.emotion_label, state.activity_label, state.dominant_need_label) == ("", "", "")
+    assert (
+        state.private.emotion_label, state.public.activity_label, state.private.dominant_need_label,
+    ) == ("", "", "")
 
 
 def test_the_dominant_need_reads_with_its_label() -> None:
-    snapshot = WorldSnapshot(
-        world_id="w", step=1, timestamp="2026-07-13 00:00:00",
-        agent_states={"agent-a": {"agent_id": "agent-a", "dominant_need": "safety"}},
+    snapshot = snapshot_of(agents={"agent-a": {"agent_id": "agent-a", "dominant_need": "safety"}},
     )
 
-    state = _agent_states_from_snapshot(snapshot, actions=[])["agent-a"]
+    state = agent_view(StepView.from_snapshot(snapshot), "agent-a")
 
-    assert state.dominant_need_label == NeedType.SAFETY.label
+    assert state.private.dominant_need_label == NeedType.SAFETY.label

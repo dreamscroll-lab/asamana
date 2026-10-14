@@ -18,7 +18,7 @@ def test_load_test_config() -> None:
     assert config.vector_store.provider == "in_memory"
     assert config.world.config == "tiled"
     assert config.world.max_agents == 3
-    assert config.engine.max_events_per_window == 1
+    assert config.engine.max_injections_per_window == 1
     assert config.logging.output == "stdout"
     assert config.logging.fmt == "console"
 
@@ -31,7 +31,7 @@ def test_load_config_uses_env_var(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     config = load_config()
 
     assert config.world.max_agents == 3
-    assert config.engine.event_check_interval == 2
+    assert config.engine.injection_check_interval == 2
 
 
 def test_a_placeholder_default_applies_when_the_var_is_unset_or_empty(

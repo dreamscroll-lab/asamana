@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { indexStep } from "../lib/step";
 import MapStage from "../components/MapStage";
 import NarrativeStep from "../components/narrative/NarrativeStep";
 import Checklist from "./Checklist";
@@ -89,12 +90,13 @@ export default function SceneBench({
   const figures: Figure[] = useMemo(() => {
     const seen = new Map<string, Figure>();
     for (const st of pick?.steps ?? []) {
-      for (const s of Object.values(st.agent_states)) {
+      const index = indexStep(st);
+      for (const s of Object.values(index.agents)) {
         if (!seen.has(s.agent_id)) {
-          seen.set(s.agent_id, { id: s.agent_id, name: s.agent_name, color: s.color || "#94a3b8" });
+          seen.set(s.agent_id, { id: s.agent_id, name: s.name, color: s.color || "#94a3b8" });
         }
       }
-      for (const n of st.npcs ?? []) {
+      for (const n of index.npcs) {
         if (!seen.has(n.npc_id)) {
           seen.set(n.npc_id, { id: n.npc_id, name: n.name || "无名", color: n.color || "#64748b" });
         }

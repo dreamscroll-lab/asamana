@@ -53,6 +53,7 @@ from core.logging import get_logger
 from core.interfaces.perception import PerceivedIdentity, Situation, SpatialPerception, VisibleEntity
 from core.prompts import (
     SIGNAL_CAPS,
+    broadcast_tag,
     render_npc,
     ABSOLUTE_TIME_RULE_FIRST_PERSON,
     CLOSED_WORLD_FACT_RULE_FIRST_PERSON,
@@ -1202,12 +1203,16 @@ class DecisionEngine:
             lines.extend(f"- {ev.content}" for ev in spatial.ambient_events[:SIGNAL_CAPS["ambient"]])
             facts.add("周围的动静", [ev.content for ev in spatial.ambient_events[:SIGNAL_CAPS["ambient"]]])
         if packet.broadcasts:
-            lines.append("世界传来的消息：")
-            facts.add("世界传来的消息", [b.content for b in packet.broadcasts[:SIGNAL_CAPS["broadcast"]]])
-            # Content only: broadcast_type is a code-layer category (its only value, WORLD_EVENT,
-            # carries no information) and the header already names the channel; rendering it
-            # into first-person text would leak across layers.
-            lines.extend(f"- {b.content}" for b in packet.broadcasts[:SIGNAL_CAPS["broadcast"]])
+            # One block may mix world-wide and local broadcasts, so each line carries its own tag.
+            # broadcast_type stays out: a code-layer category (its only value, WORLD_EVENT,
+            # carries no information); rendering it into first-person text would leak across layers.
+            heard = [
+                f"{broadcast_tag(b.location_scope)}：{b.content}"
+                for b in packet.broadcasts[:SIGNAL_CAPS["broadcast"]]
+            ]
+            lines.append("我听到的广播：")
+            facts.add("广播", heard)
+            lines.extend(f"- {line}" for line in heard)
         # The narrator's sender_name is already "不知来源", so it reads as an unknown sender like
         # any other.
         if packet.inbox:

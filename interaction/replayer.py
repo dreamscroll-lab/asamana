@@ -5,7 +5,7 @@ from __future__ import annotations
 from core.interfaces.snapshot import SnapshotProvider
 from engine.injection import Author
 
-from interaction.models import InterventionRecord, StepEvent
+from interaction.models import InterventionRecord, StepView
 
 
 class Replayer:
@@ -24,13 +24,13 @@ class Replayer:
 
         return await self._snapshot_provider.list_steps(self._world_id)
 
-    async def get_step(self, step: int) -> StepEvent:
-        """Read a single replayable step as an observation-ready StepEvent."""
+    async def get_step(self, step: int) -> StepView:
+        """Read a single replayable step as an observation-ready StepView."""
 
         snapshot = await self._snapshot_provider.load(self._world_id, step)
         if snapshot is None:
             raise ValueError(f"Snapshot not found for world={self._world_id} step={step}")
-        return StepEvent.from_snapshot(snapshot)
+        return StepView.from_snapshot(snapshot)
 
     async def list_interventions(self, *, after: int = -1) -> list[InterventionRecord]:
         """Every director intervention this world has recorded, oldest first.
@@ -46,7 +46,7 @@ class Replayer:
             snapshot = await self._snapshot_provider.load(self._world_id, step)
             if snapshot is None:
                 continue
-            for record in snapshot.event_summaries:
+            for record in snapshot.events_of("injection"):
                 if str(record.get("authored_by", "")) != Author.DIRECTOR.value:
                     continue
                 records.append(InterventionRecord(

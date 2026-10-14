@@ -23,6 +23,7 @@ from core.interfaces.perception import (
 from engine.environment import EnvironmentSystem
 from world.models import Npc, NpcSeed
 from core.interfaces.place import Place
+from tests.unit.env_state import restore, saved
 
 
 def _action_space():
@@ -166,10 +167,10 @@ def test_a_report_from_one_is_not_a_correspondent() -> None:
 
 
 def test_the_read_model_does_not_call_one_an_agent() -> None:
-    """The read model must not lie: it's not in ``agent_states``, so the relation graph and
+    """The read model must not lie: it's not among the agents, so the relation graph and
     character cards never include it."""
-    from core.interfaces.snapshot import WorldSnapshot
-    from interaction.models import StepEvent
+    from interaction.models import StepView
+    from tests.unit.step_view import agents, npcs, snapshot_of
     from world.identity_color import _PALETTE, MINDLESS_BODY_COLOR
 
     env = _env()
@@ -177,17 +178,15 @@ def test_the_read_model_does_not_call_one_an_agent() -> None:
         NpcSeed(name="王二", gender="男", age=34, description="跑得快"), location_id="hall",
     )
     npc_id = env.all_npcs()[0].npc_id
-    snapshot = WorldSnapshot(
-        world_id="w", step=1, timestamp=None, world_time={},
-        agent_states={}, metadata={"environment": env.snapshot_state()},
-    )
-    event = StepEvent.from_snapshot(snapshot)
+    world = env.world_state()
+    snapshot = snapshot_of(places=world["places"], npcs=world["npcs"], entities=world["entities"])
+    view = StepView.from_snapshot(snapshot)
 
-    assert npc_id not in event.agent_states
-    assert [n.npc_id for n in event.npcs] == [npc_id]
-    seen = event.npcs[0]
+    assert npc_id not in agents(view)
+    assert list(npcs(view)) == [npc_id]
+    where, seen = npcs(view)[npc_id]
     assert (seen.name, seen.gender, seen.age) == ("王二", "男", 34)
-    assert seen.location == "大殿"                 # narrative name, not an id
+    assert (where, view.locations[where].name) == ("hall", "大殿")  # narrative name, not an id
     # This tier has no identity, so it gets the reserved value, not a slot from the character
     # palette.
     assert seen.color == MINDLESS_BODY_COLOR
@@ -485,7 +484,7 @@ def test_the_npc_roster_holds_exactly_the_bodies_registered_as_npcs() -> None:
     _invariant()
 
     restored = _env()
-    restored.restore_state(env.snapshot_state())
+    restore(restored, saved(env))
     from world.models import BodyKind
     assert {bid for bid, k in restored._bodies.items() if k is BodyKind.NPC} == set(restored._npcs)
     assert set(restored._npcs) == set(env._npcs), "还原过来的名册要一样"

@@ -96,9 +96,9 @@ async def test_inner_monologue_carries_the_secret(container) -> None:
 def test_event_brief_and_director_line_carry_the_secret() -> None:
     """The author layer plants clues and resolves "the traitor", so it must know the truth."""
     from engine.director import DirectorChannel
-    from engine.event import EventSystem
+    from engine.narrative_editor import NarrativeEditor
 
-    brief = EventSystem._brief_characters(  # noqa: SLF001
+    brief = NarrativeEditor._brief_characters(  # noqa: SLF001
         SimpleNamespace(directory=_directory()), {"a1": _agent()},
     )
     assert SECRET in brief

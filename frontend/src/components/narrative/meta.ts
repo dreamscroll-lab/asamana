@@ -9,6 +9,7 @@
 import { ACTION_IDENTITY } from "../../lib/actionIdentity";
 import { ActionType, type ActionTypeValue, Phase } from "../../lib/contract";
 import type { ActionSummary } from "../../types";
+import type { StepCast } from "./cast";
 import type { FeedItem } from "./feed";
 
 interface ActionMeta {
@@ -42,15 +43,15 @@ export function metaOf(act: ActionSummary): ActionMeta {
 
 // The one line a collapsed beat keeps: enough to know WHAT happened and WHO it was, never
 // enough to read it. Reading it is what expanding is for.
-export function collapsedOf(item: FeedItem): { icon: string; text: string } {
-  if (item.kind === "event")
+export function collapsedOf(item: FeedItem, cast: StepCast): { icon: string; text: string } {
+  if (item.kind === "injection")
     return { icon: item.data.authored_by === "director" ? "🎬" : "⚡", text: item.data.narrative };
   if (item.kind === "message")
-    return { icon: "✉", text: `${item.data.sender_name || "不知来源"} · ${item.data.perceived_summary}` };
+    return { icon: "✉", text: `${item.data.sender_name || "不知来源"} · ${item.data.content}` };
   if (item.kind === "broadcast") return { icon: "📣", text: item.data.content };
   const act = item.data;
   return {
     icon: metaOf(act).icon,
-    text: `${item.parts.map((p) => p.agent_name).join(" · ")} · ${act.action_description}`,
+    text: `${act.participant_ids.map((id) => cast.nameOf(id) || "某人").join(" · ")} · ${act.private.action_description}`,
   };
 }

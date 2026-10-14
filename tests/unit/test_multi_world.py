@@ -400,7 +400,7 @@ async def test_a_snapshot_written_by_an_older_shape_still_loads(tmp_path) -> Non
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_json.dumps({
         "world_id": "w", "step": 3, "timestamp": "2026-01-01T00:00:00",
-        "agent_states": {"a1": {"agent_name": "甲"}},
+        "state": {"agents": {"a1": {"agent_name": "甲"}}, "a_state_field_we_since_removed": 1},
         # a field no longer on the dataclass but still present in existing saves
         "a_field_we_since_removed": {"whatever": 1},
     }, ensure_ascii=False), encoding="utf-8")
@@ -408,4 +408,4 @@ async def test_a_snapshot_written_by_an_older_shape_still_loads(tmp_path) -> Non
     snap = await provider.load("w", 3)
 
     assert snap is not None and snap.step == 3
-    assert snap.agent_states["a1"]["agent_name"] == "甲"
+    assert snap.state.agents["a1"]["agent_name"] == "甲"

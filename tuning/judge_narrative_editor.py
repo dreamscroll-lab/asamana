@@ -1,6 +1,6 @@
-"""LLM-as-judge for the EventSystem stage — SEMANTIC quality of the two narrative-editor LLM calls.
+"""LLM-as-judge for the NarrativeEditor stage — SEMANTIC quality of the two narrative-editor LLM calls.
 
-Under test are the author layer's two event-editor LLM calls (engine/event.py):
+Under test are the author layer's two narrative-editor LLM calls (engine/narrative_editor.py):
 
 - kind=gate — `_passes_llm_check`: a third-party pacing verdict that reads the briefing and
   decides whether something that brings major change should happen in the world now. Structure
@@ -8,7 +8,7 @@ Under test are the author layer's two event-editor LLM calls (engine/event.py):
   scores only pacing judgment quality: does the inject decision + reason faithfully read the
   recent pacing state (lull / stalemate / just saturated), derived from analysis rather than a
   guess?
-- kind=plan — `_generate_event_plan`: generates the event and picks channels. Structure (JSON
+- kind=plan — `_generate_injection_plan`: generates the event and picks channels. Structure (JSON
   / channel / index resolve / enum / no leaks) is deterministic; the judge scores four
   semantic qualities:
     1. groundedness — does the event grow out of the briefing's premise, people, relations
@@ -138,7 +138,7 @@ def _plan_block(plan: dict | None) -> str:
     bc = plan.get("broadcast")
     if bc:
         loc = bc.get("location_name") or "全域"
-        lines.append(f"broadcast(世界广播·{loc}·severity={bc.get('severity')}):{bc.get('content', '')}")
+        lines.append(f"broadcast(广播·{loc}·severity={bc.get('severity')}):{bc.get('content', '')}")
     msg = plan.get("message")
     if msg:
         who = "、".join(msg.get("recipient_names", []) or [])
@@ -147,7 +147,7 @@ def _plan_block(plan: dict | None) -> str:
 
 
 def _plan_prompt(meta: dict, outputs: dict, det: dict) -> str:
-    prior = outputs.get("prior_event_descs", []) or []
+    prior = outputs.get("prior_injection_descs", []) or []
     prior_text = "；".join(prior) if prior else "（无）"
     return (
         f"## 场景:{meta.get('name')}\n"
@@ -180,11 +180,11 @@ def _plan_prompt(meta: dict, outputs: dict, det: dict) -> str:
     )
 
 
-async def judge_event(
+async def judge_narrative_editor(
     router: LLMRouter, *, scenario_meta: dict, outputs: dict,
     det_findings: dict, judge_scene: LLMScene = LLMScene.WORLD_BUILDING,
 ) -> dict[str, Any]:
-    """Score the semantic quality of EventSystem gate / plan. Never raises (falls back to empty_judgment on failure)."""
+    """Score the semantic quality of NarrativeEditor gate / plan. Never raises (falls back to empty_judgment on failure)."""
     name = scenario_meta.get("name", "")
     kind = outputs.get("kind", scenario_meta.get("kind", "plan"))
     crit = criteria_for(kind)

@@ -12,36 +12,73 @@ from core.interfaces.perception import Broadcast
 
 
 @dataclass
+class WorldState:
+    """The world at the end of a step, whole: every body, place, thing and relation.
+
+    Records are JSON-native dicts in the shapes their producers write (``snapshot_agent_state``,
+    ``EnvironmentSystem`` and the relation snapshot). Nothing is left out for being private: who
+    may see what is decided by the views built from a snapshot, not here.
+    """
+
+    # Place id → its narrative name.
+    places: dict[str, str] = field(default_factory=dict)
+    # Agent id → ``snapshot_agent_state`` plus where the body is (``location_id``: a place, or
+    # ``IN_TRANSIT`` between two waypoints), its ``transit`` while mid-move and ``displaced``.
+    agents: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Npc id → the whole Npc, with ``location_id``, ``displaced`` and this beat's ``outcome``.
+    npcs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Entity id → every field, tombstones included (restore must not resurrect a destroyed seed).
+    entities: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Relation key → the full relation record, numbers included.
+    relations: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+
+@dataclass
+class EngineState:
+    """What the engine needs to resume from this step and nothing else reads."""
+
+    # Queued, not yet delivered: a message in flight, a death notice due next step. Unsaved, a
+    # restore would drop them and survivors would assume the dead alive forever.
+    pending_messages: list[Message] = field(default_factory=list)
+    pending_broadcasts: list[Broadcast] = field(default_factory=list)
+    # Next ordinal to assign on the emission timeline; restore resumes strictly increasing.
+    event_seq: int = 0
+    # ``EnvironmentSystem.engine_state``: in-transit origins and the ambient annotations
+    # (this step's and the ones carried to the next).
+    environment: dict[str, Any] = field(default_factory=dict)
+    # The scheduler's batches for the step (diagnostics).
+    schedule: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class WorldSnapshot:
-    """Persisted step snapshot."""
+    """One step as the engine records it: the world it ended in, what happened in it, and what
+    the engine needs to resume from it.
+
+    Complete and engine-shaped. Views for readers (``interaction.models.StepView``) are built
+    from it and decide what each reader may see.
+    """
 
     world_id: str
     step: int
     timestamp: datetime
-    # The world's clock, in the same shape the live event-bus payload carries:
+    # The world's clock:
     #
     #   {"hour": 19, "minute": 0,                           ← CODE layer, structured
     #    "iso":   "step=0013 time=19:00 elapsed=68400s",    ← CODE layer, log string
     #    "label": "武德九年，六月初一，酉时，夕阳西下"}          ← NARRATIVE layer
     #
     # ``iso`` is never parsed. ``label``'s shape belongs to the world's calendar, so it is only
-    # passed through whole. Keep the clock under this one key: a second copy in ``metadata`` lets
-    # the same name mean different clocks. See WorldTime.clock_payload.
+    # passed through whole. See WorldTime.clock_payload.
     world_time: dict[str, Any] = field(default_factory=dict)
-    agent_states: dict[str, dict[str, Any]] = field(default_factory=dict)
-    agent_relations: dict[str, dict[str, Any]] = field(default_factory=dict)
-    pending_messages: list[Message] = field(default_factory=list)
-    # Must be saved: death notices queue for the next step, straddling the snapshot boundary, and
-    # unsaved, survivors would assume the dead alive forever after a restore. Not
-    # metadata["broadcasts"], which holds what this step already delivered (for replay).
-    pending_broadcasts: list[Broadcast] = field(default_factory=list)
-    events_this_step: list[dict[str, Any]] = field(default_factory=list)
-    actions_this_step: list[dict[str, Any]] = field(default_factory=list)
-    # What each agent perceived at this step's perception phase, ids only:
-    # ``{agent_id: {"location_id", "agent_ids", "entity_ids", "npc_ids"}}``. The basis for showing
-    # a single character's view of the step without consulting the omniscient state.
-    perceptions: dict[str, dict[str, Any]] = field(default_factory=dict)
-    metadata: dict[str, Any] = field(default_factory=dict)
+    state: WorldState = field(default_factory=WorldState)
+    # What happened this step, in emission order, each event once (see engine.step_record):
+    # ``action`` (one execution's beat, every participant's part folded in), ``message`` (a
+    # delivery), ``broadcast`` and ``injection``. Every event carries its ``seq``.
+    events: list[dict[str, Any]] = field(default_factory=list)
+    engine: EngineState = field(default_factory=EngineState)
+    # Step 0 only: the record of building the world (manifest, lore, character profiles).
+    build: dict[str, Any] = field(default_factory=dict)
 
     @property
     def time_label(self) -> str:
@@ -53,20 +90,10 @@ class WorldSnapshot:
         """The machine clock as a log string (``iso_label``). Code layer; nothing parses it."""
         return str(self.world_time.get("iso", ""))
 
-    @property
-    def agent_summaries(self) -> list[dict[str, Any]]:
-        """The actions taken this step. Empty when nobody acted — and that is a fact.
-
-        **Never fall back to ``agent_states``**: that renders a non-event as blank deeds
-        (CLAUDE.md Rule 1) and hides runs whose decisions were all dropped behind what looks
-        like a quiet night.
-        """
-
-        return list(self.actions_this_step)
-
-    @property
-    def event_summaries(self) -> list[dict[str, Any]]:
-        return list(self.events_this_step)
+    def events_of(self, kind: str) -> list[dict[str, Any]]:
+        """This step's events of one kind, in emission order. Empty when none happened — and
+        that is a fact: never fill a quiet step from the state."""
+        return [e for e in self.events if e.get("kind") == kind]
 
 
 class SnapshotProvider(ABC):

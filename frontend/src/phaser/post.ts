@@ -7,6 +7,7 @@ import Phaser from "phaser";
 
 import { mix, toHex } from "../lib/color";
 import type { MessageSummary } from "../types";
+import type { Scoped } from "../lib/step";
 import type { Announcer } from "./announce";
 import { type FxHost, arrivingMessage } from "./effects";
 import { BUBBLE_VARIANTS, type MapHud, NOTE_GROUND } from "./hud";
@@ -55,7 +56,7 @@ export class PostLayer {
    * private letters, and many letters to one reader is one event, not a stack of plates.
    * The bubble belongs to the reader, and each reader opens his post exactly once.
    */
-  async playDeliveries(messages: MessageSummary[], gen: number): Promise<void> {
+  async playDeliveries(messages: Scoped<MessageSummary>[], gen: number): Promise<void> {
     // On the map and alive. NOT focus: focus decides only whether a post opens itself (below).
     // The dead can't read — a ✉ on a corpse asserts a cognition that did not happen.
     const canRead = (rid: string) => {
@@ -68,7 +69,7 @@ export class PostLayer {
     const post = new Map<string, MessageSummary[]>();
     // Announcements heard this step, in arrival order; they address rooms, not heads.
     const heard: {
-      content: string; location_scope: string | null; speaker: string;
+      content: string; location_id: string | null; speaker: string;
       from: { name: string; ink: number };
     }[] = [];
     for (const m of messages) {
@@ -83,7 +84,7 @@ export class PostLayer {
           flights.push(arrivingMessage(this.host, this.host.token(rid)!));
         }
       }
-      const said = String(m.perceived_summary ?? "").trim();
+      const said = m.content.trim();
       if (!said) continue;
       // For every scope the send step draws space (directedMessages / localAnnounce) and the
       // delivery draws the content. An announcement's audience is a room or the world, so it
@@ -92,7 +93,7 @@ export class PostLayer {
       if (m.scope !== "direct") {
         const from = { name: m.sender_name, ink: this.host.token(m.sender_id)?.color ?? UNSIGNED_INK };
         heard.push({
-          content: said, location_scope: m.scope === "place" ? m.place_id : null,
+          content: said, location_id: m.scope === "place" ? m.location_id : null,
           speaker: m.sender_id, from,
         });
         continue;
@@ -108,7 +109,7 @@ export class PostLayer {
       tok.postData = letters.map((m) => ({
         from: m.sender_name,
         ink: this.host.token(m.sender_id)?.color ?? UNSIGNED_INK,
-        said: String(m.spoken ?? m.perceived_summary ?? "").trim(),
+        said: (m.spoken || m.content).trim(),
       }));
       this.renderPostBadge(tok);
     }
@@ -116,10 +117,10 @@ export class PostLayer {
       if (this.host.renderGen !== gen) return;
       // Pose the speaker BEFORE the words open, so they read as one act. Only when he is still
       // in the room the words landed in: delivery lags the utterance a step, and an errand-bearer
-      // may already be walking home. (A world broadcast has null `location_scope`, so no pose.)
+      // may already be walking home. (A world proclamation has no `location_id`, so no pose.)
       const mouth = this.host.token(h.speaker);
-      if (mouth && h.location_scope && mouth.locationId === h.location_scope) this.host.holdPose(mouth, "talk");
-      await this.announcer.playBroadcast({ content: h.content, location_scope: h.location_scope }, h.from);
+      if (mouth && h.location_id && mouth.locationId === h.location_id) this.host.holdPose(mouth, "talk");
+      await this.announcer.playBroadcast({ content: h.content, location_id: h.location_id }, h.from);
     }
     // EXACTLY ONE post opens itself; the rest wait to be clicked. Not zero: the map is watched
     // far more than clicked. Not all: that queues the whole step behind plates. Without focus

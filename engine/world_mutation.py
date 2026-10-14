@@ -1,4 +1,4 @@
-"""World-state mutation channel: the channel behind EventSystem's private-effect rule.
+"""World-state mutation channel: the channel behind NarrativeEditor's private-effect rule.
 
 Private effects must go through this one channel, not scattered state edits in the author layer.
 
@@ -7,11 +7,11 @@ apply time (``_permits``):
 
 - The human director (``Author.DIRECTOR``): every kind, on people and on errand bodies
   (``Npc``) alike.
-- The LLM event editor (``Author.SYSTEM``): may only place a new thing somewhere
+- The narrative editor (``Author.SYSTEM``): may only place a new thing somewhere
   (``SpawnMutation``), or change / destroy a thing lying on the ground, held by nobody. Anything
   agents have their own causal claim on (life, injuries, location, held things) is off limits.
 
-Don't move this table back into ``EventSystem``: the editor generates in the background, and a
+Don't move this table back into ``NarrativeEditor``: the editor generates in the background, and a
 thing on the ground at generation time may be picked up by landing time. Only the check at
 landing time is accurate.
 
@@ -223,6 +223,10 @@ class MutationOutcome:
     displaced: tuple[str, ...] = ()
     """Agents moved without walking. See ``Audience.displaced``."""
 
+    observed: tuple[Observed, ...] = ()
+    """What onlookers were given to perceive, per location: only the accounts actually recorded
+    (none at a pseudo-location, none when death handling tells it instead)."""
+
 
 class WorldMutationChannel:
     """Apply a validated ``Mutation`` to the world.
@@ -351,6 +355,7 @@ class WorldMutationChannel:
         ):
             return MutationOutcome(reached=tuple(reached), displaced=displaced)
 
+        recorded: list[Observed] = []
         for observed in audience.observed:
             location = observed.location_id
             # Pseudo-locations have no onlookers.
@@ -362,9 +367,10 @@ class WorldMutationChannel:
                 strength=observed.strength,
                 doer_ids=audience.principals,
             )
+            recorded.append(observed)
             reached.extend(self._onlookers_at(location, audience.principals, agents))
         return MutationOutcome(
-            reached=tuple(dict.fromkeys(reached)), displaced=displaced,
+            reached=tuple(dict.fromkeys(reached)), displaced=displaced, observed=tuple(recorded),
         )
 
     def _here_and_now(self, agent_id: str) -> Situation:

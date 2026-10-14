@@ -26,6 +26,7 @@ from engine.npc_runner import NpcRunner
 from providers.message.in_memory import InMemoryMessageProvider
 from world.models import EntityPresence, NpcSeed, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
+from tests.unit.env_state import npc_outcomes, restore, saved
 
 
 class _FixedLLM:
@@ -602,7 +603,7 @@ async def test_a_half_walked_edge_survives_a_restore() -> None:
     fresh = EnvironmentSystem()
     fresh.space.register_place(_location("hall", "大殿", far=6))
     fresh.space.register_place(_location("far", "远处", hall=6))
-    fresh.restore_state(env.snapshot_state())
+    restore(fresh, saved(env))
     assert fresh.get_npc(npc_id).errand.leg_remaining == 4
 
 
@@ -1002,37 +1003,32 @@ async def test_the_report_says_where_the_words_end_and_the_scene_begins() -> Non
 
 
 def test_the_wire_carries_both_halves_and_an_ordinary_letter_has_only_one() -> None:
-    """The read model exposes the split as fields: ``spoken`` and ``perceived_summary``.
+    """The read model exposes the split as fields: ``spoken`` and ``content``.
 
     The display layer wants the short one and the full one, and gets both directly. An ordinary
     letter is all words with no attachment, so the two are equal; every view just reads its own
     field without first checking whether this is a report-back.
     """
-    from core.interfaces.snapshot import WorldSnapshot
-    from interaction.models import StepEvent
+    from interaction.models import StepView
+    from tests.unit.step_view import events, snapshot_of
 
     def _wire(mid: str, content: str, metadata: dict) -> dict:
         return {
-            "id": mid, "sender_id": "s", "sender_name": "某人", "content": content,
-            "recipients": ["a1"], "location_scope": None, "metadata": metadata,
+            "kind": "message", "message_id": mid, "sender_id": "s", "sender_name": "某人",
+            "content": content, "recipients": ["a1"], "location_scope": None, "metadata": metadata,
+            "receivers": [{"agent_id": "a1", "location_id": "hall"}],
         }
 
     report = "我去了宫门一趟，回来了。\n那里的情形是这样：\n- 在场的其他人：无"
-    snapshot = WorldSnapshot(
-        world_id="w", step=1, timestamp=None, world_time={}, agent_states={},
-        metadata={"messages": {
-            "delivered": [
-                _wire("m1", report, {"spoken": "我去了宫门一趟，回来了。"}),
-                _wire("m2", "你我明日午时相见。", {}),
-            ],
-            "inboxes": {"a1": ["m1", "m2"]},
-        }},
-    )
-    seen = StepEvent.from_snapshot(snapshot).messages
-    assert seen[0].spoken == "我去了宫门一趟，回来了。"
-    assert seen[0].perceived_summary == report
+    snapshot = snapshot_of(events=[
+        _wire("m1", report, {"spoken": "我去了宫门一趟，回来了。"}),
+        _wire("m2", "你我明日午时相见。", {}),
+    ])
+    seen = {m.message_id: m for _, m in events(StepView.from_snapshot(snapshot), "message")}
+    assert seen["m1"].spoken == "我去了宫门一趟，回来了。"
+    assert seen["m1"].content == report
     # An ordinary letter: nothing declared, so both are equal.
-    assert seen[1].spoken == seen[1].perceived_summary == "你我明日午时相见。"
+    assert seen["m2"].spoken == seen["m2"].content == "你我明日午时相见。"
 
 
 @pytest.mark.asyncio
@@ -1095,7 +1091,7 @@ async def test_each_step_says_what_happened_to_him_where_he_stands() -> None:
         env.begin_step(step=step, world_time=_world_time(step))
         await runner.advance(step)
         seen.append((
-            env.snapshot_state()["npc_outcomes"].get(npc_id),
+            npc_outcomes(env).get(npc_id),
             env.get_body_location(npc_id),
         ))
 
@@ -1107,7 +1103,7 @@ async def test_each_step_says_what_happened_to_him_where_he_stands() -> None:
 
     # Each line belongs to its own step: begin_step clears the previous one.
     env.begin_step(step=3, world_time=_world_time(3))
-    assert env.snapshot_state()["npc_outcomes"] == {}
+    assert npc_outcomes(env) == {}
 
 
 @pytest.mark.asyncio
@@ -1126,7 +1122,7 @@ async def test_a_trip_with_nothing_to_deliver_still_says_he_got_there() -> None:
     env.begin_step(step=1, world_time=_world_time(1))
     await runner.advance(1)
 
-    assert env.snapshot_state()["npc_outcomes"][npc_id] == {"text": "看了一眼", "ongoing": False}
+    assert npc_outcomes(env)[npc_id] == {"text": "看了一眼", "ongoing": False}
 
 
 @pytest.mark.asyncio
@@ -1158,7 +1154,7 @@ async def test_one_visit_can_get_two_things_done() -> None:
     env.begin_step(step=1, world_time=_world_time(1))
     await runner.advance(1)
 
-    assert env.snapshot_state()["npc_outcomes"][npc_id] == {
+    assert npc_outcomes(env)[npc_id] == {
         "text": "把书信交给了阿石，又带了句话：今夜勿出", "ongoing": False,
     }
 
@@ -1232,13 +1228,13 @@ async def test_the_legs_he_walks_are_the_lines_the_reader_is_told() -> None:
         # The assignment step: he doesn't move or speak; this step's event is in the requester's
         # line.
         assert env.get_body_location(npc_id) == "hall"
-        assert env.snapshot_state()["npc_outcomes"] == {}
+        assert npc_outcomes(env) == {}
 
         seen: list[tuple[str, str, bool]] = []
         for step in range(2, 2 + 2 * hops):
             env.begin_step(step=step, world_time=_world_time(step))
             await runner.advance(step)
-            line = env.snapshot_state()["npc_outcomes"].get(npc_id, {})
+            line = npc_outcomes(env).get(npc_id, {})
             seen.append((
                 env.get_body_location(npc_id),
                 str(line.get("text", "")),
@@ -1282,7 +1278,7 @@ async def test_a_trip_that_covered_no_ground_still_announces_what_he_did() -> No
     )
     env.begin_step(step=1, world_time=_world_time(1))
     await runner.advance(1)
-    assert env.snapshot_state()["npc_outcomes"][npc_id] == {
+    assert npc_outcomes(env)[npc_id] == {
         "text": "给阿石带了句话：今夜勿出", "ongoing": False,
     }
     assert env.get_body_location(npc_id) == "hall"
@@ -1298,7 +1294,7 @@ async def test_a_trip_that_covered_no_ground_still_announces_what_he_did() -> No
     env.assign_errand(ErrandOrder(npc_id, "gate", message="今夜勿出"), requester_id="a1")
     env.begin_step(step=1, world_time=_world_time(1))
     await runner.advance(1)
-    assert env.snapshot_state()["npc_outcomes"][npc_id] == {"text": "去不了宫门", "ongoing": False}
+    assert npc_outcomes(env)[npc_id] == {"text": "去不了宫门", "ongoing": False}
 
 
 def test_a_restrained_person_is_not_reported_as_free() -> None:

@@ -47,7 +47,7 @@ class Stage(str, Enum):
     # Separate slots for the world's two authors: "did a human cause this beat?" is the first
     # question when observing (see engine/injection.Author).
     DIRECTOR = "director"    # human director: free text → injection plan / suggestions
-    EVENT = "event"          # LLM event editor: pacing gate + authoring
+    NARRATIVE_EDITOR = "narrative_editor"  # the LLM narrative editor: pacing gate + authoring
     # No stage set on the context: a missing seam shows up here rather than vanishing.
     UNKNOWN = "unknown"
 
@@ -69,7 +69,7 @@ COGNITION_ORDER: tuple[Stage, ...] = (
     Stage.RELATION_EVOLUTION,
     Stage.LONG_TERM_GOALS,
     Stage.DIRECTOR,
-    Stage.EVENT,
+    Stage.NARRATIVE_EDITOR,
 )
 
 
@@ -193,7 +193,7 @@ class LLMCallTrace:
 class StepTrace:
     """One runtime step's wall-clock total plus its per-phase breakdown.
 
-    ``phase_ms`` maps each step-loop phase (event_check / message / pressure /
+    ``phase_ms`` maps each step-loop phase (injection / message / pressure /
     perceive / interrupt / executor / plan / exec / cognition / snapshot) to its
     wall-clock ms. Empty in older traces.
     """

@@ -17,6 +17,7 @@ from engine.scene import SceneVisibility, SituationVoice, assemble_scene_context
 from providers.llm.mock import MockLLMProvider
 from world.models import EntityPresence, WorldEntity, WorldEntitySeed, WorldEntityType
 from core.interfaces.place import Place
+from tests.unit.env_state import restore, saved
 
 SECRET = "明晨卯时，玄武门换防"
 CARVED = "敢有擅入者斩"
@@ -176,11 +177,11 @@ def test_content_survives_restore_for_made_and_seeded_things_alike() -> None:
     env.change_entity_state(EntityStateChange(entity_id="letter", new_content=SECRET))
     made = EntitySpawn(name="账册", content="欠粮三百石", holder_id="a1")
     env.spawn_entity(made, ground=env.get_body_location("a1"), doer_id="a1")
-    snapshot = env.snapshot_state()
+    snapshot = saved(env)
 
     fresh = _env()
     fresh.register_entity(_letter(content=""))   # seeds are rebuilt as they were at creation
-    fresh.restore_state(snapshot)
+    restore(fresh, snapshot)
     assert fresh.get_entity("letter").content == SECRET
     assert fresh.get_entity(made.entity_id).content == "欠粮三百石"
 

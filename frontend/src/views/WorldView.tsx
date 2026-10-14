@@ -11,6 +11,7 @@ import EditableWorldName from "../components/EditableWorldName";
 import NarrativeStep from "../components/narrative/NarrativeStep";
 import RelationshipGraph from "../components/RelationshipGraph";
 import WorldClock from "../components/WorldClock";
+import { indexStep } from "../lib/step";
 import { useStepPlayer } from "../hooks/useStepPlayer";
 import { NO_MODEL_KEYS_HINT, useModelKeys } from "../lib/deployment";
 import { useWorlds } from "../lib/worldsContext";
@@ -100,18 +101,19 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
     togglePlay,
   } = useStepPlayer(id, mode, graphOpen || bodyOpen); // the chart reads ties off the graph
 
-  const agents = displayStep ? Object.values(displayStep.agent_states) : [];
+  const liveAgents = displayStep ? indexStep(displayStep).agents : undefined;
+  const agents = liveAgents ? Object.values(liveAgents) : [];
   const isBusy = ["running", "paused", "stopping"].includes(runState ?? "");
 
   // Roster for the shared character card (main characters first). Live per-step
   // state is passed separately so the card shows the same rich layout as review.
   const roster: CardAgent[] = [...agents]
     .sort((a, b) => Number(b.is_main_character) - Number(a.is_main_character))
-    .map((a) => ({ id: a.agent_id, name: a.agent_name, is_main_character: a.is_main_character, color: a.color }));
+    .map((a) => ({ id: a.agent_id, name: a.name, is_main_character: a.is_main_character, color: a.color }));
   const activeAgentId = focus.agents[focus.agents.length - 1] ?? roster[0]?.id ?? null;
   const activeAgent = roster.find((a) => a.id === activeAgentId);
 
-  // --- WebSocket: connect on mount, stream live status/snapshot/step ------
+  // --- WebSocket: connect on mount, stream live status/latest_step/step ------
   useEffect(() => {
     let mounted = true;
     (async () => {
@@ -436,7 +438,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
                 roster={roster}
                 activeId={activeAgentId}
                 onActiveChange={selectOne}
-                liveStates={displayStep?.agent_states}
+                liveStates={liveAgents}
                 onExamine={(agentId) => {
                   selectOne(agentId);
                   setBodyOpen(true);
@@ -505,7 +507,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
                 <CharacterBody
                   worldId={id}
                   agent={activeAgent}
-                  live={displayStep?.agent_states[activeAgent.id]}
+                  live={liveAgents?.[activeAgent.id]}
                   graph={graph}
                 />
               </div>

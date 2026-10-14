@@ -95,7 +95,7 @@ async def test_trace_build_names_the_figure_a_persona_call_built(container, test
     """Persona-generation traces carry agent_id, which the build view uses to show names. If the
     world fails to build at this step and there's no snapshot, the name is still in the call's own
     extra."""
-    from core.interfaces.snapshot import WorldSnapshot
+    from core.interfaces.snapshot import WorldSnapshot, WorldState
     from engine.clock import WorldTime, WorldTimeConfig
 
     persona = dataclasses.replace(
@@ -106,8 +106,8 @@ async def test_trace_build_names_the_figure_a_persona_call_built(container, test
     await container.snapshot.save("w1", 0, WorldSnapshot(
         world_id="w1", step=0, timestamp=datetime.now(),
         world_time=WorldTime.from_step(0, WorldTimeConfig()).clock_payload(),
-        agent_states={"agent-1": {"agent_id": "agent-1", "agent_name": "李世民"}},
-        agent_relations={}, metadata={"character_profiles": {"agent-1": {"name": "李世民"}}},
+        state=WorldState(agents={"agent-1": {"agent_id": "agent-1", "agent_name": "李世民"}}),
+        build={"character_profiles": {"agent-1": {"name": "李世民"}}},
     ))
     client = _client(container, test_config)
 
@@ -161,7 +161,7 @@ def test_trace_build_filter_by_keywords(container, test_config) -> None:
 
 
 def test_trace_dimensions_carry_each_steps_world_time_as_an_object(container, test_config) -> None:
-    """World time in the step summary has the same shape as StepEvent.world_time: label +
+    """World time in the step summary has the same shape as StepView.world_time: label +
     hour/minute."""
     from core.interfaces.trace import StepTrace
 
@@ -588,7 +588,7 @@ async def test_director_prompt_hands_back_the_production_prompt_and_its_menus(
     # Index → name: the LLM only outputs indices, and this table is the only way to check who it
     # pointed at.
     assert body["menus"]["cast"] and "1" in body["menus"]["cast"]
-    # Same shape as StepEvent.world_time: label is for people, hour/minute is the machine clock.
+    # Same shape as StepView.world_time: label is for people, hour/minute is the machine clock.
     assert set(body["world_time"]) == {"label", "hour", "minute"}
     assert body["world_time"]["label"] and isinstance(body["world_time"]["hour"], int)
 

@@ -1,7 +1,9 @@
 import { ActionType, Phase, actedOnAgents, claimedAgents } from "../../lib/contract";
 import { avatarStyle } from "../../lib/avatar";
-import type { ActionSummary, DialogueTurn, EntityView } from "../../types";
+import type { Placed, PlacedEntity } from "../../lib/step";
+import type { ActionSummary, DialogueTurn } from "../../types";
 import type { StepCast } from "./cast";
+import type { DeedThought } from "./feed";
 import { metaOf } from "./meta";
 import Who from "./Who";
 
@@ -44,33 +46,35 @@ function Conversation({ turns, cast }: { turns: DialogueTurn[]; cast: StepCast }
 }
 
 /**
- * ONE execution, however many people were in it.
+ * ONE beat of an execution, however many people were in it.
  *
- * `act` is the initiator's record; `parts` is every participant's record, initiator first when
- * `led`. `showConversation` is decided by the feed: one transcript rides on every participant's
- * record, so whether it was already shown is a question about the whole list.
+ * `thoughts` are the deliberations behind it, one per person who decided on this beat.
+ * `showConversation` is decided by the feed: a talk's transcript rides on its closing beat and
+ * must not print twice.
  */
 export default function ActionRow({
   act,
-  parts,
-  led,
+  thoughts,
   cast,
   turns,
   showConversation,
   born,
   entities,
 }: {
-  act: ActionSummary;
-  parts: ActionSummary[];
-  led: boolean;
+  act: Placed<ActionSummary>;
+  thoughts: DeedThought[];
   cast: StepCast;
   turns: DialogueTurn[];
   showConversation: boolean;
   // What this STEP brought into the world, and the entity table to name it by. Only together
   // with `affected_entity_ids` does it say what this deed made.
   born?: ReadonlySet<string>;
-  entities?: Record<string, EntityView>;
+  entities?: Record<string, PlacedEntity>;
 }) {
+  // Everyone who spent a turn on it, initiator first: the sentence belongs to whoever started it.
+  const parts = [act.initiator_id, ...act.participant_ids.filter((id) => id !== act.initiator_id)]
+    .filter(Boolean)
+    .map((id) => ({ agent_id: id, agent_name: cast.nameOf(id) || "某人" }));
   // What THIS deed made: touched and born. A thing it merely changed is touched but not born.
   const made = (act.affected_entity_ids ?? [])
     .filter((eid) => born?.has(eid) && entities?.[eid])
@@ -79,25 +83,23 @@ export default function ActionRow({
   // their turn spent on it is in `target.claims`. A move drags people along with no arrow:
   // 「A → B」 would report a journey as an act upon a man.
   const aimedAt = new Set(actedOnAgents(act.target));
-  const others = led ? parts.slice(1) : [];
+  const others = parts.slice(1);
   // Worded like movement._company_clause: neutral 「带着」, since the same mechanism serves both
   // dragging a man off and carrying the wounded clear.
   const claimed = new Set(claimedAgents(act.target));
   const carried = others.filter((p) => claimed.has(p.agent_id) && !aimedAt.has(p.agent_id));
-  // Show direction only when the records attest it; otherwise cast order is just arrival order
-  // and an arrow would invent who approached whom.
+  // An arrow only toward someone the act was done to.
   const directed = others.some((p) => aimedAt.has(p.agent_id));
   const isInterrupt = act.phase === Phase.interrupt;
   // The MIDDLE beat of a multi-step act. Don't give it a bespoke light row: it would read as a
   // stray tail of the card above and drift from the shared markup. It shows only a 进行中 badge
   // and a progress bar, never dialogue, 心声 or outcome (those play at the opening and close).
   const tick = act.phase === Phase.ongoing_tick;
-  const tickPct = tick && act.total_steps > 0
-    ? Math.min(100, Math.round((act.elapsed_steps / act.total_steps) * 100))
+  const tickPct = tick && act.private.total_steps > 0
+    ? Math.min(100, Math.round((act.private.elapsed_steps / act.private.total_steps) * 100))
     : 0;
   const meta = metaOf(act);
-  // Whoever broke it off — it rides on every participant's record of the execution.
-  const breaker = parts.find((p) => p.interrupted_by)?.interrupted_by ?? "";
+  const breaker = act.interrupted_by;
   // Whoever heard it without being in it; not in the avatar stack or name line, which are for
   // participants. Nameless ones are dropped: never print an id.
   const overheard = (act.overheard_by ?? [])
@@ -119,8 +121,7 @@ export default function ActionRow({
   // outcome (gist + verbatim transcript) must never become prose.
   const spokenFor = act.action_type === ActionType.talk && turns.length > 0;
   const showOutcome =
-    !!act.outcome &&
-    act.phase !== Phase.initialization && // step-0 "初始化完成" is placement noise, not a result
+    !!act.private.outcome &&
     // An opening's or a tick's outcome only restates the body; the result comes on the close.
     !opening &&
     !tick &&
@@ -166,7 +167,7 @@ export default function ActionRow({
             parts.map((p) => p.agent_name).join(" · ")
           )}
         </strong>
-        {parts.some((p) => p.is_main_character) && <span className="text-[10px] text-indigo-400">★</span>}
+        {parts.some((p) => cast.isMain(p.agent_id)) && <span className="text-[10px] text-indigo-400">★</span>}
         <span className="text-xs text-slate-500">📍 {cast.placeOf(act)}</span>
         <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded-md border ${meta.chip}`}>
           {meta.icon} {meta.label}
@@ -175,7 +176,7 @@ export default function ActionRow({
             something begun steps ago. */}
         {opening && (
           <span className="text-[10px] px-1.5 py-0.5 rounded-md text-sky-300/80 bg-sky-950/40 border border-sky-900/50">
-            ⏳ 开始{act.duration_label ? ` · 预计${act.duration_label}` : ""}
+            ⏳ 开始{act.private.duration_label ? ` · 预计${act.private.duration_label}` : ""}
           </span>
         )}
         {done && (
@@ -192,9 +193,9 @@ export default function ActionRow({
         )}
         {/* The condition he acts under. Not a card of its own: the deed that imposed it
             already reported it. Amber, matching the character card. */}
-        {cast.conditionOf(act.agent_id) && (
+        {cast.conditionOf(act.initiator_id) && (
           <span className="text-[10px] px-1.5 py-0.5 rounded-md text-amber-500/80 bg-amber-950/30 border border-amber-900/40">
-            {cast.conditionOf(act.agent_id)}
+            {cast.conditionOf(act.initiator_id)}
           </span>
         )}
         {/* An interrupt adds WHO CUT IT, which matters for a joint action (the initiator
@@ -252,9 +253,9 @@ export default function ActionRow({
       </div>
 
       {/* Every beat says WHAT he is doing; the opening adds how long, the close how it went. */}
-      {act.action_description && (
+      {act.private.action_description && (
         <p className={`mt-2 text-sm leading-relaxed ${nonEvent ? "text-slate-400" : "text-slate-200"}`}>
-          {act.action_description}
+          {act.private.action_description}
         </p>
       )}
 
@@ -273,14 +274,14 @@ export default function ActionRow({
           different things), named when there is more than one. Empty on every beat that
           did not decide: a tick, a later completion, a conscripted participant, an
           interrupt (its reason lives in its outcome). */}
-      {parts
-        .filter((p) => !tick && p.inner_monologue)
-        .map((p) => (
-          <p key={p.agent_id} className="mt-1.5 text-[13px] italic leading-relaxed text-slate-400">
+      {thoughts
+        .filter(() => !tick)
+        .map((t) => (
+          <p key={t.agent_id} className="mt-1.5 text-[13px] italic leading-relaxed text-slate-400">
             <span className="not-italic text-slate-600">
-              心声{parts.length > 1 ? ` · ${p.agent_name}` : ""} ·{" "}
+              心声{parts.length > 1 ? ` · ${cast.nameOf(t.agent_id) || "某人"}` : ""} ·{" "}
             </span>
-            {p.inner_monologue}
+            {t.text}
           </p>
         ))}
 
@@ -292,7 +293,7 @@ export default function ActionRow({
           {/* The whole record, including privileged detail (an interrupt's quoted reason).
               A talk's transcript never lands here: showOutcome drops the outcome when the
               structured `dialogue` renders it. */}
-          {act.outcome}
+          {act.private.outcome}
         </p>
       )}
 

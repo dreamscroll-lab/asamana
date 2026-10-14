@@ -1,5 +1,5 @@
 {
-  "_doc": "EventSystem(叙事事件注入)验证场景。世界=长安宫变(玄武门之变前夜),premise(core_tension/narrative_theme)由 restore 的 world.analysis 注入,不在此重复。kind=gate 验 _passes_llm_check(节奏门);kind=plan 验 _generate_event_plan(生成事件+选通道)。plan 覆盖:接住近况钩子的环境/动静广播(environment_omen)、天然天候广播(weather_omen,天气变化——政治世界里唯一不与权斗打架的纯环境事件)、全局信息广播(court_tidings)、定向投递(directed_dread)、双通道(dual_palace)、不重复已注入(avoid_repeat)、空间僵局(spatial_stalemate,人人困在一处);gate 覆盖该注入(冷场)/不该注入(刚饱和)。**数据具体且贴合史实**(长林兵、嘉猷门、常何、密表、房杜乔装、昆明池设伏…),禁止为高分构造。近况遵叙事认知论:公开之事写**确凿可观测的事实**,机密之事写**观测痕迹或传闻**('有…传出''据…密报'),不写全知的私密意图。step=60 以容纳近况快照;recent[].actions 的 actor 须为主角才显示在近况,背景/环境变化走 annotations。relations 注入最新一帧关系标签+演化描述;prior_events 注入已注入事件。description/expect 是设计意图,不喂答案。",
+  "_doc": "NarrativeEditor(叙事事件注入)验证场景。世界=长安宫变(玄武门之变前夜),premise(core_tension/narrative_theme)由 restore 的 world.analysis 注入,不在此重复。kind=gate 验 _passes_llm_check(节奏门);kind=plan 验 _generate_injection_plan(生成事件+选通道)。plan 覆盖:接住近况钩子的环境/动静广播(environment_omen)、天然天候广播(weather_omen,天气变化——政治世界里唯一不与权斗打架的纯环境事件)、全局信息广播(court_tidings)、定向投递(directed_dread)、双通道(dual_palace)、不重复已注入(avoid_repeat)、空间僵局(spatial_stalemate,人人困在一处);gate 覆盖该注入(冷场)/不该注入(刚饱和)。**数据具体且贴合史实**(长林兵、嘉猷门、常何、密表、房杜乔装、昆明池设伏…),禁止为高分构造。近况遵叙事认知论:公开之事写**确凿可观测的事实**,机密之事写**观测痕迹或传闻**('有…传出''据…密报'),不写全知的私密意图。step=60 以容纳近况快照;recent[].actions 的 actor 须为主角才显示在近况,背景/环境变化走 annotations。relations 注入最新一帧关系标签+演化描述;prior_injections 注入已注入事件。description/expect 是设计意图,不喂答案。",
   "scenarios": [
     {
       "name": "plan_environment_omen",
@@ -301,7 +301,7 @@
           ]
         }
       ],
-      "prior_events": [
+      "prior_injections": [
         {
           "narrative_desc": "眼线密报:太子借为齐王饯行出征之名,欲于昆明池席间设伏杀秦王。",
           "affected": [
@@ -494,7 +494,7 @@
           ]
         }
       ],
-      "prior_events": [
+      "prior_injections": [
         {
           "narrative_desc": "密报急传秦王府:太子已于玄武门内伏下甲士,欲在明晨入朝时将秦王就地诛杀。",
           "affected": [

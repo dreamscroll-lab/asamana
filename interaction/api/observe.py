@@ -6,7 +6,7 @@ symbolic state into a map on the client; a text view ignores the geometry.
 
 The WebSocket pushes off the in-process event bus (subscribe, not poll): on
 connect it sends the current run state, the turn waiting for the actor (if one is),
-and the latest persisted step, then forwards each live ``step``, ``status`` and
+and the latest persisted step (a ``latest_step`` frame), then forwards each live ``step``, ``status`` and
 ``actor_turn`` event for its world. An ``actor_turn`` frame carries the whole turn
 when one opens and null when it closes, so it reads the same however many are missed.
 """
@@ -28,7 +28,7 @@ from interaction.api.serialization import to_jsonable
 from interaction.models import (
     AgentProfile,
     GraphNode,
-    StepEvent,
+    StepView,
     WorldGraph,
     relations_from_snapshot,
 )
@@ -48,10 +48,10 @@ def build_observe_router(services: ApiServices) -> Any:
     async def _step_payload(world_id: str, step: int) -> dict[str, Any]:
         replayer = manager.create_replayer(world_id)
         try:
-            event = await replayer.get_step(step)
+            view = await replayer.get_step(step)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return to_jsonable(event)
+        return to_jsonable(view)
 
     # ----- steps ----------------------------------------------------------
 
@@ -83,7 +83,7 @@ def build_observe_router(services: ApiServices) -> Any:
                 # Fixed identity color — same value the map/card use.
                 color=s.get("color", ""),
             )
-            for aid, s in snapshot.agent_states.items()
+            for aid, s in snapshot.state.agents.items()
         ]
         return to_jsonable(WorldGraph(nodes=nodes, edges=relations_from_snapshot(snapshot)))
 
@@ -109,7 +109,7 @@ def build_observe_router(services: ApiServices) -> Any:
     async def list_profiles(world_id: str) -> list[dict[str, Any]]:
         """The world's whole cast as persisted at step 0, the same list at every step.
 
-        A stable identity key can't come from the per-step ``agent_states`` (the roster would
+        A stable identity key can't come from a step's agents (the roster would
         depend on the loaded step); the map deals each agent a skin from this list, so a body
         is the same in every step, replay and session.
         """
@@ -123,7 +123,7 @@ def build_observe_router(services: ApiServices) -> Any:
     async def get_profile(world_id: str, agent_id: str) -> dict[str, Any]:
         """Static identity persisted at step 0 (name/role/background/traits…).
 
-        Distinct from the per-step ``agent_states`` on a StepEvent, which carry
+        Distinct from the per-step ``AgentView``s on a StepView, which carry
         the mutable current state. Used for the creation-review cards and the
         per-step agent detail panel.
         """
@@ -175,12 +175,12 @@ def build_observe_router(services: ApiServices) -> Any:
         if turn is not None:
             await websocket.send_json({"type": "actor_turn", "data": to_jsonable(turn)})
         steps = await manager.list_steps(world_id)
-        # Skip the step the initial snapshot already covered (subscribing first causes this overlap).
+        # Skip the step the initial frame already covered (subscribing first causes this overlap).
         sent_step = -1
         if steps:
             try:
                 latest = await manager.create_replayer(world_id).get_step(max(steps))
-                await websocket.send_json({"type": "snapshot", "data": to_jsonable(latest)})
+                await websocket.send_json({"type": "latest_step", "data": to_jsonable(latest)})
                 sent_step = latest.step
             except ValueError:
                 pass
@@ -196,10 +196,10 @@ def build_observe_router(services: ApiServices) -> Any:
                         break
                     etype = event.get("type")
                     if etype == "step":
-                        se = StepEvent.from_runtime_payload(event)
-                        if se.step <= sent_step:
+                        view = StepView.from_runtime_payload(event)
+                        if view.step <= sent_step:
                             continue
-                        await websocket.send_json({"type": "step", "data": to_jsonable(se)})
+                        await websocket.send_json({"type": "step", "data": to_jsonable(view)})
                     elif etype == "actor_turn":
                         await websocket.send_json(
                             {"type": "actor_turn", "data": to_jsonable(event.get("turn"))}

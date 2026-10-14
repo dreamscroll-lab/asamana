@@ -310,7 +310,7 @@ class LLMScene(str, Enum):
     AGENT_ACTION_NARRATION = "agent_action_narration"
     MEMORY_SUMMARIZATION = "memory_summarization"
     NEED_GOAL_GENERATION = "need_goal_generation"
-    EVENT_TIMING = "event_timing"
+    NARRATIVE_EDITOR = "narrative_editor"
     # A human director's sentence → injection plan. Translation, not authoring: worth a different
     # tier than the editor's pacing gate / event authoring, so each is tuned separately.
     DIRECTIVE = "directive"

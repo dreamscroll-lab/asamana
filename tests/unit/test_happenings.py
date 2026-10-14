@@ -16,6 +16,7 @@ from engine.environment import (
     HAPPENINGS_MAX_ENTRIES, HAPPENINGS_WINDOW_STEPS, EnvironmentSystem,
 )
 from core.interfaces.place import Place
+from tests.unit.env_state import saved
 
 
 def _world_time(step: int) -> WorldTime:
@@ -124,9 +125,9 @@ def test_history_never_reaches_ordinary_perception() -> None:
 
 
 def test_history_never_reaches_the_snapshot() -> None:
-    """Never included in snapshot_state. That is the real leak path: metadata["environment"] flows
-    to the event editor's brief (the step_annotations reader in engine/event.py) and to every web/replay
-    consumer.
+    """Never included in what a snapshot saves of the environment. That is the real leak path: the
+    engine state flows to the narrative editor's brief (the step_annotations reader in engine/narrative_editor.py)
+    and the world state to every web/replay consumer.
     """
     env = _env()
     env.record_happening(
@@ -134,7 +135,7 @@ def test_history_never_reaches_the_snapshot() -> None:
     )
     env.begin_step(step=2, world_time=_world_time(2))
 
-    assert "三日后动手" not in str(env.snapshot_state())
+    assert "三日后动手" not in str(saved(env))
 
 
 def test_blank_and_placeless_writes_are_dropped() -> None:

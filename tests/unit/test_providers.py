@@ -150,15 +150,13 @@ async def test_in_memory_snapshot_provider(container) -> None:
         world_id="world-1",
         step=3,
         timestamp=datetime(2026, 1, 1, 9, 0),
-        actions_this_step=[{"agent_id": "a1"}],
-        metadata={"world_time": "09:00"},
+        events=[{"kind": "action", "seq": 3, "initiator_id": "a1"}],
     )
     earlier_snapshot = WorldSnapshot(
         world_id="world-1",
         step=1,
         timestamp=datetime(2026, 1, 1, 7, 0),
-        actions_this_step=[{"agent_id": "a1"}],
-        metadata={"world_time": "07:00"},
+        events=[{"kind": "action", "seq": 1, "initiator_id": "a1"}],
     )
     other_world_snapshot = WorldSnapshot(
         world_id="world-2",

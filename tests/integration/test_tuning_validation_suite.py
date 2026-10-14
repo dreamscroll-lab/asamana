@@ -35,7 +35,7 @@ _SUITES = [
     ("tuning.validation", "validate_world_pressure", "world_pressure"),
     ("tuning.validation_action", "validate_action", "action"),
     ("tuning.validation_decision", "validate_decision", "decision"),
-    ("tuning.validation_event", "validate_event", "event"),
+    ("tuning.validation_narrative_editor", "validate_narrative_editor", "narrative_editor"),
     ("tuning.validation_feedback", "validate_feedback", "feedback"),
     ("tuning.validation_interrupt", "validate_interrupt", "interrupt"),
     ("tuning.validation_long_term_goal", "validate_long_term_goal", "long_term_goal"),

@@ -961,8 +961,8 @@ async def test_relocating_an_npc_keeps_its_errand_and_marks_it_displaced(contain
     assert environment.get_body_location(npc_id) == "market"
     # The errand isn't voided; only the unfinished edge is dropped along with the origin.
     assert errand is not None and errand.leg_remaining == 0
-    assert environment.snapshot_state()["npc_displaced"] == [npc_id]
-    # It isn't an agent, so it's not in the agent relocation list (that one feeds agent_states).
+    assert environment.world_state()["npcs"][npc_id]["displaced"] is True
+    # It isn't an agent, so it's not in the agent relocation list (that one marks agents' records).
     assert outcome.displaced == ()
     assert _ambient_at(environment, "market", observer="w1", step=4) == ["王二被一队兵卒裹挟到了西市。"]
 
@@ -989,7 +989,7 @@ def test_displaced_npcs_are_forgotten_at_the_next_step() -> None:
     environment.displace_npc(npc_id, "market")
     environment.begin_step(step=4, world_time=GlobalClock(WorldTimeConfig()).tick())
 
-    assert environment.snapshot_state()["npc_displaced"] == []
+    assert not any(n["displaced"] for n in environment.world_state()["npcs"].values())
 
 
 @pytest.mark.asyncio

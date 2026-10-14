@@ -23,7 +23,6 @@ export type ActionTypeValue = typeof ActionType[keyof typeof ActionType];
 
 export const Phase = {
   interrupt: "interrupt",
-  initialization: "initialization", // step-0 seeding records (outcome "初始化完成")
   // Which beat of an execution a record reports, and so whether its `outcome` is an opening or a
   // result. An act spanning steps arrives as three beats, each saying only what is new; one that
   // opens and closes inside a step arrives as one, `settled`, which has a result but no opening to

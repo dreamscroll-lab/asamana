@@ -56,7 +56,9 @@ async def _seed_intervention(container, world_id: str, *, step: int, authored_by
         step=step,
         timestamp=datetime.now(timezone.utc),
         world_time={"iso": f"step={step:04d} time=19:00", "label": "武德九年，六月初一"},
-        events_this_step=[{
+        events=[{
+            "kind": "injection",
+            "seq": 1,
             "id": "ev-1",
             "step": step,
             "narrative_desc": "钟声大作",

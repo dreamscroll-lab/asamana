@@ -140,16 +140,16 @@ def test_transit_origin_lifecycle_and_snapshot_roundtrip() -> None:
     env = _make_env()
     env.move_body(body_id="agent-a", location_id=IN_TRANSIT)
     assert env.transit_origin("agent-a") == "hall"
-    assert env.snapshot_state()["transit_origins"] == {"agent-a": "hall"}
+    assert env.engine_state()["transit_origins"] == {"agent-a": "hall"}
 
     # Registration is cleared on arrival
     env.move_body(body_id="agent-a", location_id="garden")
     assert env.transit_origin("agent-a") is None
-    assert env.snapshot_state()["transit_origins"] == {}
+    assert env.engine_state()["transit_origins"] == {}
 
     # restore round-trip
     fresh = _make_env()
-    fresh.restore_state({"transit_origins": {"agent-b": "garden"}, "entity_states": {}})
+    fresh.restore_state(npcs={}, entities={}, engine={"transit_origins": {"agent-b": "garden"}})
     assert fresh.transit_origin("agent-b") == "garden"
 
 

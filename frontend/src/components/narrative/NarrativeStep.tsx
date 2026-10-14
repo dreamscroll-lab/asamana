@@ -1,5 +1,5 @@
-// One step of the narrative feed: the step's own header, and its four channels folded into
-// a single seq-ordered stream of rows.
+// One step of the narrative feed: the step's own header, and what happened in it as a single
+// seq-ordered stream of rows.
 //
 // This file is the ASSEMBLY: which rows exist, in what order, and which a focus collapses
 // (never drops; see `involves` in feed.ts). A row's look belongs to its own module; what the
@@ -7,12 +7,13 @@
 import { useState } from "react";
 
 import { Phase } from "../../lib/contract";
-import type { NpcStateSummary, StepEvent } from "../../types";
+import type { AgentView, NpcView, StepView } from "../../types";
+import { type Placed, indexStep } from "../../lib/step";
 import { npcStandingLine } from "../../lib/npc";
 import ActionRow from "./ActionRow";
 import BroadcastRow from "./BroadcastRow";
 import CollapsedRow from "./CollapsedRow";
-import EventRow from "./EventRow";
+import InjectionRow from "./InjectionRow";
 import MessageRow from "./MessageRow";
 import { stepCast } from "./cast";
 import { bornInStep, buildFeed, involves, itemKey } from "./feed";
@@ -24,7 +25,7 @@ export default function NarrativeStep({
   isolated = false,
   onToggleIsolate,
 }: {
-  step: StepEvent;
+  step: StepView;
   focusAgents?: string[];
   // Whether the feed is showing this step ALONE; owned by the feed, which sees the other steps.
   isolated?: boolean;
@@ -39,8 +40,9 @@ export default function NarrativeStep({
   const focusActive = focusSet.size > 0;
   const cast = stepCast(step);
   const feed = buildFeed(step);
-  // One transcript rides on every participant's record; the first card in feed order that
-  // prints it claims it. Decided here because it's a question about the whole list.
+  const index = indexStep(step);
+  // A transcript prints once even if two beats carry it; the first card in feed order claims
+  // it. Decided here because it's a question about the whole list.
   const spoken = new Set<string>();
 
   return (
@@ -78,19 +80,22 @@ export default function NarrativeStep({
         </button>
       </div>
 
-      {/* A step where nothing happened SAYS SO (e.g. every decision failed and was skipped).
-          Blank would look like a broken feed; rows would dress the absence up as deeds. */}
-      {feed.length === 0 && (
+      {/* Step 0 is the world as built: nothing has happened yet, so it introduces who stands
+          where. Any later step where nothing happened SAYS SO (e.g. every decision failed and was
+          skipped): blank would look like a broken feed, rows would dress the absence up as deeds. */}
+      {step.step === 0 ? (
+        <AgentRollRow agents={Object.values(index.agents)} />
+      ) : feed.length === 0 && (
         <div className="mt-2 text-[13px] text-slate-600 italic">本步无人行动。</div>
       )}
 
-      {/* World events, actions, messages and broadcasts in seq (emission) order. */}
+      {/* Injections, actions, messages and broadcasts in seq (emission) order. */}
       <div className="mt-2 space-y-2.5">
-        {feed.map((item, feedIdx) => {
+        {feed.map((item) => {
           // Same key in both branches, so expanding a row swaps it in place without a remount.
-          const key = itemKey(item, feedIdx);
+          const key = itemKey(item);
           if (focusActive && !involves(item, focusSet) && !expanded.has(key)) {
-            const { icon, text } = collapsedOf(item);
+            const { icon, text } = collapsedOf(item, cast);
             return (
               <CollapsedRow
                 key={key}
@@ -101,13 +106,14 @@ export default function NarrativeStep({
             );
           }
 
-          if (item.kind === "event") return <EventRow key={key} ev={item.data} />;
+          if (item.kind === "injection") return <InjectionRow key={key} injection={item.data} />;
           if (item.kind === "message") return <MessageRow key={key} m={item.data} cast={cast} />;
-          if (item.kind === "broadcast") return <BroadcastRow key={key} b={item.data} />;
+          if (item.kind === "broadcast") {
+            return <BroadcastRow key={key} b={item.data} place={item.data.location_name} />;
+          }
 
-          // The dialogue rides on whichever participant's record happens to carry it, and a
-          // tick never replays it.
-          const turns = (item.parts.find((p) => (p.dialogue ?? []).length)?.dialogue ?? []).filter((t) => t.line);
+          // A tick never replays the dialogue.
+          const turns = item.data.private.dialogue.filter((t) => t.line);
           const sig = turns.map((t) => `${t.speaker}:${t.line}`).join("|");
           const showConversation =
             turns.length > 0 && !spoken.has(sig) && item.data.phase !== Phase.ongoing_tick;
@@ -116,19 +122,35 @@ export default function NarrativeStep({
             <ActionRow
               key={key}
               act={item.data}
-              parts={item.parts}
-              led={item.led}
+              thoughts={item.thoughts}
               cast={cast}
               turns={turns}
               showConversation={showConversation}
               born={born}
-              entities={step.entities}
+              entities={index.entities}
             />
           );
         })}
       </div>
 
-      <NpcStandingRow npcs={step.npcs ?? []} roll={step.step === 0} />
+      <NpcStandingRow npcs={index.npcs} roll={step.step === 0} />
+    </div>
+  );
+}
+
+/** The opening roll call: every character and where they stand, main characters first. */
+function AgentRollRow({ agents }: { agents: Placed<AgentView>[] }): JSX.Element | null {
+  if (!agents.length) return null;
+  const ordered = [...agents].sort((a, b) => Number(b.is_main_character) - Number(a.is_main_character));
+  return (
+    <div className="mt-2 space-y-0.5 text-[13px] text-slate-400">
+      {ordered.map((a) => (
+        <div key={a.agent_id}>
+          <span style={a.color ? { color: a.color } : undefined} className="font-medium">{a.name}</span>
+          {a.is_main_character && <span className="text-[10px] text-indigo-400"> ★</span>}
+          <span className="text-slate-600">（{a.location_name}）</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -146,9 +168,9 @@ export default function NarrativeStep({
  * The present-tense phrasing comes from lib/npc, shared with the map's hover; see there on why
  * it must not read as an event.
  */
-function NpcStandingRow({ npcs, roll }: { npcs: NpcStateSummary[]; roll: boolean }): JSX.Element | null {
+function NpcStandingRow({ npcs, roll }: { npcs: Placed<NpcView>[]; roll: boolean }): JSX.Element | null {
   const rows = npcs
-    .map((npc) => [npc.npc_id, npcStandingLine(npc, roll)] as const)
+    .map((npc) => [npc.npc_id, npcStandingLine(npc, npc.location_name, roll)] as const)
     .filter(([, line]) => line.length > 0);
   if (!rows.length) return null;
   return (

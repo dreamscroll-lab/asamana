@@ -22,7 +22,7 @@ from engine.broadcast import BroadcastChannel
 from engine.clock import GlobalClock, WorldTime
 from engine.cognition_maintenance import CognitionMaintenance
 from engine.director import DirectivePrompt, DirectiveResult, DirectorChannel, NpcOnMenu
-from engine.event import EventSettings
+from engine.narrative_editor import NarrativeEditorSettings
 from engine.executors import build_default_registry
 from engine.message_system import MessageSystem
 from engine.run_control import RunController, RunState, StepWithdrawn
@@ -204,24 +204,24 @@ class NarrativeApplication:
         world = await initializer.restore(world_id, casting=casting)
         steps = await self._container.snapshot.list_steps(world_id)
         latest_step = max((s for s in steps if s > 0), default=0)
-        fired_events = await self._collect_fired_events(world_id, steps)
+        landed_injections = await self._collect_landed_injections(world_id, steps)
         # Shared by in-flight messages, pending broadcasts and the event-seq counter.
         # Don't skip step 0: the `s > 0` filter above only sets the clock, and a never-run
-        # world's step-0 snapshot still carries pending_messages (same rule in
-        # WorldInitializer._restore_environment_state). Its metadata has no event_seq.
+        # world's step-0 snapshot still carries pending messages (same rule in
+        # WorldInitializer._restore_environment_state).
         latest = await self._container.snapshot.load(world_id, latest_step)
         await self._restore_pending_messages(world_id, latest)
         # Keeps the event seq strictly increasing across restart (engine.event_seq.EventSequencer).
-        start_event_seq = _event_seq_of(latest)
+        start_event_seq = latest.engine.event_seq if latest else 0
         self._sessions[world_id] = RuntimeSession(
             world=world,
             runtime=self._build_runtime(
                 world,
                 casting=casting,
                 start_step=latest_step,
-                fired_events=fired_events,
+                landed_injections=landed_injections,
                 start_event_seq=start_event_seq,
-                pending_broadcasts=latest.pending_broadcasts if latest else None,
+                pending_broadcasts=latest.engine.pending_broadcasts if latest else None,
             ),
         )
         logger.info(
@@ -536,7 +536,7 @@ class NarrativeApplication:
         """The channel plus the selection menu every director call is composed against.
 
         Assembled here because the director channel doesn't hold EnvironmentSystem (same
-        boundary as EventSystem), and once, so submit and the developer instruments below never
+        boundary as NarrativeEditor), and once, so submit and the developer instruments below never
         show the model two different worlds.
         """
         session = self.get_session(world_id)
@@ -747,27 +747,27 @@ class NarrativeApplication:
             self._catalog.remove(world_id)
         logger.info("world_deleted", extra={"world_id": world_id})
 
-    async def _collect_fired_events(
+    async def _collect_landed_injections(
         self, world_id: str, steps: list[int]
     ) -> list[dict[str, object]]:
         """Gather serialized world events persisted across a world's snapshots.
 
-        Used to rehydrate EventSystem throttle state on restore so a restored world
+        Used to rehydrate NarrativeEditor throttle state on restore so a restored world
         does not re-trigger a fresh window quota.
         """
-        fired_events: list[dict[str, object]] = []
+        landed_injections: list[dict[str, object]] = []
         for step in sorted(s for s in steps if s > 0):
             snapshot = await self._container.snapshot.load(world_id, step)
             if snapshot is not None:
-                fired_events.extend(snapshot.events_this_step)
-        return fired_events
+                landed_injections.extend(snapshot.events_of("injection"))
+        return landed_injections
 
     async def _restore_pending_messages(
         self, world_id: str, snapshot: "WorldSnapshot | None"
     ) -> None:
         """Re-enqueue in-flight messages so a restored world keeps delivering them.
 
-        The in-memory queue is lost across processes. The snapshot's ``pending_messages`` is
+        The in-memory queue is lost across processes. The snapshot's pending messages are
         authoritative, so clear-then-enqueue is idempotent for an in-process re-restore.
         Broadcasts are refilled in ``_build_runtime``: their channel belongs to the runtime.
         """
@@ -775,7 +775,7 @@ class NarrativeApplication:
         await provider.clear(world_id)
         if snapshot is None:
             return
-        for message in snapshot.pending_messages:
+        for message in snapshot.engine.pending_messages:
             await provider.enqueue(message)
 
     def _build_runtime(
@@ -784,7 +784,7 @@ class NarrativeApplication:
         *,
         casting: ActorCasting | None = None,
         start_step: int = 0,
-        fired_events: list[dict[str, object]] | None = None,
+        landed_injections: list[dict[str, object]] | None = None,
         start_event_seq: int = 0,
         pending_broadcasts: "list[Broadcast] | None" = None,
     ) -> NarrativeRuntime:
@@ -810,13 +810,13 @@ class NarrativeApplication:
             ),
             environment=world.environment,
             message_system=message_system,
-            event_settings=EventSettings(
+            narrative_editor_settings=NarrativeEditorSettings(
                 core_tension=world.analysis.core_tension,
                 narrative_theme=world.analysis.narrative_theme,
-                enabled=self._config.engine.event_system_enabled,
-                check_interval=self._config.engine.event_check_interval,
-                max_events_per_window=self._config.engine.max_events_per_window,
-                quota_window=self._config.engine.event_quota_window,
+                enabled=self._config.engine.narrative_editor_enabled,
+                check_interval=self._config.engine.injection_check_interval,
+                max_injections_per_window=self._config.engine.max_injections_per_window,
+                quota_window=self._config.engine.injection_quota_window,
             ),
             snapshot_provider=self._container.snapshot,
             agent_store=self._container.agent_store,
@@ -841,23 +841,9 @@ class NarrativeApplication:
             llm_router=self._container.llm_router,
             trace_sink=self._container.trace_sink,
             start_event_seq=start_event_seq,
-            fired_events=fired_events or (),
+            landed_injections=landed_injections or (),
         )
         # Wired here, once: the step loop never asks who performs a character.
         if casting is not None and not casting.exited:
             runtime.cast_actor(world.agents[casting.character_id])
         return runtime
-
-
-def _event_seq_of(snapshot: "WorldSnapshot | None") -> int:
-    """Next-to-assign event-seq counter, from ``metadata["event_seq"]``.
-
-    Persisted by ``NarrativeRuntime.run_step``; 0 when absent.
-    """
-    if snapshot is None:
-        return 0
-    raw = snapshot.metadata.get("event_seq")
-    try:
-        return int(raw) if raw is not None else 0
-    except (TypeError, ValueError):
-        return 0

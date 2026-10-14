@@ -8,6 +8,7 @@ from engine.directory import LiveWorldDirectory
 from engine.environment import EnvironmentSystem
 from world.models import WorldEntity, WorldEntityType
 from core.interfaces.place import Place
+from tests.unit.env_state import restore, saved
 
 
 def _make_location(entity_id: str, name: str, description: str = "") -> Place:
@@ -199,9 +200,9 @@ def test_entity_registered_after_construction_is_visible() -> None:
 def test_entity_restored_after_construction_is_visible() -> None:
     source_env = EnvironmentSystem()
     source_env.register_entity(_make_item("seed_sword", "佩剑"))
-    state = source_env.snapshot_state()
+    state = saved(source_env)
 
     directory, fresh_env = _make_directory()
     assert directory.describe("seed_sword") is None
-    fresh_env.restore_state(state)
+    restore(fresh_env, state)
     assert directory.entity_name("seed_sword") == "佩剑"

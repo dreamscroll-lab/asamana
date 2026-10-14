@@ -419,9 +419,15 @@ def test_main_prompt_broadcasts_rendered(main_engine) -> None:
         content="宫廷政变迹象", source="system",
         broadcast_type=BroadcastType.WORLD_EVENT, deliver_step=1, severity="high",
     )
-    packet = _make_packet(broadcasts=[bc])
+    local = Broadcast(
+        content="东宫落雨", source="director", broadcast_type=BroadcastType.WORLD_EVENT,
+        deliver_step=1, location_scope="donggong",
+    )
+    packet = _make_packet(broadcasts=[bc, local])
     prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
-    assert "宫廷政变迹象" in prompt
+    assert "全局广播：宫廷政变迹象" in prompt
+    assert "本地广播：东宫落雨" in prompt
+    assert "donggong" not in prompt
 
 
 # ---------------------------------------------------------------------------

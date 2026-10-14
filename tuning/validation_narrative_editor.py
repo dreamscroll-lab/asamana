@@ -1,17 +1,17 @@
 """event stage validation: scenarios + deterministic checks + LLM judge.
 
-Validates the two author-layer paths (the two EVENT_TIMING LLM calls in engine/event.py):
+Validates the two author-layer paths (the two NARRATIVE_EDITOR LLM calls in engine/narrative_editor.py):
 
 - kind=gate — `_passes_llm_check` (the pacing gate). Deterministic checks: the raw verdict is
   valid JSON, reason is non-empty (reason-first), inject is a bool, and the briefing/prompt has
   no step or id leak. The LLM judge scores pacing judgment quality.
-- kind=plan — `_generate_event_plan` (event generation). Deterministic checks: a valid event
+- kind=plan — `_generate_injection_plan` (event generation). Deterministic checks: a valid event
   comes out (at least one channel), reason/narrative_desc are non-empty, severity/urgency/
   is_positive are valid enums, recipients/location resolve through IndexedRef, and the
   briefing/prompt/output have no step or id leak. The LLM judge scores
   groundedness/craft/discipline.
 
-Zero production intrusion: a standalone EventSystem + InMemory snapshot; baseline ./data is
+Zero production intrusion: a standalone NarrativeEditor + InMemory snapshot; baseline ./data is
 never written. The semantic judge isn't fed answers.
 """
 
@@ -29,15 +29,15 @@ from core.interfaces.urgency import Urgency
 from core.logging import get_logger
 from world.initializer import WorldInitializer
 
-from tuning.judge_event import judge_event, criteria_for
+from tuning.judge_narrative_editor import judge_narrative_editor, criteria_for
 from tuning.judge_llm import create_judge
-from tuning.phase_harness.event import run_event
+from tuning.phase_harness.narrative_editor import run_narrative_editor
 from tuning.trace import InMemoryTraceSink, write_json, dump_llm_calls
 from tuning.validation_suite import load_scenarios, make_judge_router, run_suite, summary_md, text_leak
 
 logger = get_logger(__name__)
 
-_DEFAULT_SCENARIOS = Path(__file__).parent / "scenarios" / "event.json"
+_DEFAULT_SCENARIOS = Path(__file__).parent / "scenarios" / "narrative_editor.json"
 _VALID_SEVERITY = {s.value for s in Severity}
 _VALID_URGENCY = {u.value for u in Urgency}
 
@@ -151,15 +151,15 @@ async def _run_scenario(
     scenario_dir = out_dir / name
     sink = InMemoryTraceSink()
 
-    await run_event(container, config, world_id, scenario=scenario_meta, sink=sink,
+    await run_narrative_editor(container, config, world_id, scenario=scenario_meta, sink=sink,
                     trace_dir=str(scenario_dir))
-    phase = next((p for p in sink.phases if p.phase == "stage.event"), None)
+    phase = next((p for p in sink.phases if p.phase == "stage.narrative_editor"), None)
     inputs = phase.inputs if phase else {}
     outputs = phase.outputs if phase else {}
 
-    # Pick this stage's EVENT_TIMING call (one each for gate or plan) for the raw JSON, leak check and web display.
-    event_calls = [c for c in sink.llm_calls if c.scene == LLMScene.EVENT_TIMING.value]
-    last = event_calls[-1] if event_calls else None
+    # Pick this stage's NARRATIVE_EDITOR call (one each for gate or plan) for the raw JSON, leak check and web display.
+    editor_calls = [c for c in sink.llm_calls if c.scene == LLMScene.NARRATIVE_EDITOR.value]
+    last = editor_calls[-1] if editor_calls else None
     prompt_text = ""
     raw: dict | None = None
     if last is not None:
@@ -180,13 +180,13 @@ async def _run_scenario(
         judge_calls: list = []
     else:
         judge_router = make_judge_router(judge_provider, sink, config)
-        judge = await judge_event(
+        judge = await judge_narrative_editor(
             judge_router, scenario_meta=scenario_meta, outputs=outputs,
             det_findings=det, judge_scene=judge_scene)
         judge_calls = [{"scene": c.scene, "prompt": c.prompt_messages, "response": c.response_content}
                        for c in sink.llm_calls if c.scene == judge_scene.value]
 
-    event_call_view = (
+    editor_call_view = (
         {"scene": last.scene, "prompt": last.prompt_messages, "response": last.response_content}
         if last is not None else None
     )
@@ -196,7 +196,7 @@ async def _run_scenario(
     dump_llm_calls(sink, scenario_dir / "llm_calls.json")
     write_json(scenario_dir / "input.json", scenario_meta)
     write_json(scenario_dir / "event.json", {"inputs": inputs, "outputs": outputs})
-    write_json(scenario_dir / "prompt.json", {"event_call": event_call_view,
+    write_json(scenario_dir / "prompt.json", {"event_call": editor_call_view,
                                          "judge_call": judge_calls[-1] if judge_calls else None})
     write_json(scenario_dir / "checks.json", det)
     write_json(scenario_dir / "judge.json", judge)
@@ -212,20 +212,20 @@ async def _run_scenario(
     }
 
 
-async def validate_event(
+async def validate_narrative_editor(
     container: Container, config: Config, world_id: str,
     *, scenarios_path: str | None = None, trace_dir: str = "./data/tuning_traces",
     judge_model: str | None = None, judge_provider: LLMProvider | None = None,
     judge_scene: LLMScene = LLMScene.WORLD_BUILDING,
 ) -> dict[str, Any]:
-    """Run the full EventSystem validation suite. Returns the summary dict."""
+    """Run the full NarrativeEditor validation suite. Returns the summary dict."""
     scenarios = load_scenarios(scenarios_path, _DEFAULT_SCENARIOS)
     judge_llm = judge_provider or create_judge(config, judge_model)
 
     world = await WorldInitializer(container).restore(world_id)
     agent_ids = set(world.agents.keys())
-    location_ids = set(world.environment.snapshot_state().get("location_names", {}).keys())
-    out_dir = Path(trace_dir) / world_id / "validation" / "event"
+    location_ids = set(world.environment.world_state()["places"].keys())
+    out_dir = Path(trace_dir) / world_id / "validation" / "narrative_editor"
 
     async def _one(meta: dict) -> dict:
         return await _run_scenario(container, config, world_id, meta, agent_ids=agent_ids,
@@ -233,7 +233,7 @@ async def validate_event(
                                    judge_provider=judge_llm, judge_scene=judge_scene)
 
     return await run_suite(
-        "event", world_id, scenarios, _one, out_dir=out_dir, criteria=_ALL_CRITERIA,
+        "narrative_editor", world_id, scenarios, _one, out_dir=out_dir, criteria=_ALL_CRITERIA,
         render_md=_summary_md, default_kind="plan",
     )
 
@@ -243,7 +243,7 @@ _ALL_CRITERIA = ("pacing", "groundedness", "concreteness", "craft", "discipline"
 
 def _summary_md(summary: dict) -> str:
     return summary_md(
-        summary, title="event", avg_label="语义均值",
+        summary, title="narrative_editor", avg_label="语义均值",
         columns=[
             ("kind", lambda r: r.get("kind")),
             ("语义分", lambda r: (

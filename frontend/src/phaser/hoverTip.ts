@@ -2,7 +2,7 @@
 
 import Phaser from "phaser";
 
-import type { EntityView, NpcStateSummary } from "../types";
+import type { EntityView, NpcView } from "../types";
 import { entityTipLines } from "../lib/entity";
 import { npcTipLines } from "../lib/npc";
 import type { TipLine, TipTone } from "../lib/tip";
@@ -39,7 +39,7 @@ export class HoverTip {
    *
    * Agents get no hover card — the character card already owns those facts.
    */
-  show(tok: AgentToken, npc: NpcStateSummary): void {
+  show(tok: AgentToken, npc: NpcView): void {
     this.hide();
     const card = this.build(npcTipLines(npc), { text: "NPC", color: npc.color });
     if (!card) return;

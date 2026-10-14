@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 
 from core.interfaces.snapshot import WorldSnapshot
 from engine.clock import WorldTime, WorldTimeConfig
-from interaction.models import StepEvent, WorldTimeView
+from interaction.models import StepView, WorldTimeView
 
 _ERA = "武德九年"
 
@@ -27,13 +27,8 @@ def _world_time(step: int) -> WorldTime:
 
 
 def _live_payload(wt: WorldTime) -> dict:
-    """Exactly the shape engine.runtime publishes to the event bus."""
-    return {
-        "type": "step",
-        "world_id": "w",
-        "step": wt.step,
-        "world_time": wt.clock_payload(),
-    }
+    """Exactly the shape engine.runtime publishes to the event bus: the saved snapshot itself."""
+    return {"type": "step", "world_id": "w", "step": wt.step, "snapshot": _persisted_snapshot(wt)}
 
 
 def _persisted_snapshot(wt: WorldTime) -> WorldSnapshot:
@@ -42,8 +37,7 @@ def _persisted_snapshot(wt: WorldTime) -> WorldSnapshot:
         world_id="w",
         step=wt.step,
         timestamp=datetime.now(timezone.utc),
-        world_time=wt.clock_payload(),
-        metadata={},  # the clock lives in ONE place — no second copy here
+        world_time=wt.clock_payload(),  # the clock lives in ONE place — no second copy
     )
 
 
@@ -59,14 +53,14 @@ def test_the_snapshot_keeps_the_two_layers_apart() -> None:
 def test_live_and_replay_agree_on_both_clocks() -> None:
     wt = _world_time(13)
 
-    for event in (
-        StepEvent.from_runtime_payload(_live_payload(wt)),
-        StepEvent.from_snapshot(_persisted_snapshot(wt)),
+    for view in (
+        StepView.from_runtime_payload(_live_payload(wt)),
+        StepView.from_snapshot(_persisted_snapshot(wt)),
     ):
-        assert (event.world_time.hour, event.world_time.minute) == (wt.hour_of_day, wt.minute_of_hour)
-        assert event.world_time.label == wt.time_label
-        assert _ERA in event.world_time.label
-        assert "step=" not in event.world_time.label  # no code-layer coordinate in narrative
+        assert (view.world_time.hour, view.world_time.minute) == (wt.hour_of_day, wt.minute_of_hour)
+        assert view.world_time.label == wt.time_label
+        assert _ERA in view.world_time.label
+        assert "step=" not in view.world_time.label  # no code-layer coordinate in narrative
 
 
 def test_a_step_recorded_without_a_structured_clock_reports_no_hour() -> None:
@@ -75,8 +69,8 @@ def test_a_step_recorded_without_a_structured_clock_reports_no_hour() -> None:
         world_id="w", step=1, timestamp=datetime.now(timezone.utc),
         world_time={"label": "某时"},
     )
-    event = StepEvent.from_snapshot(snap)
-    assert event.world_time.hour is None and event.world_time.minute is None
+    view = StepView.from_snapshot(snap)
+    assert view.world_time.hour is None and view.world_time.minute is None
 
 
 def test_a_clock_that_is_not_a_payload_reads_as_unknown() -> None:

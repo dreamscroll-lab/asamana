@@ -50,9 +50,9 @@ async def test_restore_drops_what_an_uncommitted_step_wrote(container, test_conf
         for agent_id in restored.agents
         for r in await container.agent_store.load_all_relations(world.world_id, agent_id)
     }
-    assert set(relations) == set(committed.agent_relations)
+    assert set(relations) == set(committed.state.relations)
     key = f"{relation.from_id}->{relation.to_id}"
-    assert relations[key].trust_objective == committed.agent_relations[key]["trust_objective"]
+    assert relations[key].trust_objective == committed.state.relations[key]["trust_objective"]
 
 
 @pytest.mark.asyncio

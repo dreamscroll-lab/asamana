@@ -19,7 +19,7 @@ from engine.broadcast import BroadcastChannel
 from engine.clock import GlobalClock, WorldTimeConfig
 from engine.directory import LiveWorldDirectory
 from engine.environment import SALIENT_AMBIENT_STRENGTH, IN_TRANSIT, EnvironmentSystem
-from engine.event import EventSettings
+from engine.narrative_editor import NarrativeEditorSettings
 from engine.executors import build_default_registry
 from engine.executors.base import ActionExecutionState, ActionExecutor
 from engine.execution_processor import ExecutionProcessor
@@ -31,6 +31,7 @@ from providers.trace.in_memory import InMemoryTraceSink
 from core.interfaces.place import Place
 from worlds.tiled import TiledWorldConfig
 from tests.unit.bus_tap import tap
+from tests.unit.step_view import beats
 
 
 def _build_agent(container, *, world_id: str, agent_id: str, name: str, is_main_character: bool) -> Agent:
@@ -129,14 +130,14 @@ def _build_runtime(
         registry = build_default_registry(
             container.llm_router, LiveWorldDirectory.from_agents({}, environment),
         )
-    event_settings = EventSettings(check_interval=2, max_events_per_window=1)
+    narrative_editor_settings = NarrativeEditorSettings(check_interval=2, max_injections_per_window=1)
     runtime = NarrativeRuntime(
         world_id=world_id,
         clock=GlobalClock(WorldTimeConfig(start_hour=6, seconds_per_step=60)),
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=event_settings,
+        narrative_editor_settings=narrative_editor_settings,
         snapshot_provider=container.snapshot,
         agent_store=container.agent_store,
         event_bus=container.event_bus,
@@ -217,22 +218,19 @@ async def test_narrative_runtime_runs_one_step_and_persists_contract_state(conta
     snapshot = await container.snapshot.load(world_id, 1)
     main_state = await container.agent_store.load_agent_state(world_id, "agent-1")
     bg_state = await container.agent_store.load_agent_state(world_id, "agent-2")
-    action_records = event["actions"]
+    action_events = snapshot.events_of("action")
 
     assert result.step == 1
     assert result.world_time.startswith("step=0001 ")
     assert result.delivered_message_count == 0
     assert result.scheduled_agent_ids == ["agent-1", "agent-2"]
     assert len(result.action_summaries) == 2
-    assert result.event_summaries == []
+    assert result.injection_summaries == []
     assert snapshot is not None
-    # The snapshot carries the clock on BOTH channels, in the one shape the live payload uses
-    # — not the label in `world_time` plus a second copy in `metadata`, which would make the
-    # same name mean the machine clock live and prose in replay.
+    # The snapshot carries the clock on both channels under one key.
     assert snapshot.clock.startswith("step=0001 ")  # code layer: the map parses its hour
     assert snapshot.time_label and "step=" not in snapshot.time_label  # narrative layer
-    assert "time_label" not in snapshot.metadata and "world_time" not in snapshot.metadata
-    assert snapshot.metadata["schedule"] == {
+    assert snapshot.engine.schedule == {
         "step": 1,
         "batches": [
             {
@@ -247,35 +245,25 @@ async def test_narrative_runtime_runs_one_step_and_persists_contract_state(conta
             },
         ],
     }
-    assert snapshot.metadata["messages"] == {
-        "step": 1,
-        "delivered": [],
-        "inboxes": {"agent-1": [], "agent-2": []},
-        "undelivered": [],
+    assert snapshot.events_of("message") == []
+    assert {aid: a["location_id"] for aid, a in snapshot.state.agents.items()} == {
+        "agent-1": "palace", "agent-2": "palace",
     }
-    assert snapshot.metadata["environment"]["body_locations"] == {"agent-1": "palace", "agent-2": "palace"}
-    assert snapshot.agent_summaries == action_records
-    assert snapshot.event_summaries == []
+    assert snapshot.events_of("injection") == []
     assert main_state is not None
     assert main_state.dominant_need == "social"
     assert main_state.current_location == "palace"
     assert bg_state is not None
     assert bg_state.current_location == "palace"
-    assert [record["agent_id"] for record in action_records] == ["agent-1", "agent-2"]
+    assert [e["initiator_id"] for e in action_events] == ["agent-1", "agent-2"]
     # Born-zero (the helper pins estimated_steps=1): the same-step sweep folds each completion
     # into its begin record, which is re-stamped "settled" — one beat, opened and closed.
-    assert [record["phase"] for record in action_records] == ["settled", "settled"]
-    assert action_records[0]["visible_agent_ids"] == ["agent-2"]
-    assert action_records[1]["visible_agent_ids"] == ["agent-1"]
-    assert action_records[0]["message_ids"] == []
-    assert action_records[1]["message_ids"] == []
+    assert [e["phase"] for e in action_events] == ["settled", "settled"]
     assert event["type"] == "step"
     assert event["world_id"] == world_id
     assert event["step"] == 1
-    assert event["schedule"] == snapshot.metadata["schedule"]
-    assert event["messages"] == snapshot.metadata["messages"]
-    assert event["events"] == []
-    assert event["environment"] == snapshot.metadata["environment"]
+    # Live observers get the very record that was saved.
+    assert event["snapshot"] == snapshot
 
 
 @pytest.mark.asyncio
@@ -295,7 +283,7 @@ async def test_runtime_fallback_move_updates_environment_and_agent_location(cont
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=EventSettings(check_interval=2, max_events_per_window=0),
+        narrative_editor_settings=NarrativeEditorSettings(check_interval=2, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
         agent_store=container.agent_store,
         event_bus=container.event_bus,
@@ -355,10 +343,10 @@ async def test_runtime_fallback_move_updates_environment_and_agent_location(cont
     assert environment.get_body_location(agent.agent_id) == "chongren_fang"
     assert agent.personality.state.current_location == "chongren_fang"
     assert snapshot is not None
-    assert snapshot.agent_states[agent.agent_id]["current_location"] == "chongren_fang"
+    assert snapshot.state.agents[agent.agent_id]["location_id"] == "chongren_fang"
     # The trip opened and closed in one step, yet the origin still saw him leave: the completion
     # supersedes the opening only where the completion itself is seen.
-    (record,) = snapshot.actions_this_step
+    (record,) = snapshot.events_of("action")
     assert record["phase"] == "settled"
     observed_at = {o["location_id"]: o["text"] for o in record["observations"]}
     assert "离开此地" in observed_at["donggong"]
@@ -423,7 +411,7 @@ async def test_runtime_interrupts_executor_owned_action(container) -> None:
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=EventSettings(check_interval=2, max_events_per_window=0),
+        narrative_editor_settings=NarrativeEditorSettings(check_interval=2, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
         agent_store=container.agent_store,
         event_bus=container.event_bus,
@@ -642,7 +630,7 @@ async def test_narrative_runtime_delivers_targeted_messages_without_llm_event_ap
     )
 
     first_step = await runtime.run_step(agents)
-    assert first_step.event_summaries == []
+    assert first_step.injection_summaries == []
     assert published()[0]["step"] == 1
 
     second_step = await runtime.run_step(agents)
@@ -655,21 +643,14 @@ async def test_narrative_runtime_delivers_targeted_messages_without_llm_event_ap
     assert second_step.delivered_message_count == 1
     assert second_step.scheduled_agent_ids == ["agent-1", "agent-2"]
     assert len(second_step.action_summaries) == 2
-    assert second_step.event_summaries == []
+    assert second_step.injection_summaries == []
     assert second_snapshot is not None
-    messages_metadata = second_snapshot.metadata["messages"]
-    actions_by_id = {record["agent_id"]: record for record in second_event["actions"]}
-    assert second_snapshot.event_summaries == []
-    assert messages_metadata["step"] == 2
-    assert len(messages_metadata["delivered"]) == 1
-    assert messages_metadata["undelivered"] == []
-    assert "direct-1" in messages_metadata["inboxes"]["agent-1"]
-    assert "direct-1" not in messages_metadata["inboxes"]["agent-2"]
-    assert len(messages_metadata["inboxes"]["agent-1"]) == 1
-    assert len(messages_metadata["inboxes"]["agent-2"]) == 0
+    assert second_snapshot.events_of("injection") == []
+    (delivered_dict,) = second_snapshot.events_of("message")
+    # Reached agent-1 only, where he stood when it reached him.
+    assert delivered_dict["receivers"] == [{"agent_id": "agent-1", "location_id": "palace"}]
     # Lossless transport: delivered content is byte-identical to what was sent
-    delivered_dict = messages_metadata["delivered"][0]
-    assert delivered_dict["id"] == "direct-1"
+    assert delivered_dict["message_id"] == "direct-1"
     assert delivered_dict["content"] == "Meet me at dawn"
     assert delivered_dict["recipients"] == ["agent-1"]
     assert any(
@@ -684,17 +665,12 @@ async def test_narrative_runtime_delivers_targeted_messages_without_llm_event_ap
     assert main_state.current_location == "palace"
     assert bg_state is not None
     assert bg_state.current_location == "palace"
-    assert "direct-1" in actions_by_id["agent-1"]["message_ids"]
-    assert "direct-1" not in actions_by_id["agent-2"]["message_ids"]
-    assert len(actions_by_id["agent-1"]["message_ids"]) == 1
-    assert actions_by_id["agent-2"]["message_ids"] == []
     assert second_event["type"] == "step"
     assert second_event["world_id"] == world_id
     assert second_event["step"] == 2
-    assert second_event["messages"] == messages_metadata
-    assert second_event["events"] == second_snapshot.event_summaries
-    assert second_event["schedule"]["batches"][0]["agent_ids"] == ["agent-1"]
-    assert second_event["schedule"]["batches"][1]["agent_ids"] == ["agent-2"]
+    assert second_event["snapshot"] == second_snapshot
+    assert second_snapshot.engine.schedule["batches"][0]["agent_ids"] == ["agent-1"]
+    assert second_snapshot.engine.schedule["batches"][1]["agent_ids"] == ["agent-2"]
 
 
 # ---------------------------------------------------------------------------
@@ -725,7 +701,7 @@ async def test_talk_to_active_agent_is_rejected_without_double_booking(container
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=EventSettings(check_interval=99, max_events_per_window=0),
+        narrative_editor_settings=NarrativeEditorSettings(check_interval=99, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
         agent_store=container.agent_store,
         event_bus=container.event_bus,
@@ -779,7 +755,7 @@ async def test_talk_to_active_agent_is_rejected_without_double_booking(container
     actions = await container.snapshot.load_latest(world_id)
     assert actions is not None
     agent_a_record = next(
-        (r for r in actions.actions_this_step if r["agent_id"] == "agent-a"), None
+        (r for r in beats(actions) if r["agent_id"] == "agent-a"), None
     )
     assert agent_a_record is not None
     assert agent_a_record["succeeded"] is False
@@ -806,7 +782,7 @@ def _arb_runtime(container, world_id, agents_dict, environment, *, trace_sink=No
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=ms,
-        event_settings=EventSettings(check_interval=99, max_events_per_window=0),
+        narrative_editor_settings=NarrativeEditorSettings(check_interval=99, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
         agent_store=container.agent_store,
         event_bus=container.event_bus,
@@ -932,7 +908,7 @@ async def test_conscripted_agent_defers_decided_intent_into_foiled_buffer(contai
     # defer, never in the executed record).
     b_rec = next(r for r in records if r["agent_id"] == "agent-b")
     assert b_rec["action_type"] == ActionType.TALK
-    assert "独自前往城防查探敌情" not in b_rec["summary"]
+    assert "独自前往城防查探敌情" not in b_rec["action_description"]
     assert "李世民" in b_rec["outcome"]
 
 
@@ -2066,7 +2042,7 @@ async def test_duration2_talk_still_spans_two_steps(container) -> None:
 async def test_duration1_record_shows_completion_not_opening_marker(container) -> None:
     """Double-display guard: for a duration-1 action, begin produces an opening marker record and
     the sweep produces the completion; they must merge in place into one record with the completed
-    outcome. The snapshot's actions_this_step has exactly one entry for the agent, with the
+    outcome. The snapshot's action events have exactly one beat for the agent, with the
     completed outcome (the background WORK template "做完了"), not the opening marker ("着手"), and no
     duplicate."""
     world_id = "world-d1-display"
@@ -2085,7 +2061,7 @@ async def test_duration1_record_shows_completion_not_opening_marker(container) -
 
     await rt.run_step([a])
     snapshot = await container.snapshot.load(world_id, 1)
-    recs = [r for r in snapshot.actions_this_step if r["agent_id"] == "agent-a"]
+    recs = [r for r in beats(snapshot) if r["agent_id"] == "agent-a"]
     # Exactly one record (not "opening marker + completion").
     assert len(recs) == 1
     rec = recs[0]
@@ -2121,11 +2097,11 @@ async def test_decision_monologue_reaches_record_and_survives_d1_fold(container)
 
     await rt.run_step([a])
     snapshot = await container.snapshot.load(world_id, 1)
-    rec = next(r for r in snapshot.actions_this_step if r["agent_id"] == "agent-a")
+    rec = next(r for r in beats(snapshot) if r["agent_id"] == "agent-a")
     assert rec["inner_monologue"] == "父皇明日要问，我今夜须把奏疏理清。"
     # Background agents use the same LLM decision path (CLAUDE.md §5), so the monologue isn't split
     # by tier; agent-a here is is_main_character=False.
-    assert rec["is_main_character"] is False
+    assert snapshot.state.agents["agent-a"]["is_main_character"] is False
 
 
 @pytest.mark.asyncio
@@ -2157,7 +2133,7 @@ async def test_conscripted_participant_record_carries_no_monologue(container) ->
 
     await rt.run_step([a, b])
     snapshot = await container.snapshot.load(world_id, 1)
-    by_agent = {r["agent_id"]: r for r in snapshot.actions_this_step}
+    by_agent = {r["agent_id"]: r for r in beats(snapshot)}
     assert by_agent["agent-a"]["inner_monologue"] == "他若肯让步，今夜便无须动刀。"
     assert by_agent["agent-b"]["inner_monologue"] == ""
 
@@ -2729,10 +2705,10 @@ async def test_executor_tick_failure_skips_narrative_only(container) -> None:
 
 
 @pytest.mark.asyncio
-async def test_multistep_move_emits_transit_contract_in_step_event(container) -> None:
+async def test_multistep_move_emits_transit_contract_in_the_snapshot(container) -> None:
     """A weight-2 move exposes {from,to,elapsed,total} on the mover's step state.
 
-    The render-side transit contract: while an agent is IN_TRANSIT, the step event carries its
+    The render-side transit contract: while an agent is IN_TRANSIT, the step record carries its
     origin/destination + progress so a 2D renderer animates the walk ALONG the edge (see
     engine.runtime + AgentStateSummary). The edge is built here, a two-hour walk under the default
     registry's one-hour step, independent of any map's geometry.
@@ -2776,7 +2752,7 @@ async def test_multistep_move_emits_transit_contract_in_step_event(container) ->
     # Step 1: the move starts; the agent is still traveling → transit present.
     await runtime.run_step([agent])
     event = published()[0]
-    transit = event["agent_states"]["agent-1"].get("transit")
+    transit = event["snapshot"].state.agents["agent-1"].get("transit")
     assert transit is not None, "in-transit agent must carry the transit contract"
     assert transit["from_location_id"] == "near_gate"
     assert transit["to_location_id"] == "far_gate"
@@ -2787,19 +2763,79 @@ async def test_multistep_move_emits_transit_contract_in_step_event(container) ->
     # Step 2: arrival — no more transit, landed at the destination.
     agent.plan_step = plan_move  # ignored while the executor owns the agent
     await runtime.run_step([agent])
-    event2 = published()[0]
-    assert event2["agent_states"]["agent-1"].get("transit") is None
-    assert event2["agent_states"]["agent-1"]["arrival"]["path"] == ["near_gate", "far_gate"]
+    snapshot2 = published()[0]["snapshot"]
+    assert snapshot2.state.agents["agent-1"].get("transit") is None
+    # The route walked rides the beat the MOVE ended on.
+    (closing,) = [e for e in snapshot2.events_of("action") if e["action_type"] == "move"]
+    assert closing["route"]["path"] == ["near_gate", "far_gate"]
     assert environment.get_body_location("agent-1") == "far_gate"
     # The step after landing carries no trip at all.
     await runtime.run_step([agent])
-    assert "arrival" not in published()[0]["agent_states"]["agent-1"]
+    assert all(e.get("route") is None for e in published()[0]["snapshot"].events_of("action"))
 
 
 @pytest.mark.asyncio
-async def test_a_trip_crossed_within_one_step_carries_its_route_as_an_arrival(container) -> None:
+async def test_the_one_carried_rides_the_same_transit_as_the_one_carrying_him(container) -> None:
+    """A carried body travels with his carrier, so on the way he carries the same trip: without
+    it the renderer could not walk him beside the one taking him."""
+    published = tap(container.event_bus)
+    world_id = "world-carry-transit"
+    runtime, environment, _ = _build_runtime(container, world_id=world_id)
+    for entity_id, name, links in (
+        ("near_gate", "近门", {"far_gate": 2 * 3600}),
+        ("far_gate", "远门", {"near_gate": 2 * 3600}),
+    ):
+        environment.space.register_place(Place(
+            place_id=entity_id, name=name, description=name, connections=dict(links),
+        ))
+    environment.place_agent(agent_id="agent-1", location_id="near_gate")
+    environment.place_agent(agent_id="agent-2", location_id="near_gate")
+    carrier = _build_agent(
+        container, world_id=world_id, agent_id="agent-1", name="Li Shimin", is_main_character=True,
+    )
+    carried = _build_agent(
+        container, world_id=world_id, agent_id="agent-2", name="Yuchi Gong", is_main_character=False,
+    )
+
+    async def plan_carry(*, step, spatial, inbox, broadcasts, **_kw):
+        need = NeedEvaluation(
+            dominant_need=NeedType.SAFETY,
+            scores={NeedType.SAFETY: 1.0},
+            active_needs=[NeedState(NeedType.SAFETY, "safety", 1.0)],
+            short_term_goals=["reach the gate"],
+            long_term_goals=[],
+            prompt_context="safety",
+        )
+        return AgentStepPlan(
+            agent_id=carrier.agent_id, step=step, spatial=spatial,
+            inbox=list(inbox), broadcasts=list(broadcasts), need_evaluation=need,
+            action=AgentAction(
+                agent_id=carrier.agent_id, step=step, action_type=ActionType.MOVE,
+                action_description="带着尉迟恭前往远门",
+                target=ActionTarget(acts_on=[Ref.place("far_gate")], claims=[Ref.agent("agent-2")]),
+            ),
+        )
+
+    async def plan_nothing(*, step, spatial, inbox, broadcasts, **_kw):
+        return AgentStepPlan(
+            agent_id=carried.agent_id, step=step, spatial=spatial,
+            inbox=list(inbox), broadcasts=list(broadcasts), need_evaluation=None, action=None,
+        )
+
+    carrier.plan_step = plan_carry
+    carried.plan_step = plan_nothing
+
+    await runtime.run_step([carrier, carried])
+    agents = published()[0]["snapshot"].state.agents
+    assert environment.get_body_location("agent-2") == environment.get_body_location("agent-1")
+    assert agents["agent-1"].get("transit") is not None
+    assert agents["agent-2"].get("transit") == agents["agent-1"]["transit"]
+
+
+@pytest.mark.asyncio
+async def test_a_trip_crossed_within_one_step_carries_its_route_on_its_move(container) -> None:
     """Three short hops under the default one-hour step land in one step, with no transit ever;
-    the arrival gives the renderer the waypoints the engine reported him passing."""
+    the MOVE's route gives the renderer the waypoints the engine reported him passing."""
     published = tap(container.event_bus)
     world_id = "world-arrival"
     runtime, environment, _ = _build_runtime(container, world_id=world_id)
@@ -2834,9 +2870,10 @@ async def test_a_trip_crossed_within_one_step_carries_its_route_as_an_arrival(co
 
     agent.plan_step = plan_move
     await runtime.run_step([agent])
-    state = published()[0]["agent_states"]["agent-1"]
-    assert state.get("transit") is None
-    assert state["arrival"]["path"] == ["gate", "yard", "hall"]
+    snapshot = published()[0]["snapshot"]
+    assert snapshot.state.agents["agent-1"].get("transit") is None
+    (move,) = snapshot.events_of("action")
+    assert move["route"]["path"] == ["gate", "yard", "hall"]
     assert environment.get_body_location("agent-1") == "hall"
 
 
@@ -3171,11 +3208,10 @@ async def test_adjudication_failure_never_reaches_the_observer(container, caplog
     event = published()[0]
     snapshot = await container.snapshot.load(world_id, 1)
 
-    assert event["actions"] == [], "空步不得出现在叙事流/地图的 actions 通道"
+    assert event["snapshot"].events_of("action") == [], "空步不得出现在叙事流/地图的行动事件里"
     assert result.action_summaries == [], "空步不得出现在观察者摘要"
-    # The snapshot shares the source (actions_this_step comes from the same filtered list) → replay
-    # and event briefings are clean too.
-    assert snapshot is not None and snapshot.actions_this_step == []
+    # Live and replay read the one saved record → replay and event briefings are clean too.
+    assert snapshot is not None and event["snapshot"] == snapshot
     # The step did run (agent scheduled, decision succeeded); it just left no observable event in
     # the world.
     assert result.scheduled_agent_ids == ["agent-1"]
@@ -3214,7 +3250,7 @@ async def test_executor_crash_on_a_born_zero_act_never_reaches_the_observer(
         result = await runtime.run_step(agents)
     event = published()[0]
 
-    assert event["actions"] == []
+    assert event["snapshot"].events_of("action") == []
     assert result.action_summaries == []
     withheld = [r for r in caplog.records if r.message == "null_steps_withheld_from_observer"]
     assert len(withheld) == 1 and withheld[0].agent_ids == ["agent-1"]
@@ -3319,7 +3355,7 @@ async def test_setting_out_moves_the_anchor_with_the_body(container) -> None:
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=EventSettings(check_interval=2, max_events_per_window=0),
+        narrative_editor_settings=NarrativeEditorSettings(check_interval=2, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
         agent_store=container.agent_store,
         event_bus=container.event_bus,
@@ -3611,10 +3647,10 @@ async def test_a_finished_run_leaves_the_event_being_generated_alone(container) 
     """
     runtime, _env, _msgs = _build_runtime(container, world_id="w-event-lifecycle")
     inflight = asyncio.create_task(asyncio.sleep(0.05))
-    runtime._event_system._inflight = inflight
+    runtime._narrative_editor._inflight = inflight
 
     await runtime.run([], total_steps=1)
-    assert runtime._event_system._inflight is inflight, "run 收尾丢掉了在途生成"
+    assert runtime._narrative_editor._inflight is inflight, "run 收尾丢掉了在途生成"
 
     await runtime.aclose()
-    assert runtime._event_system._inflight is None, "停机时才清在途生成"
+    assert runtime._narrative_editor._inflight is None, "停机时才清在途生成"

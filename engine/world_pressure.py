@@ -29,6 +29,9 @@ from core.prompts import (
     render_condition,
     SituationVoice,
     URGENCY_SCALE_DESCRIPTION,
+    AMBIENT_TAG,
+    MESSAGE_TAG,
+    broadcast_tag,
     person_referent,
     relation_legend,
     render_situation_header,
@@ -350,21 +353,20 @@ class WorldPressureEvaluator:
 
         has_any = False
         for bc in broadcasts:
-            # A perceivable local broadcast is always at this character's location: "local"
-            # suffices, and the location_scope id must not be rendered.
-            scope = "全局" if bc.location_scope is None else "本地"
-            lines.append(f"- 广播[{scope}，{_SEVERITY_WORD[bc.severity]}] {bc.content}")
+            lines.append(
+                f"- {broadcast_tag(bc.location_scope)}（{_SEVERITY_WORD[bc.severity]}）：{bc.content}"
+            )
             has_any = True
         for msg in inbox:
             sender_name = getattr(msg, "sender_name", None) or "某人"
-            line = f"- 收到来自{sender_name}的消息：{msg.content}"
+            line = f"- 收到来自{sender_name}的{MESSAGE_TAG}：{msg.content}"
             rel = sender_relations.get(getattr(msg, "sender_id", "") or "")
             if rel:
                 line += f"（该角色与{sender_name}的关系：{rel}）"
             lines.append(line)
             has_any = True
         for ev in ambient:
-            lines.append(f"- 观察到：{ev.content}")
+            lines.append(f"- {AMBIENT_TAG}：{ev.content}")
             has_any = True
         if co_located:
             lines.append("- 同处一地（这些人就在该角色身边，构成在场压力；附其身份与该角色对其的关系，供识人参考）：")

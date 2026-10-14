@@ -1848,8 +1848,11 @@ def snapshot_agent_state(agent: "Agent") -> Dict[str, Any]:
         "agent_id": agent.agent_id,
         "agent_name": agent.personality.soul.name,
         "is_main_character": agent.is_main_character,
+        # Visible at a glance, like the name: anyone in his presence sees them.
+        "gender": agent.personality.soul.gender,
+        "age": agent.personality.soul.age,
         # Immutable identity color — one write here reaches both the map
-        # (AgentStateSummary) and the relationship graph (get_graph node).
+        # (AgentView) and the relationship graph (get_graph node).
         "color": agent.personality.soul.color,
         "location_id": state.current_location,
         "current_location": state.current_location,

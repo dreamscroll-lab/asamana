@@ -35,7 +35,7 @@ from engine.broadcast import BroadcastChannel
 from engine.clock import GlobalClock, WorldTimeConfig
 from engine.directory import LiveWorldDirectory
 from engine.environment import IN_TRANSIT, EnvironmentSystem
-from engine.event import EventSettings
+from engine.narrative_editor import NarrativeEditorSettings
 from engine.message_system import MessageSystem
 from engine.runtime import NarrativeRuntime
 from engine.scheduler import AgentScheduler
@@ -79,7 +79,7 @@ def _build_runtime(
     message_system = MessageSystem(container.message_provider, world_id=WORLD_ID)
     broadcast_channel = BroadcastChannel()
     directory = LiveWorldDirectory.from_agents({}, environment)
-    event_settings = EventSettings(check_interval=2, max_events_per_window=1)
+    narrative_editor_settings = NarrativeEditorSettings(check_interval=2, max_injections_per_window=1)
     # executor_registry must be passed at construction — the runtime's subsystems
     # (DeathHandler / ExecutionProcessor / …) capture it there. Swapping
     # runtime._executor_registry post-hoc would leave them pointing at the old one.
@@ -89,7 +89,7 @@ def _build_runtime(
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=event_settings,
+        narrative_editor_settings=narrative_editor_settings,
         snapshot_provider=container.snapshot,
         agent_store=container.agent_store,
         event_bus=container.event_bus,
@@ -553,3 +553,24 @@ def test_someone_who_dies_this_step_is_known_dead_before_anyone_plans() -> None:
     # distinguish alive from dead).
     assert alive._dead_agent_ids == frozenset({"dead"})
     assert dead._dead_agent_ids == frozenset({"dead"})
+
+
+@pytest.mark.asyncio
+async def test_a_corpse_stays_where_he_fell_in_the_step_record(container) -> None:
+    """Death takes a body off the map (no environment location), but the step record keeps him
+    in the room he died in, so replay and the map still show the corpse there."""
+    from interaction.models import StepView
+    from tests.unit.step_view import agents
+
+    environment = EnvironmentSystem(TiledWorldConfig(template="changan_iso"))
+    runtime = _build_runtime(container, environment)
+    survivor = _make_agent(container, agent_id="survivor", name="魏徵")
+    corpse = _make_agent(container, agent_id="corpse", name="李建成", vitality=0.0)
+    corpse.is_active = False
+    environment.place_agent(agent_id="survivor", location_id="palace")
+
+    await runtime.run_step([survivor, corpse])
+    snapshot = await container.snapshot.load(WORLD_ID, 1)
+
+    assert snapshot.state.agents["corpse"]["location_id"] == "palace"
+    assert agents(StepView.from_snapshot(snapshot))["corpse"][0] == "palace"

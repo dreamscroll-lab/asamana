@@ -8,7 +8,8 @@
 
 import Phaser from "phaser";
 
-import type { ActionSummary, DialogueTurn } from "../types";
+import type { DialogueTurn } from "../types";
+import type { Beat } from "./figures";
 import { type FxHost, faceInteraction, faceOnlooker } from "./effects";
 import type { PoseName } from "./skins";
 import {
@@ -228,12 +229,12 @@ export class MapHud {
 
   // A non-dialogue action's caption: icon + who in the title, what in the body.
   async playActionCaption(
-    tok: AgentToken, act: ActionSummary, icon: string, gen: number, say?: string,
+    tok: AgentToken, act: Beat, icon: string, gen: number, say?: string,
   ): Promise<void> {
     // Only a genuine in-world failure gets the mark (a non-event never reaches here).
     const failed = act.succeeded === false;
     const b = this.titledBubble(tok, `${icon} ${act.agent_name}${failed ? "  ✗" : ""}`, failed ? 0xc05a5a : tok.color, "action");
-    const desc = say || act.action_description || act.gist || "";
+    const desc = say || act.private.action_description || act.private.gist || "";
     b.body.setText([...desc].length > 48 ? [...desc].slice(0, 48).join("") + "…" : desc);
     this.layoutBubble(b);
     if (this.host.renderGen !== gen) return;

@@ -6,7 +6,7 @@ Two main lines:
   (doing nothing beats doing it badly).
 - Commit is pure dispatch: the queue holds validated plans, and drain never touches the LLM.
 
-Plus the asymmetry between the director and the LLM event editor: no quota, no pacing gate, and it
+Plus the asymmetry between the director and the narrative editor: no quota, no pacing gate, and it
 can change world state, but it never decides an agent's actions for them.
 """
 
@@ -40,7 +40,7 @@ from engine.director import DirectorChannel, NpcOnMenu
 from engine.environment import EnvironmentSystem
 from engine.execution_processor import ExecutionProcessor
 from engine.executors.registry import ActionExecutorRegistry
-from engine.injection import Author, InjectionDispatcher, serialize_world_event
+from engine.injection import Author, InjectionDispatcher, serialize_injection
 from engine.message_system import MessageSystem
 from engine.world_mutation import (
     ConditionMutation, EntityMutation, RelocateMutation, SpawnMutation, WorldMutationChannel,
@@ -321,7 +321,7 @@ async def test_accepted_directive_is_queued_with_a_preview(container) -> None:
 async def test_parse_prompt_is_a_faithful_translator_not_an_author(container) -> None:
     """Director parsing and event authoring are opposites: one translates faithfully, the other
     invents freely. Low temperature, "don't embellish", and explicit permission to refuse are what
-    set this path apart from EventSystem."""
+    set this path apart from NarrativeEditor."""
     router = _Router(_plan_json())
     channel, agents, environment, *_ = _world(container, router)
 
@@ -428,8 +428,8 @@ async def test_drain_dispatches_broadcast_with_its_phenomenon(container) -> None
     committed = await channel.drain(step=4, agents=agents)
 
     assert len(committed) == 1
-    assert serialize_world_event(committed[0].event)["authored_by"] == "director"   # the frontend uses this for the "导演" tag
-    assert serialize_world_event(committed[0].event)["step"] == 4
+    assert serialize_injection(committed[0].record)["authored_by"] == "director"   # the frontend uses this for the "导演" tag
+    assert serialize_injection(committed[0].record)["step"] == 4
     pending = bc.peek_pending()
     assert len(pending) == 1
     assert pending[0].location_scope == "market"
@@ -489,12 +489,12 @@ async def test_drain_applies_mutations_and_records_who_was_touched(container) ->
 
     assert environment.get_body_location("a2") == "palace"
     assert agents["a2"].personality.state.current_location == "palace"
-    assert serialize_world_event(committed[0].event)["dispatched_to"] == ["mutation"]
+    assert serialize_injection(committed[0].record)["dispatched_to"] == ["mutation"]
     # The channel returns who was reached: the person moved plus whoever sees it at either end. A
     # caller guessing via getattr("agent_id") on the mutation only counts the subject; see the next
     # test.
     assert committed[0].target_ids == ("a2", "a1")   # code-layer coordinates, not sent over the wire
-    assert serialize_world_event(committed[0].event)["affected_names"] == ["李建成", "李世民"]   # narrative-layer referents
+    assert serialize_injection(committed[0].record)["affected_names"] == ["李建成", "李世民"]   # narrative-layer referents
     # He was moved, not walked: from location_id alone the map would draw the teleport as a walk.
     assert committed[0].displaced_ids == ("a2",)
 
@@ -520,11 +520,11 @@ async def test_an_entity_mutation_counts_the_people_who_saw_it(container) -> Non
     committed = await channel.drain(step=5, agents=agents)
 
     assert environment.get_entity("gate").state == "broken"
-    assert serialize_world_event(committed[0].event)["dispatched_to"] == ["mutation"]
+    assert serialize_injection(committed[0].record)["dispatched_to"] == ["mutation"]
     # Li Shimin is in Taiji Palace, right in front of the gate; Li Jiancheng is in the West Market
     # and can't see it.
     assert committed[0].target_ids == ("a1",)
-    assert serialize_world_event(committed[0].event)["affected_names"] == ["李世民"]
+    assert serialize_injection(committed[0].record)["affected_names"] == ["李世民"]
 
 
 @pytest.mark.asyncio
@@ -551,9 +551,9 @@ async def test_a_mutation_nobody_witnessed_still_counts_as_dispatched(container)
 
     assert environment.get_entity("gate").state == "burning"
     assert len(committed) == 1                                  # ← still enters the event stream
-    assert serialize_world_event(committed[0].event)["dispatched_to"] == ["mutation"]
+    assert serialize_injection(committed[0].record)["dispatched_to"] == ["mutation"]
     assert committed[0].target_ids == ()                        # really nobody saw it
-    assert serialize_world_event(committed[0].event)["affected_names"] == []
+    assert serialize_injection(committed[0].record)["affected_names"] == []
 
 
 @pytest.mark.asyncio
@@ -582,7 +582,7 @@ async def test_directive_events_are_authored_by_the_director(container) -> None:
     await _submit(channel, "放个消息", agents, environment)
     committed = await channel.drain(step=2, agents=agents)
 
-    assert [c.event.authored_by.value for c in committed] == [Author.DIRECTOR.value]
+    assert [c.record.authored_by.value for c in committed] == [Author.DIRECTOR.value]
 
 
 # ---------------------------------------------------------------------------
@@ -666,10 +666,10 @@ def test_interpret_reports_the_same_refusal_the_director_would_hear(container) -
 @pytest.mark.asyncio
 async def test_the_original_sentence_survives_serialization_and_restore(container) -> None:
     """The director's original words round-trip with the record, so another process opening the
-    world still has them. They live on ``WorldEvent`` so live and replay share one serialization
+    world still has them. They live on ``InjectionRecord`` so live and replay share one serialization
     path, with no second source of truth.
     """
-    from engine.injection import restore_world_events
+    from engine.injection import restore_injection_records
 
     router = _Router(_plan_json(
         narrative_desc="西市燃起大火",
@@ -680,9 +680,9 @@ async def test_the_original_sentence_survives_serialization_and_restore(containe
 
     committed = await channel.drain(step=7, agents=agents)
 
-    payload = serialize_world_event(committed[0].event)
+    payload = serialize_injection(committed[0].record)
     assert payload["directive_text"] == "在西市放一把火，要让全城都看见"
-    restored = restore_world_events([payload])
+    restored = restore_injection_records([payload])
     assert restored[0].directive_text == "在西市放一把火，要让全城都看见"
     assert restored[0].authored_by is Author.DIRECTOR
 

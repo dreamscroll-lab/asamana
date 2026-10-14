@@ -189,13 +189,13 @@ class EngineConfig(AsamanaConfigModel):
     relation_evolution_enabled: bool = Field(default=True)
     long_term_goal_revision_enabled: bool = Field(default=True)
     # False: check_and_inject short-circuits, for purely agent-driven runs / tuning baselines.
-    event_system_enabled: bool = Field(default=True)
-    # Sliding-window quota: at most max_events_per_window in the last event_quota_window steps.
+    narrative_editor_enabled: bool = Field(default=True)
+    # Sliding-window quota: at most max_injections_per_window in the last injection_quota_window steps.
     # Not a lifetime total: a long run would spend it early and get no outside force afterwards.
     # Clustering within a window is allowed.
-    max_events_per_window: int = Field(default=2, ge=0)
-    event_quota_window: int = Field(default=20, gt=0)
-    event_check_interval: int = Field(default=6, gt=0)
+    max_injections_per_window: int = Field(default=2, ge=0)
+    injection_quota_window: int = Field(default=20, gt=0)
+    injection_check_interval: int = Field(default=6, gt=0)
     # AgentScheduler's gate: an idle agent with no pressure, urgent need or strong emotion is pulled
     # back into decision at least every this many steps. Set in world time (one step = one hour,
     # a waking day ≈ 16 hours). Don't use these to patch problems in the gate's other criteria.

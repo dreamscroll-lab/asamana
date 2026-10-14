@@ -10,7 +10,7 @@
 
 import Phaser from "phaser";
 
-import type { EntityView } from "../types";
+import type { PlacedEntity } from "../lib/step";
 import { type FxHost, flyMessageArc } from "./effects";
 import { inkOn } from "./hud";
 import { mix, shade } from "../lib/color";
@@ -27,10 +27,11 @@ const HALO_FLASH = 0.5;         // one-shot peak when a landmark's state changes
 
 /**
  * Did anything the map DRAWS about this thing change? Only the fields markers read: a change
- * elsewhere would withhold a beat for nothing visible. A new thing has changed: it appears.
+ * elsewhere would withhold a beat for nothing visible. A new thing has changed: it appears; so
+ * has a thing gone from the table: it was destroyed.
  */
-function entityChanged(prev: EntityView | undefined, next: EntityView): boolean {
-  if (!prev) return true;
+function entityChanged(prev: PlacedEntity | undefined, next: PlacedEntity | undefined): boolean {
+  if (!prev || !next) return prev !== next;
   return (
     prev.presence !== next.presence ||
     prev.presence_ref !== next.presence_ref ||
@@ -46,13 +47,13 @@ function entityChanged(prev: EntityView | undefined, next: EntityView): boolean 
 export interface EntityHost extends FxHost {
   readonly map: WorldMap;
   /** Deal this step's things onto the ground their rooms can spare. */
-  layoutFixtures(entities: Record<string, EntityView>): void;
+  layoutFixtures(entities: Record<string, PlacedEntity>): void;
   /** Announce a change where it happened: a thing wrecked, a state turned. */
   floatNote(x: number, y: number, text: string, accent: number): void;
   /** What people carry has changed; every pouch handle and open pocket is stale. */
   refreshCarried(): void;
   /** The hover card over a thing: one card on the map at a time, shared with the NPCs'. */
-  showEntityTip(x: number, y: number, entity: EntityView): void;
+  showEntityTip(x: number, y: number, entity: PlacedEntity): void;
   hideTip(): void;
 }
 
@@ -66,8 +67,8 @@ export class EntityLayer {
   /** Where each thing was dealt this step. Written by the STAGING, read here to place markers. */
   readonly entitySlotOf = new Map<string, { x: number; y: number; gx: number; gy: number }>();
   /** The snapshot the markers are currently DRAWN from, not the one the step reported. */
-  private lastEntityStates: Record<string, EntityView> = {};
-  private stepEntities: Record<string, EntityView> = {};
+  private lastEntityStates: Record<string, PlacedEntity> = {};
+  private stepEntities: Record<string, PlacedEntity> = {};
   /** Things whose reported change is being held back until its cause plays. */
   private withheldEntities = new Set<string>();
   /**
@@ -78,6 +79,11 @@ export class EntityLayer {
    * on a thing that merely changed. Deleted as drawn, so a re-run does not replay the arrival.
    */
   private bornEntities = new Set<string>();
+  /**
+   * This step does not follow the one drawn (a jump or a scrub back), so a thing missing from its
+   * table may simply not exist yet: it leaves without the "destroyed" note.
+   */
+  private cut = false;
 
   /** Which things are still holding a change back; read by the beat scheduler. */
   get withheld(): ReadonlySet<string> {
@@ -91,10 +97,16 @@ export class EntityLayer {
    * doctored view downstream works from. The decision stays here: the caller knows which things
    * the deeds name, this layer knows which would visibly change, and neither half is the test.
    */
-  beginStep(entities: Record<string, EntityView>, causedIds: Set<string>): Record<string, EntityView> {
+  beginStep(
+    entities: Record<string, PlacedEntity>, causedIds: Set<string>, cut: boolean,
+  ): Record<string, PlacedEntity> {
     this.stepEntities = entities;
+    this.cut = cut;
+    // Things this step's table dropped count too: a destroyed thing must keep standing until the
+    // blow that breaks it lands.
+    const ids = new Set([...Object.keys(entities), ...Object.keys(this.lastEntityStates)]);
     this.withheldEntities = new Set(
-      Object.keys(entities).filter(
+      [...ids].filter(
         (eid) => causedIds.has(eid) && entityChanged(this.lastEntityStates[eid], entities[eid]),
       ),
     );
@@ -131,7 +143,7 @@ export class EntityLayer {
    * presence, holder, position and state all defer through the same path, and revealing
    * a change is just handing over a map with one more truth in it.
    */
-  effectiveEntities(): Record<string, EntityView> {
+  effectiveEntities(): Record<string, PlacedEntity> {
     if (!this.withheldEntities.size) return this.stepEntities;
     const out = { ...this.stepEntities };
     for (const eid of this.withheldEntities) {
@@ -161,19 +173,26 @@ export class EntityLayer {
     this.applyEntities(shown);
   }
 
-  applyEntities(entities: Record<string, EntityView>): void {
+  applyEntities(entities: Record<string, PlacedEntity>): void {
     // Runs before lastEntityStates is overwritten, so this still reads what was drawn before.
-    const prevOf = (eid: string): EntityView | undefined => this.lastEntityStates[eid];
-    const items = new Map<string, [string, EntityView][]>();
-    const landmarks = new Map<string, [string, EntityView][]>();
+    const prevOf = (eid: string): PlacedEntity | undefined => this.lastEntityStates[eid];
+    const items = new Map<string, [string, PlacedEntity][]>();
+    const landmarks = new Map<string, [string, PlacedEntity][]>();
     // The card is free-standing, and pointerout never fires on a destroyed object.
     this.host.hideTip();
     this.carriedBy.clear();
-    for (const [eid, e] of Object.entries(entities)) {
-      if (e.presence === "destroyed") {
+    // Gone from the table: destroyed, on a step that follows the last one drawn. Only a thing
+    // that has a marker gets a goodbye.
+    for (const [eid, e] of Object.entries(this.lastEntityStates)) {
+      if (eid in entities) continue;
+      if (this.cut) {
+        this.entityMarkers.get(eid)?.destroy();
+        this.entityMarkers.delete(eid);
+      } else {
         this.destroyEntityMarker(eid, e.name);
-        continue;
       }
+    }
+    for (const [eid, e] of Object.entries(entities)) {
       if (e.presence === "held") {
         // Held items leave the map for the holder's pocket (carriedBy); a marker would only
         // stack on his token. Destroyed, not hidden: a marker exists iff the thing is in the world.
@@ -199,7 +218,7 @@ export class EntityLayer {
             ...(this.carriedBy.get(holderId) ?? []),
             {
               name: e.name, state: e.state ?? "", concealed: e.is_public === false,
-              description: e.description ?? "", content: e.content ?? "",
+              description: e.description ?? "", content: e.private.content,
             },
           ]);
           // Made and kept: never on the ground, so announce it at his token (the pocket panel
@@ -386,7 +405,7 @@ export class EntityLayer {
     marker: Phaser.GameObjects.Container,
     room: Room,
     eid: string,
-    e: EntityView,
+    e: PlacedEntity,
   ): void {
     this.layoutEntityLabel(marker, e.name, e.state);
     const prev = this.lastEntityStates[eid];

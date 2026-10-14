@@ -675,8 +675,5 @@ class ExecutionProcessor:
                 *(o for o in rec.get("observations") or [] if o.get("location_id") not in covered),
                 *completion["observations"],
             ]
-            completion["summary"] = (
-                f"行动内容：{result.action.action_description}，行动结果：{result.outcome}"
-            )
             rec.clear()
             rec.update(completion)

@@ -20,7 +20,7 @@ from agent.relation import RelationSystem
 from core.container import Container
 from core.interfaces.agent_store import AgentRelation, AgentState, relations_snapshot
 from core.interfaces.condition import condition_from_dict, condition_to_dict
-from core.interfaces.snapshot import WorldSnapshot
+from core.interfaces.snapshot import EngineState, WorldSnapshot, WorldState
 from core.logging import get_logger
 from engine.clock import (
     WorldTime,
@@ -28,7 +28,6 @@ from engine.clock import (
     parse_calendar_style,
     resolve_step_seconds,
 )
-from core.interfaces.directory import WorldDirectory
 from engine.directory import LiveWorldDirectory
 from engine.environment import DEFAULT_MAX_NPCS, IN_TRANSIT, EnvironmentSystem
 from core.interfaces.world_config import WorldConfig
@@ -145,7 +144,6 @@ class WorldInitializer:
             agent_definitions=list(agent_definitions),
             agents=agents,
             environment=environment,
-            directory=directory,
             clock_config=clock_config,
         )
 
@@ -475,7 +473,7 @@ class WorldInitializer:
         if step_zero is None:
             raise ValueError(f"No step-0 snapshot found for world {world_id!r}")
 
-        manifest = step_zero.metadata.get("manifest")
+        manifest = step_zero.build.get("manifest")
         if manifest is None:
             raise ValueError(
                 f"Step-0 snapshot for world {world_id!r} has no manifest; "
@@ -572,7 +570,7 @@ class WorldInitializer:
         fallback of the step that wrote it, not "no relations", so it is left alone.
         """
         snapshot = await self._container.snapshot.load(world_id, resume_step)
-        if snapshot is None or not snapshot.agent_relations:
+        if snapshot is None or not snapshot.state.relations:
             logger.warning(
                 "relation_rollback_skipped",
                 extra={"world_id": world_id, "step": resume_step},
@@ -580,7 +578,7 @@ class WorldInitializer:
             return
         store = self._container.agent_store
         await store.clear_relations(world_id)
-        for payload in snapshot.agent_relations.values():
+        for payload in snapshot.state.relations.values():
             await store.save_relation(AgentRelation(**payload))
 
     def _repatriate_transit_agents(
@@ -623,7 +621,7 @@ class WorldInitializer:
 
         ``restore`` rebuilds the environment from the step-0 entity seeds, which leaves item
         state/location/ownership at their initial values. The resume step's snapshot records
-        the live environment under ``metadata["environment"]``; without this the world's items
+        the live environment in its ``state`` and ``engine``; without this the world's items
         silently revert to step 0 while agents carry their latest state.
 
         **STEP 0 IS A RESUME STEP LIKE ANY OTHER — do not skip it.** For entities the re-apply
@@ -635,9 +633,11 @@ class WorldInitializer:
         snapshot = await self._container.snapshot.load(world_id, resume_step)
         if snapshot is None:
             return
-        env_state = snapshot.metadata.get("environment")
-        if isinstance(env_state, dict):
-            environment.restore_state(env_state)
+        environment.restore_state(
+            npcs=snapshot.state.npcs,
+            entities=snapshot.state.entities,
+            engine=snapshot.engine.environment,
+        )
 
     async def _freeze_map_assets(
         self, world_id: str, world_config: WorldConfig, render_map: dict[str, object]
@@ -735,39 +735,35 @@ class WorldInitializer:
         agent_definitions: list[AgentDefinition],
         agents: dict[str, Agent],
         environment: EnvironmentSystem,
-        directory: WorldDirectory,
         clock_config: WorldTimeConfig,
     ) -> WorldSnapshot:
         world_time = WorldTime.from_step(0, clock_config)
-        # Mirror the runtime's observation enrichment: snapshot_agent_state is id-only
-        # (agent/ can't touch the directory); the god-view resolves location_id → the
-        # narrative name here so step 0 shows real homes, not the "某地" fallback.
-        # (No transit at init — nobody is mid-move — so only location_name is added.)
-        agent_states = {
-            agent_id: snapshot_agent_state(agent) for agent_id, agent in agents.items()
-        }
-        for state in agent_states.values():
-            state["location_name"] = directory.location_name(state["location_id"])
+        environment_state = environment.world_state()
+        # Step 0 has no events: everyone simply stands where the world put them, which the state
+        # says. Nobody is mid-move yet, so the body location is the agent's own.
         snapshot = WorldSnapshot(
             world_id=world_id,
             step=0,
             timestamp=datetime.now(),
             world_time=world_time.clock_payload(),
-            agent_states=agent_states,
-            agent_relations=await relations_snapshot(self._container.agent_store, world_id, agents),
-            pending_messages=await self._container.message_provider.peek_pending(world_id),
-            events_this_step=[],
-            actions_this_step=self._build_agent_summaries(agents, directory),
-            metadata={
-                "phase": "initialization",
+            state=WorldState(
+                places=environment_state["places"],
+                agents={agent_id: snapshot_agent_state(agent) for agent_id, agent in agents.items()},
+                npcs=environment_state["npcs"],
+                entities=environment_state["entities"],
+                relations=await relations_snapshot(self._container.agent_store, world_id, agents),
+            ),
+            engine=EngineState(
+                pending_messages=await self._container.message_provider.peek_pending(world_id),
+                environment=environment.engine_state(),
+            ),
+            build={
                 "theme": theme,
                 "manifest": {
                     "theme": theme,
                     "analysis": analysis.as_dict(),
                     "agent_definitions": [defn.as_dict() for defn in agent_definitions],
                 },
-                "world_time": world_time.iso_label(),
-                "time_label": world_time.time_label,
                 "world": {
                     "world_name": analysis.world_name,
                     # Step duration: the review card shows it to the user before confirmation locks it in (once
@@ -782,19 +778,6 @@ class WorldInitializer:
                     "figure_names": [figure.name for figure in analysis.key_figures],
                     "location_names": [location.name for location in analysis.key_locations],
                 },
-                "schedule": {
-                    "step": 0,
-                    "batches": [],
-                },
-                "messages": {
-                    "step": 0,
-                    "delivered": [],
-                    "received": [],
-                    "inboxes": {agent_id: [] for agent_id in agents},
-                    "undelivered": [],
-                },
-                "broadcasts": [],
-                "environment": environment.snapshot_state(),
                 "character_profiles": {
                     agent_id: {
                         "name": agent.personality.soul.name,
@@ -897,39 +880,6 @@ class WorldInitializer:
                     "location_id": location_id,
                 },
             )
-
-    def _build_agent_summaries(
-        self, agents: dict[str, Agent], directory: WorldDirectory
-    ) -> list[dict[str, object]]:
-        summaries: list[dict[str, object]] = []
-        for agent in agents.values():
-            state = agent.personality.state
-            # Narrative text carries the location NAME, never the raw id (id doesn't
-            # cross into the narrative layer). action_description is name-free — the
-            # observer already shows who, so it isn't doubled.
-            loc_name = directory.location_name(state.current_location)
-            summaries.append(
-                {
-                    "agent_id": agent.agent_id,
-                    "agent_name": agent.personality.soul.name,
-                    "is_main_character": agent.is_main_character,
-                    "location_id": state.current_location,
-                    "emotion": {
-                        "primary": state.emotion.primary,
-                        "intensity": state.emotion.intensity,
-                        "valence": state.emotion.valence,
-                    },
-                    "dominant_need": state.dominant_need,
-                    "long_term_goals": list(state.long_term_goals),
-                    "short_term_goals": list(state.short_term_goals),
-                    "summary": f"{agent.personality.soul.name} 在 {loc_name} 就位。",
-                    "action_description": f"在 {loc_name} 就位",
-                    "outcome": "初始化完成",
-                    "succeeded": True,
-                    "phase": "initialization",
-                }
-            )
-        return summaries
 
     def _clock_config_for(
         self,

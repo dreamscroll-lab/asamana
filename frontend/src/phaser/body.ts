@@ -14,7 +14,7 @@ import Phaser from "phaser";
 
 import { Phase, actedOnAgents } from "../lib/contract";
 import { hsvOf } from "../lib/dye";
-import type { ActionSummary, AgentStateSummary } from "../types";
+import type { Beat, Figure } from "./figures";
 import { deedBody } from "./deedPose";
 import { type FxHost, deathDissipate } from "./effects";
 import { RECOLOR_FX, RecolorFX } from "./recolorPipeline";
@@ -157,7 +157,7 @@ export class BodyRig {
   // the step, so a token is never stranded mid-blow.
 
   /** Act out one action: the doer's deed, and the reaction of anyone it was aimed at. */
-  playDeed(tok: AgentToken, act: ActionSummary, tokens: Map<string, AgentToken>): void {
+  playDeed(tok: AgentToken, act: Beat, tokens: Map<string, AgentToken>): void {
     const body = deedBody(act.deed, act.succeeded !== false);
     if (!body) return; // nothing was adjudicated → nothing was done → draw nothing
     // The CLOSING beat of a long act: he is no longer at it, so a held pose is shown once and
@@ -286,8 +286,8 @@ export class BodyRig {
    * Must stay single: a deferred path landing only death sends the rest through the instant
    * path, ahead of the blow that caused it (the vitality bar drains a beat early).
    */
-  applyBodyState(tok: AgentToken, state: AgentStateSummary, wasPlaced: boolean): void {
-    if (reportedDead(state)) {
+  applyBodyState(tok: AgentToken, state: Figure, wasPlaced: boolean): void {
+    if (reportedDead(state.is_active, state.vitality)) {
       this.applyDeathVisual(tok, state.emotion_valence, !tok.dead && wasPlaced);
       return;
     }
@@ -301,8 +301,8 @@ export class BodyRig {
   }
 
   /** Would applying the report change what the body looks like: falling, or the bar moving. */
-  bodyChanged(tok: AgentToken, state: AgentStateSummary): boolean {
-    if (reportedDead(state) !== tok.dead) return true;
+  bodyChanged(tok: AgentToken, state: Figure): boolean {
+    if (reportedDead(state.is_active, state.vitality) !== tok.dead) return true;
     return Math.abs((state.vitality ?? 1) - tok.vit) > 0.001;
   }
 

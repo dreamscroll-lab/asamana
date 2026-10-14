@@ -5,7 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { reportedDead, unfinishedGoals } from "../lib/agentState";
 import { avatarStyle, emotionColor } from "../lib/avatar";
-import type { AgentProfile, AgentStateSummary } from "../types";
+import type { Placed } from "../lib/step";
+import type { AgentProfile, AgentView } from "../types";
 
 export interface CardAgent {
   id: string;
@@ -74,7 +75,7 @@ export default function CharacterCard({
   roster: CardAgent[];
   activeId: string | null;
   onActiveChange: (id: string) => void;
-  liveStates?: Record<string, AgentStateSummary>;
+  liveStates?: Record<string, Placed<AgentView>>;
   /** Clicking the portrait opens the body chart (observation only). */
   onExamine?: (id: string) => void;
 }) {
@@ -86,7 +87,7 @@ export default function CharacterCard({
   const profile = active ? profiles[active.id] : undefined;
   const live = active && liveStates ? liveStates[active.id] : undefined;
 
-  const { planned, owed } = useMemo(() => unfinishedGoals(live), [live]);
+  const { planned, owed } = useMemo(() => unfinishedGoals(live?.private), [live]);
 
   useEffect(() => {
     const aid = active?.id;
@@ -140,7 +141,7 @@ export default function CharacterCard({
           {roster.map((a) => {
             const ls = liveStates?.[a.id];
             const on = a.id === active.id;
-            const dead = ls ? reportedDead(ls) : false;
+            const dead = ls ? reportedDead(ls.is_active, ls.private.vitality) : false;
             return (
               <button
                 key={a.id}
@@ -162,14 +163,14 @@ export default function CharacterCard({
                   </div>
                   {ls && (
                     <div
-                      title={[ls.emotion_label, ls.location, ls.condition].filter(Boolean).join(" · ")}
+                      title={[ls.private.emotion_label, ls.location_name, ls.public.condition].filter(Boolean).join(" · ")}
                       className="text-[10px] text-slate-500 truncate"
                     >
-                      <span className={emotionColor(ls.emotion_valence)}>{ls.emotion_label}</span>
-                      <span> · 📍 {ls.location}</span>
+                      <span className={emotionColor(ls.private.emotion_valence)}>{ls.private.emotion_label}</span>
+                      <span> · 📍 {ls.location_name}</span>
                       {/* A standing condition is context, not an event: it rides the secondary
                           line. Amber, because rose is death's. */}
-                      {ls.condition && <span className="text-amber-500/70"> · {ls.condition}</span>}
+                      {ls.public.condition && <span className="text-amber-500/70"> · {ls.public.condition}</span>}
                     </div>
                   )}
                 </div>
@@ -229,17 +230,17 @@ export default function CharacterCard({
         {observing && live && (
           <div className="mt-3 border-t border-slate-800/70 pt-3 space-y-2.5">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-              <span className={`font-medium ${emotionColor(live.emotion_valence)}`}>{live.emotion_label}</span>
+              <span className={`font-medium ${emotionColor(live.private.emotion_valence)}`}>{live.private.emotion_label}</span>
               <span className="text-slate-500">
-                📍 {live.location} · {live.activity_label}
+                📍 {live.location_name} · {live.private.activity_label}
               </span>
-              {live.dominant_need && <span className="text-slate-500">需求 {live.dominant_need_label}</span>}
-              {live.vitality != null && <span className="text-slate-500">生命值 {Math.round(live.vitality * 100)}</span>}
-              {live.condition && <span className="text-amber-500/70">处境 {live.condition}</span>}
+              {live.private.dominant_need && <span className="text-slate-500">需求 {live.private.dominant_need_label}</span>}
+              {live.private.vitality != null && <span className="text-slate-500">生命值 {Math.round(live.private.vitality * 100)}</span>}
+              {live.public.condition && <span className="text-amber-500/70">处境 {live.public.condition}</span>}
               {live.is_active === false && <span className="text-rose-400">· OVER</span>}
             </div>
 
-            {(planned.length > 0 || owed.length > 0 || live.long_term_goals.length > 0) && (
+            {(planned.length > 0 || owed.length > 0 || live.private.long_term_goals.length > 0) && (
               <div className="space-y-1.5">
                 {planned.length > 0 && (
                   <GoalList label="短期目标" color="text-emerald-500/70" goals={planned} />
@@ -247,8 +248,8 @@ export default function CharacterCard({
                 {owed.length > 0 && (
                   <GoalList label="待办事项" color="text-amber-500/70" goals={owed} />
                 )}
-                {live.long_term_goals.length > 0 && (
-                  <GoalList label="长期目标" color="text-cyan-500/70" goals={live.long_term_goals} />
+                {live.private.long_term_goals.length > 0 && (
+                  <GoalList label="长期目标" color="text-cyan-500/70" goals={live.private.long_term_goals} />
                 )}
               </div>
             )}

@@ -1337,7 +1337,7 @@ async def test_perceive_step_background_agent_higher_threshold(container: object
             step=5,
         )
 
-    ambient_writes = [c for c in written_contents if c.startswith("[环境感知]")]
+    ambient_writes = [c for c in written_contents if c.startswith("[环境观察]")]
     assert len(ambient_writes) == 0, (
         f"Background agent should not write ambient (signal 0.2 < threshold 0.35), "
         f"got: {written_contents}"

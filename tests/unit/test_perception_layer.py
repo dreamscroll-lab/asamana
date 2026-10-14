@@ -171,7 +171,7 @@ async def test_scoring_ambient_low(container) -> None:
     )
     main_ambient = [
         m for m in main_mem._entries.values()
-        if m.id not in before_main and m.raw_content.startswith("[环境感知]")
+        if m.id not in before_main and m.raw_content.startswith("[环境观察]")
     ]
     assert len(main_ambient) == 1, "Main character should write ambient (0.2 >= 0.15)"
 
@@ -182,7 +182,7 @@ async def test_scoring_ambient_low(container) -> None:
     )
     bg_ambient = [
         m for m in bg_mem._entries.values()
-        if m.id not in before_bg and m.raw_content.startswith("[环境感知]")
+        if m.id not in before_bg and m.raw_content.startswith("[环境观察]")
     ]
     assert len(bg_ambient) == 0, "Background agent should NOT write ambient (0.2 < 0.35)"
 
@@ -258,7 +258,7 @@ async def test_ambient_explicit_strength_overrides_default(container) -> None:
         personality=bg_personality, step=1,
     )
     assert not [m for m in bg_mem._entries.values()
-                if m.id not in before and m.raw_content.startswith("[环境感知]")]
+                if m.id not in before and m.raw_content.startswith("[环境观察]")]
 
     # Explicit strength=0.7 (strong social signal): the background agent perceives and writes it
     strong = _make_spatial(
@@ -271,7 +271,7 @@ async def test_ambient_explicit_strength_overrides_default(container) -> None:
         personality=bg_personality, step=2,
     )
     written = [m for m in bg_mem._entries.values()
-               if m.id not in before and m.raw_content.startswith("[环境感知]")]
+               if m.id not in before and m.raw_content.startswith("[环境观察]")]
     assert len(written) == 1, "Explicit strength=0.7 should let background write the ambient"
 
 
@@ -294,7 +294,7 @@ async def test_ambient_memory_records_doer_in_identity_index(container) -> None:
     )
     await layer.record(spatial=spatial, inbox=[], broadcasts=[], personality=personality, step=1)
 
-    written = [m for m in memory._entries.values() if m.raw_content.startswith("[环境感知]")]
+    written = [m for m in memory._entries.values() if m.raw_content.startswith("[环境观察]")]
     assert len(written) == 1
     assert written[0].related_agents == ["agent-yuanji"]
 
@@ -318,7 +318,7 @@ async def test_scoring_broadcast_high(container) -> None:
     )
     main_bc = [
         m for m in main_mem._entries.values()
-        if m.id not in before_main and m.raw_content.startswith("[世界广播]")
+        if m.id not in before_main and m.raw_content.startswith("[全局广播]")
     ]
     assert len(main_bc) == 1
 
@@ -329,9 +329,22 @@ async def test_scoring_broadcast_high(container) -> None:
     )
     bg_bc = [
         m for m in bg_mem._entries.values()
-        if m.id not in before_bg and m.raw_content.startswith("[世界广播]")
+        if m.id not in before_bg and m.raw_content.startswith("[全局广播]")
     ]
     assert len(bg_bc) == 1, "Background should write high-severity broadcast (0.8 >= 0.35)"
+
+
+@pytest.mark.asyncio
+async def test_a_local_broadcast_is_remembered_as_local(container) -> None:
+    layer, mem = _make_layer(container, is_main_character=True)
+    before = set(mem._entries.keys())
+    await layer.record(
+        spatial=_make_spatial(), inbox=[],
+        broadcasts=[_make_broadcast("东宫落雨", severity="high", location_scope="donggong")],
+        personality=_make_personality(), step=1,
+    )
+    written = [m.raw_content for m in mem._entries.values() if m.id not in before]
+    assert "[本地广播] 东宫落雨" in written
 
 
 @pytest.mark.asyncio
@@ -350,7 +363,7 @@ async def test_dedup_same_broadcast(container) -> None:
     )
     world_writes = [
         m for m in mem._entries.values()
-        if m.id not in before and m.raw_content.startswith("[世界广播]")
+        if m.id not in before and m.raw_content.startswith("[全局广播]")
     ]
     assert len(world_writes) == 1, f"Dedup should collapse identical broadcasts, got {len(world_writes)}"
 
@@ -369,7 +382,7 @@ async def test_cap_ambient(container) -> None:
     )
     ambient_writes = [
         m for m in mem._entries.values()
-        if m.id not in before and m.raw_content.startswith("[环境感知]")
+        if m.id not in before and m.raw_content.startswith("[环境观察]")
     ]
     assert len(ambient_writes) <= 2, f"Main ambient cap is 2, got {len(ambient_writes)}"
 

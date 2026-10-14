@@ -16,7 +16,7 @@ from core.interfaces.perception import Broadcast, SpatialPerception
 from core.interfaces.urgency import Urgency
 from core.logging import get_logger
 from core.interfaces.severity import severity_to_urgency
-from core.prompts import URGENCY_TO_STRENGTH
+from core.prompts import AMBIENT_TAG, MESSAGE_TAG, URGENCY_TO_STRENGTH, broadcast_tag
 
 if TYPE_CHECKING:
     from agent.memory import MemorySystem
@@ -52,13 +52,6 @@ class PerceptionTuning:
     # Memory's bucket edges, so the HIGH bar can't diverge from importance_level.
     importance_high_cutoff: float = IMPORTANCE_HIGH_CUTOFF
     importance_medium_cutoff: float = IMPORTANCE_MEDIUM_CUTOFF
-
-
-_PREFIX: dict[str, str] = {
-    "ambient": "[环境感知]",
-    "broadcast": "[世界广播]",
-    "message": "[消息]",
-}
 
 
 @dataclass
@@ -152,7 +145,8 @@ class PerceptionMemoryLayer:
                 source="broadcast",
                 related_agents=[],
                 signal_strength=URGENCY_TO_STRENGTH[severity_to_urgency(bc.severity)],
-                metadata={"source": "broadcast", "severity": bc.severity.value},
+                metadata={"source": "broadcast", "severity": bc.severity.value,
+                          "location_scope": bc.location_scope},
             ))
 
         # related_agents holds only senders with cognition; _write_item reads it to decide whether
@@ -226,8 +220,12 @@ class PerceptionMemoryLayer:
         personality: "PersonalityLayer",
         step: int,
     ) -> None:
-        prefix = _PREFIX.get(item.source, "[感知]")
-        content = f"{prefix} {item.content}"
+        tag = {
+            "ambient": AMBIENT_TAG,
+            "message": MESSAGE_TAG,
+            "broadcast": broadcast_tag(item.metadata.get("location_scope")),
+        }[item.source]
+        content = f"[{tag}] {item.content}"
         importance = _strength_to_importance(
             item.signal_strength,
             self._tuning.importance_high_cutoff,

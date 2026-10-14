@@ -519,8 +519,8 @@ async def test_delete_run_traces_stops_a_rewound_clock_merging_two_runs(tmp_path
 
 def test_stage_sort_key_orders_unknown_last() -> None:
     assert stage_sort_key("world_init") < stage_sort_key("decision")
-    assert stage_sort_key("decision") < stage_sort_key("event")
-    assert stage_sort_key("unknown") > stage_sort_key("event")
+    assert stage_sort_key("decision") < stage_sort_key("narrative_editor")
+    assert stage_sort_key("unknown") > stage_sort_key("narrative_editor")
 
 
 # ---------------------------------------------------------------------------

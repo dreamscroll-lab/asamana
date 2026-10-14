@@ -4,13 +4,14 @@ import { api, API_BASE } from "../api/client";
 import type { TiledWorldScene } from "../phaser/TiledWorldScene";
 import { renderStepInto } from "../phaser/driveStep";
 import { loadMapSource, type MapSource } from "../phaser/mapSource";
-import type { MapFocus, MapSelect, StepEvent } from "../types";
+import { indexStep } from "../lib/step";
+import type { MapFocus, MapSelect, StepView } from "../types";
 import MapStage from "./MapStage";
 import WorldClock from "./WorldClock";
 
 interface Props {
   worldId: string;
-  step: StepEvent | null;
+  step: StepView | null;
   // Fired when a step's render TIMELINE fully finishes. The driver waits for this
   // before advancing, so step N is fully rendered before step N+1 begins.
   onRendered?: (stepNo: number) => void;
@@ -45,19 +46,20 @@ export default function LiveWorldMap({
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
   // id → name / identity color for the focus chips, from the current step's figures.
-  // Both tiers: NPC bodies can be clicked into focus too, and reading only `agent_states`
-  // would leave their chip showing a bare id.
+  // Both tiers: NPC bodies can be clicked into focus too, and reading only the agents would
+  // leave their chip showing a bare id.
   const nameOf = useMemo(() => {
     const m = new Map<string, string>();
     if (step) {
-      for (const s of Object.values(step.agent_states)) m.set(s.agent_id, s.agent_name);
-      for (const n of step.npcs ?? []) if (n.name) m.set(n.npc_id, n.name);
+      const index = indexStep(step);
+      for (const s of Object.values(index.agents)) m.set(s.agent_id, s.name);
+      for (const n of index.npcs) if (n.name) m.set(n.npc_id, n.name);
     }
     return (id: string) => m.get(id) ?? "某人";
   }, [step]);
   const colorOf = useMemo(() => {
     const m = new Map<string, string>();
-    if (step) for (const s of Object.values(step.agent_states)) if (s.color) m.set(s.agent_id, s.color);
+    if (step) for (const s of Object.values(indexStep(step).agents)) if (s.color) m.set(s.agent_id, s.color);
     return (id: string) => m.get(id) ?? null;
   }, [step]);
   const placeName = focus.place ? sceneRef.current?.locationName(focus.place.id) ?? focus.place.id : null;

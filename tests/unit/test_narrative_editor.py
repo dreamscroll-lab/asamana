@@ -1,12 +1,12 @@
-"""Unit tests for the engine event system (a pure narrative channel adapter).
+"""Unit tests for the narrative editor (a pure narrative channel adapter).
 
-Contract (see the engine/event.py module docstring):
+Contract (see the engine/narrative_editor.py module docstring):
 - Scope: only pacing control + channel adaptation; never mutates agents / world
 - No agent mutation (no personality.* / need_engine.* / memory_system.* calls)
 - Data-driven: no EventCategory / AgentEventType / GlobalEventType enums
 - The LLM picks the channels (broadcast / message fields in its JSON output)
 - Multiple channels may be used together
-- Private effects: world mutations go through engine/world_mutation.py; EventSystem may only touch unheld
+- Private effects: world mutations go through engine/world_mutation.py; NarrativeEditor may only touch unheld
   entities on the ground
 - Agents react autonomously
 - Communication goes only through BroadcastChannel / MessageSystem
@@ -34,10 +34,10 @@ from engine.broadcast import BroadcastChannel
 from engine.clock import GlobalClock, WorldTime, WorldTimeConfig
 from engine.directory import LiveWorldDirectory
 from engine.environment import EnvironmentSystem
-from engine.event import EventSettings, EventSystem
+from engine.narrative_editor import NarrativeEditorSettings, NarrativeEditor
 from engine.execution_processor import ExecutionProcessor
 from engine.executors.registry import ActionExecutorRegistry
-from engine.injection import Author, InjectionDispatcher, WorldEvent, serialize_world_event
+from engine.injection import Author, InjectionDispatcher, InjectionRecord, serialize_injection
 from engine.message_system import MessageSystem
 from engine.world_mutation import WorldMutationChannel
 from providers.message.in_memory import InMemoryMessageProvider
@@ -122,7 +122,7 @@ def _build_agent(
     )
 
 
-def _event_system(
+def _narrative_editor(
     container,
     *,
     router: _EventRouter | None = None,
@@ -132,13 +132,13 @@ def _event_system(
     agents: dict | None = None,
     environment: EnvironmentSystem | None = None,
     **kwargs,
-) -> EventSystem:
+) -> NarrativeEditor:
     """``environment`` is the world mutations land in; tests that check only dispatch use an empty one."""
     environment = environment or EnvironmentSystem()
     message_system = MessageSystem(container.message_provider, world_id=world_id)
     if directory is None:
         directory = LiveWorldDirectory.from_agents(agents or {}, environment)
-    return EventSystem(
+    return NarrativeEditor(
         llm_router=router or _EventRouter([]),
         snapshot_provider=container.snapshot,
         dispatcher=InjectionDispatcher(
@@ -148,18 +148,18 @@ def _event_system(
             directory=directory,
         ),
         directory=directory,
-        settings=EventSettings(
+        settings=NarrativeEditorSettings(
             core_tension=kwargs.get("core_tension", "皇位之争,手足相残"),
             narrative_theme=kwargs.get("narrative_theme", "权力与亲情的撕扯"),
             enabled=kwargs.get("enabled", True),
-            max_events_per_window=kwargs.get("max_events_per_window", 2),
+            max_injections_per_window=kwargs.get("max_injections_per_window", 2),
             quota_window=kwargs.get("quota_window", 20),
             check_interval=kwargs.get("check_interval", 6),
         ),
     )
 
 
-def _messages(system: EventSystem) -> MessageSystem:
+def _messages(system: NarrativeEditor) -> MessageSystem:
     """Where the editor's directed messages land: the dispatcher's MessageSystem."""
     return system._dispatcher._message_system
 
@@ -198,7 +198,7 @@ def _plan_json(
 
 
 async def _run_check(
-    system: EventSystem,
+    system: NarrativeEditor,
     *,
     current_step: int,
     world_time: WorldTime,
@@ -210,7 +210,7 @@ async def _run_check(
 ) -> dict | None:
     """Drive one full event check synchronously (pacing gate -> gate + plan -> commit).
 
-    Production exposes only the fire-and-forget poll_event; these tests cover dispatch / parsing /
+    Production exposes only the fire-and-forget poll_injection; these tests cover dispatch / parsing /
     fallback, not background scheduling, so this drives the internals directly.
     """
     if not system._passes_rule_check(current_step):
@@ -219,7 +219,7 @@ async def _run_check(
     if plan is None:
         return None
     committed = await system._commit_plan(plan, current_step, all_agents)
-    return None if committed is None else serialize_world_event(committed.event)
+    return None if committed is None else serialize_injection(committed.record)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -229,27 +229,27 @@ async def _run_check(
 
 def test_constructor_rejects_invalid_config(container) -> None:
     with pytest.raises(ValueError, match="check_interval"):
-        _event_system(container, check_interval=0)
-    with pytest.raises(ValueError, match="max_events_per_window"):
-        _event_system(container, max_events_per_window=-1)
+        _narrative_editor(container, check_interval=0)
+    with pytest.raises(ValueError, match="max_injections_per_window"):
+        _narrative_editor(container, max_injections_per_window=-1)
     with pytest.raises(ValueError, match="quota_window"):
-        _event_system(container, quota_window=0)
+        _narrative_editor(container, quota_window=0)
 
 
 def test_rule_check_respects_check_interval(container) -> None:
-    system = _event_system(container, check_interval=6)
+    system = _narrative_editor(container, check_interval=6)
     assert system._passes_rule_check(current_step=7) is False
     assert system._passes_rule_check(current_step=12) is True
 
 
 def test_rule_check_respects_window_quota(container) -> None:
     """Window filled -> gate closes; window slides past -> reopens (the quota is not a lifetime total)."""
-    system = _event_system(container, max_events_per_window=2, quota_window=20,
+    system = _narrative_editor(container, max_injections_per_window=2, quota_window=20,
                            check_interval=1)
     for event in (
-        WorldEvent(id="e1", triggered_step=1, narrative_desc="x", is_positive=None,
+        InjectionRecord(id="e1", triggered_step=1, narrative_desc="x", is_positive=None,
                    dispatched_to=["broadcast"]),
-        WorldEvent(id="e2", triggered_step=2, narrative_desc="y", is_positive=None,
+        InjectionRecord(id="e2", triggered_step=2, narrative_desc="y", is_positive=None,
                    dispatched_to=["message"]),
     ):
         system._ledger.record(event)
@@ -258,21 +258,21 @@ def test_rule_check_respects_window_quota(container) -> None:
     assert system._passes_rule_check(current_step=50) is True    # window now empty
 
 
-def test_disabled_event_system_never_passes_rule_check(container) -> None:
+def test_disabled_narrative_editor_never_passes_rule_check(container) -> None:
     """enabled=False master switch: even with every other gate passing, rule check short-circuits to False."""
-    system = _event_system(container, enabled=False, check_interval=1)
+    system = _narrative_editor(container, enabled=False, check_interval=1)
     assert system._passes_rule_check(current_step=10) is False
 
 
 @pytest.mark.asyncio
-async def test_disabled_event_system_skips_injection_and_llm(container) -> None:
+async def test_disabled_narrative_editor_skips_injection_and_llm(container) -> None:
     """enabled=False: the event check short-circuits: no injection, no LLM calls."""
     world_id = "world-1"
     router = _EventRouter([_gate(), _plan_json(
         narrative_desc="不该出现",
         broadcast={"content": "...", "severity": "low", "location_scope": None},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             enabled=False, check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="X")}
 
@@ -282,12 +282,12 @@ async def test_disabled_event_system_skips_injection_and_llm(container) -> None:
     )
 
     assert fired is None
-    assert system.list_events() == []
+    assert system.list_injections() == []
     assert router.calls == []  # neither gate nor plan was called
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# fire-and-forget poll_event (the only runtime entry: use a ready event, else generate in background)
+# fire-and-forget poll_injection (the only runtime entry: use a ready event, else generate in background)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -297,11 +297,11 @@ async def test_poll_event_empty_returns_none_and_schedules(container) -> None:
     world_id = "world-1"
     router = _EventRouter([_gate(True), _plan_json(
         broadcast={"content": "x", "severity": "low", "location_scope": None})])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")}
 
-    fired = await system.poll_event(current_step=1, world_time=_world_time(1),
+    fired = await system.poll_injection(current_step=1, world_time=_world_time(1),
                                     world_id=world_id, all_agents=agents,
                                     locations=[], entities=[])
     assert fired is None
@@ -321,26 +321,26 @@ async def test_poll_event_roundtrip_generates_then_commits(container) -> None:
         is_positive=False,
         broadcast={"content": "天降暴雨,街道泥泞", "severity": "medium", "location_scope": None},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             broadcast_channel=bc, check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")}
 
     # Step 1: nothing ready -> start in background, non-blocking.
-    assert await system.poll_event(current_step=1, world_time=_world_time(1),
+    assert await system.poll_injection(current_step=1, world_time=_world_time(1),
                                    world_id=world_id, all_agents=agents,
                                     locations=[], entities=[]) is None
     await system._inflight  # let background generation finish (awaited explicitly in the test)
 
     # Step 2: ready -> commit. deliver_step=2, perceivable this step.
-    fired = await system.poll_event(current_step=2, world_time=_world_time(2),
+    fired = await system.poll_injection(current_step=2, world_time=_world_time(2),
                                     world_id=world_id, all_agents=agents,
                                     locations=[], entities=[])
     assert fired is not None
-    assert fired.event.dispatched_to == ["broadcast"]
-    assert fired.event.triggered_step == 2       # commit step, not trigger step
+    assert fired.record.dispatched_to == ["broadcast"]
+    assert fired.record.triggered_step == 2       # commit step, not trigger step
     assert len(bc.peek_pending()) == 1
     assert bc.peek_pending()[0].deliver_step == 2
-    assert len(system.list_events()) == 1        # quota is counted at commit
+    assert len(system.list_injections()) == 1        # quota is counted at commit
     assert system._inflight is None              # ready was consumed; no new generation this step
 
 
@@ -350,15 +350,15 @@ async def test_poll_event_single_in_flight(container) -> None:
     world_id = "world-1"
     router = _EventRouter([_gate(True), _plan_json(
         broadcast={"content": "x", "severity": "low", "location_scope": None})])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")}
 
-    await system.poll_event(current_step=1, world_time=_world_time(1),
+    await system.poll_injection(current_step=1, world_time=_world_time(1),
                             world_id=world_id, all_agents=agents,
                                     locations=[], entities=[])
     first = system._inflight
-    await system.poll_event(current_step=1, world_time=_world_time(1),
+    await system.poll_injection(current_step=1, world_time=_world_time(1),
                             world_id=world_id, all_agents=agents,
                                     locations=[], entities=[])
     assert system._inflight is first  # not replaced
@@ -371,19 +371,19 @@ async def test_poll_event_gate_no_fires_nothing(container) -> None:
     world_id = "world-1"
     bc = BroadcastChannel()
     router = _EventRouter([_gate(False)])  # gate says don't inject, so plan is never called
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             broadcast_channel=bc, check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")}
 
-    await system.poll_event(current_step=1, world_time=_world_time(1),
+    await system.poll_injection(current_step=1, world_time=_world_time(1),
                             world_id=world_id, all_agents=agents,
                                     locations=[], entities=[])
     await system._inflight
-    fired = await system.poll_event(current_step=2, world_time=_world_time(2),
+    fired = await system.poll_injection(current_step=2, world_time=_world_time(2),
                                     world_id=world_id, all_agents=agents,
                                     locations=[], entities=[])
     assert fired is None
-    assert system.list_events() == []            # not counted
+    assert system.list_injections() == []            # not counted
     assert bc.peek_pending() == []
     await system.aclose()
 
@@ -394,11 +394,11 @@ async def test_aclose_cancels_in_flight_generation(container) -> None:
     world_id = "world-1"
     router = _EventRouter([_gate(True), _plan_json(
         broadcast={"content": "x", "severity": "low", "location_scope": None})])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")}
 
-    await system.poll_event(current_step=1, world_time=_world_time(1),
+    await system.poll_injection(current_step=1, world_time=_world_time(1),
                             world_id=world_id, all_agents=agents,
                                     locations=[], entities=[])
     assert system._inflight is not None
@@ -414,7 +414,7 @@ async def test_aclose_retrieves_the_exception_of_an_already_finished_generation(
     Asserts the real symptom (the loop's exception handler on collection). Don't assert on
     ``task.exception()``: asking counts as retrieving, so the test would pass regardless.
     """
-    system = EventSystem.__new__(EventSystem)   # only aclose is under test; skip the full dependency set
+    system = NarrativeEditor.__new__(NarrativeEditor)   # only aclose is under test; skip the full dependency set
 
     loop = asyncio.get_running_loop()
     reported: list[dict] = []
@@ -447,17 +447,17 @@ async def test_aclose_retrieves_the_exception_of_an_already_finished_generation(
 
 
 def test_restore_state_rehydrates_window_quota(container) -> None:
-    """A restored EventSystem keeps counting prior injections inside its window."""
-    system = _event_system(container, max_events_per_window=2, quota_window=40,
+    """A restored NarrativeEditor keeps counting prior injections inside its window."""
+    system = _narrative_editor(container, max_injections_per_window=2, quota_window=40,
                            check_interval=6)
     # Two events already fired in the prior session — serialized as snapshots stored them.
     fired = [
-        serialize_world_event(
-            WorldEvent(id="e1", triggered_step=6, narrative_desc="alpha",
+        serialize_injection(
+            InjectionRecord(id="e1", triggered_step=6, narrative_desc="alpha",
                        is_positive=True, dispatched_to=["broadcast"], metadata={"k": "v"})
         ),
-        serialize_world_event(
-            WorldEvent(id="e2", triggered_step=30, narrative_desc="beta",
+        serialize_injection(
+            InjectionRecord(id="e2", triggered_step=30, narrative_desc="beta",
                        is_positive=None, dispatched_to=["message"], metadata={})
         ),
     ]
@@ -465,21 +465,21 @@ def test_restore_state_rehydrates_window_quota(container) -> None:
     system.restore_state(fired)
 
     # Both prior events sit inside the 40-step window → quota full, gate closed.
-    assert len(system.list_events()) == 2
+    assert len(system.list_injections()) == 2
     assert system._passes_rule_check(current_step=42) is False
     # Window slid past both → quota free again (a restore must not freeze the world).
     assert system._passes_rule_check(current_step=72) is True
     # Rehydrated events round-trip through the public serializer.
-    assert serialize_world_event(system.list_events()[0])["narrative_desc"] == "alpha"
+    assert serialize_injection(system.list_injections()[0])["narrative_desc"] == "alpha"
 
 
 def test_restore_state_counts_director_free_history(container) -> None:
     """Without restore the window would start empty; restore re-arms it."""
-    system = _event_system(container, max_events_per_window=1, quota_window=24,
+    system = _narrative_editor(container, max_injections_per_window=1, quota_window=24,
                            check_interval=6)
     fired = [
-        serialize_world_event(
-            WorldEvent(id="e1", triggered_step=30, narrative_desc="last",
+        serialize_injection(
+            InjectionRecord(id="e1", triggered_step=30, narrative_desc="last",
                        is_positive=None, dispatched_to=["broadcast"], metadata={})
         ),
     ]
@@ -492,12 +492,12 @@ def test_restore_state_counts_director_free_history(container) -> None:
 
 
 def test_restore_state_ignores_empty_and_malformed_events(container) -> None:
-    system = _event_system(container, max_events_per_window=2)
+    system = _narrative_editor(container, max_injections_per_window=2)
     system.restore_state([])
-    assert system.list_events() == []
+    assert system.list_injections() == []
     # Entries without a usable step are skipped, not crashed on.
     system.restore_state([{"id": "x"}, "not-a-mapping", {"step": "bad"}])
-    assert system.list_events() == []
+    assert system.list_injections() == []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -515,7 +515,7 @@ async def test_pure_broadcast_plan_dispatches_only_broadcast(container) -> None:
         is_positive=False,
         broadcast={"content": "天降暴雨,街道泥泞", "severity": "medium", "location_scope": None},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             broadcast_channel=bc, check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")}
 
@@ -544,7 +544,7 @@ async def test_pure_message_plan_dispatches_only_message(container) -> None:
         is_positive=False,
         message={"content": "你心头突然涌起一阵莫名的不安", "recipients": [1], "urgency": "high"},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             broadcast_channel=bc, check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")}
 
@@ -585,7 +585,7 @@ async def test_dual_channel_plan_dispatches_both(container) -> None:
         broadcast={"content": "宫中传来噩耗,皇帝昨夜驾崩", "severity": "high", "location_scope": None},
         message={"content": "父皇驾崩,你心如刀绞", "recipients": [1, 2], "urgency": "high"},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             broadcast_channel=bc, check_interval=1)
     agents = {
         "a1": _build_agent(container, world_id=world_id, agent_id="a1", name="李世民"),
@@ -615,7 +615,7 @@ async def test_invalid_json_does_not_consume_event_quota(container) -> None:
     """LLM returns invalid JSON -> return None; the ledger doesn't grow (no window quota consumed)."""
     world_id = "world-1"
     router = _EventRouter([_gate(), "this is not valid json {{{"])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="X")}
 
@@ -625,7 +625,7 @@ async def test_invalid_json_does_not_consume_event_quota(container) -> None:
     )
 
     assert fired is None
-    assert system.list_events() == []
+    assert system.list_injections() == []
 
 
 @pytest.mark.asyncio
@@ -633,7 +633,7 @@ async def test_both_channels_null_drops_event(container) -> None:
     """LLM plan with both channels null -> dropped, no quota consumed."""
     world_id = "world-1"
     router = _EventRouter([_gate(), _plan_json(narrative_desc="空事件")])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="X")}
 
@@ -643,7 +643,7 @@ async def test_both_channels_null_drops_event(container) -> None:
     )
 
     assert fired is None
-    assert system.list_events() == []
+    assert system.list_injections() == []
 
 
 @pytest.mark.asyncio
@@ -655,7 +655,7 @@ async def test_invalid_recipients_degrades_message_channel(container) -> None:
         narrative_desc="无效定向",
         message={"content": "...", "recipients": [99, "x", -1], "urgency": "normal"},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="X")}
 
@@ -665,7 +665,7 @@ async def test_invalid_recipients_degrades_message_channel(container) -> None:
     )
     # broadcast also null -> whole event dropped
     assert fired is None
-    assert system.list_events() == []
+    assert system.list_injections() == []
 
 
 @pytest.mark.asyncio
@@ -678,7 +678,7 @@ async def test_invalid_recipients_keeps_broadcast(container) -> None:
         broadcast={"content": "城内有动静", "severity": "low", "location_scope": None},
         message={"content": "...", "recipients": [99], "urgency": "normal"},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             broadcast_channel=bc, check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="X")}
 
@@ -706,7 +706,7 @@ async def test_indexed_ref_resolves_recipients_correctly(container) -> None:
         narrative_desc="点名",
         message={"content": "...", "recipients": [1, 3], "urgency": "normal"},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             check_interval=1)
     # order matters: #1=a1, #2=a2, #3=a3
     agents = {
@@ -735,7 +735,7 @@ async def test_severity_urgency_normalization(container) -> None:
         broadcast={"content": "...", "severity": "紧急", "location_scope": None},
         message={"content": "...", "recipients": [1], "urgency": "极高"},  # not an enum literal
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             broadcast_channel=bc, check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="X")}
 
@@ -758,7 +758,7 @@ async def test_is_positive_chinese_aliases(container) -> None:
         is_positive="正面",
         broadcast={"content": "...", "severity": "low", "location_scope": None},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="X")}
 
@@ -778,7 +778,7 @@ async def test_unknown_location_scope_degrades_to_null(container) -> None:
         narrative_desc="未知地点",
         broadcast={"content": "...", "severity": "low", "location_scope": "不存在的地方"},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             broadcast_channel=bc, check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="X")}
     agents["a1"].personality.update_location(location="palace")
@@ -810,7 +810,7 @@ async def test_location_scope_index_resolves_to_location_id(container) -> None:
         narrative_desc="殿内异动",
         broadcast={"content": "殿中烛火无风自灭", "severity": "high", "location_scope": 1},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             broadcast_channel=bc, directory=directory,
                             check_interval=1)
 
@@ -845,7 +845,7 @@ async def test_location_scope_true_is_not_read_as_the_first_place(container) -> 
         narrative_desc="殿内异动",
         broadcast={"content": "殿中烛火无风自灭", "severity": "high", "location_scope": True},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                            broadcast_channel=bc, directory=directory, check_interval=1)
 
     fired = await _run_check(system,
@@ -865,7 +865,7 @@ async def test_reason_first_gate_inject_false_skips(container) -> None:
         narrative_desc="本不该出现",
         broadcast={"content": "...", "severity": "low", "location_scope": None},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="X")}
 
@@ -875,7 +875,7 @@ async def test_reason_first_gate_inject_false_skips(container) -> None:
     )
 
     assert fired is None
-    assert system.list_events() == []
+    assert system.list_injections() == []
     # plan call never happened (gate blocked it); router called once (the gate)
     assert len(router.calls) == 1
 
@@ -885,7 +885,7 @@ async def test_malformed_gate_response_is_conservative(container) -> None:
     """Gate returns invalid JSON -> conservatively "don't inject", no raise."""
     world_id = "world-1"
     router = _EventRouter(["这不是 JSON {{{"])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="X")}
 
@@ -917,7 +917,7 @@ async def test_brief_carries_premise_and_dossier_no_step_or_id_leak(container) -
         narrative_desc="测试",
         broadcast={"content": "...", "severity": "low", "location_scope": None},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             directory=directory,
                             core_tension="秦王功高震主,太子忌惮",
                             check_interval=1)
@@ -955,7 +955,7 @@ async def test_characters_block_excludes_first_person_state(container) -> None:
     main.personality.state.dominant_need = "求生欲"
     main.personality.state.short_term_goals = ["夺取兵权"]
     agents = {"a1": main}
-    system = _event_system(container, world_id=world_id, agents=agents,
+    system = _narrative_editor(container, world_id=world_id, agents=agents,
                             core_tension="边境危局", narrative_theme="忠义抉择")
 
     brief = await system._build_narrative_summary(world_id, 5, agents)
@@ -987,7 +987,7 @@ async def test_characters_block_marks_the_dead_and_drops_their_living_attrs(cont
     dead_bg = _build_agent(container, world_id=world_id, agent_id="a3", name="侍卫")
     dead_bg.is_active = False
     agents = {"a1": dead, "a2": alive, "a3": dead_bg}
-    system = _event_system(container, world_id=world_id, agents=agents)
+    system = _narrative_editor(container, world_id=world_id, agents=agents)
 
     brief = await system._build_narrative_summary(world_id, 5, agents)
 
@@ -1012,7 +1012,7 @@ async def test_characters_block_puts_where_and_how_they_are_before_the_profile(c
     bound.is_main_character = True
     bound.personality.set_condition(BodyCondition(description="双手被反绑"))
     agents = {"a1": bound}
-    system = _event_system(container, world_id=world_id, agents=agents)
+    system = _narrative_editor(container, world_id=world_id, agents=agents)
 
     brief = await system._build_narrative_summary(world_id, 5, agents)
 
@@ -1033,7 +1033,7 @@ async def test_design_menus_list_only_the_living(container) -> None:
         narrative_desc="点名",
         message={"content": "...", "recipients": [2], "urgency": "normal"},
     )])
-    system = _event_system(container, router=router, world_id=world_id, check_interval=1)
+    system = _narrative_editor(container, router=router, world_id=world_id, check_interval=1)
     agents = {
         "a1": _build_agent(container, world_id=world_id, agent_id="a1", name="一"),
         "a2": _build_agent(container, world_id=world_id, agent_id="a2", name="死者"),
@@ -1055,25 +1055,25 @@ async def test_design_menus_list_only_the_living(container) -> None:
 def test_relations_block_carries_labels_and_history_desc(container) -> None:
     """【当前关系】 injects labels + history_summary description; no trust/affection numbers."""
     from datetime import datetime
-    from core.interfaces.snapshot import WorldSnapshot
+    from core.interfaces.snapshot import WorldSnapshot, WorldState
 
     world_id = "world-1"
     a1 = _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")
     a2 = _build_agent(container, world_id=world_id, agent_id="a2", name="李建成")
     a1.is_main_character = True
     agents = {"a1": a1, "a2": a2}
-    system = _event_system(container, world_id=world_id, agents=agents)
+    system = _narrative_editor(container, world_id=world_id, agents=agents)
 
     snap = WorldSnapshot(
         world_id=world_id, step=4, timestamp=datetime.now(),
         world_time=_world_time(4).clock_payload(),
-        agent_relations={
+        state=WorldState(relations={
             "a1->a2": {
                 "from_id": "a1", "to_id": "a2", "to_name": "李建成",
                 "labels": ["兄长", "政敌"], "history_summary": "近日数次当庭争执",
                 "trust_objective": 0.2, "affection_objective": -0.6,
             }
-        },
+        }),
     )
     block = system._brief_relations(snap, {"a1"})
 
@@ -1087,32 +1087,26 @@ def test_relations_block_carries_labels_and_history_desc(container) -> None:
 def test_brief_recent_excludes_not_executed_but_keeps_genuine_failure(container) -> None:
     """【近况】 is a deeds list: not_executed (precondition unmet, never touched the world) is
     excluded, or the editor designs events around something that didn't happen. A real in-world
-    failure (not_executed=False) is a deed and stays. This channel reads action records, not memory,
+    failure (not_executed=False) is a deed and stays. This channel reads action events, not memory,
     so it must filter here itself."""
-    from datetime import datetime
-    from core.interfaces.snapshot import WorldSnapshot
 
     world_id = "world-1"
     a1 = _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")
     a1.is_main_character = True
     agents = {"a1": a1}
-    system = _event_system(container, world_id=world_id, agents=agents)
+    system = _narrative_editor(container, world_id=world_id, agents=agents)
 
-    snap = WorldSnapshot(
-        world_id=world_id, step=4, timestamp=datetime.now(),
-        world_time=_world_time(4).clock_payload(),
-        actions_this_step=[
-            # Real failure: adjudication happened and ruled against -> real deed, kept.
-            {"agent_id": "a1", "agent_name": "李世民", "is_main_character": True,
-             "phase": "completed", "outcome": "李世民强攻宫门却被禁军击退",
-             "succeeded": False, "not_executed": False},
-            # Non-event: the target wasn't present and the action never touched the world ->
-            # non-deed, excluded.
-            {"agent_id": "a1", "agent_name": "李世民", "is_main_character": True,
-             "phase": "completed", "outcome": "李世民欲面见父皇却扑了个空",
-             "succeeded": False, "not_executed": True},
-        ],
-    )
+    snap = _recent_snapshot(world_id, 4, [
+        # Real failure: adjudication happened and ruled against -> real deed, kept.
+        {"agent_id": "a1", "agent_name": "李世民", "is_main_character": True,
+         "phase": "completed", "outcome": "李世民强攻宫门却被禁军击退",
+         "succeeded": False, "not_executed": False},
+        # Non-event: the target wasn't present and the action never touched the world ->
+        # non-deed, excluded.
+        {"agent_id": "a1", "agent_name": "李世民", "is_main_character": True,
+         "phase": "completed", "outcome": "李世民欲面见父皇却扑了个空",
+         "succeeded": False, "not_executed": True},
+    ])
     block = system._brief_recent([snap], {"a1"})
 
     assert "被禁军击退" in block          # real failure is a deed, kept
@@ -1120,14 +1114,19 @@ def test_brief_recent_excludes_not_executed_but_keeps_genuine_failure(container)
 
 
 def _recent_snapshot(world_id: str, step: int, actions: list[dict]):
-    """Minimal snapshot shared by the folding cases (only actions_this_step)."""
-    from datetime import datetime
-    from core.interfaces.snapshot import WorldSnapshot
+    """A step whose events are these per-participant records, folded as the step record folds
+    them, with the doers' tier in the state."""
+    from tests.unit.step_view import snapshot_of
 
-    return WorldSnapshot(
-        world_id=world_id, step=step, timestamp=datetime.now(),
+    return snapshot_of(
+        step=step,
         world_time=_world_time(step).clock_payload(),
-        actions_this_step=actions,
+        agents={
+            r["agent_id"]: {"agent_id": r["agent_id"], "agent_name": r.get("agent_name", ""),
+                            "is_main_character": r.get("is_main_character", False)}
+            for r in actions
+        },
+        records=actions,
     )
 
 
@@ -1143,12 +1142,11 @@ def _joint_talk(execution_id: str, initiator: tuple[str, str], other: tuple[str,
 
 
 def test_brief_recent_folds_joint_action_into_one_line(container) -> None:
-    """A joint action yields one record per participant with the same dialogue as outcome. The
-    brief must fold them by execution_id into one (represented by the record where agent_id ==
-    initiator_id), the same contract as the frontend feed. Unfolded, the same dialogue appears twice
-    in 【近况】 and the gate sees double the event density."""
+    """A joint action yields one record per participant with the same dialogue as outcome; the step
+    record folds them into one event told by its initiator. Unfolded, the same dialogue would
+    appear twice in 【近况】 and the gate would see double the event density."""
     world_id = "world-1"
-    system = _event_system(container, world_id=world_id, agents={})
+    system = _narrative_editor(container, world_id=world_id, agents={})
 
     dialogue = "在崇仁坊，李世民与房玄龄的交谈：李世民：明日的事，再推一遍。"
     snap = _recent_snapshot(world_id, 4, _joint_talk(
@@ -1161,22 +1159,19 @@ def test_brief_recent_folds_joint_action_into_one_line(container) -> None:
     assert "房玄龄 在崇仁坊" not in block
 
 
-def test_brief_recent_keeps_deed_when_initiator_filtered_out(container) -> None:
-    """Folding must run after the main-character filter, falling back to the first record when the
-    group has no initiator: when a background agent starts a conversation with a main character,
-    the initiator's record is already filtered out, and "keep only the initiator" would drop the
-    whole deed."""
+def test_brief_recent_keeps_a_deed_a_main_character_took_part_in(container) -> None:
+    """When a background agent starts a conversation with a main character, the deed is the main
+    character's business too: it stays, once, told by whoever started it."""
     world_id = "world-1"
-    system = _event_system(container, world_id=world_id, agents={})
+    system = _narrative_editor(container, world_id=world_id, agents={})
 
     dialogue = "在东宫，魏徵与李建成的交谈：魏徵：殿下，事不宜迟。"
     records = _joint_talk("talk_bg_5_xyz", ("bg1", "魏徵"), ("a1", "李建成"), outcome=dialogue)
-    records[0]["is_main_character"] = False     # initiator is a background character -> filtered out first
+    records[0]["is_main_character"] = False     # the initiator is a background character
     block = system._brief_recent([_recent_snapshot(world_id, 5, records)], {"a1"})
 
-    assert block.count(dialogue) == 1           # the deed is still there, as a single entry
-    assert "李建成 在东宫，" in block             # represented by the surviving participant's record
-    assert "魏徵 在东宫，" not in block           # initiator already removed by the main-character filter
+    assert block.count(dialogue) == 1           # the deed is there, as a single entry
+    assert "魏徵 在东宫，" in block               # told by the one who started it
 
 
 def test_brief_recent_folds_within_step_only(container) -> None:
@@ -1184,7 +1179,7 @@ def test_brief_recent_folds_within_step_only(container) -> None:
     end step ("开始聊了起来" / full dialogue); both belong. Folding across steps would swallow the
     closing dialogue. The ongoing_ticks in between are removed by the existing filter."""
     world_id = "world-1"
-    system = _event_system(container, world_id=world_id, agents={})
+    system = _narrative_editor(container, world_id=world_id, agents={})
 
     eid = "talk_a1_4_abc"
     begin = _recent_snapshot(world_id, 4, _joint_talk(
@@ -1210,7 +1205,7 @@ def test_brief_recent_keeps_records_without_execution_id_separate(container) -> 
     """Records without an execution_id (step-0 placement records etc.) stay separate rows and are
     never merged because they share an empty value."""
     world_id = "world-1"
-    system = _event_system(container, world_id=world_id, agents={})
+    system = _narrative_editor(container, world_id=world_id, agents={})
 
     snap = _recent_snapshot(world_id, 0, [
         {"agent_id": "a1", "agent_name": "李世民", "is_main_character": True,
@@ -1225,7 +1220,7 @@ def test_brief_recent_keeps_records_without_execution_id_separate(container) -> 
 
 
 @pytest.mark.asyncio
-async def test_prior_events_carry_affected_names_and_location(container) -> None:
+async def test_prior_injections_carry_affected_names_and_location(container) -> None:
     """【已注入事件】 must say who was affected and where; affected_names/location_label survive restore."""
     from core.interfaces.place import Place
 
@@ -1252,8 +1247,8 @@ async def test_prior_events_carry_affected_names_and_location(container) -> None
         _gate(), _plan_json(narrative_desc="第二事件",
                             broadcast={"content": "...", "severity": "low", "location_scope": None}),
     ])
-    system = _event_system(container, router=router, world_id=world_id, directory=directory,
-                            max_events_per_window=5, check_interval=1)
+    system = _narrative_editor(container, router=router, world_id=world_id, directory=directory,
+                            max_injections_per_window=5, check_interval=1)
 
     first = await _run_check(system, 
         current_step=1, world_time=_world_time(1), world_id=world_id,
@@ -1261,7 +1256,7 @@ async def test_prior_events_carry_affected_names_and_location(container) -> None
     )
     assert first is not None
     # the ledger entry holds narrative-layer referents
-    ev = system.list_events()[0]
+    ev = system.list_injections()[0]
     assert ev.affected_names == ["李世民", "李建成"]
     assert ev.location_label == "太极殿"
 
@@ -1276,16 +1271,16 @@ async def test_prior_events_carry_affected_names_and_location(container) -> None
     assert "太极殿" in second_plan_prompt
 
     # names/place names survive restore (serialize -> restore round trip)
-    serialized = [serialize_world_event(ev) for ev in system.list_events() if ev.triggered_step == 1]
-    fresh = _event_system(container, world_id=world_id, directory=directory)
+    serialized = [serialize_injection(ev) for ev in system.list_injections() if ev.triggered_step == 1]
+    fresh = _narrative_editor(container, world_id=world_id, directory=directory)
     fresh.restore_state(serialized)
-    restored = fresh.list_events()[0]
+    restored = fresh.list_injections()[0]
     assert restored.affected_names == ["李世民", "李建成"]
     assert restored.location_label == "太极殿"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Serialize schema (one field, one meaning; no aliases + WorldEvent ledger entry)
+# Serialize schema (one field, one meaning; no aliases + InjectionRecord ledger entry)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -1302,7 +1297,7 @@ async def test_serialized_event_emits_one_key_per_meaning(container) -> None:
         narrative_desc="某事件",
         broadcast={"content": "...", "severity": "low", "location_scope": None},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             check_interval=1)
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="X")}
 
@@ -1311,7 +1306,7 @@ async def test_serialized_event_emits_one_key_per_meaning(container) -> None:
         all_agents=agents, clock=GlobalClock(WorldTimeConfig()),
     )
 
-    serialized = [serialize_world_event(ev) for ev in system.list_events()]
+    serialized = [serialize_injection(ev) for ev in system.list_injections()]
     assert len(serialized) == 1
     s = serialized[0]
     assert set(s) == {
@@ -1329,14 +1324,14 @@ async def test_serialized_event_emits_one_key_per_meaning(container) -> None:
     assert s["narrative_desc"] == "某事件"
     assert s["step"] == 1
     assert s["dispatched_to"] == ["broadcast"]
-    # Written by the LLM event editor, not the director; observers use this to tell "the world
+    # Written by the narrative editor, not the director; observers use this to tell "the world
     # did it" from "you caused it".
     assert s["authored_by"] == "system"
 
 
 def test_world_event_dataclass_minimal_shape() -> None:
-    """WorldEvent is a ledger entry, not a behavior carrier."""
-    event = WorldEvent(
+    """InjectionRecord is a ledger entry, not a behavior carrier."""
+    event = InjectionRecord(
         id="evt-1", triggered_step=5,
         narrative_desc="X", is_positive=False,
         dispatched_to=["broadcast", "message"],
@@ -1344,7 +1339,7 @@ def test_world_event_dataclass_minimal_shape() -> None:
     assert event.id == "evt-1"
     assert event.triggered_step == 5
     assert event.dispatched_to == ["broadcast", "message"]
-    assert event.authored_by is Author.SYSTEM   # default author is the LLM event editor
+    assert event.authored_by is Author.SYSTEM   # default author is the narrative editor
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1354,7 +1349,7 @@ def test_world_event_dataclass_minimal_shape() -> None:
 
 @pytest.mark.asyncio
 async def test_event_does_not_mutate_agent_state(container) -> None:
-    """Even when the LLM describes events like "X is wounded", EventSystem doesn't call
+    """Even when the LLM describes events like "X is wounded", NarrativeEditor doesn't call
     personality.update_emotion and the like; it only publishes broadcast/message.
     """
     world_id = "world-1"
@@ -1364,7 +1359,7 @@ async def test_event_does_not_mutate_agent_state(container) -> None:
         broadcast={"content": "李世民负伤", "severity": "high", "location_scope": None},
         message={"content": "你感到剧痛袭来", "recipients": [1], "urgency": "high"},
     )])
-    system = _event_system(container, router=router, world_id=world_id,
+    system = _narrative_editor(container, router=router, world_id=world_id,
                             broadcast_channel=bc, check_interval=1)
     agent = _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")
     agents = {"a1": agent}
@@ -1393,7 +1388,7 @@ async def test_event_does_not_mutate_agent_state(container) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# BroadcastChannel: location-scoped filtering (independent of EventSystem)
+# BroadcastChannel: location-scoped filtering (independent of NarrativeEditor)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -1489,7 +1484,7 @@ def _ground_index(env: EnvironmentSystem, entity_id: str) -> int:
 async def test_entity_menu_lists_unheld_things_here_and_elsewhere(container) -> None:
     env, agents, directory = _ground_world(container)
     router = _EventRouter([_gate(), _plan_json(broadcast={"content": "x", "severity": "low"})])
-    system = _event_system(container, router=router, directory=directory, environment=env,
+    system = _narrative_editor(container, router=router, directory=directory, environment=env,
                            check_interval=1)
 
     await _run_check(system, current_step=1, world_time=_world_time(1), world_id="world-1",
@@ -1510,7 +1505,7 @@ async def test_place_menu_shows_who_is_where(container) -> None:
     env, agents, directory = _ground_world(container)
     env.space.register_place(Place(place_id="gate", name="玄武门"))     # nobody, nothing: still drawn
     router = _EventRouter([_gate(), _plan_json(broadcast={"content": "x", "severity": "low"})])
-    system = _event_system(container, router=router, directory=directory, environment=env,
+    system = _narrative_editor(container, router=router, directory=directory, environment=env,
                            check_interval=1)
 
     await _run_check(system, current_step=1, world_time=_world_time(1), world_id="world-1",
@@ -1529,7 +1524,7 @@ def test_menu_places_keeps_occupied_caps_stocked_and_draws_bare() -> None:
     import random
     from collections import Counter
 
-    from engine.event import _MAX_BARE_PLACES, _MAX_STOCKED_PLACES, _menu_places
+    from engine.narrative_editor import _MAX_BARE_PLACES, _MAX_STOCKED_PLACES, _menu_places
     from core.interfaces.place import Place
 
     stocked_count = _MAX_STOCKED_PLACES + 2
@@ -1553,7 +1548,7 @@ def test_menu_places_rotates_bare_places_across_steps() -> None:
     import random
     from collections import Counter
 
-    from engine.event import _menu_places
+    from engine.narrative_editor import _menu_places
     from core.interfaces.place import Place
 
     places = [Place(place_id=f"p{i}", name=f"地{i}") for i in range(12)]
@@ -1577,7 +1572,7 @@ async def test_entity_menu_hides_what_a_takeable_thing_on_the_ground_says(contai
         content="今夜三更动手。", presence=EntityPresence.AT_LOCATION, presence_ref="palace",
     ))
     router = _EventRouter([_gate(), _plan_json(broadcast={"content": "x", "severity": "low"})])
-    system = _event_system(container, router=router, directory=directory, environment=env,
+    system = _narrative_editor(container, router=router, directory=directory, environment=env,
                            check_interval=1)
 
     await _run_check(system, current_step=1, world_time=_world_time(1), world_id="world-1",
@@ -1600,7 +1595,7 @@ async def test_spawn_alter_destroy_land_in_the_world(container) -> None:
                "content": "速救东宫", "observation": "殿门口落下一方白绢。"},
         alter={"entity": _ground_index(env, "notice"), "state": "撕破", "observation": "告示被撕去半边。"},
     )])
-    system = _event_system(container, router=router, directory=directory, environment=env,
+    system = _narrative_editor(container, router=router, directory=directory, environment=env,
                            check_interval=1)
 
     fired = await _run_check(system, current_step=1, world_time=_world_time(1), world_id="world-1",
@@ -1615,7 +1610,7 @@ async def test_spawn_alter_destroy_land_in_the_world(container) -> None:
     router2 = _EventRouter([_gate(), _plan_json(
         destroy={"entity": _ground_index(env, "notice"), "observation": "告示被一把火烧了。"},
     )])
-    system2 = _event_system(container, router=router2, directory=directory, environment=env,
+    system2 = _narrative_editor(container, router=router2, directory=directory, environment=env,
                             check_interval=1)
     await _run_check(system2, current_step=2, world_time=_world_time(2), world_id="world-1",
                      all_agents=agents, locations=env.space.all_places(),
@@ -1634,7 +1629,7 @@ async def test_spawn_alter_destroy_land_in_the_world(container) -> None:
 async def test_malformed_entity_slots_are_dropped(container, things) -> None:
     env, agents, directory = _ground_world(container)
     router = _EventRouter([_gate(), _plan_json(**things)])
-    system = _event_system(container, router=router, directory=directory, environment=env,
+    system = _narrative_editor(container, router=router, directory=directory, environment=env,
                            check_interval=1)
 
     fired = await _run_check(system, current_step=1, world_time=_world_time(1), world_id="world-1",
@@ -1642,7 +1637,7 @@ async def test_malformed_entity_slots_are_dropped(container, things) -> None:
                      entities=env.all_live_entities())
 
     assert fired is None                           # the only channel came up empty -> not recorded, no quota used
-    assert system.list_events() == []
+    assert system.list_injections() == []
     assert env.get_entity("notice").state == "intact" and not env.get_entity("notice").is_destroyed
 
 
@@ -1661,7 +1656,7 @@ async def test_a_thing_picked_up_before_commit_is_spared_but_the_broadcast_still
         destroy={"entity": _ground_index(env, "seal"), "observation": "兵符碎了。"},
         broadcast={"content": "殿中一声脆响", "severity": "medium", "location_scope": 1},
     )])
-    system = _event_system(container, router=router, directory=directory, environment=env,
+    system = _narrative_editor(container, router=router, directory=directory, environment=env,
                            broadcast_channel=bc, check_interval=1)
 
     plan = await system._generate_plan(
@@ -1669,6 +1664,6 @@ async def test_a_thing_picked_up_before_commit_is_spared_but_the_broadcast_still
     env.change_entity_state(EntityStateChange(entity_id="seal", owner_id="a1"))
     fired = await system._commit_plan(plan, 1, agents)
 
-    assert fired is not None and fired.event.dispatched_to == ["broadcast"]
+    assert fired is not None and fired.record.dispatched_to == ["broadcast"]
     assert not env.get_entity("seal").is_destroyed
     assert len(bc.peek_pending()) == 1

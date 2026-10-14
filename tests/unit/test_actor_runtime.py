@@ -28,6 +28,7 @@ from core.interfaces.llm import LLMScene
 from core.interfaces.message import Message
 from core.interfaces.urgency import Urgency
 from tests.unit.test_runtime_smoke import _build_agent, _build_runtime, _set_work_decision
+from tests.unit.step_view import beats
 
 HERO = "agent-1"
 OTHER = "agent-2"
@@ -108,9 +109,9 @@ async def test_the_step_waits_for_the_actor_and_executes_their_action(container)
     assert [t.kind for t in turns] == [TurnKind.DECIDE]
     assert turns[0].agent_id == HERO and turns[0].step == 1
     snapshot = await container.snapshot.load(world_id, 1)
-    hero_actions = [r for r in snapshot.actions_this_step if r["agent_id"] == HERO]
+    hero_actions = [r for r in beats(snapshot) if r["agent_id"] == HERO]
     assert [r["action_description"] for r in hero_actions] == ["亲自誊抄奏章"]
-    assert any(r["agent_id"] == OTHER for r in snapshot.actions_this_step)
+    assert any(r["agent_id"] == OTHER for r in beats(snapshot))
     assert HERO in result.scheduled_agent_ids
     # Feedback landed as for anyone.
     assert hero.personality.state.last_action is not None
@@ -207,7 +208,7 @@ async def test_breaking_off_leads_into_the_decision_stage(container) -> None:
     assert [t.kind for t in turns] == [TurnKind.INTERRUPT, TurnKind.DECIDE]
     assert HERO in result.scheduled_agent_ids
     snapshot = await container.snapshot.load(world_id, 2)
-    interrupted = [r for r in snapshot.actions_this_step if r.get("interrupted_by") == HERO]
+    interrupted = [r for r in beats(snapshot) if r.get("interrupted_by") == HERO]
     assert interrupted and "此事更急" in interrupted[0]["outcome"]
 
 
@@ -297,7 +298,9 @@ def test_the_actors_own_acts_do_not_count_as_being_targeted(container) -> None:
 
 
 @pytest.mark.asyncio
-async def test_each_step_records_what_every_agent_perceived(container) -> None:
+async def test_a_letter_is_recorded_where_its_reader_stood(container) -> None:
+    """The step record places a delivered letter where its reader perceived from that step, so a
+    view of the step needs no second account of who perceived what."""
     world_id = "world-perceptions"
     runtime, environment, message_system = _build_runtime(container, world_id=world_id)
     environment.place_agent(agent_id=HERO, location_id="palace")
@@ -312,12 +315,9 @@ async def test_each_step_records_what_every_agent_perceived(container) -> None:
 
     await runtime.run_step(agents)
 
-    record = (await container.snapshot.load(world_id, 2)).perceptions[HERO]
-    assert record["location_id"] == "palace"
-    assert record["agent_ids"] == [OTHER]
-    assert record["message_ids"] == ["msg-1"]
-    # OTHER's act last step, as HERO saw it; HERO's own act is not among what he saw.
-    assert record["ambient"] and all(e["doer_ids"] == [OTHER] for e in record["ambient"])
+    (letter,) = (await container.snapshot.load(world_id, 2)).events_of("message")
+    assert letter["message_id"] == "msg-1"
+    assert letter["receivers"] == [{"agent_id": HERO, "location_id": "palace"}]
 
 
 @pytest.mark.asyncio

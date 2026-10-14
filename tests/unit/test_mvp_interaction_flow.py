@@ -7,6 +7,7 @@ from core.container import Container
 from core.interfaces.action import EntityStateChange
 from engine.application import NarrativeApplication
 from interaction.replayer import Replayer
+from tests.unit.step_view import agents, events
 from interaction.world_manager import WorldManager
 from world import WorldBuilder
 from world.initializer import WorldInitializer
@@ -33,27 +34,24 @@ async def test_world_builder_persists_real_step_zero_snapshot(container) -> None
 
     assert snapshot is not None
     assert snapshot == world.step_zero_snapshot
-    assert snapshot.metadata["phase"] == "initialization"
-    assert snapshot.metadata["schedule"] == {"step": 0, "batches": []}
-    assert snapshot.metadata["messages"]["step"] == 0
-    assert set(snapshot.metadata["messages"]["inboxes"]) == set(world.agents)
-    assert snapshot.metadata["environment"]["body_locations"]
-    assert set(snapshot.metadata["environment"]["body_locations"].values()) <= set(
+    # Step 0 is a state, not a happening: everyone stands where the world put them.
+    assert snapshot.events == []
+    assert snapshot.build["manifest"]["agent_definitions"]
+    assert set(snapshot.state.agents) == set(world.agents)
+    assert {a["location_id"] for a in snapshot.state.agents.values()} <= set(
         world.world_config.get_places()
     )
-    assert len(snapshot.agent_summaries) == len(world.agents)
-    assert snapshot.event_summaries == []
-    assert set(snapshot.agent_states) == set(world.agents)
-    first_state = next(iter(snapshot.agent_states.values()))
+    assert set(snapshot.state.places) == set(world.world_config.get_places())
+    first_state = next(iter(snapshot.state.agents.values()))
     assert {
         "agent_id",
         "agent_name",
-        "current_location",
+        "location_id",
         "activity_status",
         "current_action",
         "action_remaining_steps",
     } <= set(first_state)
-    assert snapshot.agent_relations
+    assert snapshot.state.relations
 
     stored_states = [
         await container.agent_store.load_agent_state(world.world_id, agent_id)
@@ -104,12 +102,13 @@ async def test_application_runtime_produces_replayable_history(container, test_c
     assert step_one_snapshot.clock.startswith("step=0001 ")
     # Runtime step snapshots carry relations in the same shape as the step-0 snapshot.
     step_zero_snapshot = await container.snapshot.load(world.world_id, 0)
-    assert step_one_snapshot.agent_relations
-    assert set(next(iter(step_one_snapshot.agent_relations.values()))) == set(
-        next(iter(step_zero_snapshot.agent_relations.values()))
+    assert step_one_snapshot.state.relations
+    assert set(next(iter(step_one_snapshot.state.relations.values()))) == set(
+        next(iter(step_zero_snapshot.state.relations.values()))
     )
-    assert replay_steps[0].actions
-    assert replay_steps[0].agent_states
+    # Step 0 is the world as built: everyone in place, nothing happened yet.
+    assert agents(replay_steps[0]) and events(replay_steps[0]) == []
+    assert events(replay_steps[1], "action")
     assert await manager.latest_snapshot(world.world_id) == await container.snapshot.load(
         world.world_id,
         2,
@@ -117,23 +116,23 @@ async def test_application_runtime_produces_replayable_history(container, test_c
 
 
 @pytest.mark.asyncio
-async def test_runtime_snapshots_expose_all_agent_states_to_replay(container, test_config) -> None:
+async def test_runtime_snapshots_expose_every_agent_to_replay(container, test_config) -> None:
     application = NarrativeApplication(container, test_config)
     world = await application.build_world("玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=1)
 
     snapshot = await container.snapshot.load(world.world_id, 1)
     assert snapshot is not None
-    assert set(snapshot.agent_states) == set(world.agents)
+    assert set(snapshot.state.agents) == set(world.agents)
 
     event = await Replayer(
         world.world_id,
         container.snapshot,
     ).get_step(1)
-    assert set(event.agent_states) == set(world.agents)
-    for summary in event.agent_states.values():
-        assert summary.vitality is not None
-        assert 0.0 <= summary.vitality <= 1.0
+    assert set(agents(event)) == set(world.agents)
+    for _, summary in agents(event).values():
+        assert summary.private.vitality is not None
+        assert 0.0 <= summary.private.vitality <= 1.0
 
 
 @pytest.mark.asyncio
@@ -179,17 +178,18 @@ async def test_restore_recovers_live_environment_entity_state(container, test_co
 
 @pytest.mark.asyncio
 async def test_restore_session_rehydrates_event_throttle(container, test_config) -> None:
-    """restore_session replays fired events into the EventSystem so a restored world
+    """restore_session replays fired events into the NarrativeEditor so a restored world
     keeps its window quota instead of resetting it."""
     application = NarrativeApplication(container, test_config)
     world = await application.build_world("玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=1)
 
-    # Inject a fired event into the latest snapshot's event log to stand in for a
-    # world event that the run would have produced.
+    # Put an injection into the latest snapshot's events to stand in for one the run would have
+    # produced.
     latest = await container.snapshot.load(world.world_id, 1)
-    latest.events_this_step.append(
+    latest.events.append(
         {
+            "kind": "injection", "seq": 999,
             "id": "evt-restore", "step": 1, "narrative_desc": "城门骤变",
             "is_positive": None, "dispatched_to": ["broadcast"],
             "authored_by": "system", "metadata": {},
@@ -201,8 +201,8 @@ async def test_restore_session_rehydrates_event_throttle(container, test_config)
     restored_app = NarrativeApplication(container, test_config)
     await restored_app.restore_session(world.world_id)
 
-    event_system = restored_app.get_session(world.world_id).runtime._event_system
-    assert any(ev.id == "evt-restore" for ev in event_system.list_events())
+    narrative_editor = restored_app.get_session(world.world_id).runtime._narrative_editor
+    assert any(ev.id == "evt-restore" for ev in narrative_editor.list_injections())
 
 
 @pytest.mark.asyncio
@@ -290,7 +290,7 @@ async def test_a_never_run_world_still_restores_its_in_flight_messages(
     ))
     # Rewrite the step-0 snapshot to carry this in-flight message (the queue was empty at build time).
     step0 = await container.snapshot.load(world.world_id, 0)
-    step0.pending_messages = await container.message_provider.peek_pending(world.world_id)
+    step0.engine.pending_messages = await container.message_provider.peek_pending(world.world_id)
     await container.snapshot.save(world.world_id, 0, step0)
     assert await container.snapshot.list_steps(world.world_id) == [0]
 
@@ -326,7 +326,7 @@ async def test_a_death_notice_survives_a_restore(container, test_config) -> None
 
     await application.run_world(world.world_id, steps=1)
     latest = await container.snapshot.load(world.world_id, 2)
-    assert [b.content for b in latest.pending_broadcasts] == ["宫中传出消息：那人已死。"]
+    assert [b.content for b in latest.engine.pending_broadcasts] == ["宫中传出消息：那人已死。"]
 
     # New process: the channel belongs to the runtime, and a fresh BroadcastChannel is empty.
     restored = NarrativeApplication(container, test_config)
@@ -342,7 +342,7 @@ async def test_a_death_notice_survives_a_restore(container, test_config) -> None
 async def test_restore_session_rehydrates_in_flight_messages(container, test_config) -> None:
     """A message sent before the save but due for delivery after it survives a
     cross-process restore. Only InMemoryMessageProvider exists, so the queue is lost
-    on restart unless restore re-enqueues the snapshot's pending_messages."""
+    on restart unless restore re-enqueues the snapshot's pending messages."""
     from core.interfaces.message import Message
 
     application = NarrativeApplication(container, test_config)
@@ -364,7 +364,7 @@ async def test_restore_session_rehydrates_in_flight_messages(container, test_con
     # Run a step so the pending message lands in the persisted snapshot.
     await application.run_world(world.world_id, steps=1)
     latest = await container.snapshot.load(world.world_id, 1)
-    assert any(m.id == "msg-in-flight" for m in latest.pending_messages)
+    assert any(m.id == "msg-in-flight" for m in latest.engine.pending_messages)
 
     # Simulate a process restart: the in-memory queue is gone.
     await container.message_provider.clear()

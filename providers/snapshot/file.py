@@ -14,7 +14,7 @@ from typing import Any, List, Optional
 from core.factory import ComponentKind, ProviderFactory
 from core.interfaces.message import Message
 from core.interfaces.perception import Broadcast, BroadcastType
-from core.interfaces.snapshot import SnapshotProvider, WorldSnapshot
+from core.interfaces.snapshot import EngineState, SnapshotProvider, WorldSnapshot, WorldState
 from core.logging import get_logger
 from core.serialization import atomic_write_text, dump_json, read_json_file
 
@@ -23,6 +23,8 @@ logger = get_logger(__name__)
 # Unknown keys are dropped on read, so removing a dataclass field doesn't make every existing
 # snapshot unreadable (same as _AGENT_STATE_FIELDS in agent_store).
 _SNAPSHOT_FIELDS = frozenset(f.name for f in dataclasses.fields(WorldSnapshot))
+_STATE_FIELDS = frozenset(f.name for f in dataclasses.fields(WorldState))
+_ENGINE_FIELDS = frozenset(f.name for f in dataclasses.fields(EngineState))
 
 _STEP_RE = re.compile(r"^step_(\d+)\.json$")
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -73,16 +75,20 @@ class FileSnapshotProvider(SnapshotProvider):
         data = json.loads(raw)
         if isinstance(data.get("timestamp"), str):
             data["timestamp"] = datetime.fromisoformat(data["timestamp"])
-        data["pending_messages"] = [
+        state = data.get("state") if isinstance(data.get("state"), dict) else {}
+        data["state"] = WorldState(**{k: v for k, v in state.items() if k in _STATE_FIELDS})
+        engine = dict(data.get("engine")) if isinstance(data.get("engine"), dict) else {}
+        engine["pending_messages"] = [
             _message_from_dict(item)
-            for item in data.get("pending_messages", [])
+            for item in engine.get("pending_messages", [])
             if isinstance(item, dict)
         ]
-        data["pending_broadcasts"] = [
+        engine["pending_broadcasts"] = [
             _broadcast_from_dict(item)
-            for item in data.get("pending_broadcasts", [])
+            for item in engine.get("pending_broadcasts", [])
             if isinstance(item, dict)
         ]
+        data["engine"] = EngineState(**{k: v for k, v in engine.items() if k in _ENGINE_FIELDS})
         return WorldSnapshot(**{k: v for k, v in data.items() if k in _SNAPSHOT_FIELDS})
 
     # ------------------------------------------------------------------

@@ -268,7 +268,7 @@ SEVERITY_SCALE_DESCRIPTION: str = (
 # Visible phenomena (phenomenon)
 # ============================================================================
 
-#: Shared by the world's two authors (EventSystem and DirectorChannel), whose broadcasts pass the
+#: Shared by the world's two authors (NarrativeEditor and DirectorChannel), whose broadcasts pass the
 #: same ``parse_broadcast_spec`` filter: diverging wording would show flames for one author and
 #: silently none for the other. Names come from the ``Phenomenon`` enum, never hand-written.
 PHENOMENON_DEFINITION: str = (
@@ -405,6 +405,18 @@ def strip_end_punct(text: str) -> str:
 # Per-channel cap on items injected into a prompt, so one channel can't crowd out the others.
 # Every perception renderer reads it, including the decision prompt's own format.
 SIGNAL_CAPS = {"visible": 10, "ambient": 10, "inbox": 20, "broadcast": 5}
+
+
+# Each perception channel's label, shared by the prompt lines and the memories perception
+# writes, so a recalled memory names its channel as the prompt did.
+AMBIENT_TAG = "环境观察"
+MESSAGE_TAG = "消息"
+
+
+def broadcast_tag(location_scope: str | None) -> str:
+    """A broadcast's label: world-wide or local to where it is heard. The place itself is never
+    named: a local broadcast is heard only where it happens."""
+    return "全局广播" if location_scope is None else "本地广播"
 
 
 # The decision prompt quotes it literally, so change it only here.
@@ -694,11 +706,11 @@ def render_perceived_signals(*, spatial, inbox, broadcasts) -> list[str]:
             ))
         lines.append(f"同处一地的人：{', '.join(people)}")
     for ev in getattr(spatial, "ambient_events", [])[:SIGNAL_CAPS["ambient"]]:
-        lines.append(f"环境观察：{ev.content}")
+        lines.append(f"{AMBIENT_TAG}：{ev.content}")
     for msg in (inbox or [])[:SIGNAL_CAPS["inbox"]]:
         # The narrator's sender_name is already a narrative "unknown source"; no special case.
         sender = getattr(msg, "sender_name", None) or "某人"
-        lines.append(f"收到来自{sender}的消息：{msg.content}")
+        lines.append(f"收到来自{sender}的{MESSAGE_TAG}：{msg.content}")
     for bc in (broadcasts or [])[:SIGNAL_CAPS["broadcast"]]:
-        lines.append(f"世界广播：{bc.content}")
+        lines.append(f"{broadcast_tag(bc.location_scope)}：{bc.content}")
     return lines

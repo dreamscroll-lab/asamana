@@ -1,6 +1,6 @@
 import { Fragment } from "react";
 
-import type { EventReceipt, WorldEventSummary } from "../../types";
+import type { InjectionReceipt, InjectionSummary } from "../../types";
 
 // What a director's intervention actually DID. An injection can be delivered to the right
 // inbox and still move nobody (the pressure evaluator judges it irrelevant), which from
@@ -10,7 +10,7 @@ import type { EventReceipt, WorldEventSummary } from "../../types";
 // One row per column, not one sentence: the four readings are independent and each can hold
 // a whole cast. As a label column and a name column, 「打断」 is found at a glance and a name
 // in "送达" but not in "压力" shows as a gap.
-function EventReceiptLine({ receipt }: { receipt: EventReceipt }) {
+function ReceiptLine({ receipt }: { receipt: InjectionReceipt }) {
   const { delivered_to, pressure, decided, interrupted } = receipt;
   if (!delivered_to.length && !pressure.length) {
     return (
@@ -47,9 +47,9 @@ function EventReceiptLine({ receipt }: { receipt: EventReceipt }) {
   );
 }
 
-export default function EventRow({ ev }: { ev: WorldEventSummary }) {
-  // World events and director injections share this card but must never look alike.
-  const byDirector = ev.authored_by === "director";
+export default function InjectionRow({ injection }: { injection: InjectionSummary }) {
+  // The editor's injections and the director's share this card but must never look alike.
+  const byDirector = injection.authored_by === "director";
   return (
     <div
       className={
@@ -64,15 +64,15 @@ export default function EventRow({ ev }: { ev: WorldEventSummary }) {
           导演
         </span>
       )}
-      {ev.narrative}
+      {injection.narrative}
       {/* What was actually typed, under what the engine made of it: only the comparison
           tells a badly worded intervention from a world that doesn't care. */}
-      {ev.directive_text && (
+      {injection.directive_text && (
         <div className="mt-1.5 text-[11px] text-indigo-300/60 italic">
-          导演说：{ev.directive_text}
+          导演说：{injection.directive_text}
         </div>
       )}
-      {ev.receipt && <EventReceiptLine receipt={ev.receipt} />}
+      {injection.receipt && <ReceiptLine receipt={injection.receipt} />}
     </div>
   );
 }

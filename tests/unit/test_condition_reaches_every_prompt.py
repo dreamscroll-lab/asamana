@@ -181,15 +181,15 @@ async def test_experiential_memory_prose_knows_the_writer_is_bound(container) ->
 
 
 def test_event_brief_lists_condition_beside_vitality() -> None:
-    """The event editor's character briefing is about externally observable scalars — who this is,
+    """The narrative editor's character briefing is about externally observable scalars — who this is,
     where, how much life is left — and "hands tied behind the back" is the most conspicuous of
     them. Without it the editor designs events where a bound man bursts out of the palace gate, and
     that text is broadcast, perceived, and written into memory."""
-    from engine.event import EventSystem
+    from engine.narrative_editor import NarrativeEditor
 
     main = _agent("a2", "李元吉")
     main.is_main_character = True
-    brief = EventSystem._brief_characters(  # noqa: SLF001
+    brief = NarrativeEditor._brief_characters(  # noqa: SLF001
         type("S", (), {"directory": _directory()})(), {"a2": main},
     )
     assert MARK in brief
@@ -197,11 +197,11 @@ def test_event_brief_lists_condition_beside_vitality() -> None:
 
 
 def test_event_brief_omits_condition_when_unencumbered() -> None:
-    from engine.event import EventSystem
+    from engine.narrative_editor import NarrativeEditor
 
     main = _agent("a2", "李元吉", condition=None)
     main.is_main_character = True
-    brief = EventSystem._brief_characters(  # noqa: SLF001
+    brief = NarrativeEditor._brief_characters(  # noqa: SLF001
         type("S", (), {"directory": _directory()})(), {"a2": main},
     )
     assert "处境" not in brief

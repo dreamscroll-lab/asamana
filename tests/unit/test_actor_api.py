@@ -191,7 +191,7 @@ async def test_turns_reach_the_websocket(mock_build_container, test_config) -> N
     with _client(mock_build_container, test_config, catalog) as client:
         with client.websocket_connect(f"/ws/{world_id}") as ws:
             assert ws.receive_json()["type"] == "status"
-            assert ws.receive_json()["type"] == "snapshot"
+            assert ws.receive_json()["type"] == "latest_step"
             mock_build_container.event_bus.publish({"type": "actor_turn", "world_id": world_id, "turn": turn})
             mock_build_container.event_bus.publish({"type": "actor_turn", "world_id": world_id, "turn": None})
             opened, closed = ws.receive_json(), ws.receive_json()

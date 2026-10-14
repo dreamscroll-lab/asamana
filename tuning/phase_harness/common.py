@@ -11,7 +11,7 @@ from core.interfaces.agent_store import AgentRelation, AgentState, AgentStorePro
 from core.interfaces.perception import PerceivedIdentity
 from engine.broadcast import BroadcastChannel
 from engine.clock import GlobalClock
-from engine.event import EventSettings
+from engine.narrative_editor import NarrativeEditorSettings
 from engine.runtime import NarrativeRuntime
 from engine.scheduler import AgentScheduler
 from world import World
@@ -56,10 +56,10 @@ def make_action_runtime(container, config, world_id, world, registry, message_sy
         scheduler=AgentScheduler(),
         environment=world.environment,
         message_system=message_system,
-        event_settings=EventSettings(
+        narrative_editor_settings=NarrativeEditorSettings(
             core_tension=world.analysis.core_tension,
             narrative_theme=world.analysis.narrative_theme,
-            check_interval=99, max_events_per_window=0,
+            check_interval=99, max_injections_per_window=0,
         ),
         snapshot_provider=container.snapshot,
         agent_store=container.agent_store,

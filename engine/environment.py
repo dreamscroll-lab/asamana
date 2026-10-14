@@ -215,9 +215,9 @@ class EnvironmentSystem:
         self._carry_annotations: Dict[str, List[AmbientEvent]] = {}
         # Full-fidelity happenings for covert adjudication (see _Happening). No carry/flip: the
         # writer (runtime._carry_step_observations) already runs after the beat's adjudications.
-        # Must never reach spatial_for (breaks information asymmetry), snapshot_state (leaks
-        # into the director's briefing and replay) or assemble_scene_context (would show up in
-        # broadcast PHYSICAL outcomes).
+        # Must never reach spatial_for (breaks information asymmetry), world_state/engine_state
+        # (leaks into the director's briefing and replay) or assemble_scene_context (would show
+        # up in broadcast PHYSICAL outcomes).
         self._happenings: Dict[str, List[_Happening]] = {}
         # Tombstones stay in ``_entities`` (names must resolve and snapshots must keep them, or a
         # destroyed seed comes back on restore) but leave ``_items``. Ask "what's it called" of
@@ -958,37 +958,30 @@ class EnvironmentSystem:
             reachable_locations=reachable_locations,
         )
 
-    def snapshot_state(self) -> dict[str, object]:
-        """Expose environment state for snapshots and observation tooling."""
+    def world_state(self) -> dict[str, dict[str, object]]:
+        """This environment's share of the world at the end of a step, whole: places, Npcs and
+        entities (``core.interfaces.snapshot.WorldState``). Agents' bodies are reported with
+        the agents, by the runtime."""
         return {
-            # The agent half is write-only (agent_store is authoritative); the Npc half is read
-            # back on restore.
-            "body_locations": dict(sorted(self._locations.items())),
-            "transit_origins": dict(sorted(self._transit_origins.items())),
-            "npc_outcomes": {
-                nid: {"text": text, "ongoing": ongoing}
-                for nid, (text, ongoing) in sorted(self._npc_outcomes.items())
-            },
-            "npc_displaced": sorted(self._npc_displaced),
+            "places": {place.place_id: place.name for place in self.space.all_places()},
             # The whole Npc: nothing else records its condition or errand.
-            "npc_states": {
-                nid: _npc_payload(npc) for nid, npc in sorted(self._npcs.items())
-            },
-            "step_annotations": {
-                scope: list(entries) for scope, entries in sorted(self._step_annotations.items())
-            },
-            # What onlookers perceive next step. Unsaved, a restore would drop that beat.
-            "carry_annotations": {
-                scope: [_ambient_payload(e) for e in entries]
-                for scope, entries in sorted(self._carry_annotations.items())
-            },
-            "location_names": {
-                place.place_id: place.name for place in self.space.all_places()
+            "npcs": {
+                nid: {
+                    **_npc_payload(npc),
+                    "location_id": self._locations.get(nid, ""),
+                    "displaced": nid in self._npc_displaced,
+                    # This beat's one line, written by its runner; None when nothing happened.
+                    "outcome": (
+                        {"text": self._npc_outcomes[nid][0], "ongoing": self._npc_outcomes[nid][1]}
+                        if nid in self._npc_outcomes else None
+                    ),
+                }
+                for nid, npc in sorted(self._npcs.items())
             },
             # Includes tombstones, so restore doesn't resurrect a destroyed seed. Every field:
             # this is the only record of runtime-made things (a missing is_public makes a hidden
             # item public on restore).
-            "entity_states": {
+            "entities": {
                 eid: {
                     "name": e.name,
                     "entity_type": e.entity_type.value,
@@ -1005,46 +998,62 @@ class EnvironmentSystem:
             },
         }
 
-    def restore_state(self, state: Mapping[str, object]) -> None:
-        """Inverse of :meth:`snapshot_state` for the mutable parts of the world.
+    def engine_state(self) -> dict[str, object]:
+        """What only resuming needs: where travelers set out from, and the ambient annotations."""
+        return {
+            "transit_origins": dict(sorted(self._transit_origins.items())),
+            # What was perceived at each place this step.
+            "step_annotations": {
+                scope: list(entries) for scope, entries in sorted(self._step_annotations.items())
+            },
+            # What onlookers perceive next step. Unsaved, a restore would drop that beat.
+            "carry_annotations": {
+                scope: [_ambient_payload(e) for e in entries]
+                for scope, entries in sorted(self._carry_annotations.items())
+            },
+        }
+
+    def restore_state(
+        self,
+        *,
+        npcs: Mapping[str, object],
+        entities: Mapping[str, object],
+        engine: Mapping[str, object],
+    ) -> None:
+        """Inverse of :meth:`world_state` and :meth:`engine_state` for the mutable parts of the
+        world.
 
         The caller rebuilds places and agent placement; this restores entity state (re-registering
         runtime-made ones, re-killing tombstoned seeds), ``transit_origins`` (so the caller can
         send mid-MOVE agents back), next step's carried observations, and Npcs whole, position
         included.
         """
-        carry = state.get("carry_annotations")
+        carry = engine.get("carry_annotations")
         if isinstance(carry, Mapping):
             self._carry_annotations = {
                 str(scope): [_ambient_from_payload(e) for e in entries if isinstance(e, Mapping)]
                 for scope, entries in carry.items() if isinstance(entries, list)
             }
-        transit_origins = state.get("transit_origins")
+        transit_origins = engine.get("transit_origins")
         if isinstance(transit_origins, Mapping):
             self._transit_origins = {
                 str(agent_id): str(origin) for agent_id, origin in transit_origins.items()
             }
-        npc_states = state.get("npc_states")
-        if isinstance(npc_states, Mapping):
-            placements = state.get("body_locations")
-            placements = placements if isinstance(placements, Mapping) else {}
-            for npc_id, payload in npc_states.items():
-                if not isinstance(payload, Mapping):
-                    continue
-                npc_id = str(npc_id)
-                self._npcs[npc_id] = _npc_from_payload(npc_id, payload)
-                where = str(placements.get(npc_id, "") or "")
-                if where and where != IN_TRANSIT:
-                    self._place_body(npc_id, where, BodyKind.NPC)
-                else:
-                    # Restore can't put it back mid-road: back to the origin, errand resumes.
-                    origin = self._transit_origins.get(npc_id, "")
-                    if origin:
-                        self._place_body(npc_id, origin, BodyKind.NPC)
-        entity_states = state.get("entity_states")
-        if not isinstance(entity_states, Mapping):
-            return
-        for entity_id, payload in entity_states.items():
+        for npc_id, payload in (npcs.items() if isinstance(npcs, Mapping) else ()):
+            if not isinstance(payload, Mapping):
+                continue
+            npc_id = str(npc_id)
+            self._npcs[npc_id] = _npc_from_payload(npc_id, payload)
+            where = str(payload.get("location_id", "") or "")
+            if where and where != IN_TRANSIT:
+                self._place_body(npc_id, where, BodyKind.NPC)
+            else:
+                # Restore can't put it back mid-road: back to the origin, errand resumes.
+                origin = self._transit_origins.get(npc_id, "")
+                if origin:
+                    self._place_body(npc_id, origin, BodyKind.NPC)
+        # A malformed snapshot restores nothing rather than failing the whole world's restore.
+        for entity_id, payload in (entities.items() if isinstance(entities, Mapping) else ()):
             if not isinstance(payload, Mapping):
                 continue
             presence = EntityPresence(str(payload.get("presence", EntityPresence.AT_LOCATION.value)))

@@ -1,5 +1,5 @@
 import { ActionType } from "../../lib/contract";
-import type { EntityView } from "../../types";
+import type { PlacedEntity } from "../../lib/step";
 import type { LabPlaces } from "../places";
 import { MO, SHI, did, step, type LabScene, who } from "./fixtures";
 
@@ -14,7 +14,7 @@ const KEPT = "made_item-6b1f90c4aa";
 const SET_DOWN = "made_item-2d47ae1130";
 
 /** A thing just written and pocketed — nobody standing there can perceive it. */
-const kept = (holder: string): Record<string, EntityView> => ({
+const kept = (holder: string): Record<string, PlacedEntity> => ({
   [KEPT]: {
     name: "换防部署令",
     entity_type: "item",
@@ -23,14 +23,14 @@ const kept = (holder: string): Record<string, EntityView> => ({
     presence_ref: holder,
     description: "圈定亲信的名单",
     is_public: false,
-    content: "",
+    private: { content: "" },
     // step({ bornIds: [...] }) sets the real birth step, since only it knows the step number.
     created_step: 0,
   },
 });
 
 /** A thing built where it stands — it hides from nobody. */
-const setDown = (where: string): Record<string, EntityView> => ({
+const setDown = (where: string): Record<string, PlacedEntity> => ({
   [SET_DOWN]: {
     name: "一道栅栏",
     entity_type: "item",
@@ -38,7 +38,7 @@ const setDown = (where: string): Record<string, EntityView> => ({
     presence: "at_location",
     presence_ref: where,
     description: "拦住了侧门",
-    content: "",
+    private: { content: "" },
     is_public: true,
     created_step: 0,
   },

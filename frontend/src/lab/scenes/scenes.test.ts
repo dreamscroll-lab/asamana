@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { indexStep } from "../../lib/step";
 import { buildScenes } from "./index";
 import { castDemographics } from "./fixtures";
 import { DEED_BODY } from "../../phaser/deedPose";
@@ -48,7 +49,7 @@ describe("lab scenes", () => {
     const known = castDemographics();
     for (const s of scenes) {
       for (const st of s.steps) {
-        for (const id of Object.keys(st.agent_states)) {
+        for (const id of Object.keys(indexStep(st).agents)) {
           expect(known[id], `${s.id} stages ${id}`).toBeDefined();
         }
       }
@@ -58,7 +59,7 @@ describe("lab scenes", () => {
   it("every deed the renderer can draw has a scene", () => {
     // The fixtures' premise: the deed table is the checklist. Nothing but this test catches a
     // new deed pose with no scene staging it.
-    const staged = new Set(scenes.flatMap((s) => s.steps.flatMap((st) => st.actions.map((a) => a.deed))));
+    const staged = new Set(scenes.flatMap((s) => s.steps.flatMap((st) => indexStep(st).actions.map((a) => a.deed))));
     for (const deed of Object.keys(DEED_BODY)) {
       expect(staged.has(deed), `no scene stages deed "${deed}"`).toBe(true);
     }

@@ -548,7 +548,7 @@ def reconstruct_world(
         world_sequence.append({
             "step": step,
             "world_time": world_times.get(step, ""),
-            "events": [c.output for c in wcalls if c.stage == "event"],
+            "injections": [c.output for c in wcalls if c.stage == "narrative_editor"],
         })
 
     return WorldAuditView(

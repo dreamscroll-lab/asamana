@@ -1,15 +1,16 @@
 /**
  * A body that acts but does not think, sent on an errand.
  *
- * It arrives on its own read-model channel (`step.npcs`) with no card, relation or action record,
+ * It arrives as an Npc body in its room with no card, relation or action record,
  * so everything that makes it legible (slate color, body from gender and age, hover card) is the
  * renderer's decision. The whole round trip is staged because the joints matter: setting out, the
  * handover at the far end, the answer coming back as an ordinary letter.
  */
 import { ActionType, Deed, RefKind } from "../../lib/contract";
-import type { NpcStateSummary } from "../../types";
 import type { LabPlaces } from "../places";
-import { MINDLESS_INK, MO, SHI, carried, did, mindless, step, type LabScene, type Room, who } from "./fixtures";
+import {
+  MINDLESS_INK, MO, SHI, carried, did, mindless, step, type LabScene, type Room, type RunnerRecord, who,
+} from "./fixtures";
 import { nextSeq } from "./fixtures";
 
 /** The runner. Deliberately NOT in CAST: nothing about him may come from the agent channel. */
@@ -24,7 +25,7 @@ const WANG = {
 
 function runner(
   at: Room, outcome = "", condition = "", ongoing = false,
-): NpcStateSummary {
+): RunnerRecord {
   return mindless(WANG, at, { condition, outcome, ongoing });
 }
 
@@ -110,16 +111,14 @@ export function buildErrandScenes(places: LabPlaces): LabScene[] {
               sender_name: WANG.name,
               receiver_ids: [MO.id],
               // The backend sends both parts: the bubble shows `spoken` (short), the feed shows
-              // `perceived_summary` (the full text).
+              // `content` (the full text).
               spoken: `我去了${FAR.name}一趟，回来了。\n- 书信已交到阿石手上。`,
-              perceived_summary:
+              content:
                 `我去了${FAR.name}一趟，回来了。\n- 书信已交到阿石手上。\n`
                 + `那里的情形是这样：\n时间：六月初一，下午两点；`
                 + `地点：${FAR.name}——百官官署所在。\n`
                 + `- 在场的其他人：阿石（男）\n- 现场物件：无\n- 刚发生的事：无`,
               scope: "direct",
-              place: "",
-              place_id: "",
               seq: nextSeq(),
             },
           ],

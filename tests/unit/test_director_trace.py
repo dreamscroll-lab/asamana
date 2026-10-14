@@ -53,8 +53,8 @@ def test_director_is_its_own_stage_in_the_cognition_order() -> None:
     tell them apart, and whether a step's event came from the world or from a human is the first
     thing an observer wants to know."""
     assert Stage.DIRECTOR in COGNITION_ORDER
-    assert Stage.EVENT in COGNITION_ORDER
-    assert Stage.DIRECTOR is not Stage.EVENT
+    assert Stage.NARRATIVE_EDITOR in COGNITION_ORDER
+    assert Stage.DIRECTOR is not Stage.NARRATIVE_EDITOR
 
 
 @pytest.mark.asyncio

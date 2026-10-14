@@ -132,10 +132,10 @@ def test_agent_prompt_separates_reference_from_perceived_and_carries_relations()
     # perceived content is framed as the only pressure source
     assert "【该角色此刻感知到的内容（外部压力的唯一来源）】" in prompt
     # The severity code enum is translated into a natural word; "severity=high" must not leak
-    assert "广播[全局，重大] 喊杀骤起" in prompt
+    assert "全局广播（重大）：喊杀骤起" in prompt
     assert "severity=" not in prompt
     assert "收到来自长孙无忌的消息：速来" in prompt
-    assert "观察到：地上有血迹" in prompt
+    assert "环境观察：地上有血迹" in prompt
     # co-located: role + relation (via shared format_relation_block) + personality + background
     assert "#1 李建成（男，太子）" in prompt
     assert "[兄弟:敌对]" in prompt and "信任度0.10" in prompt and "好感度-0.60" in prompt

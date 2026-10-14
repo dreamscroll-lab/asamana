@@ -9,7 +9,9 @@
 
 import Phaser from "phaser";
 
-import type { ActionSummary, AgentStateSummary, EntityView, GraphEdge } from "../types";
+import type { GraphEdge } from "../types";
+import type { PlacedEntity } from "../lib/step";
+import type { Beat, Figure } from "./figures";
 import { ActionType, actedOnAgents, actedOnEntities, actedOnNpcs, reachedAgents } from "../lib/contract";
 import type { EntityLayer } from "./entities";
 import { type AgentToken, PLATE_GAP } from "./types";
@@ -29,7 +31,7 @@ const pairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|$
  * Agents before NPCs, so a deed naming both turns to the one who can answer; receivers last: a
  * hand-over is done to the thing, and its receiver is the only person it names.
  */
-export const subjectPeopleIds = (act: ActionSummary): string[] => [
+export const subjectPeopleIds = (act: Beat): string[] => [
   ...actedOnAgents(act.target), ...actedOnNpcs(act.target), ...reachedAgents(act.target),
 ];
 /**
@@ -39,7 +41,7 @@ export const subjectPeopleIds = (act: ActionSummary): string[] => [
  * heaved at a gate and it held, while `target.acts_on` survives failure. The fallback is still
  * needed: a seize names its prize only through the change (its target may have been a person).
  */
-export const subjectEntityIds = (act: ActionSummary): string[] => {
+export const subjectEntityIds = (act: Beat): string[] => {
   const aimed = actedOnEntities(act.target);
   return aimed.length ? aimed : act.affected_entity_ids ?? [];
 };
@@ -49,7 +51,7 @@ export interface StagingHost {
   readonly map: WorldMap;
   token(id: string): AgentToken | undefined;
   /** Reported dead with no token left on the map — takes no room. */
-  gone(state: AgentStateSummary): boolean;
+  gone(state: Figure): boolean;
 }
 
 export class Staging {
@@ -67,7 +69,7 @@ export class Staging {
   constructor(private host: StagingHost, private entities: EntityLayer) {}
 
   /**
-   * Feed the step's relationship edges (`StepEvent.relations`). Collapsed to a
+   * Feed the step's relationship edges (every agent's relations). Collapsed to a
    * symmetric per-pair affinity in [-1,1] that the resting layout uses to draw
    * allies together and push rivals apart.
    */
@@ -104,12 +106,12 @@ export class Staging {
    * Called once per render, before the scene's moveAgent and layoutLabels read positionFor.
    */
   layoutRooms(
-    states: AgentStateSummary[],
-    actions: ActionSummary[],
-    entities: Record<string, EntityView>,
+    states: Figure[],
+    actions: Beat[],
+    entities: Record<string, PlacedEntity>,
   ): Map<string, number> {
     this.slotOf.clear();
-    const byRoom = new Map<string, AgentStateSummary[]>();
+    const byRoom = new Map<string, Figure[]>();
     for (const s of states) {
       if (s.transit) continue;
       // The long dead take no room, or each would hold a cell where he died for the rest of
@@ -426,16 +428,16 @@ export class Staging {
    *  2. A thing's cell depends on the room and its id, not on who is present, so a chest
    *     doesn't shuffle every time someone walks in.
    *
-   * Held and destroyed things have no marker and get no cell. Called with the map as drawn,
+   * Held things have no marker and get no cell. Called with the map as drawn,
    * not as the step reported it, so a withheld change is laid out in the visible state.
    */
-  layoutFixtures(entities: Record<string, EntityView>): void {
+  layoutFixtures(entities: Record<string, PlacedEntity>): void {
     this.entities.entitySlotOf.clear();
     this.fixtureCells.clear();
     const byLoc = new Map<string, string[]>();
     for (const [eid, e] of Object.entries(entities)) {
-      if (e.presence === "held" || e.presence === "destroyed") continue;
-      const locId = e.presence_ref ?? "";
+      if (e.presence === "held") continue;
+      const locId = e.presence_ref;
       if (!this.host.map.rooms.has(locId)) continue;
       (byLoc.get(locId) ?? byLoc.set(locId, []).get(locId)!).push(eid);
     }
@@ -460,8 +462,8 @@ export class Staging {
   // Resting slot only (from the cached layoutRooms result); in-transit agents are
   // driven by Walker.walkTransit (path-follow).
   positionFor(
-    state: AgentStateSummary,
-    _all: AgentStateSummary[],
+    state: Figure,
+    _all: Figure[],
   ): { x: number; y: number } | null {
     const slot = this.slotOf.get(state.agent_id);
     if (slot) return slot;
@@ -475,7 +477,7 @@ export class Staging {
   // roster). Co-located figures can crowd, so de-collide only vertically: sort by
   // screen-x and lift alternating plates a row higher, so horizontal neighbors don't
   // overprint.
-  layoutLabels(states: AgentStateSummary[]): void {
+  layoutLabels(states: Figure[]): void {
     for (const s of states) {
       const tok = this.host.token(s.agent_id);
       if (tok) {

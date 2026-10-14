@@ -22,6 +22,7 @@ from engine.clock import WorldTime, WorldTimeConfig
 from engine.environment import EnvironmentSystem
 from world.models import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
+from tests.unit.env_state import restore, saved
 
 
 def _location(entity_id: str, name: str) -> Place:
@@ -152,7 +153,7 @@ def test_snapshot_carries_destroyed_tombstone() -> None:
     env.register_entity(_item("sword", "剑", "hall"))
     env.change_entity_state(EntityStateChange(entity_id="sword", new_state="destroyed", destroyed=True))
 
-    states = env.snapshot_state()["entity_states"]
+    states = env.world_state()["entities"]
     assert states["sword"]["presence"] == "destroyed"
     assert states["sword"]["presence_ref"] is None
 
@@ -162,14 +163,14 @@ def test_restore_rekills_reseeded_destroyed_entity() -> None:
     env = _env_with_hall()
     env.register_entity(_item("sword", "剑", "hall"))
     env.change_entity_state(EntityStateChange(entity_id="sword", new_state="destroyed", destroyed=True))
-    snapshot = env.snapshot_state()
+    snapshot = saved(env)
 
     # A fresh environment re-instantiates the seed ALIVE (as restore does), then
     # the tombstone overlay must re-kill it rather than leave it resurrected.
     fresh = _env_with_hall()
     fresh.register_entity(_item("sword", "剑", "hall"))
     assert "sword" in fresh._items  # alive before overlay
-    fresh.restore_state(snapshot)
+    restore(fresh, snapshot)
     assert fresh.get_entity("sword").is_destroyed
     assert "sword" not in fresh._items
     assert fresh.get_items_at("hall") == []
@@ -179,15 +180,16 @@ def test_restore_reregisters_midrun_destroyed_entity_as_tombstone() -> None:
     # An entity created mid-run and destroyed: not in step-0 seeds, so restore
     # re-registers it — and must keep it out of the live view.
     env = _env_with_hall()
-    snapshot = {
-        "entity_states": {
+    env.restore_state(
+        npcs={},
+        entities={
             "shard": {
                 "name": "碎片", "entity_type": "item", "state": "destroyed",
                 "presence": "destroyed", "presence_ref": None,
             }
-        }
-    }
-    env.restore_state(snapshot)
+        },
+        engine={},
+    )
     assert env.get_entity("shard").is_destroyed
     assert "shard" not in env._items
 
@@ -345,7 +347,7 @@ def test_a_runtime_made_thing_survives_restore_whole() -> None:
     fresh = _env_with_hall()
     fresh.place_agent(agent_id="a1", location_id="hall")
     fresh.place_agent(agent_id="a2", location_id="hall")
-    fresh.restore_state(env.snapshot_state())
+    restore(fresh, saved(env))
 
     restored = fresh.get_entity(made_id)
     assert restored is not None

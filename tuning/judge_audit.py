@@ -1278,7 +1278,7 @@ def world_block(view: WorldAuditView) -> str:
     for entry in view.world_sequence:
         lines.append(_step_sep(entry["step"], entry.get("world_time")))
         # World pressure (meta, a scheduling signal) isn't injected: it isn't something that happens in the world, and it distracts the director (a deliberate decision).
-        for ev in entry.get("events", []):  # events = external variables actually injected into the world (e.g. a secret letter); narrative-level, so make them prominent
+        for ev in entry.get("injections", []):  # external variables actually injected into the world (e.g. a secret letter); narrative-level, so make them prominent
             if isinstance(ev, dict) and (ev.get("message") or ev.get("narrative_desc")):
                 lines.append(f"  ⚡事件：{ev.get('narrative_desc') or ev.get('message')}")
         rel_changes: list[str] = []

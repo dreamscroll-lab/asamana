@@ -469,7 +469,7 @@ async def test_agent_generator_prompt_splits_need_weight_from_intensity() -> Non
 @pytest.mark.asyncio
 async def test_initial_snapshot_manifest_persists_invariants(container) -> None:
     """Step-0 snapshot must surface all three invariants both in
-    manifest.analysis and as redundant top-level metadata.world fields."""
+    manifest.analysis and as redundant build.world fields."""
     analysis = _analysis()
     definitions = await AgentGenerator(container.llm_router).generate(analysis)
 
@@ -483,21 +483,20 @@ async def test_initial_snapshot_manifest_persists_invariants(container) -> None:
 
     snapshot = await container.snapshot.load(world.world_id, 0)
     assert snapshot is not None
-    world_meta = snapshot.metadata["world"]
+    world_meta = snapshot.build["world"]
     assert world_meta["core_tension"] == analysis.core_tension
     assert world_meta["narrative_theme"] == analysis.narrative_theme
     assert world_meta["narrative_pitch"] == analysis.narrative_pitch
 
-    manifest_analysis = snapshot.metadata["manifest"]["analysis"]
+    manifest_analysis = snapshot.build["manifest"]["analysis"]
     assert manifest_analysis["core_tension"] == analysis.core_tension
     assert manifest_analysis["narrative_theme"] == analysis.narrative_theme
     assert manifest_analysis["narrative_pitch"] == analysis.narrative_pitch
 
-    # Step-0 agent_states carry the god-view location_name (id→narrative name), so
-    # the map/observer shows real homes at init, not the "某地" fallback.
-    for state in snapshot.agent_states.values():
-        assert state.get("location_id")
-        assert state.get("location_name"), state.get("location_id")
+    # Every agent stands in a real place the world names, so the observer shows real homes at
+    # init, not the "某地" fallback.
+    for state in snapshot.state.agents.values():
+        assert snapshot.state.places.get(state["location_id"]), state.get("location_id")
 
 
 @pytest.mark.asyncio

@@ -1,136 +1,89 @@
 /**
- * The narrative feed's DATA MODEL: how a step's four channels become one ordered stream, and
- * what a focus is matched against. No JSX: this file is about the wire, not pixels.
+ * The narrative feed's DATA MODEL: how a step's scopes become one ordered stream, and what a
+ * focus is matched against. No JSX: this file is about the wire, not pixels.
  */
 
 import { actedOnAgents } from "../../lib/contract";
+import { type Placed, type Scoped, indexStep } from "../../lib/step";
 import type {
   ActionSummary,
   BroadcastSummary,
   MessageSummary,
-  StepEvent,
-  WorldEventSummary,
+  StepView,
+  InjectionSummary,
 } from "../../types";
 
-// An action item carries EVERY record of its execution, not one: see foldExecutions.
-// Broadcasts (a death, an injected event) belong in the feed too, not only on the map.
-export type FeedItem =
-  | { kind: "event"; seq: number; data: WorldEventSummary }
-  | { kind: "action"; seq: number; data: ActionSummary; parts: ActionSummary[]; led: boolean }
-  | { kind: "message"; seq: number; data: MessageSummary }
-  | { kind: "broadcast"; seq: number; data: BroadcastSummary; key: string };
-
-// One folded execution. `parts` is ordered initiator-first when `led`; `led` says whether the
-// records actually told us who started it — see foldExecutions.
-type Fold = { lead: ActionSummary; parts: ActionSummary[]; led: boolean };
-
-/**
- * Fold an execution's records back into the one deed they came from.
- *
- * A joint action emits ONE RECORD PER PARTICIPANT (each agent learns from its own), but the
- * feed is a stream of events; a conscripted participant's outcome only restates the
- * initiator's intent back at them.
- *
- * Records are joined on execution_id; the initiator's record (agent_id == initiator_id) speaks
- * for the deed and its seq sets the slot. `parts` comes back initiator-first and `led` says the
- * direction is known; when records lack initiator_id, `led` is false and the card stays
- * symmetric rather than inventing a direction from arrival order.
- */
-function foldExecutions(actions: ActionSummary[]): Fold[] {
-  const groups = new Map<string, Fold>();
-  const out: Fold[] = [];
-  for (const act of actions) {
-    const leads = !!act.initiator_id && act.agent_id === act.initiator_id;
-    // No execution_id (step-0 placement records, ticks) → nothing to join on; stands alone.
-    if (!act.execution_id) {
-      out.push({ lead: act, parts: [act], led: leads });
-      continue;
-    }
-    const g = groups.get(act.execution_id);
-    if (!g) {
-      const fresh: Fold = { lead: act, parts: [act], led: leads };
-      groups.set(act.execution_id, fresh);
-      out.push(fresh);
-      continue;
-    }
-    // The initiator's record speaks for the deed — and it may arrive second, so it takes both
-    // the lead slot and the head of the cast.
-    if (leads) {
-      g.lead = act;
-      g.led = true;
-      g.parts.unshift(act);
-    } else {
-      g.parts.push(act);
-    }
-  }
-  return out;
+/** One person's deliberation behind a deed (their `ThoughtView` for its seq). */
+export interface DeedThought {
+  agent_id: string;
+  text: string;
 }
 
+// Broadcasts (a death, an injected change) belong in the feed too, not only on the map.
+export type FeedItem =
+  | { kind: "injection"; seq: number; data: InjectionSummary }
+  | { kind: "action"; seq: number; data: Placed<ActionSummary>; thoughts: DeedThought[] }
+  | { kind: "message"; seq: number; data: Scoped<MessageSummary> }
+  | { kind: "broadcast"; seq: number; data: Scoped<BroadcastSummary> };
+
 /**
- * One seq-ordered stream from all four channels.
+ * One seq-ordered stream of what happened, as the god view tells it.
  *
- * Legacy items without seq sort stably to the end (Number.MAX_SAFE_INTEGER). seq is used
- * ONLY for sorting and is never rendered — it is an engine-layer ordinal (see the emission
- * -order contract), not something the story knows about itself.
+ * Each event once: an action is told where it is recorded, so the places that only saw it
+ * (observations) add nothing here. A letter whose recipients stood in several places arrives
+ * as one entry per place under one seq; it is one letter, so they merge back into one row.
+ *
+ * seq is used ONLY for sorting and is never rendered — it is an engine-layer ordinal, not
+ * something the story knows about itself.
  */
-export function buildFeed(step: StepEvent): FeedItem[] {
+export function buildFeed(step: StepView): FeedItem[] {
+  const index = indexStep(step);
+  const thoughts = new Map<number, DeedThought[]>();
+  for (const agent of Object.values(index.agents)) {
+    for (const t of agent.private.thoughts) {
+      (thoughts.get(t.seq) ?? thoughts.set(t.seq, []).get(t.seq)!).push({ agent_id: agent.agent_id, text: t.text });
+    }
+  }
+  const letters = new Map<number, Scoped<MessageSummary>>();
+  for (const m of index.messages) {
+    const seen = letters.get(m.seq);
+    letters.set(m.seq, seen ? { ...seen, receiver_ids: [...seen.receiver_ids, ...m.receiver_ids] } : m);
+  }
   return [
-    ...step.world_events.map((ev) => ({
-      kind: "event" as const,
-      seq: ev.seq ?? Number.MAX_SAFE_INTEGER,
-      data: ev,
+    ...step.observer.injections.map((inj) => ({ kind: "injection" as const, seq: inj.seq, data: inj })),
+    ...index.actions.map((act) => ({
+      kind: "action" as const, seq: act.seq, data: act, thoughts: thoughts.get(act.seq) ?? [],
     })),
-    ...foldExecutions(step.actions).map(({ lead, parts, led }) => ({
-      kind: "action" as const,
-      seq: lead.seq ?? Number.MAX_SAFE_INTEGER,
-      data: lead,
-      parts,
-      led,
-    })),
-    ...step.messages.map((m) => ({
-      kind: "message" as const,
-      seq: m.seq ?? Number.MAX_SAFE_INTEGER,
-      data: m,
-    })),
-    ...(step.broadcasts ?? []).map((b, i) => ({
-      kind: "broadcast" as const,
-      seq: b.seq ?? Number.MAX_SAFE_INTEGER,
-      data: b,
-      key: `bc-${step.step}-${i}`,
-    })),
+    ...[...letters.values()].map((m) => ({ kind: "message" as const, seq: m.seq, data: m })),
+    ...index.broadcasts.map((b) => ({ kind: "broadcast" as const, seq: b.seq, data: b })),
   ].sort((a, b) => a.seq - b.seq);
 }
 
-/** A stable React key for a feed row. `index` only ever backs an action, which has no id. */
-export function itemKey(item: FeedItem, index: number): string {
-  if (item.kind === "event") return `ev-${item.data.id}`;
-  if (item.kind === "message") return `msg-${item.data.message_id}`;
-  if (item.kind === "broadcast") return item.key;
-  return `act-${index}`;
+/** A stable React key for a feed row. */
+export function itemKey(item: FeedItem): string {
+  if (item.kind === "injection") return `injection-${item.data.id}`;
+  return `${item.kind}-${item.seq}`;
 }
 
 // Every agent a focus can match this beat against (ids, a join key, never rendered). A deed
 // counts its whole cast plus who it was AIMED at and who CUT it.
 function itemCast(item: FeedItem): string[] {
   if (item.kind === "action") {
-    const ids: string[] = [];
-    for (const p of item.parts) {
-      ids.push(p.agent_id, ...actedOnAgents(p.target));
-      if (p.interrupted_by) ids.push(p.interrupted_by);
-    }
-    return ids;
+    const act = item.data;
+    return [...act.participant_ids, act.initiator_id, ...actedOnAgents(act.target), act.interrupted_by]
+      .filter(Boolean);
   }
   if (item.kind === "message") return [item.data.sender_id, ...item.data.receiver_ids];
-  // An event's only id-level cast is a closed director injection's receipt (who it was
+  // An injection's only id-level cast is a closed director injection's receipt (who it was
   // delivered to); affected_names is narrative-layer, not ids.
-  if (item.kind === "event") return item.data.receipt?.delivered_to.map((d) => d.agent_id) ?? [];
+  if (item.kind === "injection") return item.data.receipt?.delivered_to.map((d) => d.agent_id) ?? [];
   return []; // broadcast — senderless by construction; see `involves`.
 }
 
 // Is this beat about anyone in the focus? Two "yes" answers aren't cast matches:
 //   - A BROADCAST is the world's own voice with no agent ids; a death announced to the realm
 //     is never filtered out by a character focus. They are rare, so this costs no scrolling.
-//   - A world EVENT that names nobody lands on everybody.
+//   - An INJECTION that names nobody lands on everybody.
 export function involves(item: FeedItem, focus: Set<string>): boolean {
   if (item.kind === "broadcast") return true;
   const cast = itemCast(item);
@@ -148,7 +101,7 @@ export function involves(item: FeedItem, focus: Set<string>): boolean {
  *
  * Callers intersect with the action's `affected_entity_ids` to say which deed made it.
  */
-export function bornInStep(step: StepEvent): Set<string> {
-  const table = step.entities ?? {};
+export function bornInStep(step: StepView): Set<string> {
+  const table = indexStep(step).entities;
   return new Set(Object.keys(table).filter((eid) => table[eid]?.created_step === step.step));
 }

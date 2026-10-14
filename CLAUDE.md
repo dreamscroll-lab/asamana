@@ -29,7 +29,7 @@ Dependency direction is strictly downward: `interaction → world/engine/agent �
 
 ## Design Principles
 
-Every code change must follow these five principles:
+Every code change must follow these six principles:
 
 ### 1. Holistic Impact
 Before changing anything, check whether it affects `core/`, `agent/`, `engine/`, `world/`, `interaction/`, `providers/`, config, snapshots, events, or tests. Cross-boundary changes require identifying all affected sites first.
@@ -53,6 +53,13 @@ Asamana exists so that agents drive emergent narrative on their own. Every desig
 - **`is_main_character` is a narrative tier, not a cognition mode.** It controls scheduling priority, perception fidelity, memory-write thresholds and failure retry (`complete_with_retry`). It must **never** switch between LLM and rules — don't write `if is_main_character: LLM else: rule` for a new cognition gate.
 - **The only way to reduce cognition costs is to use a cheaper model tier.** Route background agents to a cheaper model through a separate scene while keeping the same LLM cognition path. **Never** introduce a per-agent LLM/rules switch (`tiered_cognition`, `use_llm_cognition` or similar).
 - **Rule-based cognition is only a fallback for LLM failure, never a normal execution path** (e.g. the fallback in `ImportanceEvaluator`). See the fallback tiers under Rule 1 below.
+
+### 6. One Name per Concept
+A concept has one name everywhere: code, comments, docs, API and prompts. Before naming
+something, check whether the project already names it, and use that name; don't coin a synonym
+for an existing concept. Two names are justified only when they name two different things, and
+then the difference is stated where they meet. Where two names for one thing are found, merge
+them.
 
 ---
 
@@ -636,7 +643,7 @@ A reasoning field is just the extreme case that every conclusion depends on.
   `target_index` in relation evolution. Nothing depends on it; it's just a coordinate, so it
   **yields to the reasoning**, placed after `reason`/`rationale` (§5, second boundary).
 - **Generation premise** ("whom/where does this land on"): `DecisionEngine`'s `person_indices` /
-  `destination_index` / `physical_entity_index`, `EventSystem`'s `recipients` / `location_scope`, dialogue's
+  `destination_index` / `physical_entity_index`, `NarrativeEditor`'s `recipients` / `location_scope`, dialogue's
   `speaker`, reflection's `source_indices`. **It shapes how the content after it gets written**, so
   **it must come before that content**. The exact words said to a recipient can't be
   written before the recipient is chosen; write the words first and then look for an index, and the
@@ -834,7 +841,7 @@ gender shows. If any of these applies, it **must** be included:
 **Leave it out:**
 
 - For pure rulings **with no people in the output** (importance scoring, goal progress status, the
-  event-injection gate's boolean, severity tiers) — their `reason` is a short justification that
+  narrative editor's injection gate, severity tiers) — their `reason` is a short justification that
   never becomes narrative.
 - When the person is only a **routing key** in the prompt (location/item menus, or an id list
   used just to align indices).
@@ -1016,79 +1023,33 @@ Dependencies: `phaser/` may use `lib/`; `lib/` and `hooks/` may use `api/`; none
 **Terminology** (a theatre crew: keep these apart in code, comments and docs):
 - **character** (角色): a person in the world — identity, body, memory, relations, situation.
   The world and the narrative know only characters; how a character comes to think is no part
-  of the story. A character is passive on its own: it has state but forms no intent.
+  of the story.
 - **Agent**: a character's cognition, AI-driven, and the default for every character. The
-  `Agent` class carries the character with its AI cognition; `agent_id` is the character's id.
-- **actor** (演员): a character's secondary cognition, driven by a person (the user in actor
-  mode) instead of AI, for at most one character per world. Both are code-layer solutions for
-  making a character think, never narrative concepts.
+  `Agent` class carries the character with its AI cognition.
+- **actor** (演员): a character's secondary cognition, driven by a person (the user) instead of
+  AI, for at most one character per world. Agent and actor are code-layer solutions for making
+  a character think, never narrative concepts.
 - **director** (导演): the user in director mode, who performs no character and steers the world.
 - **doer** (行动者): whoever performs a given action, as executors and feedback see it
-  (`doer_id`; `doer_ids` may include Npcs, `doer_agent_ids` is the subset with cognition). Not
-  "actor" or "acting agent": both collide with the theatre vocabulary above.
+  (`doer_id`). Not "actor" or "acting agent": both collide with the vocabulary above.
 
-Both cognitions follow the one loop `perception → motivation → decision → action → feedback`.
-Perception is identical, actions are adjudicated identically, and feedback is computed and
-written identically. The actor takes over **motivation and decision** (goals, actions, whether
-to break off an action in progress) and may amend the subjective part of feedback.
-
-- **The runtime never asks who drives a character.** It calls every character the same way, and
-  the character asks its actor (`Agent.actor`, the `agent.actor.Actor` protocol) where one
-  performs it: `Agent.plan_step` yields the same `AgentStepPlan`, `Agent.evaluate_interrupt`
-  the same verdict, `Agent.decides_this_step` sets its own pace in place of the scheduler's
-  cadence, and `Agent.reads_world_pressure` turns off the world-pressure judgment, which is
-  motivation. The actor is wired once, when the runtime is built
-  (`NarrativeRuntime.cast_actor`); a test keeps the step loop and its stages free of it.
-- The actor is not a rule path and does not conflict with Design Principle 5: no cognition gate
-  switches to rules. For its character the AI's decision, goal generation, world-pressure
-  goals and LLM interrupt judgment don't run; everything else does.
-- `engine/actor_coordinator.py` implements the actor: it asks the person through its
-  `ActorChannel`, and the step suspends there until they answer:
-  - **Interrupt**: break off or not, and why (`ActorInterruptAnswer`). The teardown is the
-    engine's, as for anyone.
-  - **Decision**: the decision and goals (`ActorDecision`). Words about what to do next, said
-    with a break-off, are read only at that step's decision stage, where the lists exist, and
-    come back as the turn's `proposal`.
-- What reaches the actor is what the character perceived, defined once in `engine/signals.py`:
-  the same signals that put an AI character before the world-pressure judgment (messages,
-  broadcasts where it stands, others' acts it saw; not mere co-location). The actor replaces
-  that judgment, so no threshold filters them. Being acted on reaches a character through
-  feedback, not perception, so the runtime tells every character it was acted on
-  (`Agent.note_acted_upon`) and the actor hears of it.
-- The actor's action (`ActorAction`) has the decision's own flat slots, with ids where the model
-  gives indices, and is bound by the same per-type binders (`DecisionEngine.bind_actor_action`).
-  Its ids must come from the lists in the turn's `ActorBriefing`, the ones the AI's decision
-  binds against (`agent.decision.candidate_lists`), so the actor reaches exactly what the
-  character perceives. A refused answer raises at submit and the turn stays open.
-- The actor answers in their own words; the engine reads them into an answer
-  (`ActorCoordinator.interpret`: a decision on those lists, with goals only where the words
-  state them, or whether to break off), and the actor confirms before it is submitted. The
-  reading is a functional translation: it decides nothing for the character and writes nothing.
-  Its prompt sees an instruction about the character and the character's situation, never the
-  actor: "actor" is a code-layer concept, and naming it there makes the model reason about who
-  is playing whom.
-- The actor may amend the subjective part of feedback the next decision turn lists
-  (`ActorFeedback`: experiential memories, insights, changed relations): emotion, those
-  memories (rewrite or forget) and trust/affection. Factual memories, outcomes, body and
-  belongings are not amendable: they are what happened. Relation labels and summaries aren't
-  either: they are a third-person reading (`RelationEvolution`), not the character's feeling.
-- Planning stays write-free as for the AI, except the actor's goals and amendments: they land
-  at the decision stage, since they stand whether or not that step's action happens.
-- A suspended step is never committed. Restore resumes at the last committed step and rolls back
-  what the uncommitted step wrote (memories after that step, relations from its snapshot).
-  Stopping a run withdraws an open turn (`StepWithdrawn`); the application then drops the
-  session, and the next restore picks up from there.
-- Casting belongs to the world's setup: it is chosen in the act of confirming the world
-  (`POST /confirm` with `character_id`), so a confirmed world (every bundled example among
-  them) takes no actor. It lives in the catalog (`ActorCasting`): the cast character is built
-  main tier, and the runtime is built with the actor wired to it. The actor's exit is one-way:
-  the character returns to AI cognition, keeps its tier, and nobody can be cast again.
-- The API reaches the actor through `interaction/api/actor.py`: the open turn (also pushed over
-  the WebSocket as `actor_turn` frames), reading the actor's words, and answering a turn named
-  by its `turn_id`, so an answer meant for a closed turn never lands on the next one (step and
-  kind don't name a turn: a step replayed after a restore asks them again). While an
-  actor performs, the director's routes are closed behind the one gate
-  `ApiServices.require_director`; run control stays open.
+**Principles:**
+- **One loop for both.** Either cognition follows `perception → motivation → decision → action →
+  feedback`. Perception is identical, actions are adjudicated identically, and feedback is
+  computed and written identically. The actor takes over only motivation and decision, and may
+  amend the subjective part of feedback (emotion, experiential memories, trust/affection), never
+  what happened (facts, outcomes, body, belongings).
+- **The runtime never asks who drives a character.** It calls every character the same way; the
+  character consults its actor (`Agent.actor`) where one performs it. No `if actor` in the step
+  loop or its stages.
+- **Not a rule path.** The actor replaces the AI's motivation and decision for its character; no
+  cognition gate switches to rules (Design Principle 5).
+- **The actor knows only what the character perceives.** What it is offered at a turn comes from
+  the character's perception as the engine recorded it. What it sees of the world is a filter
+  over the step (`StepView`): the character's own body and mind, the public side of what is in
+  the place it ends the step in, and every event whose audience includes it. Visibility is
+  decided once, in what each event records (its public side and its audience); a filter that
+  shows too much or too little is fixed there, never by a second visibility rule downstream.
 
 The cognition loop is `perception → motivation → decision → action → feedback`. Each subsystem in `agent/` is distinct and cooperates through explicit state — do not collapse them into one convenience object.
 

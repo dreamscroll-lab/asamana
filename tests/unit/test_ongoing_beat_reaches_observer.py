@@ -3,8 +3,8 @@
 The runtime must pass through the middle beat ExecutionProcessor builds every step, or a
 multi-step act reads as "he set out to do X" … hours of silence … "X turned out thus".
 
-The tick record must carry ``agent_name`` (else the read model falls back to the agent_id, an id
-in the narrative layer), ``execution_id`` (ties it to its act) and ``action_description``.
+The tick record must carry ``agent_name`` (a name, never the agent_id, for narrative readers of the
+record), ``execution_id`` (ties it to its act) and ``action_description``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from core.interfaces.action import ActionTarget, ActionType, AgentAction, Ref
 from engine.execution_processor import ExecutionProcessor
 from engine.executors.registry import ActionExecutorRegistry
 from engine.executors.work import WorkExecutor
-from interaction.models import _action_from_record
+from tests.unit.step_view import the_action
 from tests.unit.test_action_executors import _directory, _make_agent, _make_environment
 from tests.unit.bus_tap import tap
 
@@ -102,18 +102,19 @@ async def test_the_progress_beat_says_who_it_is_aimed_at(container) -> None:
 
     assert tick["target"]["acts_on"] == [{"kind": "agent", "id": "agent-b"}]
     # And it survives into the read model the renderer actually consumes.
-    assert [r.id for r in _action_from_record(tick).target.acts_on] == ["agent-b"]
+    assert [r.id for r in the_action(tick).target.acts_on] == ["agent-b"]
 
 
 @pytest.mark.asyncio
 async def test_the_progress_beat_survives_the_read_model_without_leaking_an_id(container) -> None:
-    summary = _action_from_record(await _tick_a_multi_step_work(container))
+    tick = await _tick_a_multi_step_work(container)
+    assert tick["agent_name"] == "李渊"  # a name, never the id
 
+    summary = the_action(tick)
     assert summary.phase == "ongoing_tick"
-    assert summary.agent_name == "李渊"
-    assert "agent-" not in summary.agent_name  # the fallback must not put the id here
+    assert summary.initiator_id == "agent-a"
     assert summary.execution_id
-    assert summary.action_description
+    assert summary.private.action_description
 
 
 @pytest.mark.asyncio
@@ -141,16 +142,14 @@ async def test_the_progress_beat_actually_reaches_the_step_stream(container) -> 
     )
 
     await runtime.run_step([agent])                       # step 1: he sets out
-    begin = published()[0]["actions"][0]
+    begin = published()[0]["snapshot"].events_of("action")[0]
     assert begin["phase"] == "begin", "a multi-step opening must stay an opening, not 'settled'"
     assert agent.personality.state.action_status == ActionStatus.IN_PROGRESS
 
     await runtime.run_step([agent])                       # step 2: still at it
-    ticks = [r for r in published()[0]["actions"]
+    ticks = [r for r in published()[0]["snapshot"].events_of("action")
              if r.get("phase") == "ongoing_tick"]
 
     assert ticks, "the middle beat must reach the observer's stream, not just the CLI log"
     assert ticks[0]["execution_id"] == begin["execution_id"]  # …tied to the act it belongs to
-    # Never an id. This fixture's directory is empty, so the name degrades to "某人" (someone) per the
-    # directory's contract; the exact-name case is pinned above.
-    assert "agent-" not in ticks[0]["agent_name"]
+    assert [p["agent_id"] for p in ticks[0]["parts"]] == ["agent-1"]

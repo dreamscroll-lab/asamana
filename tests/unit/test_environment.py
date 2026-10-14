@@ -14,6 +14,7 @@ from engine.environment import IN_TRANSIT, EnvironmentSystem
 from world.models import EntityPresence, WorldEntity, WorldEntitySeed, WorldEntityType
 from core.interfaces.place import Place
 from worlds.tiled import TiledWorldConfig
+from tests.unit.env_state import restore, saved
 
 
 def _world_time(step: int = 1) -> WorldTime:
@@ -446,18 +447,17 @@ def test_change_entity_state_returns_false_for_unknown_entity() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_snapshot_state_includes_entity_states() -> None:
+def test_world_state_includes_entities() -> None:
     env = EnvironmentSystem()
     env.place_agent(agent_id="a1", location_id="hall")
     item = _make_item("torch", "火炬", location_id="hall", state="lit")
     env.register_entity(item)
 
-    state = env.snapshot_state()
+    state = env.world_state()
 
-    assert "entity_states" in state
-    assert "torch" in state["entity_states"]
-    assert state["entity_states"]["torch"]["name"] == "火炬"
-    assert state["entity_states"]["torch"]["state"] == "lit"
+    assert "torch" in state["entities"]
+    assert state["entities"]["torch"]["name"] == "火炬"
+    assert state["entities"]["torch"]["state"] == "lit"
 
 
 def test_carried_observations_survive_a_snapshot_round_trip() -> None:
@@ -472,21 +472,22 @@ def test_carried_observations_survive_a_snapshot_round_trip() -> None:
     )
 
     restored = EnvironmentSystem()
-    restored.restore_state(json.loads(dump_json(env.snapshot_state())))
+    restore(restored, json.loads(dump_json(saved(env))))
     restored.begin_step(step=2, world_time=_world_time(2))
     env.begin_step(step=2, world_time=_world_time(2))
 
     assert restored._step_annotations == env._step_annotations
 
 
-def test_snapshot_state_entity_states_excludes_locations() -> None:
+def test_world_state_entities_exclude_locations() -> None:
     env = EnvironmentSystem()
     env.space.register_place(_make_location("hall", "大殿"))
     env.place_agent(agent_id="a1", location_id="hall")
 
-    state = env.snapshot_state()
+    state = env.world_state()
 
-    assert "hall" not in state.get("entity_states", {})
+    assert "hall" not in state["entities"]
+    assert state["places"] == {"hall": "大殿"}
 
 
 # ---------------------------------------------------------------------------
@@ -511,19 +512,6 @@ def test_move_agent_updates_location_in_spatial() -> None:
     spatial = env.spatial_for(agent_id="agent-1")
 
     assert spatial.location_id == "palace"
-
-
-def test_snapshot_state_carries_where_each_body_stands() -> None:
-    """Occupancy is stored once. There is no inverted index (who is where): nothing reads it, and it
-    would drift from the primary copy."""
-    env = EnvironmentSystem()
-    env.place_agent(agent_id="agent-1", location_id="hall")
-    env.place_agent(agent_id="agent-2", location_id="garden")
-
-    state = env.snapshot_state()
-
-    assert state["body_locations"] == {"agent-1": "hall", "agent-2": "garden"}
-    assert "location_occupancy" not in state
 
 
 def test_environment_loads_world_config_locations() -> None:
@@ -917,7 +905,7 @@ def test_check_physical_feasibility_landmark_succeeds_when_at_location() -> None
 
 
 # ---------------------------------------------------------------------------
-# restore_state() — inverse of snapshot_state() for mutable entity state
+# restore_state() — inverse of world_state()/engine_state() for mutable entity state
 # ---------------------------------------------------------------------------
 
 def test_restore_state_reapplies_item_state_location_and_owner() -> None:
@@ -930,14 +918,14 @@ def test_restore_state_reapplies_item_state_location_and_owner() -> None:
     live.change_entity_state(
         EntityStateChange(entity_id="sword", new_state="bloodied", owner_id="a1"),
     )
-    captured = live.snapshot_state()
+    captured = saved(live)
 
     # Fresh environment rebuilt from step-0 seeds: sword is intact, on the floor.
     fresh = EnvironmentSystem()
     fresh.space.register_place(_make_location("hall", "hall"))
     fresh.register_entity(_make_item("sword", "sword", location_id="hall"))
 
-    fresh.restore_state(captured)
+    restore(fresh, captured)
 
     restored = fresh.find_item("sword")
     assert restored is not None
@@ -951,20 +939,20 @@ def test_restore_state_reapplies_item_state_location_and_owner() -> None:
 
 def test_restore_state_reapplies_a_seeded_items_privacy() -> None:
     """A runtime change to a seed item's is_public must be restored too. Otherwise a hidden private
-    item becomes visible to everyone after restore (the same reason snapshot_state writes this
+    item becomes visible to everyone after restore (the same reason world_state writes this
     field)."""
     live = EnvironmentSystem()
     live.space.register_place(_make_location("hall", "hall"))
     live.register_entity(_make_item("letter", "letter", location_id="hall"))
     live.find_item("letter").is_public = False
-    captured = live.snapshot_state()
+    captured = saved(live)
 
     fresh = EnvironmentSystem()
     fresh.space.register_place(_make_location("hall", "hall"))
     fresh.register_entity(_make_item("letter", "letter", location_id="hall"))
     assert fresh.find_item("letter").is_public is True   # seeds start public
 
-    fresh.restore_state(captured)
+    restore(fresh, captured)
 
     assert fresh.find_item("letter").is_public is False
 
@@ -975,17 +963,17 @@ def test_restore_state_reregisters_entity_created_mid_run() -> None:
     fresh.space.register_place(_make_location("hall", "hall"))
 
     fresh.restore_state(
-        {
-            "entity_states": {
-                "letter": {
-                    "name": "letter",
-                    "entity_type": "item",
-                    "state": "sealed",
-                    "presence": "at_location",
-                    "presence_ref": "hall",
-                }
+        npcs={},
+        entities={
+            "letter": {
+                "name": "letter",
+                "entity_type": "item",
+                "state": "sealed",
+                "presence": "at_location",
+                "presence_ref": "hall",
             }
-        }
+        },
+        engine={},
     )
 
     letter = fresh.find_item("letter")
@@ -998,9 +986,9 @@ def test_restore_state_reregisters_entity_created_mid_run() -> None:
 def test_restore_state_ignores_missing_or_malformed_payload() -> None:
     env = EnvironmentSystem()
     env.space.register_place(_make_location("hall", "hall"))
-    # Must not raise on absent or wrongly-typed entity_states.
-    env.restore_state({})
-    env.restore_state({"entity_states": "not-a-mapping"})
+    # Must not raise on empty or wrongly-typed parts.
+    env.restore_state(npcs={}, entities={}, engine={})
+    env.restore_state(npcs="not-a-mapping", entities="not-a-mapping", engine={})  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------- #
@@ -1157,7 +1145,7 @@ def test_when_it_appeared_survives_a_restore() -> None:
 
     fresh = EnvironmentSystem()
     fresh.space.register_place(_make_location("hall", "大殿"))
-    fresh.restore_state(env.snapshot_state())
+    restore(fresh, saved(env))
 
     assert fresh.all_live_entities()[0].created_step == 9
 

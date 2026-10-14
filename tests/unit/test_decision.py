@@ -1007,8 +1007,7 @@ def test_decision_prompt_surfaces_broadcasts(container: object) -> None:
 
     prompt = _decision_prompt(engine, personality, packet, _ACTION_SPACE)  # noqa: SLF001
 
-    assert "世界传来" in prompt
-    assert "大雨倾盆，道路泥泞难行" in prompt
+    assert "全局广播：大雨倾盆，道路泥泞难行" in prompt
     # Code-layer enums must not appear in first-person text (on Python 3.11+ an f-string renders a
     # str-Enum as "BroadcastType.WORLD_EVENT")
     assert "BroadcastType" not in prompt

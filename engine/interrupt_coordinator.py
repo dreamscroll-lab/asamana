@@ -26,6 +26,7 @@ from core.interfaces.severity import Severity
 from core.interfaces.trace import Stage
 from core.interfaces.urgency import URGENCY_INTERRUPT_THRESHOLD
 from core.logging import get_logger
+from core.prompts import broadcast_tag
 from core.duration import describe_duration
 from engine.clock import GlobalClock
 from engine.environment import EnvironmentSystem
@@ -121,7 +122,7 @@ class InterruptCoordinator:
                 if bc.location_scope is not None:
                     if bc.location_scope != self._environment.get_body_location(agent_id):
                         continue
-                _note(agent_id, f"世界广播：{bc.content}")
+                _note(agent_id, f"{broadcast_tag(bc.location_scope)}：{bc.content}")
 
         # Path 3: ExternalGoal THREAT, urgency >= HIGH, edge-triggered
         for agent_id, agent in agents.items():
