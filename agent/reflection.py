@@ -13,6 +13,7 @@ from agent.memory import MemorySystem
 from agent.memory_types import Memory, MemoryKind
 from agent.personality import PersonalityLayer
 from core.coerce import coerce_float
+from core.context import annotate_active_call, note_active_call_adoption
 from core.interfaces.llm import IndexedRef, LLMMessage, LLMRouter, LLMScene, extract_json, output_budget
 from core.interfaces.perception import Situation
 from core.logging import get_logger
@@ -138,6 +139,7 @@ class ReflectionEngine:
             )
             data = extract_json(response.content)
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning(
                 "reflection_llm_failed",
                 extra={"agent_id": self._agent_id, "step": current_step, "error": str(exc)},
@@ -146,6 +148,7 @@ class ReflectionEngine:
 
         insights_payload = data.get("insights") if isinstance(data, dict) else None
         if not isinstance(insights_payload, list):
+            note_active_call_adoption(False, "missing_insights")
             return ReflectionResult()
 
         candidate_by_id = {memory.id: memory for memory in candidates}
@@ -214,6 +217,9 @@ class ReflectionEngine:
                     "insights": len(new_insights),
                 },
             )
+        annotate_active_call(insights_returned=len(insights_payload), insights_written=len(new_insights))
+        if insights_payload and not new_insights:
+            note_active_call_adoption(False, "no_usable_insights")
         return ReflectionResult(new_insights=new_insights)
 
     def _build_prompt(

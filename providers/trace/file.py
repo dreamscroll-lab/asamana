@@ -11,7 +11,7 @@ Records are buffered in memory per ``(world_id, segment)`` and written once on
 ``flush`` — under ``max_concurrent_llm`` fan-out, per-call synchronous appends
 would block the event loop and interleave lines; a per-step flush is bounded and
 makes the whole step land atomically. The runtime flushes each step; the
-application flushes the ``build`` segment after world construction.
+world builder flushes the ``build`` segment when construction exits.
 """
 
 from __future__ import annotations
@@ -217,6 +217,15 @@ class BufferedJsonlTraceSink(TraceSink):
     # ------------------------------------------------------------------
 
     def _all_records(self, world_id: str) -> list[dict[str, Any]]:
+        """Combine persisted records with live calls that can still receive step annotations."""
+        buffered = [
+            self._to_record(obj)
+            for (wid, _segment), objects in self._buffer.items() if wid == world_id
+            for obj in objects
+        ]
+        return self._persisted_records(world_id) + buffered
+
+    def _persisted_records(self, world_id: str) -> list[dict[str, Any]]:
         """Parse every JSONL record for a world, cached on file signature."""
         world_dir = self._world_dir(world_id)
         if not world_dir.exists():

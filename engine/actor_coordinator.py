@@ -34,6 +34,7 @@ import json
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from agent.personality import ActionStatus
+from core.context import annotate_call, note_active_call_adoption
 from core.interfaces.action import DialogueTurn
 from core.interfaces.actor import (
     UNREADABLE,
@@ -294,10 +295,12 @@ class ActorCoordinator:
             raise ValueError("No decision is waiting for the actor")
         agent, packet = self._asking
         try:
-            reading = await agent.interpret_actor_decision(text, packet)
+            with annotate_call(actor_words=text, turn_id=turn.turn_id):
+                reading = await agent.interpret_actor_decision(text, packet)
             if reading is not None and reading.action is not None:
                 agent.bind_actor_action(reading.action, packet)
         except ActorAnswerRejected as exc:
+            note_active_call_adoption(False, exc.reason)
             entry = SaidEntry(step=turn.step, turn_id=turn.turn_id, words=text, reason=exc.reason)
         else:
             entry = SaidEntry(

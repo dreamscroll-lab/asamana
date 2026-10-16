@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Sequence
 
+from core.context import note_active_call_adoption
 from core.interfaces.llm import (
     IndexedRef,
     LLMMessage,
@@ -112,6 +113,7 @@ class TemplateSelector:
                         },
                     )
                     return chosen
+                note_active_call_adoption(False, "invalid_template_index")
                 last_exc = ValueError(
                     f"LLM returned no usable template index (attempt {attempt + 1}): "
                     f"{response.content[:200]}"
@@ -121,6 +123,7 @@ class TemplateSelector:
                     extra={"theme": theme, "attempt": attempt + 1, "reason": str(last_exc)},
                 )
             except Exception as exc:
+                note_active_call_adoption(False, "unusable_payload")
                 last_exc = exc
                 logger.warning(
                     "template_selection_attempt_failed",

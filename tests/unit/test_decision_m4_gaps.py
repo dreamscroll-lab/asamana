@@ -736,7 +736,7 @@ class _CallBox:
 
     def __init__(self) -> None:
         self.parse_ok = None
-        self.adopted = None
+        self.adopted = True
         self.reject_reason = ""
 
 

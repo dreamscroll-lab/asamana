@@ -8,6 +8,7 @@ from typing import AbstractSet, Any, Mapping, Sequence
 
 from agent.personality import SECRET_LABEL
 from agent.relation import NEUTRAL_AFFECTION, NEUTRAL_TRUST
+from core.context import note_active_call_adoption
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json_object, output_budget
 from core.logging import get_logger
 from core.prompts import MEMORY_IMPORTANCE_SCORE_DEFINITION, RELATION_LABEL_FORMAT
@@ -443,6 +444,7 @@ class ThemeAnalyzer:
                     # A dedicated event name + structured counts so cast-size mismatches can be aggregated (the
                     # attempt_failed below is shared by every failure mode and only has the numbers in free text).
                     # world_id is set into the log context by build(), so it needn't be passed here.
+                    note_active_call_adoption(False, "cast_size_out_of_range")
                     logger.warning(
                         "cast_size_rejected",
                         extra={
@@ -458,6 +460,7 @@ class ThemeAnalyzer:
                         f"outside the required {required}-{ceiling if ceiling else '∞'}"
                     )
                 else:
+                    note_active_call_adoption(False, "no_json_object")
                     last_exc = ValueError(
                         f"LLM returned no parseable JSON for theme '{theme}' "
                         f"(attempt {attempt + 1}): {response.content[:200]}"
@@ -469,6 +472,7 @@ class ThemeAnalyzer:
                 if attempt < BUILD_ATTEMPTS - 1:
                     await asyncio.sleep(1.0)
             except Exception as exc:
+                note_active_call_adoption(False, "unusable_payload")
                 last_exc = exc
                 logger.warning(
                     "theme_analysis_attempt_failed",

@@ -327,12 +327,12 @@ def test_in_memory_sink_marks_only_the_addressed_call_unadopted() -> None:
     sink.mark_call_unadopted("w", step=1, agent_id="a1", stage="motivation", reason="conscripted")
     marked = [(c.stage, c.agent_id, c.adopted, c.reject_reason) for c in sink.llm_calls]
     assert marked == [("motivation", "a1", False, "conscripted"),
-                      ("motivation", "a2", None, ""),
-                      ("decision", "a1", None, "")]
+                      ("motivation", "a2", True, ""),
+                      ("decision", "a1", True, "")]
     # No match means nothing happens; like the two context helpers, a missed mark only loses one
     # diagnostic.
     sink.mark_call_unadopted("w", step=9, agent_id="a1", stage="motivation", reason="conscripted")
-    assert [c.adopted for c in sink.llm_calls] == [False, None, None]
+    assert [c.adopted for c in sink.llm_calls] == [False, True, True]
 
 
 @pytest.mark.asyncio
@@ -444,7 +444,8 @@ async def test_buffered_jsonl_flush_all_rescues_stragglers(tmp_path) -> None:
     # a straggler arrives for step 2 AFTER its per-step flush (frozen-context deferred write);
     # the runtime never re-flushes step 2 per step, so it is not yet on disk...
     sink.record_llm_call(_call(step=2, stage="memory", scene="memory_summarization"))
-    assert len(sink.read_calls("w", step=2)) == 1
+    assert len(sink.read_calls("w", step=2)) == 2
+    assert len((tmp_path / "w" / "step_000002.jsonl").read_text().splitlines()) == 1
     # ...until the shutdown flush-all writes every remaining buffered segment.
     await sink.flush("w")  # no step → flush ALL remaining segments
     rescued = sink.read_calls("w", step=2)
@@ -621,7 +622,7 @@ def test_note_active_call_adoption_records_verdict_and_reason() -> None:
     note_active_call_adoption(False, "whatever")  # no active call → no-op, must not raise
 
     class _Box:
-        adopted = None
+        adopted = True
         reject_reason = ""
 
     box = _Box()
@@ -630,7 +631,7 @@ def test_note_active_call_adoption_records_verdict_and_reason() -> None:
     assert box.adopted is False
     assert box.reject_reason == "missing_action_description"
 
-    # first verdict wins; later stray verdicts must not overwrite it
+    # The first rejection wins; acceptance never clears it.
     note_active_call_adoption(True)
     assert box.adopted is False
     assert box.reject_reason == "missing_action_description"
@@ -680,15 +681,14 @@ async def test_discarded_call_is_ok_and_parseable_yet_not_adopted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_verdict_stays_none() -> None:
-    """Uninstrumented paths take no position → None (not False): don't record "nobody reported" as
-    "discarded"."""
+async def test_successful_output_is_adopted_without_a_consumer_mark() -> None:
+    """A successful response stays adopted unless a consumer explicitly rejects it."""
     clear_log_context()
     set_log_context(world_id="w", step="1")
     sink = InMemoryTraceSink()
     router = _router(_OkProvider("just prose"), sink)
     await router.complete(LLMScene.MEMORY_SUMMARIZATION, [LLMMessage(role="user", content="x")])
-    assert sink.llm_calls[0].adopted is None
+    assert sink.llm_calls[0].adopted is True
     assert sink.llm_calls[0].reject_reason == ""
 
 def test_build_scene_order_names_real_scenes() -> None:

@@ -14,7 +14,7 @@ from agent.personality import (
     SoulLayer,
     parse_emotion_type,
 )
-from core.context import annotate_call, observe_stage
+from core.context import annotate_call, note_active_call_adoption, observe_stage
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, coerce_bool, extract_json_object, output_budget
 from core.interfaces.trace import Stage
 from core.logging import get_logger
@@ -126,10 +126,12 @@ class AgentGenerator:
                 payload = extract_json_object(response.content)
                 if payload is not None:
                     return self._definition_from_payload(figure, analysis, payload, agent_id)
+                note_active_call_adoption(False, "no_json_object")
                 last_exc = ValueError(
                     f"No parseable JSON for figure '{figure.name}' (attempt {attempt + 1})"
                 )
             except Exception as exc:
+                note_active_call_adoption(False, "unusable_payload")
                 last_exc = exc
             logger.warning(
                 "agent_definition_attempt_failed",

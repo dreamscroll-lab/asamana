@@ -143,8 +143,9 @@ class LLMCallTrace:
     - ``parse_ok``: did structured data come out? None = no parse attempted; set via
       ``core.context.note_active_call_parse``.
     - ``adopted``: did the **consumer use** it? Only this catches a parseable payload the engine
-      couldn't act on (e.g. a missing required field). None = no verdict filed; False carries
-      ``reject_reason``. A deliberate no-op the engine honored (``act:false``) is adopted.
+      couldn't act on (e.g. a missing required field). Successful responses default to True;
+      consumers mark rejected output False with ``reject_reason``. None means no provider output.
+      A deliberate no-op the engine honored (``act:false``) is adopted.
 
     Mutable so ``parse_ok`` / ``adopted`` can be filled in before the step is flushed.
     Observability only — never read back into logic, a prompt, or an embedding.
@@ -174,7 +175,7 @@ class LLMCallTrace:
     error: str = ""
     parse_ok: bool | None = None
     # See the class docstring.
-    adopted: bool | None = None
+    adopted: bool | None = True
     # A short code-layer slug (e.g. "missing_action_description") that makes the discard diagnosable.
     reject_reason: str = ""
     # Also logged on "llm_complete", to cross-reference a call across web / jsonl / logs.
@@ -233,7 +234,8 @@ class TraceSink(ABC):
 
         For a verdict reached after the call's own task is gone (arbitration discarding a
         step's cognition), when ``note_active_call_adoption``'s pointer has moved on. No match →
-        no-op. Observability-only: business logic must never read it back.
+        no-op. A later discard overrides an earlier acceptance; an existing rejection is kept.
+        Observability-only: business logic must never read it back.
         """
 
     @abstractmethod

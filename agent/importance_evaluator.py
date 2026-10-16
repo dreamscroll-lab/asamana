@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Sequence
 
-from core.context import observe_stage
+from core.context import note_active_call_adoption, observe_stage
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json, output_budget
 from core.interfaces.trace import Stage
 from core.logging import get_logger
@@ -119,6 +119,8 @@ class ImportanceEvaluator:
                 )
             data = extract_json(response.content)
             score = float(data.get("score", 0.5))
+            if "score" not in data:
+                note_active_call_adoption(False, "missing_score")
             logger.debug(
                 "memory_importance_llm",
                 extra={
@@ -129,6 +131,7 @@ class ImportanceEvaluator:
             )
             return max(0.0, min(1.0, score))
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning(
                 "memory_importance_llm_failed",
                 extra={"agent_id": self._agent_id, "error": str(exc)},

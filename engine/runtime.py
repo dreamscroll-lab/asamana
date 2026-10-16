@@ -136,6 +136,7 @@ class NarrativeRuntime:
         # double-fire the shutdown in run()'s finally. Guarded on the state's owner so no
         # caller can bypass it.
         self._running: bool = False
+        self._step_in_progress: bool = False
         self._event_seqs = EventSequencer(start_seq=start_event_seq)
         # Advances ongoing executions (tick) and lands completions/feedback; the main sweep,
         # death teardown and interrupts all land through it. Shares the same executor_registry.
@@ -345,7 +346,19 @@ class NarrativeRuntime:
         """
         await self._narrative_editor.aclose()
 
+    @property
+    def step_in_progress(self) -> bool:
+        """Whether this step's traces can still receive arbitration and execution annotations."""
+        return self._step_in_progress
+
     async def run_step(self, agents: List[Agent]) -> RuntimeStepResult:
+        self._step_in_progress = True
+        try:
+            return await self._run_step(agents)
+        finally:
+            self._step_in_progress = False
+
+    async def _run_step(self, agents: List[Agent]) -> RuntimeStepResult:
         step_start = time.perf_counter()
         agents_dict = {agent.agent_id: agent for agent in agents}
         # Sample the living set before any tick/decay/commit: death handling finds new deaths as

@@ -943,7 +943,7 @@ async def test_conscription_leaves_its_two_marks_on_the_step_traces(container) -
     marked = {c.agent_id: (c.adopted, c.reject_reason) for c in sink.llm_calls
               if c.stage == Stage.MOTIVATION.value}
     assert marked["agent-b"] == (False, "conscripted")
-    assert marked["agent-a"] == (None, ""), "发起方没被征召,他那次不该被判未采纳"
+    assert marked["agent-a"] == (True, ""), "发起方没被征召,他那次不该被判未采纳"
     # The decision isn't void (it survives to the next step via defer_decided_intent), but what the
     # world did with it must be stamped. One verdict field answers it, so audit doesn't have to
     # infer the same thing from side signals (is there an execution_id, an action call, is talk_role

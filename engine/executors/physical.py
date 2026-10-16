@@ -10,7 +10,7 @@ from agent.personality import EmotionType, parse_emotion_type
 from agent.relation import (
     NEUTRAL_AFFECTION, NEUTRAL_TRUST, format_relation_block, parse_relation_direction,
 )
-from core.context import GivenFacts, annotate_call, observe_stage
+from core.context import GivenFacts, annotate_call, note_active_call_adoption, observe_stage
 from core.interfaces.action import (
     KIND_OBJECT, ActionResult, ActionType, AgentAction, Deed, EntityStateChange,
     NpcEffect, TargetAgentEffect, parse_deed,
@@ -984,7 +984,10 @@ class PhysicalExecutor(ActionExecutor):
                     json_mode=True,
                 )
             data = extract_json(response.content)
+            if not isinstance(data, dict):
+                note_active_call_adoption(False, "response_not_an_object")
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning(
                 "physical_judge_llm_failed",
                 extra={"agent_id": agent.agent_id, "error": str(exc)},
@@ -1202,7 +1205,10 @@ class PhysicalExecutor(ActionExecutor):
                 json_mode=True,
                 )
             data = extract_json(response.content)
+            if not isinstance(data, dict):
+                note_active_call_adoption(False, "response_not_an_object")
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning(
                 "physical_reaction_llm_failed",
                 extra={"agent_id": target_agent.agent_id, "error": str(exc)},

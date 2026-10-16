@@ -25,7 +25,7 @@ from agent.memory_types import (
     importance_level,
 )
 from agent.memory_write_queue import MemoryWriteQueue
-from core.context import observe_stage, observe_step
+from core.context import note_active_call_adoption, observe_stage, observe_step
 from core.interfaces.embedding import EmbeddingProvider
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json, output_budget
 from core.interfaces.trace import Stage
@@ -1353,23 +1353,28 @@ class MemorySystem:
                 LLMScene.MEMORY_SUMMARIZATION, messages, max_tokens=output_budget(490), json_mode=True,
             )
             if _is_unusable_llm_content(response.content):
+                note_active_call_adoption(False, "empty_summary")
                 return None
             # extract_json raises; uncaught, one bad cluster would abort the whole compression round.
             data = extract_json(response.content)
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning(
                 "memory_summary_failed",
                 extra={"agent_id": self._agent_id, "error": str(exc)},
             )
             return None
         if not isinstance(data, dict):
+            note_active_call_adoption(False, "response_not_an_object")
             return None
         # Persist points only; reason is dropped so the reasoning is never embedded.
         points = data.get("points")
         if not isinstance(points, list):
+            note_active_call_adoption(False, "missing_points")
             return None
         cleaned = [str(p).strip() for p in points if str(p).strip()]
         if not cleaned:
+            note_active_call_adoption(False, "empty_summary")
             return None
         return "\n".join(f"- {p}" for p in cleaned)
 
@@ -1667,7 +1672,10 @@ class MemorySystem:
                 messages,
                 max_tokens=max_tokens,
             )
-            return response.content.strip()
+            content = response.content.strip()
+            if _is_unusable_llm_content(content):
+                note_active_call_adoption(False, "empty_monologue")
+            return content
         except Exception as exc:
             logger.warning(
                 "memory_llm_call_failed",

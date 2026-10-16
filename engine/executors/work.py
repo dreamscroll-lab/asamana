@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List
 
-from core.context import GivenFacts, annotate_call
+from core.context import GivenFacts, annotate_call, note_active_call_adoption
 from core.interfaces.action import (
     ActionTarget, ActionResult, ActionType, AgentAction, EntitySpawn, EntityStateChange,
 )
@@ -342,8 +342,12 @@ class WorkExecutor(ActionExecutor):
                         max_tokens=output_budget(69),  # fact ≤36 chars; est. ~69 tok
                     json_mode=True,
                     )
-                factual = str(extract_json(resp.content).get("fact", "")).strip() or fallback
+                fact = str(extract_json(resp.content).get("fact", "")).strip()
+                if not fact:
+                    note_active_call_adoption(False, "missing_fact")
+                factual = fact or fallback
             except Exception as exc:
+                note_active_call_adoption(False, "unusable_payload")
                 logger.warning("work_interrupt_failed", extra={"agent_id": agent.agent_id, "error": str(exc)})
 
         doer_name = self._directory.agent_name(state.initiator_id)
@@ -578,5 +582,6 @@ class WorkExecutor(ActionExecutor):
                 updated_content=str(data.get("updated_content", "")).strip(),
             )
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning("work_outcome_failed", extra={"agent_id": agent.agent_id, "error": str(exc)})
             return None

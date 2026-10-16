@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, List
 
 from agent.relation import format_relation_block, parse_relation_direction, relation_legend
-from core.context import GivenFacts, annotate_call, observe_stage
+from core.context import GivenFacts, annotate_call, note_active_call_adoption, observe_stage
 from core.interfaces.action import (
     ActionResult, ActionTarget, ActionType, AgentAction, DialogueTurn, Observed, Ref, TargetAgentEffect,
 )
@@ -870,8 +870,12 @@ class SocialExecutor(ActionExecutor):
                     max_tokens=output_budget(69),  # fact ≤36 chars; est. ~69 tok
                 json_mode=True,
                 )
-            return str(extract_json(resp.content).get("fact", "")).strip() or fallback
+            fact = str(extract_json(resp.content).get("fact", "")).strip()
+            if not fact:
+                note_active_call_adoption(False, "missing_fact")
+            return fact or fallback
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning("talk_interrupt_summary_failed", extra={"agent_id": agent.agent_id, "error": str(exc)})
             return fallback
 
@@ -1059,8 +1063,10 @@ class SocialExecutor(ActionExecutor):
                 if parsed:
                     observation = " ".join(str(data.get("observation", "")).split()).strip()
                     return parsed, observation
+                note_active_call_adoption(False, "transcript_unattributable")
                 reason = "transcript_unattributable"
             except Exception as exc:
+                note_active_call_adoption(False, "unusable_payload")
                 reason = str(exc)
             logger.warning(
                 "talk_dialogue_failed",
@@ -1202,11 +1208,14 @@ class SocialExecutor(ActionExecutor):
                 )
             data = extract_json(response.content)
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning(
                 "talk_live_turn_failed",
                 extra={"agent_id": agent.agent_id, "step": step, "error": str(exc)},
             )
             return None
+        if "line" not in data and "end" not in data:
+            note_active_call_adoption(False, "missing_dialogue_turn")
         return str(data.get("line", "")).strip(), coerce_bool(data.get("end"), False)
 
     @staticmethod
@@ -1347,6 +1356,7 @@ class SocialExecutor(ActionExecutor):
             why = str(data.get("why", "")).strip() if not succeeded else ""
             return fact, succeeded, relation_dir, why
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning("talk_memory_summary_failed", extra={"agent_id": agent.agent_id, "error": str(exc)})
             return None
 
@@ -1431,8 +1441,12 @@ class SocialExecutor(ActionExecutor):
                     max_tokens=output_budget(95),
                     json_mode=True,
                 )
-            return str(extract_json(response.content).get("fact", "")).strip() or None
+            fact = str(extract_json(response.content).get("fact", "")).strip()
+            if not fact:
+                note_active_call_adoption(False, "missing_fact")
+            return fact or None
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning(
                 "talk_listener_memory_failed",
                 extra={"agent_id": agent.agent_id, "error": str(exc)},

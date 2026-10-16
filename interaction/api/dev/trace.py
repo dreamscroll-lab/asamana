@@ -22,9 +22,7 @@ def _aggregate(calls: list) -> dict[str, Any]:
     failures = sum(1 for c in calls if not getattr(c, "ok", True))
     parsed = [c for c in calls if getattr(c, "parse_ok", None) is not None]
     parse_failures = sum(1 for c in parsed if c.parse_ok is False)
-    # Adoption: of the calls whose consumer filed a verdict, how many were discarded.
-    # Rated against `judged` (not `calls`) so uninstrumented paths — which file no
-    # verdict — cannot dilute the rate into looking healthier than it is.
+    # Provider failures have no output to adopt; successful output is adopted unless rejected.
     judged = [c for c in calls if getattr(c, "adopted", None) is not None]
     discarded = sum(1 for c in judged if c.adopted is False)
     return {

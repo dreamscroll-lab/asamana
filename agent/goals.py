@@ -392,11 +392,11 @@ def text_to_long_term_goal_entity(text: str) -> GoalEntity:
     )
 
 
-def parse_goal_evaluation(content: str, goals: List[GoalEntity], step: int) -> None:
+def parse_goal_evaluation(content: str, goals: List[GoalEntity], step: int) -> bool:
     """Apply the judge's verdict {"goals": [{"reason", "index" (1-based), "status"}]} in place.
 
     Only index + status drive the update; reason is kept as progress_summary. Malformed entries
-    are skipped.
+    are skipped. Returns whether a verdict was usable, including an explicit empty list.
     """
     _STATUS_MAP = {
         "completed": GoalStatus.COMPLETED, "已完成": GoalStatus.COMPLETED,
@@ -407,12 +407,13 @@ def parse_goal_evaluation(content: str, goals: List[GoalEntity], step: int) -> N
     try:
         data = extract_json(content)
     except Exception:
-        return
+        return False
     if not isinstance(data, dict):
-        return
-    entries = data.get("goals", [])
+        return False
+    entries = data.get("goals")
     if not isinstance(entries, list):
-        return
+        return False
+    accepted = not entries
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -426,12 +427,14 @@ def parse_goal_evaluation(content: str, goals: List[GoalEntity], step: int) -> N
         if new_status is None:
             continue
         goals[pos].status = new_status
+        accepted = True
         goals[pos].last_evaluated_step = step
         reason = entry.get("reason")
         if reason:
             # The prompt caps this; don't slice it here, that would cut a persisted summary
             # mid-sentence.
             goals[pos].progress_summary = str(reason).strip()
+    return accepted
 
 
 def parse_residue(content: str) -> tuple[List[tuple[str, int | None]], str]:

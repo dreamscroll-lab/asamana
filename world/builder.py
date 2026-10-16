@@ -123,6 +123,12 @@ class WorldBuilder:
             return world
         finally:
             set_log_context(**previous_context)
+            try:
+                await self._container.trace_sink.flush(resolved_world_id)
+            except Exception as exc:
+                logger.warning(
+                    "build_trace_flush_failed", extra={"world_id": resolved_world_id, "error": str(exc)},
+                )
 
 def _purge_orphan_references(analysis: ThemeAnalysis) -> None:
     """Remove relations and event figure-refs that name truncated figures."""

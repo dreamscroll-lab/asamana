@@ -424,14 +424,18 @@ class LLMRouter:
     ) -> LLMResponse:
         """Complete through the provider configured for a scene. See LLMProvider.complete."""
 
+        from core.context import set_active_call
+
+        # A failed trace write must not leave parsing pointed at an earlier completion.
+        set_active_call(None)
         _t = time.perf_counter()
         # Shared by the runtime log and the trace record, to locate a call across both.
         call_id = str(uuid4())
         gate = self._semaphore if self._semaphore is not None else nullcontext()
         rate_gate = self._rate_gates.get(scene)
-        if rate_gate is not None:
-            await rate_gate.acquire()
         try:
+            if rate_gate is not None:
+                await rate_gate.acquire()
             async with gate:
                 result = await self._scene_providers[scene].complete(
                     messages,
@@ -439,6 +443,14 @@ class LLMRouter:
                     max_tokens=max_tokens,
                     json_mode=json_mode,
                 )
+        except asyncio.CancelledError:
+            if self._trace_sink is not None:
+                self._record_trace(
+                    scene, messages, None, temperature, max_tokens,
+                    round((time.perf_counter() - _t) * 1000, 1),
+                    call_id=call_id, error="cancelled", json_mode=json_mode,
+                )
+            raise
         except Exception as exc:
             # A rate-limit / overload arms the shared cooldown so sibling callers back off
             # together. Re-raise: callers own the fallback (CLAUDE.md Rule 1).
@@ -518,6 +530,7 @@ class LLMRouter:
                 agent_id=ctx.get("agent_id") or None,
                 step=int(step_raw) if step_raw and step_raw.isdigit() else None,
                 ok=response is not None,
+                adopted=True if response is not None else None,
                 error=error,
                 call_id=call_id,
                 extra=get_call_annotations(),

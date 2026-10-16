@@ -63,15 +63,14 @@ def note_active_call_parse(ok: bool) -> None:
 
 
 def note_call_adoption(call: Any, adopted: bool, reason: str = "") -> None:
-    """Record whether the consumer **used** *call*'s output (``reject_reason`` when not).
-    First verdict wins; no-op when *call* is None.
+    """Reject a call's output with its reason; successful output is adopted by default.
+    The first rejection wins; acceptance never clears it. No-op without provider output.
 
     Observability only. Never read back into logic, a prompt, or an embedding.
     """
-    if call is not None and getattr(call, "adopted", "x") is None:
-        call.adopted = adopted
-        if not adopted:
-            call.reject_reason = reason
+    if call is not None and not adopted and getattr(call, "adopted", None) is True:
+        call.adopted = False
+        call.reject_reason = reason
 
 
 def note_active_call_adoption(adopted: bool, reason: str = "") -> None:

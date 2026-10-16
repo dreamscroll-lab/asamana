@@ -1277,7 +1277,6 @@ class Agent:
                 # Valid JSON but no emotion → discard; note it, or the trace would look clean.
                 note_active_call_adoption(False, "missing_emotion")
                 return None
-            note_active_call_adoption(True)
             return emotion
         except Exception as exc:
             logger.warning(
@@ -1410,6 +1409,8 @@ class Agent:
                     json_mode=True,
                     )
             data = extract_json(resp.content)
+            if "interrupt" not in data:
+                note_active_call_adoption(False, "missing_interrupt")
             # Don't slice: the thought is quoted in the persisted outcome
             # (format_interrupt_reason_3p), and a cut would leave a broken clause forever. The
             # prompt's ≤60 chars owns the length.
@@ -1417,6 +1418,7 @@ class Agent:
         except Exception as exc:
             # Don't interrupt: interrupting is destructive, while the signal is already in memory
             # and pressure stays in pending_external_goals for the next re-plan.
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning(
                 "interrupt_llm_failed",
                 extra={"agent_id": self.agent_id, "step": step, "error": repr(exc)},

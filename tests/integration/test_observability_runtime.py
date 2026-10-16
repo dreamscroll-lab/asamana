@@ -104,6 +104,7 @@ async def test_run_step_records_stage_tagged_traces(container) -> None:
     assert Stage.DECISION.value in stages
     assert Stage.UNKNOWN.value not in stages
     assert all(c.world_id == world_id and c.step == 1 for c in sink.llm_calls)
+    assert all(c.adopted is not None for c in sink.llm_calls if c.ok)
     assert {c.agent_id for c in sink.llm_calls if c.stage == Stage.DECISION.value} <= {"a1", "a2"}
 
     # The per-step wall-clock total is recorded.

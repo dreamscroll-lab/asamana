@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
 from agent.personality import SECRET_LABEL
+from core.context import note_active_call_adoption
 from core.interfaces.directory import WorldDirectory
 from core.interfaces.llm import IndexedRef, LLMMessage, LLMRouter, LLMScene, coerce_bool, extract_json, output_budget
 from core.interfaces.phenomenon import Phenomenon
@@ -406,9 +407,12 @@ class NarrativeEditor:
             )
             data = extract_json(response.content)
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning("narrative_editor_gate_failed", extra={"error": str(exc)})
             return False
         inject = coerce_bool(data.get("inject"), False)
+        if "inject" not in data:
+            note_active_call_adoption(False, "missing_inject")
         logger.debug(
             "narrative_editor_gate",
             extra={
@@ -764,6 +768,7 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
         try:
             data = extract_json(response.content)
         except Exception as exc:
+            note_active_call_adoption(False, "invalid_json")
             logger.warning(
                 "injection_plan_parse_failed",
                 extra={"step": current_step, "error": str(exc)},
@@ -772,9 +777,11 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
 
         plan = self._parse_plan(data, agent_id_list, location_ref, entity_ref)
         if plan is None:
+            note_active_call_adoption(False, "invalid_plan")
             logger.warning("injection_plan_invalid", extra={"step": current_step})
             return None
         if plan.broadcast is None and plan.message is None and not plan.mutations:
+            note_active_call_adoption(False, "no_dispatchable_channel")
             logger.warning("injection_plan_no_valid_channel", extra={"step": current_step})
             return None
         return plan

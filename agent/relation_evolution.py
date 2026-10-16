@@ -27,7 +27,7 @@ from agent.relation import (
     RelationSystem,
 )
 from core.interfaces.agent_store import AgentRelation
-from core.context import annotate_call
+from core.context import annotate_active_call, annotate_call, note_active_call_adoption
 from core.interfaces.llm import (
     IndexedRef,
     LLMMessage,
@@ -137,6 +137,7 @@ class RelationEvolution:
                 )
             data = extract_json(response.content)
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning(
                 "label_evolution_llm_failed",
                 extra={"agent_id": self._agent_id, "step": current_step, "error": str(exc)},
@@ -145,6 +146,7 @@ class RelationEvolution:
 
         updates_payload = data.get("updates") if isinstance(data, dict) else None
         if not isinstance(updates_payload, list):
+            note_active_call_adoption(False, "missing_updates")
             return []
 
         applied: list[tuple[str, list[str], str]] = []
@@ -216,6 +218,9 @@ class RelationEvolution:
             )
             applied.append((target_id, wrote_labels, wrote_summary))
 
+        annotate_active_call(updates_returned=len(updates_payload), updates_applied=len(applied))
+        if updates_payload and not applied:
+            note_active_call_adoption(False, "no_usable_updates")
         return applied
 
     async def _build_target_context(

@@ -141,8 +141,6 @@ class NarrativeApplication:
             max_agents=self._config.world.max_agents,
             max_npcs=self._config.engine.max_npcs,
         )
-        # Flush the build segment (world-init LLM traces carry no step → build.jsonl).
-        await self._container.trace_sink.flush(world.world_id)
         self._sessions[world.world_id] = RuntimeSession(
             world=world,
             runtime=self._build_runtime(world),
@@ -368,7 +366,18 @@ class NarrativeApplication:
         """The actor's words read against the open DECIDE turn, for the actor to confirm and
         answer it with (``answer_actor_turn``). ``ValueError`` when no DECIDE turn is open or
         nobody is performed in this session."""
-        return await self.get_session(world_id).runtime.actor_say(text)
+        session = self.get_session(world_id)
+        turn = session.runtime.actor.pending_turn
+        step = turn.step if turn is not None else session.runtime.clock.current_step
+        previous = get_log_context()
+        # HTTP requests don't inherit the suspended step's observation context.
+        set_log_context(world_id=world_id, step=str(step))
+        try:
+            with observe_stage(Stage.DECISION, agent_id=turn.agent_id if turn is not None else ""):
+                return await session.runtime.actor_say(text)
+        finally:
+            set_log_context(**previous)
+            self._flush_trace_async(world_id, step)
 
     def actor_break_off(self, world_id: str) -> None:
         """Break off what the performed character is doing. Raises ``ActorAnswerRejected`` when
@@ -508,6 +517,8 @@ class NarrativeApplication:
             if session.task is not None and not session.task.done()
         }
         if not live:
+            if self._trace_flush_tasks:
+                await asyncio.gather(*self._trace_flush_tasks, return_exceptions=True)
             return
         for world_id in live:
             # None once the loop is past its last step and only finishing up.
@@ -515,6 +526,8 @@ class NarrativeApplication:
                 self.stop_run(world_id)
         logger.info("shutdown_waiting_for_runs", extra={"world_ids": sorted(live)})
         await asyncio.gather(*live.values(), return_exceptions=True)
+        if self._trace_flush_tasks:
+            await asyncio.gather(*self._trace_flush_tasks, return_exceptions=True)
         logger.info("shutdown_runs_stopped", extra={"world_ids": sorted(live)})
 
     def _set_status(self, world_id: str, session: RuntimeSession, state: RunState) -> None:
@@ -670,6 +683,10 @@ class NarrativeApplication:
         Losing a flush to a crash is acceptable for an audit log. No running loop means no
         flush: skipping an audit write beats raising into the work being audited.
         """
+        session = self._sessions.get(world_id)
+        # An open step still annotates its calls; the runtime flushes them at commit or run exit.
+        if session is not None and session.runtime.step_in_progress:
+            return
         try:
             asyncio.get_running_loop()
         except RuntimeError:

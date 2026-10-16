@@ -16,7 +16,7 @@ from agent.motivation import ExternalDriveType, ExternalGoal
 from agent.need import NeedType
 from agent.personality import SECRET_LABEL
 from agent.relation import format_relation_block
-from core.context import observe_stage
+from core.context import annotate_active_call, note_active_call_adoption, observe_stage
 from core.interfaces.llm import IndexedRef, LLMMessage, LLMScene, LLMRouter, extract_json, output_budget
 from core.interfaces.perception import PerceivedSignals, Situation
 from core.interfaces.severity import Severity
@@ -400,6 +400,7 @@ class WorldPressureEvaluator:
         try:
             data: Any = extract_json(raw)
         except (ValueError, Exception):  # noqa: BLE001 — extract_json may raise JSONDecodeError
+            note_active_call_adoption(False, "invalid_json")
             logger.warning(
                 "world_pressure_parse_failed",
                 extra={"agent_id": agent_id, "raw_prefix": raw[:200]},
@@ -407,6 +408,7 @@ class WorldPressureEvaluator:
             return []
         raw_goals = data.get("goals") if isinstance(data, dict) else None
         if not isinstance(raw_goals, list):
+            note_active_call_adoption(False, "missing_goals")
             return []
         goals: list[ExternalGoal] = []
         for g in raw_goals:
@@ -433,6 +435,9 @@ class WorldPressureEvaluator:
                 )
                 continue
         goals.sort(key=lambda x: x.urgency.level, reverse=True)
+        annotate_active_call(goals_returned=len(raw_goals), goals_accepted=len(goals))
+        if raw_goals and not goals:
+            note_active_call_adoption(False, "no_usable_goals")
         return goals
 
     def _parse_goal(self, g: dict[str, Any], *, agents_ref: IndexedRef) -> ExternalGoal:

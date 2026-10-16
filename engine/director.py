@@ -420,6 +420,7 @@ class DirectorChannel:
         try:
             data = extract_json(raw_response)
         except Exception as exc:  # noqa: BLE001 — an unreadable response means rejection
+            note_active_call_adoption(False, "invalid_json")
             logger.warning("directive_parse_failed", extra={"error": str(exc)})
             return DirectiveResult(accepted=False, reason="没能读懂这条指令,请换一种说法。"), None
 
@@ -457,7 +458,6 @@ class DirectorChannel:
             logger.warning("directive_index_ref_in_narrative", extra={"text": leaked[:80]})
 
         # The plan's shape is the first thing to check when reviewing translation vs. overreach.
-        note_active_call_adoption(True)
         annotate_active_call(
             channels=self._channels_of(plan),
             mutation_kinds=[type(m).__name__ for m in plan.mutations],

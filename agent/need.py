@@ -17,7 +17,7 @@ from agent.goals import (
     parse_goal_item, parse_residue, trim_goal_history,
 )
 from agent.personality import SECRET_LABEL, EmotionState, PersonalityLayer
-from core.context import GivenFacts, annotate_active_call, annotate_call
+from core.context import GivenFacts, annotate_active_call, annotate_call, note_active_call_adoption
 from core.duration import describe_duration
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json, output_budget
 from core.interfaces.perception import Situation
@@ -757,13 +757,16 @@ class NeedEngine:
                         max_tokens=output_budget(1225),
                         json_mode=True,
                     )
-                parse_goal_evaluation(response.content, active, step)
+                verdict_used = parse_goal_evaluation(response.content, active, step)
                 residue_goals, residue_reason = parse_residue(response.content)
+                if not verdict_used and not residue_goals:
+                    note_active_call_adoption(False, "no_usable_goal_evaluation")
                 # Both go into the trace: audits need to see why the judge ruled, not just what.
                 annotate_active_call(
                     residue=[t for t, _ in residue_goals], residue_reason=residue_reason,
                 )
             except Exception as exc:
+                note_active_call_adoption(False, "unusable_payload")
                 _logger.warning(
                     "llm_call_failed",
                     extra={"method": "evaluate_goal_progress", "error": str(exc)},
@@ -873,9 +876,12 @@ class NeedEngine:
                 for raw in data.get("goals", [])
                 if (text := str(raw).strip()) and len(text) <= 50
             ]
+            if not revised:
+                note_active_call_adoption(False, "no_usable_goals")
             if revised and revised != current:
                 return revised
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             _logger.warning(
                 "llm_call_failed",
                 extra={"method": "revise_long_term_goals", "error": str(exc)},
@@ -1147,9 +1153,13 @@ class NeedEngine:
                     for raw in data.get("goals", [])
                     if (parsed := parse_goal_item(raw)) and len(parsed[0]) <= 50
                 ]
+                raw_goals = data.get("goals")
+                if not isinstance(raw_goals, list) or (raw_goals and not goals):
+                    note_active_call_adoption(False, "no_usable_goals")
                 # Empty goals is a valid answer: no new direction this step.
                 return goals[:2]
             except Exception as exc:
+                note_active_call_adoption(False, "unusable_payload")
                 _logger.warning(
                     "llm_call_failed",
                     extra={"method": "_generate_short_term_goals", "error": str(exc)},

@@ -824,7 +824,6 @@ class DecisionEngine:
         if act is False or (isinstance(act, str) and act.strip().lower() == "false"):
             # Adopted: the output was used and says "do nothing"; marking it discarded would log
             # deliberate restraint as failure.
-            note_active_call_adoption(True)
             logger.info("decision_no_action", extra={"agent_id": agent_id, "step": step})
             return DecisionResult.no_action()
 
@@ -832,7 +831,6 @@ class DecisionEngine:
         if selection is None:  # _parse_llm_selection already recorded the reason on the trace
             logger.warning("decision_unparseable", extra={"agent_id": agent_id, "step": step})
             return DecisionResult.failed()
-        note_active_call_adoption(True)
         selection.llm_model = response.model or "llm"
         # Only for the model, which may leave it out. Not for an actor: this guesses an intent
         # they never stated, and MOVE writes it into the character's memory as "我打算「…」".
@@ -921,12 +919,14 @@ class DecisionEngine:
             return None
         payload = extract_json_object(response.content)
         if not isinstance(payload, dict):
+            note_active_call_adoption(False, "no_json_object")
             logger.info("actor_decision_unreadable", extra={"agent_id": agent_id})
             return None
         if payload.get("decision") == "act":
             action = _actor_action_from_payload(payload, candidate_lists(packet))
             if action is not None:
                 return ActorDecision(action=action)
+        note_active_call_adoption(False, "invalid_action" if payload.get("decision") == "act" else "unclear")
         logger.info("actor_decision_unclear", extra={"agent_id": agent_id})
         return None
 

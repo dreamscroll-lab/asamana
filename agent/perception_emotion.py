@@ -25,7 +25,7 @@ from core.interfaces.urgency import Urgency
 from core.numeric import clamp
 from typing import NamedTuple
 
-from core.context import GivenFacts
+from core.context import GivenFacts, note_active_call_adoption
 from core.prompts import (
     EMOTION_INTENSITY_DEFINITION,
     EMOTION_INTENSITY_RANGE,
@@ -192,14 +192,20 @@ def parse_perception_emotion_response(content: str) -> PerceptionAppraisal:
     try:
         data = extract_json(content)
     except Exception:
+        note_active_call_adoption(False, "invalid_json")
         return empty
     if not isinstance(data, dict):
+        note_active_call_adoption(False, "response_not_an_object")
         return empty
     need_activation = _parse_need_activation(data)
     try:
         emotion = emotion_from_payload(data, triggered_by=str(data.get("reason", "")))
     except (TypeError, ValueError):
         emotion = None
+    # An absent emotion is a valid no-reaction answer; malformed fields must remain visible.
+    adopted = emotion is not None or bool(need_activation) or not data.get("emotion")
+    if not adopted:
+        note_active_call_adoption(False, "unusable_appraisal")
     return PerceptionAppraisal(emotion=emotion, need_activation=need_activation)
 
 

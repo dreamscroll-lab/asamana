@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from core.context import note_active_call_adoption
 from core.interfaces.llm import IndexedRef, LLMMessage, LLMRouter, LLMScene, extract_json_object, output_budget
 from core.logging import get_logger
 from core.prompts import relation_legend
@@ -42,11 +43,13 @@ class CastDesigner:
                 cast_design = self._parse(response.content, analysis)
                 if cast_design is not None:
                     return cast_design
+                note_active_call_adoption(False, "incomplete_cast_roles")
                 last_exc = ValueError(
                     f"CastDesigner returned incomplete roles for world '{analysis.world_name}' "
                     f"(attempt {attempt + 1})"
                 )
             except Exception as exc:
+                note_active_call_adoption(False, "unusable_payload")
                 last_exc = exc
             logger.warning(
                 "cast_design_attempt_failed",

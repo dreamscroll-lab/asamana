@@ -168,7 +168,7 @@ def _world(container, router):
 def _watch_adoption():
     """Put a fake "current LLM call" into the contextvar. In production LLMRouter sets it; _Router
     is a stub."""
-    call = SimpleNamespace(adopted=None, reject_reason="")
+    call = SimpleNamespace(adopted=True, reject_reason="")
     set_active_call(call)
     return call
 

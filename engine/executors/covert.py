@@ -14,7 +14,7 @@ from core.prompts import (
 )
 from engine.environment import SALIENT_AMBIENT_STRENGTH
 from core.duration import describe_duration
-from core.context import GivenFacts, annotate_call
+from core.context import GivenFacts, annotate_call, note_active_call_adoption
 from core.interfaces.execution import TickResult
 from engine.executors.base import (
     ActionExecutionState,
@@ -421,7 +421,10 @@ class CovertExecutor(ActionExecutor):
                     json_mode=True,
                 )
             data = extract_json(response.content)
+            if not isinstance(data, dict):
+                note_active_call_adoption(False, "response_not_an_object")
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning(
                 "covert_judge_llm_failed",
                 extra={"agent_id": agent.agent_id, "error": str(exc)},
