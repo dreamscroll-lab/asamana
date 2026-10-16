@@ -674,8 +674,27 @@ export interface ActorAmendments {
   emotion: EmotionAmendment | null;
   relations: RelationAmendment[];
   long_term_goals: string[] | null; // the list in full; null keeps it
-  short_term_goals: string[] | null;
+  short_term_goals: GoalAmendment[] | null;
+  removed_short_term_goal_ids: string[];
   insights: string[];
+}
+
+/** Text is the only editable field; null id adds a goal. */
+export interface GoalAmendment {
+  id: string | null;
+  text: string;
+}
+
+export interface BriefGoal {
+  id: string;
+  text: string;
+  status: "active" | "interrupted" | "completed" | "failed";
+  origin: "cognitive" | "residue";
+  created_step: number;
+  due_step: number | null;
+  progress_summary: string;
+  time_hint: string;
+  attention: boolean;
 }
 
 /** The character's mind as the actor sees it at any time. `pending`: saved, not landed yet. */
@@ -684,7 +703,7 @@ export interface ActorMind {
   emotion_intensity: number;
   emotion_valence: number;
   long_term_goals: string[];
-  short_term_goals: string[];
+  short_term_goals: BriefGoal[];
   relations: BriefRelation[]; // everyone the character has a relation with, latest change first
   pending: ActorAmendments | null;
 }

@@ -13,6 +13,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Iterable, List, Optional, Sequence
 
 from core.duration import describe_duration
+from core.interfaces.actor import GoalAmendment
 from core.interfaces.llm import extract_json
 from core.logging import get_logger
 
@@ -329,33 +330,35 @@ def enqueue_goals(
     return result
 
 
-def replace_live_goals(
+def amend_short_term_goals(
     entities: Sequence[GoalEntity],
-    texts: Sequence[str],
+    amendments: Sequence[GoalAmendment],
     *,
     current_step: int,
+    removed_ids: Sequence[str] = (),
 ) -> List[GoalEntity]:
-    """Make ``texts`` the live short-term queue, as an actor states it; pure.
+    """Apply text edits, additions and explicit removals, preserving all other state; pure.
 
-    A text matching a live goal keeps that entity (status, due time, progress). A live goal the
-    actor dropped is marked FAILED rather than deleted, so it stays in the history like any
-    goal let go of. The actor's list is taken as given: no dedup and no cap eviction.
+    Feedback can add or close goals while an edit waits to land. Unmentioned goals survive,
+    and queued edits cannot revive terminal goals. Admission validates ids before saving.
     """
-    wanted = [text.strip() for text in texts if text.strip()]
-    live_by_text = {g.text: g for g in entities if is_live_goal(g)}
+    edits = {g.id: g.text.strip() for g in amendments if g.id is not None}
+    removed = set(removed_ids)
     result: List[GoalEntity] = []
     for goal in entities:
         if not is_live_goal(goal):
             result.append(goal)
-        elif goal.text not in wanted:
+        elif goal.id in removed:
             result.append(replace(
                 goal, status=GoalStatus.FAILED, last_evaluated_step=current_step,
+                progress_summary="已放下。",
             ))
+        else:
+            result.append(replace(goal, text=edits[goal.id]) if goal.id in edits else goal)
     seq = _next_short_term_seq(entities)
-    for text in wanted:
-        kept = live_by_text.get(text)
-        if kept is not None:
-            result.append(kept)
+    for amendment in amendments:
+        text = amendment.text.strip()
+        if amendment.id is not None:
             continue
         result.append(GoalEntity(
             id=f"stg-{current_step}-{seq}",

@@ -24,13 +24,14 @@ import { useCast } from "../../lib/cast";
 import { identityColor, toHex } from "../../lib/color";
 import { durationLabel } from "../../lib/duration";
 import type {
-  ActorAnswer, ActorBriefing, ActorDecision, ActorEntry, ActorDialogueTurn, ActorPace, ActorTurn, RunState,
+  ActorAnswer, ActorBriefing, ActorDecision, ActorEntry, ActorDialogueTurn, ActorMind, ActorPace, ActorTurn, RunState,
 } from "../../types";
 import { ActionType } from "../../lib/contract";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
 import Transcript from "../narrative/Transcript";
 import ConversationWindow from "./ConversationWindow";
 import MindPanel from "./MindPanel";
+import { goalChoices, type GoalRow } from "./goals";
 import SendButton, { SEND_HINT, isSendKey } from "./SendButton";
 import { describeDecision, reasonText } from "./reading";
 import { breakableAct, buildThread, conversationsOf, liveConversation, type ThreadItem } from "./thread";
@@ -83,6 +84,7 @@ export default function ActorConsole({
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [mind, setMind] = useState<ActorMind | null>(null);
   // Words just said, shown at once until their reading comes back as a `said` entry: `after` is
   // how many there were when they were said.
   const [pending, setPending] = useState<{ words: string; after: number } | null>(null);
@@ -97,6 +99,7 @@ export default function ActorConsole({
   const deciding = turn?.kind === "decide";
   const items = useMemo(() => buildThread(entries, turn), [entries, turn]);
   const breakable = breakableAct(items);
+  const choices = useMemo(() => mind ? goalChoices(mind) : [], [mind]);
   const speaking = turn?.kind === "speak" ? turn.conversation : null;
   const conversations = useMemo(() => conversationsOf(items), [items]);
   const live = liveConversation(items);
@@ -145,17 +148,17 @@ export default function ActorConsole({
   };
 
   // Each answer comes back over the socket as entries of the thread; only a refusal is said here.
-  const say = () => run(async () => {
-    const words = text.trim();
+  const say = (choice?: string) => run(async () => {
+    const words = (choice ?? text).trim();
     if (!words) return "";
     setPending({ words, after: saidCount });
-    setText("");
+    if (choice === undefined) setText("");
     try {
       await api.sayActor(worldId, words);
     } catch (e) {
       // Not taken: the words go back into the box, to be said again.
       setPending(null);
-      setText(words);
+      if (choice === undefined) setText(words);
       throw e;
     }
     return "";
@@ -215,7 +218,8 @@ export default function ActorConsole({
           <div className="flex items-start gap-2">
             <span className="text-sm pt-1" title="演员台"><ActorIcon /></span>
             <div className="min-w-0 flex-1 max-h-72 overflow-y-auto">
-              <MindPanel worldId={worldId} refreshKey={`${step}:${turnId ?? ""}`} turnId={turnId} running={running} />
+              <MindPanel worldId={worldId} refreshKey={`${step}:${turnId ?? ""}`} turnId={turnId} running={running}
+                immediate={turn?.kind === "decide" || turn?.kind === "interrupt"} mind={mind} onMindChange={setMind} />
             </div>
             <button
               className="pt-1 text-[11px] text-slate-500 hover:text-slate-200 transition"
@@ -251,6 +255,8 @@ export default function ActorConsole({
               onAnswer={answer}
               onBreakOff={breakOff}
               canBreakOff={breakable?.key === item.key && !breakable.breakingOff}
+              choices={choices}
+              onChoose={(words) => void say(words)}
             />
           ))}
           {pending && (
@@ -301,6 +307,8 @@ function Line({
   onAnswer,
   onBreakOff,
   canBreakOff,
+  choices,
+  onChoose,
 }: {
   item: ThreadItem;
   busy: boolean;
@@ -310,6 +318,8 @@ function Line({
   onAnswer: (a: ActorAnswer) => void;
   onBreakOff: () => void;
   canBreakOff: boolean;
+  choices: GoalRow[];
+  onChoose: (words: string) => void;
 }) {
   switch (item.kind) {
     case "time":
@@ -317,7 +327,7 @@ function Line({
     case "perceived":
       return <Perceived item={item} />;
     case "asked":
-      return <Asked item={item} busy={busy} ink={ink} onAnswer={onAnswer} />;
+      return <Asked item={item} busy={busy} ink={ink} onAnswer={onAnswer} choices={choices} onChoose={onChoose} />;
     case "said":
       return <Said item={item} busy={busy} secondsPerStep={secondsPerStep} onAnswer={onAnswer} />;
     case "chose":
@@ -385,11 +395,15 @@ function Asked({
   busy,
   ink,
   onAnswer,
+  choices,
+  onChoose,
 }: {
   item: Extract<ThreadItem, { kind: "asked" }>;
   busy: boolean;
   ink: Ink;
   onAnswer: (a: ActorAnswer) => void;
+  choices: GoalRow[];
+  onChoose: (words: string) => void;
 }) {
   const { turn, open } = item;
   if (turn.kind === "invite") {
@@ -416,6 +430,20 @@ function Asked({
     return (
       <div className={`${WORLD} border-indigo-800/60 space-y-2`}>
         <p>{turn.reason && `${turn.reason}。`}想做什么？</p>
+        {choices.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-[11px] text-slate-500">也可以继续这些事 · 选择后确认行动</p>
+            {choices.map((g, i) => (
+              <button key={g.id ?? `new-${i}`} className={`${BTN} block w-full text-left whitespace-normal break-words`}
+                disabled={busy || [...g.text].length > MAX_WORDS} onClick={() => onChoose(g.text)}>
+                <span className="text-slate-500 tabular-nums">{i + 1}. </span>
+                <span className="text-[11px] text-slate-500">短期目标 · </span>
+                {g.text}
+                {g.detail?.time_hint && <span className={`text-[11px] ${g.detail.attention ? "text-amber-300" : "text-slate-500"}`}>{" "}{g.detail.time_hint}</span>}
+              </button>
+            ))}
+          </div>
+        )}
         <button className={BTN} disabled={busy} onClick={() => onAnswer({ action: null, idle: true })}>
           ⏸ 这次先不动
         </button>

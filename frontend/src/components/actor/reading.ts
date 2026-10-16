@@ -94,6 +94,8 @@ const REASON_TEXT: Record<string, string> = {
   errand_without_destination: "要差人去哪里？",
   errand_item_not_in_hand: "要让人带去的东西不在你手上。",
   relation_not_listed: "你和这个人还没有交集。",
+  goal_not_listed: "这个目标已结束或不在当前列表中，请刷新后再修改。",
+  goal_duplicate: "同一个目标不能重复保存，请刷新后再修改。",
   nothing_to_break_off: "你手上没在做什么，不用停。",
   turn_too_long: "这一轮说得太长了，分几轮说吧。",
   unknown_emotion: "不认识这种情绪。",

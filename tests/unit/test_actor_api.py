@@ -18,6 +18,7 @@ from engine.application import NarrativeApplication
 from world import WorldCatalog
 
 from interaction.api import create_app
+from interaction.api.actor import _decode_amendments
 
 
 async def _unconfirmed_world(container, test_config, catalog: WorldCatalog) -> tuple[str, str]:
@@ -30,6 +31,15 @@ async def _unconfirmed_world(container, test_config, catalog: WorldCatalog) -> t
 
 def _client(container, test_config, catalog: WorldCatalog) -> TestClient:
     return TestClient(create_app(container, test_config, catalog=catalog))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("status", "completed"), ("origin", "residue"), ("due_step", 10),
+    ("created_step", 0), ("progress_summary", "完成"), ("last_evaluated_step", 1),
+])
+def test_goal_amendments_reject_read_only_fields(field: str, value: Any) -> None:
+    with pytest.raises(TypeError):
+        _decode_amendments({"short_term_goals": [{"id": "stg-0-1", "text": "目标", field: value}]})
 
 
 def _until(probe: Callable[[], Any], *, timeout: float = 20.0) -> Any:
@@ -270,7 +280,7 @@ async def test_the_actor_reads_and_amends_the_mind_between_steps(mock_build_cont
         before = client.get(f"/api/worlds/{world_id}/actor/mind").json()
         saved = client.post(f"/api/worlds/{world_id}/actor/amend", json={
             "emotion": {"emotion": "anger", "intensity": 0.7, "valence": -0.6},
-            "short_term_goals": ["今夜先见长孙无忌"],
+            "short_term_goals": [{"id": None, "text": "今夜先见长孙无忌"}],
             "insights": ["大哥终究容不下我"],
         })
         refused = client.post(f"/api/worlds/{world_id}/actor/amend", json={
@@ -284,7 +294,7 @@ async def test_the_actor_reads_and_amends_the_mind_between_steps(mock_build_cont
     assert saved.json() == {"accepted": True, "reason": None, "landed": False}
     assert refused.json() == {"accepted": False, "reason": "relation_not_listed", "landed": False}
     assert malformed.status_code == 400
-    assert after["pending"]["short_term_goals"] == ["今夜先见长孙无忌"]
+    assert after["pending"]["short_term_goals"] == [{"id": None, "text": "今夜先见长孙无忌"}]
     assert after["pending"]["insights"] == ["大哥终究容不下我"]
     assert after["emotion"] == before["emotion"]
 

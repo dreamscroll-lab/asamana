@@ -96,7 +96,7 @@ export default function CharacterCard({
   const knowsPrivate = (id: string) => viewer === null || id === viewer;
   const privateKnown = active ? knowsPrivate(active.id) : false;
 
-  const { planned, owed } = useMemo(() => unfinishedGoals(live?.private), [live]);
+  const shortTermGoals = useMemo(() => unfinishedGoals(live?.private), [live]);
 
   useEffect(() => {
     const aid = active?.id;
@@ -251,13 +251,10 @@ export default function CharacterCard({
               {live.is_active === false && <span className="text-rose-400">· OVER</span>}
             </div>
 
-            {(planned.length > 0 || owed.length > 0 || live.private.long_term_goals.length > 0) && (
+            {(shortTermGoals.length > 0 || live.private.long_term_goals.length > 0) && (
               <div className="space-y-1.5">
-                {planned.length > 0 && (
-                  <GoalList label="短期目标" color="text-emerald-500/70" goals={planned} />
-                )}
-                {owed.length > 0 && (
-                  <GoalList label="待办事项" color="text-amber-500/70" goals={owed} />
+                {shortTermGoals.length > 0 && (
+                  <GoalList label="短期目标" color="text-emerald-500/70" goals={shortTermGoals} />
                 )}
                 {live.private.long_term_goals.length > 0 && (
                   <GoalList label="长期目标" color="text-cyan-500/70" goals={live.private.long_term_goals} />

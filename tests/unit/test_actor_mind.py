@@ -5,15 +5,18 @@ open, and otherwise at the start of the next step."""
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
+from agent.goals import GoalEntity, GoalOrigin, GoalStatus
 from agent.memory_types import MemoryKind, MemoryStream
 from core.interfaces.actor import (
     ActorAmendments,
     ActorAnswerRejected,
     ActorDecision,
     EmotionAmendment,
+    GoalAmendment,
     RelationAmendment,
 )
 from tests.unit.test_actor_runtime import HERO, OTHER, _next_turn, _setup, _step_answering
@@ -34,7 +37,7 @@ _AMENDED = ActorAmendments(
     emotion=EmotionAmendment(emotion="anger", intensity=0.7, valence=-0.6),
     relations=(RelationAmendment(OTHER, trust=0.05),),
     long_term_goals=("保全秦王府上下",),
-    short_term_goals=("今夜先见长孙无忌",),
+    short_term_goals=(GoalAmendment(text="今夜先见长孙无忌"),),
     insights=("大哥终究容不下我",),
 )
 
@@ -67,6 +70,68 @@ async def test_the_mind_shows_feeling_goals_and_relations(container) -> None:
 
 
 @pytest.mark.asyncio
+async def test_goal_details_use_the_world_clock_even_before_the_actor_perceives(container) -> None:
+    runtime, _agents, hero = await _hero_with_a_relation(container, "world-actor-goal-details")
+    hero.personality.set_short_term_goal_entities([
+        GoalEntity(id="appointment", text="赴约", goal_type="short_term", due_step=7,
+                   origin=GoalOrigin.RESIDUE, progress_summary="已收到回信"),
+        GoalEntity(id="old", text="查明缘由", goal_type="short_term", created_step=0),
+        GoalEntity(id="done", text="送信", goal_type="short_term", status=GoalStatus.COMPLETED),
+    ])
+    for _ in range(6):
+        runtime.clock.tick()
+
+    mind = await runtime.actor_mind()
+    appointment, old, done = mind.short_term_goals
+    assert appointment.origin == "residue"
+    assert appointment.due_step == 7
+    assert appointment.progress_summary == "已收到回信"
+    assert "约定在" in appointment.time_hint
+    assert appointment.attention is False
+    assert "仍未了结" in old.time_hint and old.attention is True
+    assert done.status == "completed" and not done.time_hint and not done.attention
+
+    runtime.clock.tick()
+    at_due = (await runtime.actor_mind()).short_term_goals[0]
+    assert "就在此刻" in at_due.time_hint and at_due.attention
+    runtime.clock.tick()
+    late = (await runtime.actor_mind()).short_term_goals[0]
+    assert "时刻已过" in late.time_hint and late.attention
+
+
+@pytest.mark.asyncio
+async def test_editing_goal_text_preserves_identity_and_all_other_fields(container) -> None:
+    runtime, agents, hero = await _hero_with_a_relation(container, "world-actor-goal-edit")
+    original = GoalEntity(
+        id="stg-0-1", text="原来的约定", goal_type="short_term", status=GoalStatus.INTERRUPTED,
+        created_step=0, due_step=10, last_evaluated_step=0, origin=GoalOrigin.RESIDUE,
+        progress_summary="尚未等到答复",
+    )
+    hero.personality.set_short_term_goal_entities([original])
+    task = asyncio.create_task(runtime.run_step(agents))
+    await _next_turn(runtime, task)
+    try:
+        assert await runtime.amend_actor_mind(ActorAmendments(short_term_goals=(
+            GoalAmendment(id=original.id, text="修改后的约定"),
+            GoalAmendment(text="另一个目标"),
+        ))) is True
+        edited, added = hero.personality.state.short_term_goal_entities
+        assert edited == replace(original, text="修改后的约定")
+        assert added.id != original.id and added.origin is GoalOrigin.COGNITIVE
+        assert added.due_step is None
+
+        await runtime.amend_actor_mind(ActorAmendments(
+            short_term_goals=(), removed_short_term_goal_ids=(edited.id, added.id),
+        ))
+        dropped = hero.personality.state.short_term_goal_entities
+        assert all(g.status is GoalStatus.FAILED for g in dropped)
+        assert all(g.progress_summary == "已放下。" for g in dropped)
+    finally:
+        runtime.answer_actor(_IDLE)
+        await task
+
+
+@pytest.mark.asyncio
 async def test_amendments_saved_between_steps_land_at_the_next_step(container) -> None:
     runtime, agents, hero = await _hero_with_a_relation(container, "world-actor-mind-between")
 
@@ -81,6 +146,31 @@ async def test_amendments_saved_between_steps_land_at_the_next_step(container) -
 
     assert turns
     await _assert_amended(container, hero)
+    assert (await runtime.actor_mind()).pending is None
+
+
+@pytest.mark.asyncio
+async def test_pending_goal_edits_preserve_feedback_added_after_saving(container) -> None:
+    runtime, agents, hero = await _hero_with_a_relation(container, "world-actor-goal-concurrent")
+    first = GoalEntity(id="stg-0-1", text="旧目标", goal_type="short_term", due_step=10)
+    dropped = GoalEntity(id="stg-0-2", text="不再追求", goal_type="short_term")
+    hero.personality.set_short_term_goal_entities([first, dropped])
+    await runtime.amend_actor_mind(ActorAmendments(
+        short_term_goals=(GoalAmendment(id=first.id, text="新的表达"),),
+        removed_short_term_goal_ids=(dropped.id,),
+    ))
+    await runtime.amend_actor_mind(ActorAmendments(insights=("我愿意继续",)))
+    newer = GoalEntity(
+        id="stg-0-3", text="反馈刚留下的待办", goal_type="short_term", origin=GoalOrigin.RESIDUE,
+    )
+    hero.personality.set_short_term_goal_entities([first, dropped, newer])
+
+    await _step_answering(runtime, agents, _IDLE)
+
+    by_id = {g.id: g for g in hero.personality.state.short_term_goal_entities}
+    assert by_id[first.id] == replace(first, text="新的表达")
+    assert by_id[dropped.id].status is GoalStatus.FAILED
+    assert by_id[newer.id] == newer
     assert (await runtime.actor_mind()).pending is None
 
 
@@ -120,6 +210,7 @@ async def test_a_later_save_overrides_an_earlier_one_and_insights_add_up(contain
 @pytest.mark.parametrize("amendments, reason", [
     (ActorAmendments(relations=(RelationAmendment("agent-9", trust=0.5),)), "relation_not_listed"),
     (ActorAmendments(emotion=EmotionAmendment(emotion="自得", intensity=0.5, valence=0.2)), "unknown_emotion"),
+    (ActorAmendments(short_term_goals=(GoalAmendment(id="missing", text="无此目标"),)), "goal_not_listed"),
 ])
 async def test_only_what_the_mind_lists_can_be_amended(container, amendments, reason) -> None:
     runtime, _agents, _hero = await _hero_with_a_relation(container, f"world-actor-mind-{reason}")
@@ -137,6 +228,8 @@ def test_amendments_are_well_formed() -> None:
     with pytest.raises(ValueError):
         RelationAmendment(HERO, trust=1.5)
     with pytest.raises(ValueError):
-        ActorAmendments(short_term_goals=(" ",))
+        GoalAmendment(text=" ")
+    with pytest.raises(ValueError):
+        ActorAmendments(removed_short_term_goal_ids=("stg-0-1",))
 
 

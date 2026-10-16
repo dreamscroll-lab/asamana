@@ -45,6 +45,7 @@ from core.interfaces.actor import (
     ActorDialogueTurn,
     ActorPace,
     EmotionAmendment,
+    GoalAmendment,
     RelationAmendment,
 )
 from core.interfaces.urgency import Urgency
@@ -231,7 +232,10 @@ def _decode_amendments(data: Any) -> ActorAmendments:
         "emotion": _optional(lambda e: _build(EmotionAmendment, e)),
         "relations": lambda rs: tuple(_build(RelationAmendment, r) for r in _items(rs)),
         "long_term_goals": _optional(_strings),
-        "short_term_goals": _optional(_strings),
+        "short_term_goals": _optional(lambda gs: tuple(
+            _build(GoalAmendment, g, {"text": _string, "id": _optional(_string)}) for g in _items(gs)
+        )),
+        "removed_short_term_goal_ids": _strings,
         "insights": _strings,
     })
 

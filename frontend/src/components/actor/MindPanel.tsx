@@ -4,7 +4,7 @@
  *
  * Each is a current value: the actor overwrites it or leaves it be; an insight is only added, one
  * at a time, and kept among the character's memories. Edits gather in one draft and
- * are saved together; the backend lands them at once while a turn is open, otherwise at the
+ * are saved together; DECIDE and INTERRUPT saves land at once, other saves at the
  * start of the next step (a write between steps belongs to no snapshot). Saved but not landed,
  * a value shows the actor's version, marked.
  *
@@ -16,9 +16,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "../../api/client";
 import { AFFECTION_RANGE, EMOTION_INTENSITY_RANGE, EMOTION_VALENCE_RANGE, TRUST_RANGE } from "../../lib/contract";
-import type { ActorAmendments, ActorMind, BriefRelation, EmotionAmendment } from "../../types";
+import type { ActorAmendments, ActorMind, BriefRelation, EmotionAmendment, GoalAmendment } from "../../types";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
 import { reasonText } from "./reading";
+import GoalPanel from "./GoalPanel";
+import { goalRows, goalsChanged, shortTermAmendments } from "./goals";
 
 type Tab = "emotion" | "goals" | "relations" | "insight";
 
@@ -39,11 +41,12 @@ interface Draft {
   emotion: EmotionAmendment | null;
   relations: Record<string, { trust: number | null; affection: number | null }>;
   long: string[] | null;
-  short: string[] | null;
+  short: GoalAmendment[] | null;
+  shortRemoved: string[];
   insight: string;
 }
 
-const EMPTY_DRAFT: Draft = { emotion: null, relations: {}, long: null, short: null, insight: "" };
+const EMPTY_DRAFT: Draft = { emotion: null, relations: {}, long: null, short: null, shortRemoved: [], insight: "" };
 
 const clean = (goals: string[]) => goals.map((g) => g.trim()).filter(Boolean);
 
@@ -57,12 +60,12 @@ function editCount(d: Draft): number {
   );
 }
 
-function amendmentsOf(d: Draft): ActorAmendments {
+function amendmentsOf(d: Draft, mind: ActorMind): ActorAmendments {
   return {
     emotion: d.emotion,
     relations: Object.entries(d.relations).map(([agent_id, v]) => ({ agent_id, ...v })),
     long_term_goals: d.long ? clean(d.long) : null,
-    short_term_goals: d.short ? clean(d.short) : null,
+    ...shortTermAmendments(mind, d.short, d.shortRemoved),
     insights: d.insight.trim() ? [d.insight.trim()] : [],
   };
 }
@@ -74,7 +77,6 @@ function withPending(m: ActorMind) {
   return {
     emotion: p?.emotion ?? { emotion: m.emotion, intensity: m.emotion_intensity, valence: m.emotion_valence },
     long: p?.long_term_goals ?? m.long_term_goals,
-    short: p?.short_term_goals ?? m.short_term_goals,
     relation: (r: BriefRelation) => ({
       trust: relations.get(r.agent_id)?.trust ?? r.trust,
       affection: relations.get(r.agent_id)?.affection ?? r.affection,
@@ -107,9 +109,7 @@ function movedBetween(before: ActorMind, after: ActorMind): Moved {
       before.emotion !== after.emotion ||
       Math.abs(before.emotion_intensity - after.emotion_intensity) >= 0.005 ||
       Math.abs(before.emotion_valence - after.emotion_valence) >= 0.005,
-    goals:
-      before.long_term_goals.join("\n") !== after.long_term_goals.join("\n") ||
-      before.short_term_goals.join("\n") !== after.short_term_goals.join("\n"),
+    goals: goalsChanged(before, after),
     relations,
   };
 }
@@ -126,14 +126,19 @@ export default function MindPanel({
   refreshKey,
   turnId,
   running,
+  immediate,
+  onMindChange,
+  mind,
 }: {
   worldId: string;
   // Changes whenever the world may have moved the mind (a step landed, a turn opened or closed).
   refreshKey: string;
   turnId: string | null;
   running: boolean;
+  immediate: boolean;
+  onMindChange: (mind: ActorMind) => void;
+  mind: ActorMind | null;
 }) {
-  const [mind, setMind] = useState<ActorMind | null>(null);
   const [moved, setMoved] = useState<Moved>(NOTHING_MOVED);
   // Tabs looked at since the engine last moved something there.
   const [looked, setLooked] = useState<Set<Tab>>(new Set());
@@ -143,27 +148,31 @@ export default function MindPanel({
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
   const [emotions, setEmotions] = useState<{ value: string; label: string }[]>([]);
   const last = useRef<ActorMind | null>(null);
+  const loadSequence = useRef(0);
 
   // `ownSave`: the change is the actor's own, not something that happened to them.
   const load = useCallback(
     async (ownSave = false) => {
+      const sequence = ++loadSequence.current;
       try {
         const next = await api.actorMind(worldId);
+        if (sequence !== loadSequence.current) return;
         if (last.current && !ownSave) {
           setMoved(movedBetween(last.current, next));
           setLooked(new Set());
         }
         last.current = next;
-        setMind(next);
+        onMindChange(next);
       } catch {
         // Unreadable now (no session yet): keep what is shown.
       }
     },
-    [worldId],
+    [worldId, onMindChange],
   );
 
   useEffect(() => {
     void load();
+    return () => { loadSequence.current++; };
   }, [load, refreshKey]);
 
   useEffect(() => {
@@ -178,6 +187,7 @@ export default function MindPanel({
   if (!mind) return null;
   const shown = withPending(mind);
   const edits = editCount(draft);
+  const goalAlerts = goalRows(mind).filter((g) => g.detail?.attention).length;
 
   const open = (t: Tab) => {
     setTab((cur) => (cur === t ? null : t));
@@ -188,7 +198,7 @@ export default function MindPanel({
     setBusy(true);
     setNotice(null);
     try {
-      const r = await api.amendActor(worldId, amendmentsOf(draft));
+      const r = await api.amendActor(worldId, amendmentsOf(draft, mind));
       if (!r.accepted) {
         setNotice({ text: reasonText(r.reason), error: true });
         return;
@@ -217,6 +227,9 @@ export default function MindPanel({
               }`}
             >
               {label}
+              {key === "goals" && goalAlerts > 0 && (
+                <span className="ml-1 text-amber-300">{goalAlerts}</span>
+              )}
               {dot && <span className="absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full bg-amber-400" />}
             </button>
           );
@@ -241,13 +254,12 @@ export default function MindPanel({
             edited={!!draft.long}
             onChange={(g) => setDraft({ ...draft, long: g })}
           />
-          <GoalList
-            label="短期目标"
-            goals={draft.short ?? shown.short}
-            pending={!!mind.pending?.short_term_goals}
-            edited={!!draft.short}
-            onChange={(g) => setDraft({ ...draft, short: g })}
-          />
+          <GoalPanel mind={mind} draft={draft.short} removedIds={draft.shortRemoved}
+            onChange={(goals, removedId) => setDraft((current) => ({
+              ...current, short: goals,
+              shortRemoved: goals === null ? [] : removedId
+                ? [...current.shortRemoved, removedId] : current.shortRemoved,
+            }))} />
         </div>
       )}
       {tab === "relations" && (
@@ -289,11 +301,11 @@ export default function MindPanel({
         </div>
       )}
 
-      {(edits > 0 || notice) && (
+      {tab !== null && (edits > 0 || notice) && (
         <div className="flex items-center gap-2 border-t border-slate-800/60 pt-2">
           {edits > 0 ? (
             <span className="text-[11px] text-slate-400">
-              {edits} 处修改 · {turnId ? "保存后立即生效" : running ? "下一步生效" : "运行后的下一步生效"}
+              {edits} 处修改 · {immediate ? "保存后立即生效" : running ? "下一步生效" : "运行后的下一步生效"}
             </span>
           ) : (
             <span className={`text-[11px] ${notice!.error ? "text-rose-400" : "text-emerald-400"}`}>{notice!.text}</span>
@@ -378,11 +390,13 @@ function GoalList({
   edited: boolean;
   onChange: (g: string[] | null) => void;
 }) {
+  const [editing, setEditing] = useState(false);
   const set = (i: number, text: string) => onChange(goals.map((g, j) => (j === i ? text : g)));
   return (
     <div className="space-y-1">
       <div className="flex items-center gap-2 text-[11px] text-slate-500">
         {label}
+        <button className="ml-auto hover:text-white" onClick={() => setEditing(!editing)}>{editing ? "收起编辑" : "编辑"}</button>
         <Mark pending={pending} edited={edited} />
         {edited && (
           <button className="ml-auto text-slate-500 hover:text-slate-300" onClick={() => onChange(null)}>
@@ -393,17 +407,21 @@ function GoalList({
       {goals.length === 0 && <p className="text-[12px] text-slate-600">暂无</p>}
       {goals.map((g, i) => (
         <div key={i} className="flex items-start gap-1.5">
-          <textarea value={g} rows={1} onChange={(e) => set(i, e.target.value)} className={EDIT_BOX} />
-          <button
-            className="shrink-0 px-1 text-[12px] text-slate-600 hover:text-rose-300"
-            title="去掉这个目标"
-            onClick={() => onChange(goals.filter((_, j) => j !== i))}
-          >
-            ×
-          </button>
+          <span className="shrink-0 text-[12px] text-slate-500 tabular-nums">{i + 1}.</span>
+          {editing ? <textarea value={g} rows={2} onChange={(e) => set(i, e.target.value)} className={EDIT_BOX} />
+            : <p className="m-0 flex-1 whitespace-pre-wrap break-words text-[12px] text-slate-200">{g}</p>}
+          {editing && (
+            <button
+              className="shrink-0 px-1 text-[12px] text-slate-600 hover:text-rose-300"
+              title="删除目标"
+              onClick={() => onChange(goals.filter((_, j) => j !== i))}
+            >
+              ×
+            </button>
+          )}
         </div>
       ))}
-      <button className="text-[11px] text-slate-500 hover:text-slate-200" onClick={() => onChange([...goals, ""])}>
+      <button className="text-[11px] text-slate-500 hover:text-slate-200" onClick={() => { setEditing(true); onChange([...goals, ""]); }}>
         ＋ 添加
       </button>
     </div>

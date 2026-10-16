@@ -19,7 +19,7 @@ from agent.memory import MemorySystem
 from agent.memory_types import Memory, MemoryImportance, MemoryStream
 from agent.reflection import INSIGHT_BASE_IMPORTANCE, ReflectionEngine
 from agent.relation_evolution import RelationEvolution
-from agent.goals import GoalEntity, GoalStatus, replace_live_goals
+from agent.goals import GoalEntity, GoalStatus, is_live_goal, amend_short_term_goals
 from agent.need import NeedEngine, NeedEvaluation, NeedType
 from agent.perception import InternalContext, PerceptionPacket, RetrievalQuery
 from agent.perception_emotion import (
@@ -511,17 +511,29 @@ class Agent:
             text, personality=self.personality, packet=packet,
         )
 
-    async def actor_mind(self, *, pending: ActorAmendments | None) -> ActorMind:
+    async def actor_mind(self, *, pending: ActorAmendments | None, step: int) -> ActorMind:
         return build_actor_mind(
             self.personality,
             await self.relation_system.all_relations(),
             dead_ids=self._dead_agent_ids,
             pending=pending,
+            step=step,
+            seconds_per_step=self.seconds_per_step,
         )
 
     async def check_amendments(self, amendments: ActorAmendments) -> None:
         """Refuse an amendment to anything the character's mind doesn't list
         (``ActorAnswerRejected``)."""
+        if amendments.short_term_goals is not None:
+            live_ids = {g.id for g in self.personality.state.short_term_goal_entities if is_live_goal(g)}
+            listed: set[str] = set()
+            goal_ids = [g.id for g in amendments.short_term_goals if g.id is not None]
+            for goal_id in [*goal_ids, *amendments.removed_short_term_goal_ids]:
+                if goal_id not in live_ids:
+                    raise ActorAnswerRejected("goal_not_listed")
+                if goal_id in listed:
+                    raise ActorAnswerRejected("goal_duplicate")
+                listed.add(goal_id)
         # A value check, but EmotionType lives in agent/, out of reach of the contract in core/.
         if amendments.emotion is not None:
             try:
@@ -559,28 +571,15 @@ class Agent:
             await self.relation_system.set_trust_affection(
                 relation.agent_id, trust=relation.trust, affection=relation.affection, step=step,
             )
-        self._adopt_actor_goals(
-            step=step,
-            long_term_goals=amendments.long_term_goals,
-            short_term_goals=amendments.short_term_goals,
-        )
-
-    def _adopt_actor_goals(
-        self,
-        *,
-        step: int,
-        long_term_goals: Sequence[str] | None,
-        short_term_goals: Sequence[str] | None,
-    ) -> None:
-        """Apply the actor's goals for this character; ``None`` leaves that list unchanged."""
-        if long_term_goals is not None:
-            self.personality.set_long_term_goals(list(long_term_goals))
-        if short_term_goals is not None:
+        if amendments.long_term_goals is not None:
+            self.personality.set_long_term_goals(amendments.long_term_goals)
+        if amendments.short_term_goals is not None:
             self.personality.set_short_term_goal_entities(
-                replace_live_goals(
+                amend_short_term_goals(
                     self.personality.state.short_term_goal_entities,
-                    short_term_goals,
+                    amendments.short_term_goals,
                     current_step=step,
+                    removed_ids=amendments.removed_short_term_goal_ids,
                 ),
                 step=step,
             )

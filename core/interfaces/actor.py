@@ -252,6 +252,34 @@ class RelationAmendment:
 
 
 @dataclass(frozen=True)
+class GoalAmendment:
+    """One live short-term goal's text; no id means a new goal. Other fields are read-only."""
+
+    text: str
+    id: str | None = None
+
+    def __post_init__(self) -> None:
+        require_text(self.text, "goal.text")
+        if self.id is not None:
+            require_text(self.id, "goal.id")
+
+
+@dataclass(frozen=True)
+class BriefGoal:
+    """A goal record visible only to its character's actor; time hints use world time."""
+
+    id: str
+    text: str
+    status: str
+    origin: str
+    created_step: int
+    due_step: int | None
+    progress_summary: str
+    time_hint: str
+    attention: bool
+
+
+@dataclass(frozen=True)
 class ActorAmendments:
     """The actor's changes to the character's mind, each an outright value over what the engine
     wrote; whatever is left out keeps its value. ``insights`` are added: judgments the character
@@ -267,15 +295,19 @@ class ActorAmendments:
 
     emotion: EmotionAmendment | None = None
     relations: tuple[RelationAmendment, ...] = ()
-    # The goal lists in full; ``None`` keeps that list.
+    # Long-term goals replace the list. Short-term edits preserve unmentioned goals.
     long_term_goals: tuple[str, ...] | None = None
-    short_term_goals: tuple[str, ...] | None = None
+    short_term_goals: tuple[GoalAmendment, ...] | None = None
+    removed_short_term_goal_ids: tuple[str, ...] = ()
     insights: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        for goals in (self.long_term_goals, self.short_term_goals):
-            for text in goals or ():
-                require_text(text, "goal")
+        for text in self.long_term_goals or ():
+            require_text(text, "goal")
+        for goal_id in self.removed_short_term_goal_ids:
+            require_text(goal_id, "removed_short_term_goal_id")
+        if self.removed_short_term_goal_ids and self.short_term_goals is None:
+            raise ValueError("Goal removals require short_term_goals")
         for text in self.insights:
             require_text(text, "insight")
 
@@ -297,6 +329,10 @@ class ActorAmendments:
             short_term_goals=(
                 later.short_term_goals if later.short_term_goals is not None else self.short_term_goals
             ),
+            removed_short_term_goal_ids=(
+                later.removed_short_term_goal_ids
+                if later.short_term_goals is not None else self.removed_short_term_goal_ids
+            ),
             insights=self.insights + later.insights,
         )
 
@@ -306,6 +342,7 @@ class ActorMind:
     """The character's mind as its actor sees it at any time, and amends it
     (``ActorAmendments``).
 
+    ``short_term_goals`` includes the live queue and recent history, separated by status.
     ``relations`` are everyone the character has a relation with. ``pending`` holds amendments
     saved but not landed yet; the values above don't include them.
     """
@@ -315,7 +352,7 @@ class ActorMind:
     emotion_intensity: float
     emotion_valence: float
     long_term_goals: tuple[str, ...]
-    short_term_goals: tuple[str, ...]
+    short_term_goals: tuple[BriefGoal, ...]
     relations: tuple[BriefRelation, ...]
     pending: ActorAmendments | None = None
 

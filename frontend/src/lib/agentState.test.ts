@@ -6,19 +6,20 @@ import { unfinishedGoals } from "./agentState";
 const state = (extra: Partial<AgentPrivateView>) => extra as AgentPrivateView;
 
 describe("unfinishedGoals", () => {
-  it("splits unfinished goals by origin and drops finished ones", () => {
+  it("merges both origins in queue order and drops finished goals", () => {
     const s = state({
       short_term_goals: [
         { text: "a", status: "active", origin: "cognitive" },
         { text: "b", status: "interrupted", origin: "cognitive" },
         { text: "c", status: "active", origin: "residue" },
         { text: "d", status: "completed", origin: "residue" },
+        { text: "e", status: "failed", origin: "cognitive" },
       ],
     });
-    expect(unfinishedGoals(s)).toEqual({ planned: ["a", "b"], owed: ["c"] });
+    expect(unfinishedGoals(s)).toEqual(["a", "b", "c"]);
   });
 
   it("reads nothing when there is no queue", () => {
-    expect(unfinishedGoals(undefined)).toEqual({ planned: [], owed: [] });
+    expect(unfinishedGoals(undefined)).toEqual([]);
   });
 });

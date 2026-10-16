@@ -6,12 +6,13 @@ import asyncio
 
 import pytest
 
-from agent.goals import GoalEntity, GoalStatus, replace_live_goals
+from agent.goals import GoalEntity, GoalStatus, amend_short_term_goals
 from core.interfaces.action import ActionType
 from core.interfaces.actor import (
     ActorAction,
     ActorAnswerRejected,
     ActorDecision,
+    GoalAmendment,
     ActorInterruptAnswer,
     ActorTurn,
     TurnKind,
@@ -180,17 +181,36 @@ def test_a_change_of_character_drops_a_break_off() -> None:
     assert not channel.break_off_requested
 
 
-def test_the_actors_goal_list_becomes_the_live_queue() -> None:
+def test_actor_goal_edits_preserve_metadata_and_record_explicit_removals() -> None:
     kept = GoalEntity(id="stg-1-1", text="查清账目", goal_type="short_term", progress_summary="已查一半")
     dropped = GoalEntity(id="stg-1-2", text="拜访旧友", goal_type="short_term")
     done = GoalEntity(id="stg-0-1", text="早起", goal_type="short_term", status=GoalStatus.COMPLETED)
 
-    result = replace_live_goals([done, kept, dropped], ["查清账目", "去城门打听消息"], current_step=7)
+    result = amend_short_term_goals(
+        [done, kept, dropped],
+        [GoalAmendment(id=kept.id, text="查清账目"), GoalAmendment(text="去城门打听消息")],
+        current_step=7, removed_ids=(dropped.id,),
+    )
 
     by_text = {g.text: g for g in result}
-    assert by_text["查清账目"] is kept                       # progress survives
+    assert by_text["查清账目"] == kept                       # progress survives
     assert by_text["拜访旧友"].status is GoalStatus.FAILED   # let go, kept in history
     assert by_text["早起"].status is GoalStatus.COMPLETED
     added = by_text["去城门打听消息"]
     assert added.status is GoalStatus.ACTIVE and added.created_step == 7
     assert len({g.id for g in result}) == len(result)
+
+
+def test_a_queued_text_edit_cannot_revive_a_completed_goal() -> None:
+    done = GoalEntity(id="stg-0-1", text="送信", goal_type="short_term", status=GoalStatus.COMPLETED)
+    result = amend_short_term_goals([done], [GoalAmendment(id=done.id, text="送出信件")], current_step=7)
+    assert result == [done]
+
+
+def test_actor_goal_edits_preserve_unmentioned_goals_in_queue_order() -> None:
+    first = GoalEntity(id="stg-0-1", text="先前的目标", goal_type="short_term")
+    newer = GoalEntity(id="stg-1-1", text="刚发生的约定", goal_type="short_term")
+    result = amend_short_term_goals(
+        [first, newer], [GoalAmendment(id=first.id, text="改过的目标")], current_step=2,
+    )
+    assert [(g.id, g.text) for g in result] == [(first.id, "改过的目标"), (newer.id, newer.text)]

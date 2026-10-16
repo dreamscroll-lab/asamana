@@ -13,16 +13,9 @@ export function reportedDead(isActive: boolean, vitality: number | null): boolea
   return vitality === 0 || isActive === false;
 }
 
-/**
- * The unfinished short-term queue split by origin (see GoalView): what they planned, and what an
- * action left them owing.
- */
-export function unfinishedGoals(state: AgentPrivateView | undefined): { planned: string[]; owed: string[] } {
-  const unfinished = (state?.short_term_goals ?? []).filter(
-    (g) => g.status === "active" || g.status === "interrupted",
-  );
-  return {
-    planned: unfinished.filter((g) => g.origin !== "residue").map((g) => g.text),
-    owed: unfinished.filter((g) => g.origin === "residue").map((g) => g.text),
-  };
+/** All unfinished short-term goals, regardless of origin, in queue order. */
+export function unfinishedGoals(state: AgentPrivateView | undefined): string[] {
+  return (state?.short_term_goals ?? [])
+    .filter((g) => g.status === "active" || g.status === "interrupted")
+    .map((g) => g.text);
 }

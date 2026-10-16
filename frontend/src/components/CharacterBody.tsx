@@ -258,7 +258,7 @@ export default function CharacterBody({
   }, [worldId, identity, agent.id]);
 
   const dead = live ? reportedDead(live.is_active, live.private.vitality) : false;
-  const { planned, owed } = useMemo(() => unfinishedGoals(live?.private), [live]);
+  const shortTermGoals = useMemo(() => unfinishedGoals(live?.private), [live]);
 
   // Ties held by this person, strongest first: how much they lean on someone either way.
   const ties = useMemo(() => {
@@ -351,8 +351,7 @@ export default function CharacterBody({
     hands: (
       <>
         <Section label="状态">{live ? live.private.activity_label || "—" : "—"}</Section>
-        <Section label="短期目标"><Numbered items={planned} /></Section>
-        {owed.length > 0 && <Section label="待办事项"><Numbered items={owed} /></Section>}
+        <Section label="短期目标"><Numbered items={shortTermGoals} /></Section>
       </>
     ),
     feet: (

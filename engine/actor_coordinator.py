@@ -327,9 +327,9 @@ class ActorCoordinator:
 
     # ----- the character's mind ----------------------------------------------
 
-    async def mind(self) -> ActorMind:
+    async def mind(self, *, step: int) -> ActorMind:
         """The character's mind as the actor sees it now."""
-        return await self._performed().actor_mind(pending=self._pending_amendments)
+        return await self._performed().actor_mind(pending=self._pending_amendments, step=step)
 
     async def amend(self, amendments: ActorAmendments) -> bool:
         """Save the actor's amendments; whether they landed now (``True``) or wait for the next

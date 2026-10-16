@@ -254,7 +254,7 @@ class NarrativeRuntime:
 
     async def actor_mind(self) -> ActorMind:
         """The performed character's mind as the actor sees it (``ActorCoordinator.mind``)."""
-        return await self._actor.mind()
+        return await self._actor.mind(step=self._clock.current_step)
 
     async def amend_actor_mind(self, amendments: ActorAmendments) -> bool:
         """Save the actor's amendments; whether they landed now (``ActorCoordinator.amend``)."""
