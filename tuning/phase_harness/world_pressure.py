@@ -9,6 +9,7 @@ from core.container import Container
 from core.context import clear_log_context, set_log_context
 from core.interfaces.trace import to_jsonable
 from core.logging import get_logger
+from engine.signals import perceived_signals
 from engine.world_pressure import WorldPressureEvaluator
 
 from tuning.fixtures import load_fixture, save_fixture
@@ -61,8 +62,17 @@ async def run_world_pressure(
     try:
         pressure_map = await evaluator.evaluate(
             agents=active,
-            agent_inboxes=inboxes,
-            broadcasts=injected,
+            # Built as the runtime builds them, so the dry run reads what a real step would.
+            signals={
+                aid: perceived_signals(
+                    location_id=spatials[aid].location_id,
+                    inbox=inboxes.get(aid, []),
+                    broadcasts=injected,
+                    ambient=spatials[aid].ambient_events,
+                    acted_upon=agent.personality.state.acted_upon,
+                )
+                for aid, agent in active.items()
+            },
             world_time_label=world_time_label,
             agent_spatials=spatials,
         )

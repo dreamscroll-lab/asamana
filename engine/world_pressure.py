@@ -1,9 +1,10 @@
 """Per-agent external pressure evaluator.
 
-One LLM call **per agent that has an acute signal of its own** (inbox message, a perceivable
-broadcast, or an ambient observation). Each prompt contains ONLY that agent's perceivable
-signals, so information asymmetry is enforced *structurally*, not by instruction. Pure
-co-location does not trigger evaluation; it only modulates pressure for an agent with a signal.
+One LLM call **per agent that has an acute signal of its own** (``PerceivedSignals``: an inbox
+message, a perceivable broadcast, an ambient observation, or another's act that landed on it).
+Each prompt contains ONLY that agent's perceivable signals, so information asymmetry is enforced
+*structurally*, not by instruction. Pure co-location does not trigger evaluation; it only
+modulates pressure for an agent with a signal.
 """
 
 from __future__ import annotations
@@ -17,8 +18,7 @@ from agent.personality import SECRET_LABEL
 from agent.relation import format_relation_block
 from core.context import observe_stage
 from core.interfaces.llm import IndexedRef, LLMMessage, LLMScene, LLMRouter, extract_json, output_budget
-from core.interfaces.perception import Situation
-from engine.signals import perceived_signals
+from core.interfaces.perception import PerceivedSignals, Situation
 from core.interfaces.severity import Severity
 from core.interfaces.trace import Stage
 from core.interfaces.urgency import Urgency, parse_urgency
@@ -38,12 +38,17 @@ from core.prompts import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from agent.agent import Agent
     from core.interfaces.message import Message
     from core.interfaces.perception import AmbientEvent, Broadcast, SpatialPerception
 
 logger = get_logger(__name__)
 
+
+# What landed on the target, in the source list and on each such line alike.
+_ACTED_UPON_TAG = "落到他身上的事"
 
 _DRIVE_TYPE_MAP: dict[str, ExternalDriveType] = {t.value: t for t in ExternalDriveType}
 _NEED_TYPE_MAP: dict[str, NeedType] = {n.value: n for n in NeedType}
@@ -74,7 +79,7 @@ _SYSTEM_PROMPT = f"""\
 客观评估此刻有哪些**外部力量**正在推动该角色行动，输出其外部目标列表。
 
 【压力的唯一来源 = 感知内容】
- - 外部压力**只能源自该角色此刻感知到的内容**（收到的消息 / 可感知的广播 / 环境观察 / 同处者的在场）。
+ - 外部压力**只能源自该角色此刻感知到的内容**（收到的消息 / 可感知的广播 / 环境观察 / {_ACTED_UPON_TAG} / 同处者的在场）。
  - 角色的姓名、性格、背景只是供你判断"同一信号对这个人意味着什么"的**参考**，**它们本身不是压力来源**；
  - 角色自身的内在动机、长期目标**不属于外部压力**（那是其内在需求，由别处处理，不在此输出）。
 
@@ -127,12 +132,11 @@ class WorldPressureEvaluator:
         self,
         *,
         agents: dict[str, "Agent"],
-        agent_inboxes: dict[str, list["Message"]],
-        broadcasts: "list[Broadcast]",
+        signals: "Mapping[str, PerceivedSignals]",
         world_time_label: str,
         agent_spatials: "dict[str, SpatialPerception] | None" = None,
     ) -> dict[str, list[ExternalGoal]]:
-        """Return external goals per agent.
+        """Return external goals per agent, from what reached each (``signals``).
 
         Agents without an acute signal of their own are skipped and omitted from the result.
         """
@@ -141,8 +145,7 @@ class WorldPressureEvaluator:
                 agent_id=agent_id,
                 agent=agent,
                 all_agents=agents,
-                inbox=agent_inboxes.get(agent_id, []),
-                broadcasts=broadcasts,
+                signals=signals.get(agent_id, PerceivedSignals()),
                 spatial=agent_spatials.get(agent_id) if agent_spatials else None,
                 world_time_label=world_time_label,
             )
@@ -168,23 +171,14 @@ class WorldPressureEvaluator:
         agent_id: str,
         agent: "Agent",
         all_agents: dict[str, "Agent"],
-        inbox: list["Message"],
-        broadcasts: "list[Broadcast]",
+        signals: PerceivedSignals,
         spatial: "SpatialPerception | None",
         world_time_label: str,
     ) -> tuple[str, list[ExternalGoal] | None]:
         """Evaluate one agent. Returns (agent_id, goals) or (agent_id, None) when skipped."""
-        location = agent.personality.state.current_location or (spatial.location_id if spatial else "")
-        signals = perceived_signals(
-            location_id=location,
-            inbox=inbox,
-            broadcasts=broadcasts,
-            ambient=spatial.ambient_events if spatial is not None else (),
-        )
         if not signals:
             return agent_id, None
-        perceivable_bcs = list(signals.broadcasts)
-        ambient = list(signals.ambient)
+        inbox = list(signals.messages)
 
         visible_ids = list(spatial.visible_agent_ids) if spatial is not None else []
         co_located = await self._co_located(agent, all_agents, spatial, visible_ids)
@@ -203,8 +197,9 @@ class WorldPressureEvaluator:
         prompt = self._build_agent_prompt(
             agent,
             inbox=inbox,
-            broadcasts=perceivable_bcs,
-            ambient=ambient,
+            broadcasts=list(signals.broadcasts),
+            ambient=list(signals.ambient),
+            acted_upon=list(signals.acted_upon),
             co_located=co_located,
             sender_relations=sender_relations,
             situation_header=situation_header,
@@ -323,6 +318,7 @@ class WorldPressureEvaluator:
         broadcasts: "list[Broadcast]",
         ambient: "list[AmbientEvent]",
         co_located: list[dict[str, Any]],
+        acted_upon: "Sequence[str]" = (),
         sender_relations: dict[str, str],
         situation_header: str,
     ) -> str:
@@ -367,6 +363,10 @@ class WorldPressureEvaluator:
             has_any = True
         for ev in ambient:
             lines.append(f"- {AMBIENT_TAG}：{ev.content}")
+            has_any = True
+        # His own memory of it, so first person: 「我」 is the target.
+        for fact in acted_upon:
+            lines.append(f"- {_ACTED_UPON_TAG}（他自己的记忆，「我」即该角色）：{fact}")
             has_any = True
         if co_located:
             lines.append("- 同处一地（这些人就在该角色身边，构成在场压力；附其身份与该角色对其的关系，供识人参考）：")

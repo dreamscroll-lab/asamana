@@ -19,6 +19,8 @@ from core.coerce import (
     coerce_optional_int,
     coerce_optional_str,
 )
+from core.interfaces.action import DialogueTurn
+from core.interfaces.actor import ActorPace
 from core.interfaces.agent_store import relation_has_substance
 from core.interfaces.snapshot import WorldSnapshot
 from engine.environment import IN_TRANSIT
@@ -63,14 +65,19 @@ class WorldMeta:
     # the actor exits, ``actor_exited`` is set and the character is back with AI cognition.
     actor_character_id: str | None = None
     actor_exited: bool = False
+    # When the actor is asked to decide while the character is idle.
+    actor_pace: ActorPace = ActorPace.EVERY_STEP
+    # The whole cast has been shown to the user as the director; the world takes no actor after.
+    director_reviewed: bool = False
 
 
 @dataclass(frozen=True)
 class CastCandidate:
-    """A character as anyone could know them at a glance: whom an actor may choose to perform.
+    """A character as anyone could know them: whom an actor may choose to perform.
 
-    Nothing of the inner life (traits, values, goals, secret) or of relations: choosing a
-    character must not tell the actor about the others.
+    The same identity an actor sees of anyone else once performing (``interaction.actor_view``).
+    Nothing of the inner life (traits, values, goals, secret), of relations or of narrative tier:
+    choosing a character must not tell the actor about the others.
     """
 
     agent_id: str
@@ -78,8 +85,9 @@ class CastCandidate:
     gender: str
     age: int | None
     role: str
+    background: str
+    appearance: str
     color: str
-    is_main_character: bool
 
 
 @dataclass(frozen=True)
@@ -287,15 +295,6 @@ class ActionTargetView:
     acts_on: list[TargetRef] = field(default_factory=list)   # who/what the act is done to
     claims: list[TargetRef] = field(default_factory=list)    # whose turn it uses up
     reaches: list[TargetRef] = field(default_factory=list)   # passively receive it; turn unaffected
-
-
-@dataclass(frozen=True)
-class DialogueTurn:
-    """One line of a conversation: who said it, and what."""
-
-    speaker_id: str  # code layer — the join key; never rendered
-    speaker: str     # narrative layer — the name to print
-    line: str
 
 
 @dataclass(frozen=True)
@@ -1129,6 +1128,9 @@ def build_world_meta(
         confirmed=bool(catalog_entry.get("confirmed", False)) if catalog_entry else False,
         actor_character_id=(catalog_entry.get("actor_character_id") or None) if catalog_entry else None,
         actor_exited=bool(catalog_entry.get("actor_exited", False)) if catalog_entry else False,
+        actor_pace=ActorPace(catalog_entry.get("actor_pace", ActorPace.EVERY_STEP.value))
+        if catalog_entry else ActorPace.EVERY_STEP,
+        director_reviewed=bool(catalog_entry.get("director_reviewed", False)) if catalog_entry else False,
     )
 
 

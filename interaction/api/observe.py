@@ -8,10 +8,11 @@ While an actor performs a character, every route here and the feed answer as tha
 perceived the world (``interaction.actor_view``); once the actor exits, they answer in full again.
 
 The WebSocket pushes off the in-process event bus (subscribe, not poll): on
-connect it sends the current run state, the turn waiting for the actor (if one is),
-and the latest persisted step (a ``latest_step`` frame), then forwards each live ``step``, ``status`` and
-``actor_turn`` event for its world. An ``actor_turn`` frame carries the whole turn
-when one opens and null when it closes, so it reads the same however many are missed.
+connect it sends the current run state, the turn waiting for the actor (if one is) and the latest
+persisted step (a ``latest_step`` frame), then forwards each live ``step``, ``status``,
+``actor_turn`` and ``actor_entry`` event for its world. An ``actor_turn`` frame carries the whole
+turn when one opens and null when it closes; an ``actor_entry`` frame one new entry of the actor's
+thread, whose history a client reads from ``GET /actor/thread``.
 """
 
 from __future__ import annotations
@@ -215,6 +216,8 @@ def build_observe_router(services: ApiServices) -> Any:
                         await websocket.send_json(
                             {"type": "actor_turn", "data": to_jsonable(event.get("turn"))}
                         )
+                    elif etype == "actor_entry":
+                        await websocket.send_json({"type": "actor_entry", "data": event.get("entry")})
                     elif etype == "status":
                         await websocket.send_json(
                             {"type": "status",

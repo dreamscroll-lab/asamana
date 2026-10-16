@@ -247,8 +247,14 @@ class Broadcast:
 @dataclass(frozen=True)
 class PerceivedSignals:
     """What reached one character this step: messages to it, broadcasts reaching where it
-    stands, and others' acts it saw (``engine.signals`` builds it, one definition for every
-    consumer).
+    stands, others' acts it saw, and others' acts that landed on it (``engine.signals`` builds
+    it, one definition for every consumer).
+
+    ``acted_upon`` holds each act that landed on the character since it last perceived, as its
+    own memory keeps it (first person); being named only to listen is not being acted upon. They
+    are not in ``ambient``: whoever an act lands on is left out of its onlookers. Their effect on
+    the character (memory, emotion, relation) already landed with them; here they only count as
+    having reached it.
 
     Standing beside someone who did nothing is not a signal: pure co-location stays out.
     """
@@ -256,6 +262,11 @@ class PerceivedSignals:
     messages: tuple["Message", ...] = ()
     broadcasts: tuple[Broadcast, ...] = ()
     ambient: tuple[AmbientEvent, ...] = ()
+    acted_upon: tuple[str, ...] = ()
 
     def __bool__(self) -> bool:
-        return bool(self.messages or self.broadcasts or self.ambient)
+        return bool(self.messages or self.broadcasts or self.ambient or self.acted_upon)
+
+    def __len__(self) -> int:
+        """How many things reached the character."""
+        return len(self.messages) + len(self.broadcasts) + len(self.ambient) + len(self.acted_upon)

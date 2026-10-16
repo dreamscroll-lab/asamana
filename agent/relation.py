@@ -354,10 +354,10 @@ class RelationSystem:
         relation.updated_step = step
         await self._store.save_relation(relation)
 
-    async def changed_since(self, step: int) -> List[AgentRelation]:
-        """Relations whose trust, affection, labels or summary changed at or after ``step``."""
+    async def all_relations(self) -> List[AgentRelation]:
+        """Every relation this agent holds, the most recently changed first."""
         relations = await self._store.load_all_relations(self._world_id, self._agent_id)
-        return [r for r in relations if r.updated_step >= step]
+        return sorted(relations, key=lambda r: -r.updated_step)
 
     async def set_trust_affection(
         self,

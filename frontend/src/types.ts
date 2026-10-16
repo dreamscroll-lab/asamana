@@ -33,6 +33,14 @@ export interface WorldMeta {
   // Whether the user has reviewed and locked initialization. Unconfirmed worlds
   // sit in the creation-review stage and cannot start their narrative run.
   confirmed: boolean;
+  // The character an actor performs, chosen at confirmation; null if nobody was cast. Once the
+  // actor exits, `actor_exited` is set and the world is the director's again.
+  actor_character_id: string | null;
+  actor_exited: boolean;
+  // When the actor is asked to decide while the character is idle.
+  actor_pace: ActorPace;
+  // The whole cast has been shown to the user as the director; the world takes no actor after.
+  director_reviewed: boolean;
 }
 
 /** What this backend deployment offers, independent of any world. */
@@ -548,4 +556,251 @@ export type WsFrame =
   | { type: "status"; data: { world_id: string; status: RunState } }
   // The latest persisted step, sent once on connect; then `step` frames as they complete.
   | { type: "latest_step"; data: StepView }
-  | { type: "step"; data: StepView };
+  | { type: "step"; data: StepView }
+  // The turn waiting for the actor: the whole turn when one opens, null when it closes.
+  | { type: "actor_turn"; data: ActorTurn | null }
+  // One new entry of the actor's thread; its history comes from `/actor/thread`.
+  | { type: "actor_entry"; data: ActorEntry };
+
+// --- Actor mode (core/interfaces/actor.py; interaction/api/actor.py) ---------------------------
+// Field for field with the contracts. An answer is sent back in this same shape: the backend
+// refuses unknown keys, so build answers from these types, never by adding fields.
+
+/** A character as anyone could know them: whom the actor may choose to perform. */
+export interface CastCandidate {
+  agent_id: string;
+  name: string;
+  gender: string;
+  age: number | null;
+  role: string;
+  background: string;
+  appearance: string;
+  color: string;
+}
+
+// `decide`: the character's turn, whether or not the world changed. `interrupt`: something reached
+// it mid-action (what, is in the step's perception). `invite`: someone invites the free character
+// into their act (compulsion is never asked). `speak`: the character's dialogue turn in a live conversation.
+export type TurnKind = "decide" | "interrupt" | "invite" | "speak";
+
+/** Someone the character can reach: present, or known and alive elsewhere. */
+export interface BriefPerson {
+  agent_id: string;
+  name: string;
+  gender: string;
+  present: boolean;
+}
+
+export interface BriefNpc {
+  npc_id: string;
+  name: string;
+}
+
+export interface BriefPlace {
+  location_id: string;
+  name: string;
+  travel_seconds: number;
+}
+
+export interface BriefEntity {
+  entity_id: string;
+  name: string;
+}
+
+export interface BriefMessage {
+  sender_name: string; // empty when the message names nobody
+  content: string;
+  urgency: string;
+}
+
+export interface BriefRelation {
+  agent_id: string;
+  name: string;
+  gender: string;
+  trust: number;
+  affection: number;
+  labels: string[];
+  summary: string;
+  deceased: boolean;
+}
+
+/** What a decision can name: the lists an action picks its targets from. */
+export interface ActorBriefing {
+  people: BriefPerson[]; // everyone it can reach, present or not
+  npcs: BriefNpc[];
+  places: BriefPlace[];
+  entities: BriefEntity[];
+}
+
+export interface ActorAction {
+  action_type: string;
+  action_description: string;
+  inner_monologue: string;
+  expected_outcome: string;
+  estimated_steps: number;
+  person_ids: string[];
+  message_announce: boolean;
+  message_content: string;
+  urgency: string;
+  destination_id: string | null;
+  move_carry_ids: string[];
+  physical_person_id: string | null;
+  physical_npc_id: string | null;
+  physical_entity_id: string | null;
+  item_name: string;
+  physical_recipient_id: string | null;
+  errand_npc_id: string | null;
+  errand_destination_id: string | null;
+  errand_item_id: string | null;
+  errand_recipient_id: string | null;
+  errand_announce: boolean;
+  errand_message: string;
+}
+
+export interface EmotionAmendment {
+  emotion: string;
+  intensity: number;
+  valence: number;
+}
+
+/** How the character now regards someone it has a relation with; null keeps that value. */
+export interface RelationAmendment {
+  agent_id: string;
+  trust: number | null;
+  affection: number | null;
+}
+
+/** The actor's changes to the character's mind; whatever is left out keeps its value.
+ *  `insights` are added. */
+export interface ActorAmendments {
+  emotion: EmotionAmendment | null;
+  relations: RelationAmendment[];
+  long_term_goals: string[] | null; // the list in full; null keeps it
+  short_term_goals: string[] | null;
+  insights: string[];
+}
+
+/** The character's mind as the actor sees it at any time. `pending`: saved, not landed yet. */
+export interface ActorMind {
+  emotion: string; // an EmotionType value
+  emotion_intensity: number;
+  emotion_valence: number;
+  long_term_goals: string[];
+  short_term_goals: string[];
+  relations: BriefRelation[]; // everyone the character has a relation with, latest change first
+  pending: ActorAmendments | null;
+}
+
+/** `/actor/amend`: `landed` false means it waits for the start of the next step. */
+export interface ActorAmendResult {
+  accepted: boolean;
+  reason: string | null;
+  landed: boolean;
+}
+
+/**
+ * The answer to a DECIDE turn: exactly one of `action` or `idle` (the character does nothing
+ * this step). Goals are amended in the mind.
+ */
+export interface ActorDecision {
+  action: ActorAction | null;
+  idle: boolean;
+}
+
+/** The answer to an INTERRUPT turn. What to do instead is said at the DECIDE turn it leads into. */
+export interface ActorInterruptAnswer {
+  interrupt: boolean;
+}
+
+/** The answer to an INVITE turn: join the inviter's act or not. */
+export interface ActorInvitationAnswer {
+  accept: boolean;
+}
+
+/** The answer to a SPEAK turn: the character's dialogue turn, what it says (`line`) and whether
+ *  the conversation ends with it. Ending may leave `line` empty. */
+export interface ActorDialogueTurn {
+  line: string;
+  end: boolean;
+}
+
+export type ActorAnswer = ActorDecision | ActorInterruptAnswer | ActorInvitationAnswer | ActorDialogueTurn;
+
+/**
+ * When an idle character's actor is asked to decide: every step, or only when something
+ * reached it or an act of its own has just ended.
+ */
+export type ActorPace = "every_step" | "when_reached";
+
+/** Someone inviting the character to join their act, named as the character perceives them. */
+export interface Invitation {
+  inviter: BriefPerson;
+  action_type: string; // the kind of act it is invited into
+}
+
+/**
+ * A live conversation (spoken turn by turn) the character is in, at the character's dialogue turn:
+ * whom with, and what has been said so far. `turns_left` counts the dialogue turns left, this one
+ * included; `last`: the conversation ends with this one whatever is said. `max_turn_chars` caps
+ * what the actor says in it.
+ */
+export interface Conversation {
+  other: BriefPerson;
+  dialogue: DialogueTurn[];
+  turns_left: number;
+  last: boolean;
+  max_turn_chars: number;
+}
+
+export interface ActorTurn {
+  agent_id: string;
+  step: number; // the step being decided: one past the last step on the map
+  kind: TurnKind;
+  briefing: ActorBriefing | null; // DECIDE only
+  doing: string; // INTERRUPT only: the action in progress
+  // INVITE only: the invitation, and the act the character decided on this step, which
+  // accepting sets aside ("" when none).
+  invitation: Invitation | null;
+  decided: string;
+  conversation: Conversation | null; // SPEAK only
+  // Why the character is asked, as a sentence for the actor; empty when nothing brought it on.
+  reason: string;
+  turn_id: string;
+}
+
+/**
+ * One entry of the actor's thread: what passed between actor and world, in order. `step` is a
+ * code-layer coordinate; never render it as text. `time_label` is the world's own name for that
+ * step's moment.
+ */
+export type ActorEntry =
+  // What reached the character: letters and broadcasts as a step began, or someone else's act
+  // landing on it (`acted_upon`, as its own memory keeps it).
+  | { kind: "perceived"; entry_id: string; step: number; time_label: string; messages: BriefMessage[]; broadcasts: string[]; acted_upon: string[] }
+  // The world asks: a turn opened.
+  | { kind: "asked"; entry_id: string; step: number; time_label: string; turn: ActorTurn }
+  // The actor's words at a DECIDE turn and their reading; `reason` (a refusal slug) when none.
+  | { kind: "said"; entry_id: string; step: number; time_label: string; turn_id: string; words: string; reading: ActorDecision | null; reason: string | null }
+  | { kind: "answered"; entry_id: string; step: number; time_label: string; turn_id: string; answer: ActorAnswer }
+  // The actor asked to break off the act in progress, outside any turn.
+  | { kind: "break_off"; entry_id: string; step: number; time_label: string }
+  // The character set out on an act, expected to take `total_steps` steps, this one the first.
+  | { kind: "began"; entry_id: string; step: number; time_label: string; description: string; total_steps: number }
+  // The act in progress went on another step: `elapsed_steps` of `total_steps` are done.
+  | { kind: "progressed"; entry_id: string; step: number; time_label: string; elapsed_steps: number; total_steps: number }
+  // How it ended, as the character remembers it; `fact` empty when it was never adjudicated,
+  // `happened` false when it never engaged the world.
+  | { kind: "ended"; entry_id: string; step: number; time_label: string; fact: string; succeeded: boolean; happened: boolean }
+  // A dialogue turn of a live conversation, either side's. `end`: the conversation ends with it
+  // (by the speaker's choice, or the turns ran out); an ending turn's line may be empty. SPEAK
+  // turns leave no `asked` or `answered` entries: these are their record.
+  | { kind: "dialogue_turn"; entry_id: string; step: number; time_label: string; dialogue_turn: DialogueTurn; end: boolean };
+
+/**
+ * `/actor/say`, `/actor/answer`, `/actor/break-off`: a refusal is a normal answer, with a reason
+ * slug. What was taken comes as entries of the thread.
+ */
+export interface ActorResult {
+  accepted: boolean;
+  reason: string | null;
+}

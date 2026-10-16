@@ -16,8 +16,14 @@ from agent.personality import ActionStatus, activity_status_for
 from core.context import annotate_call, observe_stage, set_log_context
 from core.event_bus import NarrativeEventBus
 from core.interfaces.action import COVERTABLE_ACTION_TYPES
-from core.interfaces.actor import ActorDecision, ActorInterruptAnswer, ActorTurn
-from core.interfaces.perception import PerceivedSignals
+from core.interfaces.actor import (
+    ActorAmendments,
+    ActorAnswer,
+    ActorMind,
+    ActorPace,
+    ActorTurn,
+    SaidEntry,
+)
 from core.interfaces.agent_store import AgentStoreProvider, relations_snapshot
 from core.interfaces.directory import WorldDirectory
 from core.interfaces.snapshot import EngineState, SnapshotProvider, WorldSnapshot, WorldState
@@ -30,7 +36,7 @@ from engine.actor_coordinator import ActorCoordinator
 from engine.signals import perceived_signals
 from engine.broadcast import BroadcastChannel
 from engine.presence import attach_presence
-from engine.clock import GlobalClock
+from engine.clock import GlobalClock, WorldTime
 from engine.cognition_maintenance import CognitionMaintenance
 from engine.environment import IN_TRANSIT, UNPLACED, EnvironmentSystem
 from engine.narrative_editor import NarrativeEditorSettings, NarrativeEditor
@@ -55,7 +61,8 @@ from core.interfaces.llm import LLMRouter
 from engine.world_pressure import WorldPressureEvaluator
 if TYPE_CHECKING:
     from agent.agent import Agent
-    from core.interfaces.perception import Broadcast, SpatialPerception
+    from core.interfaces.message import Message
+    from core.interfaces.perception import Broadcast, PerceivedSignals, SpatialPerception
 
 
 logger = get_logger(__name__)
@@ -149,9 +156,11 @@ class NarrativeRuntime:
             processor=self._processor,
         )
         # The actor a person performs a character through, once ``cast_actor`` hands it one. The
-        # step loop never asks it: the character does. Each turn opening and closing goes out on
-        # the event bus, like steps.
-        self._actor = ActorCoordinator(on_turn=self._publish_actor_turn)
+        # step loop never asks it: the character does. Each turn opening and closing, and each
+        # entry of the actor's thread, goes out on the event bus, like steps.
+        self._actor = ActorCoordinator(
+            clock.config, on_turn=self._publish_actor_turn, on_entry=self._publish_actor_entry,
+        )
         # Owns its edge-trigger state (_interrupt_seen_goals); lands torn-down actions
         # through the processor.
         self._interrupts = InterruptCoordinator(
@@ -217,20 +226,46 @@ class NarrativeRuntime:
 
     @property
     def actor(self) -> ActorChannel:
-        """The actor's channel — the API answers the character's turns through this."""
+        """The actor's channel: the turn waiting for the actor, and its withdrawal."""
         return self._actor.channel
 
-    def cast_actor(self, agent: Agent) -> None:
-        """Have a person perform ``agent`` through this world's actor."""
-        self._actor.perform(agent)
+    def answer_actor(self, answer: ActorAnswer) -> None:
+        """Answer the turn waiting for the actor (``ActorCoordinator.answer``)."""
+        self._actor.answer(answer)
+
+    def cast_actor(self, agent: Agent, *, pace: ActorPace) -> None:
+        """Have a person perform ``agent`` through this world's actor, asked at ``pace``."""
+        self._actor.perform(agent, pace=pace)
+
+    def set_actor_pace(self, pace: ActorPace) -> None:
+        self._actor.set_pace(pace)
 
     def _publish_actor_turn(self, turn: ActorTurn | None) -> None:
         self._event_bus.publish({"type": "actor_turn", "world_id": self._world_id, "turn": turn})
 
-    async def interpret_actor_answer(self, text: str) -> "ActorDecision | ActorInterruptAnswer | None":
-        """The actor's words read as an answer to the open turn, for them to confirm (see
-        ``ActorCoordinator.interpret``)."""
-        return await self._actor.interpret(text)
+    def _publish_actor_entry(self, entry: dict[str, Any]) -> None:
+        self._event_bus.publish({"type": "actor_entry", "world_id": self._world_id, "entry": entry})
+
+    @property
+    def actor_live_thread(self) -> list[dict[str, Any]]:
+        """The actor's thread since the last committed step (``ActorCoordinator.live_thread``)."""
+        return self._actor.live_thread
+
+    async def actor_mind(self) -> ActorMind:
+        """The performed character's mind as the actor sees it (``ActorCoordinator.mind``)."""
+        return await self._actor.mind()
+
+    async def amend_actor_mind(self, amendments: ActorAmendments) -> bool:
+        """Save the actor's amendments; whether they landed now (``ActorCoordinator.amend``)."""
+        return await self._actor.amend(amendments)
+
+    async def actor_say(self, text: str) -> SaidEntry:
+        """The actor's words read against the open DECIDE turn (``ActorCoordinator.say``)."""
+        return await self._actor.say(text)
+
+    def actor_break_off(self) -> None:
+        """Break off what the performed character is doing (``ActorCoordinator.break_off``)."""
+        self._actor.break_off()
 
     @property
     def clock(self) -> GlobalClock:
@@ -369,6 +404,9 @@ class NarrativeRuntime:
         await self._deaths.process_new_deaths(agents, pre_step_active, step)
         pre_step_active = {aid for aid in pre_step_active if agents_dict[aid].is_active}
         self._sync_dead_ids(agents_dict)
+        # Amendments to a character's mind saved between steps land before it perceives this one.
+        for agent in agents:
+            await agent.land_amendments(step)
         injection_ms = round((time.perf_counter() - _t0) * 1000, 1)
         logger.debug("injection_check_done", extra={"step": step, "elapsed_ms": injection_ms, "director_injections": len(director_injections), "editor_injected": editor_injection is not None})
 
@@ -409,6 +447,7 @@ class NarrativeRuntime:
                 inbox=deliveries.inbox_for(agent.agent_id),
                 broadcasts=broadcasts_this_step,
                 ambient=agent_spatials[agent.agent_id].ambient_events,
+                acted_upon=agent.personality.state.acted_upon,
             )
             for agent in agents
             if agent.is_active
@@ -426,8 +465,7 @@ class NarrativeRuntime:
 
         pressure_ms = await self._apply_world_pressure(
             agents_dict,
-            deliveries=deliveries,
-            broadcasts=broadcasts_this_step,
+            signals=agent_signals,
             agent_spatials=agent_spatials,
             world_time_label=world_time.time_label,
             step=step,
@@ -512,7 +550,6 @@ class NarrativeRuntime:
             world_time_label=world_time.time_label,
             agent_spatials=agent_spatials,
             broadcasts=broadcasts_this_step,
-            signals=agent_signals,
         )
         plan_elapsed_ms = (time.perf_counter() - plan_start) * 1000.0
         # Count deciders (spent LLM calls), idle (conscriptable) and busy (listed only to be
@@ -680,8 +717,6 @@ class NarrativeRuntime:
                 },
             )
 
-        self._note_acted_upon(agents_dict, all_action_records, injections)
-
         # The step's record: each event once, in emission order, stamped with its seq. Message
         # receivers are placed where they perceived from this step (the delivery reached them
         # there, before anyone moved).
@@ -703,31 +738,14 @@ class NarrativeRuntime:
         )
 
         await self._persist_agent_states(agents, step)
-        environment_state = self._environment.world_state()
-        snapshot = WorldSnapshot(
-            world_id=self._world_id,
+        snapshot = await self._step_snapshot(
             step=step,
-            timestamp=datetime.now(),
-            world_time=world_time.clock_payload(),
-            state=WorldState(
-                places=environment_state["places"],
-                agents=agent_records_now,
-                npcs=environment_state["npcs"],
-                entities=environment_state["entities"],
-                relations=await self._build_relation_snapshot(agents_dict.keys()),
-            ),
+            world_time=world_time,
+            agents=agent_records_now,
+            agent_ids=agents_dict.keys(),
             events=events,
-            engine=EngineState(
-                pending_messages=pending_messages,
-                # Broadcasts not yet due. Death notices (deliver_step = next step) straddle this
-                # boundary; unsaved, nobody would know of the death after a restore.
-                pending_broadcasts=self._broadcast_channel.peek_pending(),
-                # Next seq to assign; restore (NarrativeApplication._build_runtime →
-                # start_event_seq) resumes strictly increasing.
-                event_seq=self._event_seqs.next_seq,
-                environment=self._environment.engine_state(),
-                schedule=plan.as_dict(),
-            ),
+            pending_messages=pending_messages,
+            schedule=plan.as_dict(),
         )
         _t_snapshot = time.perf_counter()
         try:
@@ -798,6 +816,46 @@ class NarrativeRuntime:
             injection_summaries=[event["narrative_desc"] for event in serialized_events],
             delivered_message_count=len(deliveries.delivered_messages),
             scheduled_agent_ids=[agent.agent_id for agent in plan.ordered_agents()],
+        )
+
+    async def _step_snapshot(
+        self,
+        *,
+        step: int,
+        world_time: WorldTime,
+        agents: Dict[str, Dict[str, Any]],
+        agent_ids: Iterable[str],
+        events: List[Dict[str, Any]],
+        pending_messages: List[Message],
+        schedule: Dict[str, Any],
+    ) -> WorldSnapshot:
+        """The committed step's record, from what each subsystem holds at the commit point."""
+        environment_state = self._environment.world_state()
+        return WorldSnapshot(
+            world_id=self._world_id,
+            step=step,
+            timestamp=datetime.now(),
+            world_time=world_time.clock_payload(),
+            state=WorldState(
+                places=environment_state["places"],
+                agents=agents,
+                npcs=environment_state["npcs"],
+                entities=environment_state["entities"],
+                relations=await self._build_relation_snapshot(agent_ids),
+            ),
+            events=events,
+            engine=EngineState(
+                pending_messages=pending_messages,
+                # Broadcasts not yet due. Death notices (deliver_step = next step) straddle this
+                # boundary; unsaved, nobody would know of the death after a restore.
+                pending_broadcasts=self._broadcast_channel.peek_pending(),
+                # Next seq to assign; restore (NarrativeApplication._build_runtime →
+                # start_event_seq) resumes strictly increasing.
+                event_seq=self._event_seqs.next_seq,
+                environment=self._environment.engine_state(),
+                schedule=schedule,
+            ),
+            actor_thread=self._actor.take_thread(),
         )
 
     def _agent_records(
@@ -1065,27 +1123,6 @@ class NarrativeRuntime:
                     doer_ids=doer_ids,
                 )
 
-    @staticmethod
-    def _note_acted_upon(
-        agents: Dict[str, "Agent"], records: List[Dict[str, Any]], injections: "List[Any]",
-    ) -> None:
-        """Tell each character that someone else's action, or a world event, landed on it.
-
-        Effects on a character reach it through feedback (its own memory of the effect), and
-        onlooker traces exclude whoever was acted on, so its perception alone would miss the one
-        thing most likely to matter to it. Its own acts, including the partner's side of one it
-        started, don't count.
-        """
-        acted_upon: set[str] = set()
-        for record in records:
-            doers = {record.get("agent_id"), record.get("initiator_id")}
-            acted_upon.update(aid for aid in record.get("acted_upon") or () if aid not in doers)
-        for injection in injections:
-            acted_upon.update(injection.target_ids)
-        for agent_id in acted_upon:
-            if (agent := agents.get(agent_id)) is not None:
-                agent.note_acted_upon()
-
     async def _plan_one_agent(
         self,
         agent: "Agent",
@@ -1095,7 +1132,6 @@ class NarrativeRuntime:
         world_time_label: str,
         broadcasts: "List[Broadcast]",
         spatial: "SpatialPerception | None" = None,
-        signals: PerceivedSignals = PerceivedSignals(),
     ) -> tuple[str, "Agent", AgentStepPlan]:
         """Build perception inputs for one agent and run its plan_step.
 
@@ -1114,7 +1150,6 @@ class NarrativeRuntime:
             spatial=spatial,
             inbox=agent_messages,
             broadcasts=local_broadcasts,
-            signals=signals,
         )
         return (phase, agent, plan_result)
 
@@ -1122,8 +1157,7 @@ class NarrativeRuntime:
         self,
         agents: Dict[str, "Agent"],
         *,
-        deliveries: MessageDelivery,
-        broadcasts: "List[Broadcast]",
+        signals: "Mapping[str, PerceivedSignals]",
         agent_spatials: "dict[str, SpatialPerception]",
         world_time_label: str,
         step: int,
@@ -1150,10 +1184,7 @@ class NarrativeRuntime:
 
         pressure_map = await self._pressure_evaluator.evaluate(
             agents=agents,
-            agent_inboxes={
-                agent_id: deliveries.inbox_for(agent_id) for agent_id in agents
-            },
-            broadcasts=broadcasts,
+            signals=signals,
             world_time_label=world_time_label,
             agent_spatials=agent_spatials,
         )
@@ -1231,7 +1262,6 @@ class NarrativeRuntime:
         world_time_label: str,
         broadcasts: "List[Broadcast]",
         agent_spatials: "dict[str, SpatialPerception] | None" = None,
-        signals: "Mapping[str, PerceivedSignals] | None" = None,
     ) -> List[tuple[str, Agent, AgentStepPlan]]:
         # Planning is parallel across the whole scheduled set: plan_step writes nothing shared.
         # Main-before-background is an arbitration property, not a planning barrier: gather
@@ -1258,7 +1288,6 @@ class NarrativeRuntime:
                     world_time_label=world_time_label,
                     broadcasts=broadcasts,
                     spatial=agent_spatials.get(agent.agent_id) if agent_spatials else None,
-                    signals=(signals or {}).get(agent.agent_id, PerceivedSignals()),
                 )
                 for phase, agent in ordered
             ],
@@ -1342,6 +1371,9 @@ class NarrativeRuntime:
                 fields["verdict"] = "start_failed"
             elif resolved.is_passive_join:
                 fields["verdict"] = "conscripted"
+            elif resolved.refused:
+                # The invitee refused: it happened, as a failure, so it isn't "rejected".
+                fields["verdict"] = "refused"
             elif carried is not None and carried.not_executed:
                 # Ruled infeasible and settled as a failure this step; the reason is in the
                 # result text.
@@ -1382,17 +1414,19 @@ class NarrativeRuntime:
         remaining = exec_state.remaining_steps if exec_state else max(0, record_action.estimated_steps - 1)
 
         if resolved.is_passive_join:
+            # His own decided action is discarded; keep the intent for next step's decision (the
+            # perception that drove it lasts one step). None if his decision failed. Before the
+            # join, so his own act comes to nothing before the one he is drawn into begins.
+            if plan.action is not None:
+                agent.defer_decided_intent(plan.action, plan.step)
             await agent.join_ongoing_action(
                 description=resolved.action_result.outcome,
                 target_id=exec_state.initiator_id if exec_state else "",
                 activity_status=activity_status_for(exec_state.action_type if exec_state else record_action.action_type),
                 estimated_steps=remaining,
+                total_steps=exec_state.estimated_steps if exec_state else record_action.estimated_steps,
                 step=plan.step,
             )
-            # His own decided action is discarded; keep the intent for next step's decision (the
-            # perception that drove it lasts one step). None if his decision failed.
-            if plan.action is not None:
-                agent.defer_decided_intent(plan.action, plan.step)
             # Two trace marks for review (cognitive outputs carry no review-only field):
             #  · Motivation is voided (join_ongoing_action doesn't submit the need evaluation) →
             #    unadopted, so review won't flag a never-queued goal as unpursued.
@@ -1405,7 +1439,10 @@ class NarrativeRuntime:
                     stage=Stage.MOTIVATION.value, reason="conscripted",
                 )
         else:
-            await agent.begin_ongoing_step(plan=plan, estimated_steps=remaining)
+            await agent.begin_ongoing_step(
+                plan=plan, estimated_steps=remaining,
+                total_steps=exec_state.estimated_steps if exec_state else record_action.estimated_steps,
+            )
 
         # Invariant guard: arbitration gave him an execution the registry lacks. Landing
         # normally would leave him in progress forever, never deciding again, so keep the
@@ -1499,8 +1536,12 @@ class NarrativeRuntime:
         groups: List[List[tuple[str, "Agent", AgentStepPlan]]] = []
         current_phase: str | None = None
         for item in planned_steps:
-            phase, _agent, plan = item
+            phase, agent, plan = item
             if plan.agent_id not in arbitration:
+                # An intent with no verdict: its execution failed to start (logged by the
+                # arbiter). Nothing to commit; the character decides afresh next step.
+                if plan.action is not None:
+                    agent.drop_unstarted_intent(plan.action, plan.step)
                 continue
             if phase != current_phase:
                 groups.append([item])
@@ -1515,6 +1556,7 @@ class NarrativeRuntime:
         #                execution, not the decision's often-off estimated_steps)
         #   conscripted  folded into someone else's action (motivation voided too)
         #   rejected     ruled infeasible, settled as a failure that step
+        #   refused      the one invited refused; a failure that happened, remembered
         #   start_failed admitted but couldn't start: infrastructure failure, not a verdict
         self._stamp_verdicts(planned_steps, arbitration)
 

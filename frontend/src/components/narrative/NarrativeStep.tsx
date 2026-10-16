@@ -10,11 +10,13 @@ import { Phase } from "../../lib/contract";
 import type { AgentView, NpcView, StepView } from "../../types";
 import { type Placed, indexStep } from "../../lib/step";
 import { npcStandingLine } from "../../lib/npc";
+import type { Viewer } from "../../lib/viewer";
 import ActionRow from "./ActionRow";
 import BroadcastRow from "./BroadcastRow";
 import CollapsedRow from "./CollapsedRow";
 import InjectionRow from "./InjectionRow";
 import MessageRow from "./MessageRow";
+import ObservationRow from "./ObservationRow";
 import { stepCast } from "./cast";
 import { bornInStep, buildFeed, involves, itemKey } from "./feed";
 import { collapsedOf } from "./meta";
@@ -24,12 +26,15 @@ export default function NarrativeStep({
   focusAgents = [],
   isolated = false,
   onToggleIsolate,
+  viewer = null,
 }: {
   step: StepView;
   focusAgents?: string[];
   // Whether the feed is showing this step ALONE; owned by the feed, which sees the other steps.
   isolated?: boolean;
   onToggleIsolate?: (step: number) => void;
+  // Whose view the step is filtered to; null for the director.
+  viewer?: Viewer;
 }) {
   // Beats the reader opened despite the focus. Owned by the card, so it survives a focus
   // change: an expanded beat is one you asked to see.
@@ -39,7 +44,7 @@ export default function NarrativeStep({
   const focusSet = new Set(focusAgents);
   const focusActive = focusSet.size > 0;
   const cast = stepCast(step);
-  const feed = buildFeed(step);
+  const feed = buildFeed(step, viewer);
   const index = indexStep(step);
   // A transcript prints once even if two beats carry it; the first card in feed order claims
   // it. Decided here because it's a question about the whole list.
@@ -108,6 +113,7 @@ export default function NarrativeStep({
 
           if (item.kind === "injection") return <InjectionRow key={key} injection={item.data} />;
           if (item.kind === "message") return <MessageRow key={key} m={item.data} cast={cast} />;
+          if (item.kind === "observation") return <ObservationRow key={key} o={item.data} cast={cast} />;
           if (item.kind === "broadcast") {
             return <BroadcastRow key={key} b={item.data} place={item.data.location_name} />;
           }
@@ -128,6 +134,8 @@ export default function NarrativeStep({
               showConversation={showConversation}
               born={born}
               entities={index.entities}
+              inside={item.inside}
+              mine={viewer !== null && item.data.participant_ids.includes(viewer)}
             />
           );
         })}

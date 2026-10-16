@@ -697,7 +697,9 @@ async def test_finalize_adjudication_failed_is_null_step(container: object) -> N
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_apply_feedback_none_factual_memory_does_not_write_none_string(container: object) -> None:
+async def test_an_act_with_no_fact_is_not_remembered(container: object, caplog) -> None:
+    """A producer that states no fact writes no memory: neither a literal "None" nor the intent
+    standing in for what happened."""
     agent = _make_agent(container)
     action = AgentAction(
         action_type=ActionType.TALK,
@@ -715,10 +717,8 @@ async def test_apply_feedback_none_factual_memory_does_not_write_none_string(con
     )
     await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion())  # noqa: SLF001
 
-    for m in agent.memory_system._entries.values():
-        assert not m.stored_content.startswith("None"), (
-            f"Memory starts with literal 'None': {m.stored_content!r}"
-        )
+    assert not agent.memory_system._entries  # noqa: SLF001
+    assert "action_fact_missing" in caplog.text
 
 
 @pytest.mark.asyncio

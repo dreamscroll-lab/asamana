@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
 import { api, API_BASE } from "../api/client";
 import type { TiledWorldScene } from "../phaser/TiledWorldScene";
 import { renderStepInto } from "../phaser/driveStep";
 import { loadMapSource, type MapSource } from "../phaser/mapSource";
 import { indexStep } from "../lib/step";
+import type { Viewer } from "../lib/viewer";
 import type { MapFocus, MapSelect, StepView } from "../types";
 import MapStage from "./MapStage";
 import WorldClock from "./WorldClock";
@@ -22,6 +23,11 @@ interface Props {
   // included) goes immersive together; the map only reflects the flag in its button.
   immersive: boolean;
   onToggleImmersive: () => void;
+  // Whose view the steps are filtered to; null for the director.
+  viewer?: Viewer;
+  // What floats over the map (the director's or the actor's console), kept inside the map
+  // itself so it never covers the controls under it.
+  children?: ReactNode;
 }
 
 /**
@@ -39,6 +45,8 @@ export default function LiveWorldMap({
   onFocusChange,
   immersive,
   onToggleImmersive,
+  viewer = null,
+  children,
 }: Props) {
   const [scene, setScene] = useState<TiledWorldScene | null>(null);
   const sceneRef = useRef<TiledWorldScene | null>(null);
@@ -111,6 +119,7 @@ export default function LiveWorldMap({
     // suppressed via `cancelled` so only the current step's completion advances.
     let cancelled = false;
     const stepNo = step.step;
+    sceneRef.current.setViewer(viewer);
     // A render that threw still finished (renderStepInto hands the error back). Report it
     // anyway: the driver's gate is only reopened here, so an unreported failure stops
     // playback for good.
@@ -120,7 +129,7 @@ export default function LiveWorldMap({
     return () => {
       cancelled = true;
     };
-  }, [ready, step]);
+  }, [ready, step, viewer]);
 
   // With no map the scene never mounts and onRendered never fires, freezing the driver's
   // gate (clock, roster, cards, DirectorBar all stall). No render timeline to wait for, so
@@ -132,13 +141,14 @@ export default function LiveWorldMap({
 
   if (mapSource === false) {
     return (
-      <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-6">
+      <div className="relative h-full bg-slate-900/40 border border-slate-800 rounded-2xl p-6">
         <h3 className="text-sm font-semibold tracking-wider text-slate-400 uppercase mb-2">
           🗺️ 世界地图
         </h3>
         {/* The two fetches loadMapSource refuses to carry on without — a missing
             tileset or no derived ground still draws, so neither lands here. */}
         <p className="text-slate-500 text-sm">取不到这个世界的地图文件或人物资产。</p>
+        {children}
       </div>
     );
   }
@@ -174,8 +184,8 @@ export default function LiveWorldMap({
           </div>
         )}
         {/* Focus toolbar: subject chips and follow / clear as one left-aligned cluster.
-            pr-[27rem] reserves the top-right for the director console overlay, or the chips
-            wrap under it; below `sm` the console is near full-width, so no reserve. */}
+            pr-[27rem] reserves the top-right for the director console or the actor's console, or
+            the chips wrap under it; below `sm` either is near full-width, so no reserve. */}
         {(focus.agents.length > 0 || focus.place) && (
           <div className="absolute top-2 left-2 right-2 sm:pr-[27rem] flex items-center flex-wrap gap-1.5 pointer-events-none">
             <span className="text-[10px] text-slate-400 bg-slate-950/80 px-1.5 py-0.5 rounded pointer-events-auto">🎯 焦点</span>
@@ -224,6 +234,7 @@ export default function LiveWorldMap({
             </button>
           </div>
         )}
+        {children}
       </div>
       <div className="shrink-0 flex items-center justify-end gap-1 px-3 py-2 border-t border-slate-800/70 bg-slate-950/50">
         {/* The clock shows here only in immersive, when the header that carries it is collapsed. */}

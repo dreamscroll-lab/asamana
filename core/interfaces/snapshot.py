@@ -77,6 +77,9 @@ class WorldSnapshot:
     # delivery), ``broadcast`` and ``injection``. Every event carries its ``seq``.
     events: list[dict[str, Any]] = field(default_factory=list)
     engine: EngineState = field(default_factory=EngineState)
+    # The actor's thread in this step (``core.interfaces.actor.ActorEntry`` as JSON), in order;
+    # empty when nobody performs a character.
+    actor_thread: list[dict[str, Any]] = field(default_factory=list)
     # Step 0 only: the record of building the world (manifest, lore, character profiles).
     build: dict[str, Any] = field(default_factory=dict)
 

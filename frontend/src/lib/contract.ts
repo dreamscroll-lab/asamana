@@ -102,3 +102,10 @@ export const actedOnEntities = (t: ActionTarget | undefined): string[] =>
 export const claimedAgents = (t: ActionTarget | undefined): string[] =>
   (t?.claims ?? []).filter((r) => r.kind === RefKind.agent).map((r) => r.id);
 
+
+// Value ranges the backend validates amendments against; mirrors core.prompts. Sliders stay
+// inside them, so the backend's 400 is a backstop.
+export const EMOTION_INTENSITY_RANGE: [number, number] = [0, 1];
+export const EMOTION_VALENCE_RANGE: [number, number] = [-1, 1];
+export const TRUST_RANGE: [number, number] = [0, 1];
+export const AFFECTION_RANGE: [number, number] = [-1, 1];

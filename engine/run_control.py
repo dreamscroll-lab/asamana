@@ -50,10 +50,6 @@ class RunController:
         self._single_step = False
 
     @property
-    def is_paused(self) -> bool:
-        return not self._resume.is_set() and not self._stop_requested
-
-    @property
     def stop_requested(self) -> bool:
         return self._stop_requested
 

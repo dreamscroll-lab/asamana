@@ -1,7 +1,15 @@
-// Creation-review dashboard: after a world is built the user reviews the cast
-// (CharacterCard) and their relationship web (RelationshipGraph), then confirms
-// to lock initialization and enter the narrative phase. Until confirmed a world
+// Creation-review dashboard: after a world is built the user chooses how to enter it, then
+// confirms to lock initialization and enter the narrative phase. Until confirmed a world
 // cannot start its run.
+//
+// The choice comes first because the director's review shows everything: every character's
+// dossier, secrets and relations. Someone who will live in the world as one character must not
+// see that, so the page shows only the world's premise until the user picks:
+//   - as the director: the whole cast and their relationship web, then confirm. One way: the
+//     world takes no actor afterwards (the backend records it).
+//   - as a character: the cast as anyone could know them, one picked, then confirm. Their own
+//     full dossier waits until they are in the world, or browsing candidates would reveal
+//     everyone's.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
@@ -9,19 +17,11 @@ import { api } from "../api/client";
 import CharacterCard, { type CardAgent } from "../components/CharacterCard";
 import EditableWorldName from "../components/EditableWorldName";
 import RelationshipGraph from "../components/RelationshipGraph";
+import { avatarStyle } from "../lib/avatar";
+import { durationLabel } from "../lib/duration";
+import { viewerOf } from "../lib/viewer";
 import { useWorlds } from "../lib/worldsContext";
-import type { WorldGraph, WorldMeta } from "../types";
-
-/**
- * A step's world duration in the units a reader thinks in — a full day reads as
- * "约一天", not "24 小时". Mirrors the backend's core.duration.describe_duration:
- * the wire carries seconds, and this is the one place that turns them into words.
- */
-function stepDurationLabel(seconds: number): string {
-  const total = Math.floor(seconds / 60);
-  const parts: [number, string][] = [[Math.floor(total / 1440), "天"], [Math.floor((total % 1440) / 60), "小时"], [total % 60, "分钟"]];
-  return `约 ${parts.filter(([n]) => n).map(([n, unit]) => `${n} ${unit}`).join(" ") || "0 分钟"}`;
-}
+import type { CastCandidate, WorldGraph, WorldMeta } from "../types";
 
 /**
  * Keyed on the world for the same reason WorldView is (see its header): this screen holds
@@ -47,6 +47,15 @@ function WorldReview({ id }: { id: string }) {
   const [error, setError] = useState("");
   // Full-screen is this page's call, not the graph's: the view owns the screen.
   const [graphExpanded, setGraphExpanded] = useState(false);
+  // Picking whom to perform; chosen with the confirmation and locked by it.
+  const [casting, setCasting] = useState(false);
+  const [candidates, setCandidates] = useState<CastCandidate[]>([]);
+  const [castId, setCastId] = useState("");
+
+  // The whole cast is the director's: once reviewed (or once the world is confirmed without an
+  // actor) nobody can be cast, and only then is it shown.
+  const directing = !!meta && (meta.director_reviewed || meta.confirmed);
+  const stage = !meta ? "loading" : directing ? "director" : casting ? "casting" : "choose";
 
   useEffect(() => {
     if (!graphExpanded) return;
@@ -57,9 +66,7 @@ function WorldReview({ id }: { id: string }) {
 
   const load = useCallback(async () => {
     try {
-      const [m, g] = await Promise.all([api.getWorld(id), api.graph(id)]);
-      setMeta(m);
-      setGraph(g);
+      setMeta(await api.getWorld(id));
     } catch (e) {
       setError(String(e));
     }
@@ -68,6 +75,34 @@ function WorldReview({ id }: { id: string }) {
   useEffect(() => {
     load();
   }, [load]);
+
+  // While an actor performs, this world is theirs to live in, not to review.
+  useEffect(() => {
+    if (viewerOf(meta)) navigate(`/worlds/${id}`, { replace: true });
+  }, [meta, id, navigate]);
+
+  // Fetched only once the page is the director's: before that, nothing of the cast is loaded.
+  useEffect(() => {
+    if (stage !== "director") return;
+    api.graph(id).then(setGraph).catch((e) => setError(String(e)));
+  }, [id, stage]);
+
+  useEffect(() => {
+    if (stage !== "casting") return;
+    api.castCandidates(id).then(setCandidates).catch((e) => setError(String(e)));
+  }, [id, stage]);
+
+  async function openDirectorReview() {
+    setBusy(true);
+    setError("");
+    try {
+      setMeta(await api.openReview(id));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   // Roster: main characters first.
   const roster = useMemo<CardAgent[]>(
@@ -89,7 +124,8 @@ function WorldReview({ id }: { id: string }) {
     setBusy(true);
     setError("");
     try {
-      await api.confirmWorld(id);
+      await api.confirmWorld(id, stage === "casting" ? castId : undefined);
+      void refreshWorlds();
       navigate(`/worlds/${id}`);
     } catch (e) {
       setError(String(e));
@@ -125,6 +161,15 @@ function WorldReview({ id }: { id: string }) {
               已确认
             </span>
           )}
+          {stage === "casting" && (
+            <button
+              onClick={() => setCasting(false)}
+              disabled={busy}
+              className="text-xs text-slate-400 hover:text-white px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 transition disabled:opacity-40"
+            >
+              ← 换个方式
+            </button>
+          )}
           <button
             onClick={discard}
             disabled={busy}
@@ -132,13 +177,17 @@ function WorldReview({ id }: { id: string }) {
           >
             丢弃
           </button>
-          <button
-            onClick={confirm}
-            disabled={busy}
-            className="text-xs font-semibold px-5 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 border border-indigo-500 shadow-lg shadow-indigo-600/30 transition disabled:opacity-40"
-          >
-            {meta?.confirmed ? "进入叙事 →" : "确认并进入叙事 →"}
-          </button>
+          {(stage === "director" || stage === "casting") && (
+            <button
+              onClick={confirm}
+              disabled={busy || (stage === "casting" && !castId)}
+              className="text-xs font-semibold px-5 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 border border-indigo-500 shadow-lg shadow-indigo-600/30 transition disabled:opacity-40"
+            >
+              {stage === "casting"
+                ? `🧑 我是${candidates.find((c) => c.agent_id === castId)?.name ?? "所选角色"} →`
+                : meta?.confirmed ? "进入叙事 →" : "确认并进入叙事 →"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -171,19 +220,21 @@ function WorldReview({ id }: { id: string }) {
             </h3>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex items-center space-x-2 text-xs bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 text-slate-400">
-              <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
-              <span>
-                {roster.length} 名角色 &amp; {graph?.edges.length ?? 0} 个关系连接
-              </span>
-            </div>
+            {stage === "director" && (
+              <div className="flex items-center space-x-2 text-xs bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 text-slate-400">
+                <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+                <span>
+                  {roster.length} 名角色 &amp; {graph?.edges.length ?? 0} 个关系连接
+                </span>
+              </div>
+            )}
             {/* The story's own pace, chosen for it at build and frozen by confirming —
                 a story told a day at a time is a different story from one told hour by
                 hour, so it belongs here, next to the cast, before the user locks it. */}
             {meta?.seconds_per_step ? (
               <div className="flex items-center space-x-2 text-xs bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 text-slate-400">
                 <span>⏳</span>
-                <span>叙事节奏 · 每步 {stepDurationLabel(meta.seconds_per_step)}</span>
+                <span>叙事节奏 · 每步 {durationLabel(meta.seconds_per_step)}</span>
               </div>
             ) : null}
           </div>
@@ -195,57 +246,151 @@ function WorldReview({ id }: { id: string }) {
         )}
       </div>
 
-      {/* Cast + graph — each a unified card (title + content in one bordered container),
-          matching the lore card above and the narrative page's drawers. */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
-        <div className="lg:col-span-5">
-          <div className="h-full flex flex-col bg-slate-900 border border-slate-800/80 rounded-2xl p-4 shadow-lg">
-            <div className="flex items-center justify-between mb-3 shrink-0">
-              <h4 className="text-sm font-semibold tracking-wider text-slate-400 uppercase">
-                <span className="inline-flex items-center rounded-full bg-slate-800/60 border border-slate-700/60 px-4 py-1.5">👥 角色档案</span>
-              </h4>
-              <span className="text-xs text-slate-500">
-                {roster.length ? roster.findIndex((r) => r.id === effectiveId) + 1 : 0} / {roster.length}
-              </span>
-            </div>
-            <CharacterCard
-              worldId={id}
-              roster={roster}
-              activeId={effectiveId}
-              onActiveChange={setActiveId}
-            />
+      {stage === "choose" && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <EntryChoice
+            icon="🎬"
+            title="导演模式"
+            description="可以以导演的视角去观察世界，操控世界，可以看到完整的世界。"
+            disabled={busy}
+            onClick={openDirectorReview}
+          />
+          <EntryChoice
+            icon="🧑"
+            title="演员模式"
+            description="扮演世界中的一个角色，以第一视角与世界中的其他角色共同叙事。"
+            disabled={busy}
+            onClick={() => setCasting(true)}
+          />
+        </div>
+      )}
+
+      {stage === "casting" && (
+        <div className="space-y-3">
+          <p className="text-xs text-slate-500">选择一个想要扮演的角色</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {candidates.map((c) => (
+              <CandidateCard key={c.agent_id} c={c} picked={c.agent_id === castId} onPick={() => setCastId(c.agent_id)} />
+            ))}
           </div>
         </div>
+      )}
 
-        <div className="lg:col-span-7">
-          <div
-            className={
-              graphExpanded
-                ? "fixed inset-0 z-[60] flex flex-col bg-slate-950 p-4"
-                : "h-full flex flex-col bg-slate-900 border border-slate-800/80 rounded-2xl p-4 shadow-lg"
-            }
-          >
-            <div className="flex items-center justify-between mb-3 shrink-0">
-              <h4 className="text-sm font-semibold tracking-wider text-slate-400 uppercase">
-                <span className="inline-flex items-center rounded-full bg-slate-800/60 border border-slate-700/60 px-4 py-1.5">🕸️ 角色关系网图谱</span>
-              </h4>
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-slate-500">提示: 点击节点可高亮该角色关系链</span>
-                <button
-                  onClick={() => setGraphExpanded((v) => !v)}
-                  title={graphExpanded ? "退出全屏 (Esc)" : "全屏"}
-                  className="shrink-0 text-[11px] px-2.5 py-1.5 rounded-lg bg-slate-950/90 border border-slate-700 text-slate-300 hover:text-white hover:border-slate-600 transition"
-                >
-                  {graphExpanded ? "⤢ 退出" : "⛶ 全屏"}
-                </button>
+      {/* Cast + graph — each a unified card (title + content in one bordered container),
+          matching the lore card above and the narrative page's drawers. */}
+      {stage === "director" && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
+          <div className="lg:col-span-5">
+            <div className="h-full flex flex-col bg-slate-900 border border-slate-800/80 rounded-2xl p-4 shadow-lg">
+              <div className="flex items-center justify-between mb-3 shrink-0">
+                <h4 className="text-sm font-semibold tracking-wider text-slate-400 uppercase">
+                  <span className="inline-flex items-center rounded-full bg-slate-800/60 border border-slate-700/60 px-4 py-1.5">👥 角色档案</span>
+                </h4>
+                <span className="text-xs text-slate-500">
+                  {roster.length ? roster.findIndex((r) => r.id === effectiveId) + 1 : 0} / {roster.length}
+                </span>
+              </div>
+              <CharacterCard
+                worldId={id}
+                roster={roster}
+                activeId={effectiveId}
+                onActiveChange={setActiveId}
+              />
+            </div>
+          </div>
+
+          <div className="lg:col-span-7">
+            <div
+              className={
+                graphExpanded
+                  ? "fixed inset-0 z-[60] flex flex-col bg-slate-950 p-4"
+                  : "h-full flex flex-col bg-slate-900 border border-slate-800/80 rounded-2xl p-4 shadow-lg"
+              }
+            >
+              <div className="flex items-center justify-between mb-3 shrink-0">
+                <h4 className="text-sm font-semibold tracking-wider text-slate-400 uppercase">
+                  <span className="inline-flex items-center rounded-full bg-slate-800/60 border border-slate-700/60 px-4 py-1.5">🕸️ 角色关系网图谱</span>
+                </h4>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-slate-500">提示: 点击节点可高亮该角色关系链</span>
+                  <button
+                    onClick={() => setGraphExpanded((v) => !v)}
+                    title={graphExpanded ? "退出全屏 (Esc)" : "全屏"}
+                    className="shrink-0 text-[11px] px-2.5 py-1.5 rounded-lg bg-slate-950/90 border border-slate-700 text-slate-300 hover:text-white hover:border-slate-600 transition"
+                  >
+                    {graphExpanded ? "⤢ 退出" : "⛶ 全屏"}
+                  </button>
+                </div>
+              </div>
+              <div className="flex-1 min-h-0">
+                <RelationshipGraph graph={graph} activeId={effectiveId} onNodeClick={setActiveId} />
               </div>
             </div>
-            <div className="flex-1 min-h-0">
-              <RelationshipGraph graph={graph} activeId={effectiveId} onNodeClick={setActiveId} />
-            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** One way into the world, before anything of the cast is shown. */
+function EntryChoice({
+  icon,
+  title,
+  description,
+  disabled,
+  onClick,
+}: {
+  icon: string;
+  title: string;
+  description: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="group text-left flex flex-col gap-4 bg-gradient-to-br from-slate-900 to-slate-900/60 border border-slate-700/80 rounded-2xl p-6 shadow-lg cursor-pointer transition duration-200 hover:-translate-y-0.5 hover:border-indigo-500/80 hover:shadow-indigo-900/40 hover:shadow-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:border-slate-700/80"
+    >
+      <div className="flex items-center gap-3">
+        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-indigo-500/10 border border-indigo-500/30 text-2xl transition group-hover:bg-indigo-500/20">
+          {icon}
+        </span>
+        <span className="text-lg font-bold text-slate-100">{title}</span>
+      </div>
+      <p className="text-sm leading-relaxed text-slate-400">{description}</p>
+    </button>
+  );
+}
+
+/** A character as anyone could know them; the identity color is their face. */
+function CandidateCard({ c, picked, onPick }: { c: CastCandidate; picked: boolean; onPick: () => void }) {
+  return (
+    <button
+      onClick={onPick}
+      className={`text-left rounded-2xl border p-4 cursor-pointer transition duration-200 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-indigo-900/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
+        picked
+          ? "bg-indigo-950/50 border-indigo-500/80 ring-1 ring-indigo-500/60"
+          : "bg-slate-900 border-slate-800/80 hover:bg-indigo-950/30 hover:border-indigo-500/60"
+      }`}
+    >
+      <div className="flex items-center gap-3">
+        <div
+          className="w-10 h-10 rounded-xl grid place-items-center text-white text-lg font-black shrink-0"
+          style={avatarStyle(c.color, c.agent_id)}
+        >
+          {c.name[0]}
+        </div>
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-slate-100 truncate">{c.name}</div>
+          <div className="text-[11px] text-slate-400">
+            {[c.role, c.gender, c.age != null ? `${c.age} 岁` : ""].filter(Boolean).join(" · ")}
           </div>
         </div>
       </div>
-    </div>
+      {c.appearance && <p className="mt-2 text-xs text-slate-300 leading-relaxed">{c.appearance}</p>}
+      {c.background && <p className="mt-1.5 text-xs text-slate-500 leading-relaxed">{c.background}</p>}
+    </button>
   );
 }

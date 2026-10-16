@@ -1,6 +1,6 @@
 """The actor's view is the observer's read models filtered to one character: its own body and
 mind, the public side of the place it ends the step in, and events whose audience includes it.
-Of others, only what shows at a glance; never their inner life or narrative tier."""
+Of others, only who they are and how they look; never their inner life or narrative tier."""
 
 from __future__ import annotations
 
@@ -156,7 +156,7 @@ def test_the_world_scope_reaches_everyone_and_the_observer_nobody() -> None:
     assert view.observer == ObserverView()
 
 
-def test_profiles_show_others_only_as_they_look() -> None:
+def test_profiles_show_others_only_who_they_are() -> None:
     def profile(agent_id: str) -> AgentProfile:
         return AgentProfile(
             agent_id=agent_id, name=agent_id, role="宰相", age=50, gender="男", background="出身",
@@ -166,7 +166,7 @@ def test_profiles_show_others_only_as_they_look() -> None:
 
     assert profile_for(profile(ME), ME) == profile(ME)
     assert profile_for(profile("agent-b"), ME) == AgentProfile(
-        agent_id="agent-b", name="agent-b", role="", age=50, gender="男", background="",
+        agent_id="agent-b", name="agent-b", role="宰相", age=50, gender="男", background="出身",
         appearance="清瘦", color="#123456", is_main_character=None,
     )
 
@@ -184,7 +184,7 @@ def test_the_graph_is_the_characters_own_relations() -> None:
     view = graph_for(graph, ME)
 
     assert [(e.from_id, e.to_id) for e in view.edges] == [(ME, "b")]
-    assert [(n.id, n.role, n.is_main_character) for n in view.nodes] == [(ME, "r", True), ("b", "", None)]
+    assert [(n.id, n.role, n.is_main_character) for n in view.nodes] == [(ME, "r", True), ("b", "r", None)]
 
 
 def test_what_arrived_as_the_step_began_follows_who_received_it() -> None:

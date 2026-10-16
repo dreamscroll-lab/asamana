@@ -16,6 +16,7 @@ import {
   type AgentToken, FONT, NOTE_WRAP_W, PLATE_R, PLATE_RISE, TEXT_ACTION, TEXT_RES, WRAP_W, drawPlate,
 } from "./types";
 import { mix, shade, toHex } from "../lib/color";
+import { DIALOGUE_TYPE_MS } from "../lib/dialogue";
 
 // A titled bubble: a drawn panel with a nameplate in the speaker's color and a tail pointing at
 // them. The nameplate hugs the FAR edge and the tail leaves from the NEAR edge (relative to the
@@ -61,9 +62,6 @@ export const NOTE_CHARS = 20;
 // The near-black a floated note's plate is tinted up from, same as the map's other surfaces.
 export const NOTE_GROUND = 0x0a0e1a;
 
-// Per-character typing delay at 1×. Scaled with the dwell by the animation-speed control, or a
-// talky step at 2× plays at well under 2×.
-const DIALOGUE_TYPE_MS = 42;
 
 // Color carries the channel: speech cool blue, action warm amber. `fill` is numeric because the
 // box is drawn (drawPanel), the only way to get a border, shadow and tail.
@@ -227,14 +225,13 @@ export class MapHud {
     g.lineBetween(tx + 7, -dir, tx, dir * 9);
   }
 
-  // A non-dialogue action's caption: icon + who in the title, what in the body.
-  async playActionCaption(
-    tok: AgentToken, act: Beat, icon: string, gen: number, say?: string,
-  ): Promise<void> {
+  // A non-dialogue action's caption: icon + who in the title, what in the body (the beat's
+  // `caption`; see Beat).
+  async playActionCaption(tok: AgentToken, act: Beat, icon: string, gen: number): Promise<void> {
     // Only a genuine in-world failure gets the mark (a non-event never reaches here).
     const failed = act.succeeded === false;
     const b = this.titledBubble(tok, `${icon} ${act.agent_name}${failed ? "  ✗" : ""}`, failed ? 0xc05a5a : tok.color, "action");
-    const desc = say || act.private.action_description || act.private.gist || "";
+    const desc = act.caption;
     b.body.setText([...desc].length > 48 ? [...desc].slice(0, 48).join("") + "…" : desc);
     this.layoutBubble(b);
     if (this.host.renderGen !== gen) return;
@@ -426,6 +423,8 @@ export class MapHud {
       };
       this.host.addCanceler(cancel);
       timer = this.host.time.addEvent({
+        // At 1×. Scaled with the dwell by the animation-speed control, or a talky step at 2×
+        // plays at well under 2×.
         delay: DIALOGUE_TYPE_MS,
         repeat: chars.length - 1,
         callback: () => {

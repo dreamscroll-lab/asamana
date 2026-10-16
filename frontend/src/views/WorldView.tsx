@@ -4,6 +4,9 @@ import { useNavigate, useOutletContext, useParams } from "react-router-dom";
 import type { ShellContext } from "../App";
 import { api } from "../api/client";
 import { WorldSocket } from "../api/ws";
+import ActorConsole from "../components/actor/ActorConsole";
+import { mergeEntries } from "../components/actor/thread";
+import { BTN, BTN_PRIMARY } from "../components/buttonStyles";
 import CharacterBody from "../components/CharacterBody";
 import CharacterCard, { type CardAgent } from "../components/CharacterCard";
 import DirectorBar from "../components/DirectorBar";
@@ -12,10 +15,11 @@ import NarrativeStep from "../components/narrative/NarrativeStep";
 import RelationshipGraph from "../components/RelationshipGraph";
 import WorldClock from "../components/WorldClock";
 import { indexStep } from "../lib/step";
+import { viewerOf } from "../lib/viewer";
 import { useStepPlayer } from "../hooks/useStepPlayer";
 import { NO_MODEL_KEYS_HINT, useModelKeys } from "../lib/deployment";
 import { useWorlds } from "../lib/worldsContext";
-import type { MapFocus, MapSelect, RunState, WorldMeta, WsFrame } from "../types";
+import type { ActorEntry, ActorTurn, MapFocus, MapSelect, RunState, WorldMeta, WsFrame } from "../types";
 
 // Phaser is ~1.4 MB — load the 2D map only when its view is opened.
 const LiveWorldMap = lazy(() => import("../components/LiveWorldMap"));
@@ -47,6 +51,14 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
   const modelKeys = useModelKeys();
 
   const [meta, setMeta] = useState<WorldMeta | null>(null);
+  // The character an actor performs here, whose view every payload is filtered to; null for the
+  // director. Every panel below reads the world through it (see lib/viewer).
+  const viewer = viewerOf(meta);
+  // The turn waiting for the actor, pushed over the socket whenever one opens or closes.
+  const [turn, setTurn] = useState<ActorTurn | null>(null);
+  // The actor's thread: its history read once the world's viewer is known, each new entry pushed
+  // over the socket.
+  const [thread, setThread] = useState<ActorEntry[]>([]);
   const [runState, setRunState] = useState<RunState>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState("");
@@ -86,6 +98,28 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
     });
   };
 
+  // Seen through a character, the camera starts on it and follows it.
+  useEffect(() => {
+    if (viewer) setFocus({ agents: [viewer], place: null, follow: true });
+  }, [viewer]);
+
+  // The actor's thread from the backend: on arrival, and whenever the run settles. A run stopped
+  // mid-step discards that step, so the thread read then replaces what was pushed live; while
+  // the world runs, the read only adds to what arrives meanwhile.
+  const settled = runState !== "running" && runState !== "stopping";
+  useEffect(() => {
+    if (!viewer) return;
+    let current = true;
+    api
+      .actorThread(id)
+      .then((r) => current && setThread((t) => (settled ? r.entries : mergeEntries(r.entries, t))))
+      // Unreadable now: keep what is shown.
+      .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [id, viewer, settled]);
+
   // --- Step playback state machine (live buffer + playback + graph) ---
   const {
     displayStep,
@@ -107,10 +141,13 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
 
   // Roster for the shared character card (main characters first). Live per-step
   // state is passed separately so the card shows the same rich layout as review.
+  // The performed character leads, so its own state is always at hand.
   const roster: CardAgent[] = [...agents]
-    .sort((a, b) => Number(b.is_main_character) - Number(a.is_main_character))
+    .sort((a, b) =>
+      Number(b.agent_id === viewer) - Number(a.agent_id === viewer)
+      || Number(b.is_main_character) - Number(a.is_main_character))
     .map((a) => ({ id: a.agent_id, name: a.name, is_main_character: a.is_main_character ?? false, color: a.color }));
-  const activeAgentId = focus.agents[focus.agents.length - 1] ?? roster[0]?.id ?? null;
+  const activeAgentId = focus.agents[focus.agents.length - 1] ?? viewer ?? roster[0]?.id ?? null;
   const activeAgent = roster.find((a) => a.id === activeAgentId);
 
   // --- WebSocket: connect on mount, stream live status/latest_step/step ------
@@ -134,6 +171,8 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
 
     const onFrame = (frame: WsFrame) => {
       if (frame.type === "status") setRunState(frame.data.status);
+      else if (frame.type === "actor_turn") setTurn(frame.data);
+      else if (frame.type === "actor_entry") setThread((t) => mergeEntries(t, [frame.data]));
       else onLiveStep(frame.data);
     };
     const socket = new WorldSocket(
@@ -185,6 +224,17 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
     return Number.isFinite(n) && n > 0 ? n : undefined;
   };
 
+  // The actor steps out for good. Remounted afterwards: every step held here was filtered to the
+  // character.
+  async function exitActor() {
+    if (!confirm("退出演员模式？退出后这个角色交还给 AI，你回到导演视角，且不能再扮演。")) return;
+    await control(async () => {
+      await api.exitActor(id);
+      await refreshWorlds();
+      onReset();
+    });
+  }
+
   async function remove() {
     if (!confirm("删除该世界？此操作不可恢复。")) return;
     await control(() => api.deleteWorld(id));
@@ -192,10 +242,6 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
     navigate("/");
   }
 
-  const BTN =
-    "px-3 py-1.5 rounded-lg text-xs bg-slate-950 border border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed";
-  const BTN_PRIMARY =
-    "px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 border border-indigo-500 text-white hover:bg-indigo-500 transition disabled:opacity-40 disabled:cursor-not-allowed";
   const toggle = (on: boolean) => (on ? BTN_PRIMARY : BTN);
   // Panel collapse affordance — a plain text link, no boxed button chrome.
   const COLLAPSE = "text-xs text-slate-500 hover:text-slate-200 transition";
@@ -238,6 +284,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
         <NarrativeStep
           key={ev.step}
           step={ev}
+          viewer={viewer}
           focusAgents={focus.agents}
           isolated={isolatedStep === ev.step}
           onToggleIsolate={(s) => setIsolatedStep((cur) => (cur === s ? null : s))}
@@ -352,19 +399,22 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
             >
               ⏭ 推一步
             </button>
-            <button
-              className={BTN}
-              disabled={isBusy || !modelKeys}
-              title={modelKeys ? undefined : NO_MODEL_KEYS_HINT}
-              onClick={() =>
-                control(async () => {
-                  await api.reset(id);
-                  onReset();
-                })
-              }
-            >
-              ↺ 重置
-            </button>
+            {/* Resetting rewrites the story: the director's power, not the actor's. */}
+            {!viewer && (
+              <button
+                className={BTN}
+                disabled={isBusy || !modelKeys}
+                title={modelKeys ? undefined : NO_MODEL_KEYS_HINT}
+                onClick={() =>
+                  control(async () => {
+                    await api.reset(id);
+                    onReset();
+                  })
+                }
+              >
+                ↺ 重置
+              </button>
+            )}
             {divider}
             <span className="text-xs text-slate-500">模式</span>
             <button className={toggle(mode === "live")} onClick={() => setMode("live")}>
@@ -407,12 +457,24 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
             >
               ⛶ 沉浸
             </button>
-            <button
-              className="ml-auto px-3 py-1.5 rounded-lg text-xs bg-slate-950 border border-rose-900/60 text-rose-400 hover:bg-rose-950/30 transition"
-              onClick={remove}
-            >
-              删除
-            </button>
+            {viewer ? (
+              // Like reset, only on a stopped world: the backend takes no exit mid-run.
+              <button
+                className="ml-auto px-3 py-1.5 rounded-lg text-xs bg-slate-950 border border-amber-900/60 text-amber-300 hover:bg-amber-950/30 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                disabled={isBusy || !modelKeys}
+                onClick={exitActor}
+                title={isBusy ? "先停止运行再退出" : modelKeys ? "把角色交还给 AI，回到导演视角" : NO_MODEL_KEYS_HINT}
+              >
+                🧑 退出演员模式
+              </button>
+            ) : (
+              <button
+                className="ml-auto px-3 py-1.5 rounded-lg text-xs bg-slate-950 border border-rose-900/60 text-rose-400 hover:bg-rose-950/30 transition"
+                onClick={remove}
+              >
+                删除
+              </button>
+            )}
           </div>
 
           {error && <p className="text-rose-400 text-xs">{error}</p>}
@@ -439,6 +501,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
                 activeId={activeAgentId}
                 onActiveChange={selectOne}
                 liveStates={liveAgents}
+                viewer={viewer}
                 onExamine={(agentId) => {
                   selectOne(agentId);
                   setBodyOpen(true);
@@ -457,27 +520,45 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
               </div>
             }
           >
+            {/* Held until the world's meta says whose view the steps are: drawn as the director's
+                first, a character's step would show its blanks as the god view. */}
             <LiveWorldMap
               worldId={id}
-              step={displayStep}
+              step={meta ? displayStep : null}
+              viewer={viewer}
               onRendered={doneRendering}
               focus={focus}
               onSelect={handleMapSelect}
               onFocusChange={setFocus}
               immersive={immersive}
               onToggleImmersive={() => setImmersive((o) => !o)}
-            />
-          </Suspense>
+            >
+              {/* The director's console over the map's top-right, live mode only (playback is
+                  history, with no next step to land on). Inside the map, so it survives immersive
+                  and never covers the map's own controls; under the graph overlay (z-30 vs z-40). */}
+              {/* Only a worldId: whether to advance a step for this command is the backend's
+                  call (only it knows whether the loop is alive); don't duplicate run-state rules
+                  here. */}
+              {/* step is only a refresh trigger: an intervention's receipt exists only once the
+                  step it lands in has run. */}
+              {mode === "live" && !viewer && <DirectorBar worldId={id} step={displayStep?.step ?? null} />}
 
-          {/* The director's console over the map's top-right, live mode only (playback is
-              history, with no next step to land on). A child of the map, so it survives
-              immersive; under the graph overlay (z-30 vs z-40). */}
-          {/* Only a worldId: whether to advance a step for this command is the backend's
-              call (only it knows whether the loop is alive); don't duplicate run-state rules
-              here. */}
-          {/* step is only a refresh trigger: an intervention's receipt exists only once the
-              step it lands in has run. */}
-          {mode === "live" && <DirectorBar worldId={id} step={displayStep?.step ?? null} />}
+              {/* The actor's console takes the director console's corner: a viewer has no director
+                  console, and deciding over the map keeps what they decide next to where it happens. */}
+              {viewer && (
+                <ActorConsole
+                  worldId={id}
+                  selfId={viewer}
+                  entries={thread}
+                  turn={turn}
+                  runState={runState}
+                  step={feed[0]?.step ?? 0}
+                  pace={meta?.actor_pace ?? "every_step"}
+                  secondsPerStep={meta?.seconds_per_step ?? 0}
+                />
+              )}
+            </LiveWorldMap>
+          </Suspense>
 
           {/* Relationship graph — a summoned overlay over the map, dismissible. */}
           {graphOpen && (

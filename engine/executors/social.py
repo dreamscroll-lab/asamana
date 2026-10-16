@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, List
 
 from agent.relation import format_relation_block, parse_relation_direction, relation_legend
 from core.context import GivenFacts, annotate_call, observe_stage
 from core.interfaces.action import (
-    ActionResult, ActionTarget, ActionType, AgentAction, Observed, Ref, TargetAgentEffect,
+    ActionResult, ActionTarget, ActionType, AgentAction, DialogueTurn, Observed, Ref, TargetAgentEffect,
 )
+from core.interfaces.actor import BriefPerson, Conversation
 from core.interfaces.directory import WorldDirectory
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, coerce_bool, extract_json, output_budget
 from core.interfaces.trace import Stage
@@ -57,6 +60,15 @@ _DIRECTION_TALK_DELTAS: dict[str, tuple[float, float]] = {
 
 # Soft cap on generated turns. A long TALK means more elapsed time, not more turns.
 _MAX_DIALOGUE_TURNS: int = 8
+
+# A live conversation: at most this many dialogue turns, both sides' together, and what the actor
+# says in one at most this long. An AI turn's length cap is in its prompt.
+#
+# The turn cap is a backstop against a conversation that won't end, not a narrative constraint:
+# the AI side isn't told it, and ends by the conversation's own course. Don't put the turns left
+# in its prompt: a count of turns to spare reads as room to keep talking. The actor is shown it.
+_LIVE_MAX_TURNS: int = 20
+_LIVE_ACTOR_TURN_CHARS: int = 100
 
 _EMPTY_CTX: dict[str, Any] = {"relation": None, "about_other": [], "about_topic": [], "recent": []}
 
@@ -221,6 +233,63 @@ observation 是**一个不在近旁、听不见内容的路人**看到的样子�
 {ABSOLUTE_TIME_RULE}"""
 
 
+@dataclass(frozen=True)
+class _LiveSide:
+    """One side of a live conversation: who, the name the transcript gives them, and what they
+    bring to it (``_gather_context``)."""
+
+    agent: "Agent"
+    name: str
+    ctx: dict[str, Any]
+    is_initiator: bool
+
+
+#: The byte-identical system prefix for an AI side's dialogue turn in a live conversation (prefix cache).
+_LIVE_TURN_SYSTEM: str = f"""\
+【我此刻】
+我就是下面写的这个人，正和人当面说话。轮到我开口了。
+
+【所给】
+- 我是谁、我此刻的处境、我眼前的人和物。
+- 我知道的：我和对方的关系、我对对方的认识、我记得的相关的事、我近来的经历。
+- 这场对话：是谁找的谁、到现在说过的话。
+
+【要做的】
+- 先判断这场话说完了没有，再决定怎么开口。
+- 没说完：接着对方的话，说出我这一轮的话。
+- 说完了：收场。可以说一句告别、应承或撂下的话，也可以一句不说。
+
+【怎样算说完】（有一条就算）
+- 我想要的已经得到了，或已经明白得不到。
+- 事情已经说定：对方应承了、告退了，或只回了一句应付的话。
+- 再说下去，也不会有什么实质的内容和进展了。
+- 谈崩了，或我此时此刻不想再谈了。
+拿不准时就收场：当面说话本来就短。
+
+【约束】
+- 对方已经应承或告辞，我还一句接一句地叮嘱、重复说过的事——这是最该避免的。
+- 我只说我自己知道的事：下面「我知道的」和到现在说过的话里没有的，我就不知道。
+- 对方的话我未必信、未必认账；说法相左时，我照自己认定的来，不替两边调和。
+- 话符合我人设，性格，当前的情绪以及与对方的关系等等。
+- 只说我这一轮的话：不写动作旁白，不替对方说话。
+- 口语、简练，长短随情境。
+- 提到不在场的人要合乎情理：不能指使不在场的人当场做事。
+- 先看清此刻的时间和我所在的地方，别在话里把时间、处所说错。
+{CLOSED_WORLD_FACT_RULE_FIRST_PERSON}
+
+关系数值含义：{relation_legend()}
+
+【输出】
+严格输出以下 JSON，不要任何多余内容，三个字段按这个次序写：
+{{"thought": "这场话说完了没有、我此刻在想什么，≤40字", "end": true或false, "line": "我这一轮说出口的话，≤60字"}}
+- thought：先照上面【怎样算说完】判断这场话说完了没有，再想对方刚才那句让我怎么想、我还想要什么。
+- end：说完了就是 true，这一轮之后我不再说。
+- line：说出口的原话。end 为 true 时是收场的话，可以留空。
+
+开口之前，还有一条：
+{ABSOLUTE_TIME_RULE_FIRST_PERSON}"""
+
+
 class SocialExecutor(ActionExecutor):
     """Executor for TALK actions.
 
@@ -228,8 +297,12 @@ class SocialExecutor(ActionExecutor):
       stay free and they only get an overheard TargetAgentEffect. Group announcements belong
       to SEND_MESSAGE.
     - The whole dialogue is generated once at complete(); ticks are content-free.
-    - One neutral narrator voices both sides. Accepted cost: one prompt holds both sides'
-      private memories, so asymmetry can leak at generation (and persist via memory_summary).
+    - Between AI characters one neutral narrator voices both sides. Accepted cost: one prompt
+      holds both sides' private memories, so asymmetry can leak at generation (and persist via
+      memory_summary).
+    - With the performed character the conversation is live instead, spoken turn by turn
+      (``_live_dialogue``): its actor types its dialogue turns, the AI side speaks in character from its
+      own column only. Either way the result is the same transcript.
     - Each side's memory_summary is its own first-person record.
     """
 
@@ -291,8 +364,11 @@ class SocialExecutor(ActionExecutor):
         if target_ids[0] not in agents:
             return self._failed_result(action, step, f"没有找到{target_label}，无法交谈。", location)
 
-        duration = max(action.estimated_steps, 1)
         participant_ids = [action.agent_id, target_ids[0]]
+        live = any(agents[pid].is_performed for pid in participant_ids if pid in agents)
+        # A live conversation takes one step, so it is spoken the step it starts; a longer act
+        # would ask the actor whether to break off a talk not yet spoken.
+        duration = 1 if live else max(action.estimated_steps, 1)
         initiator_name = self._directory.agent_name(action.agent_id)
         target_name = self._directory.agent_name(target_ids[0])
         # The opening is public; the privileged transcript appears only in complete's outcome.
@@ -314,6 +390,7 @@ class SocialExecutor(ActionExecutor):
             ),
         )
         state.extra["target_id"] = target_ids[0]
+        state.extra["live"] = live
         return state
 
     def _failed_result(self, action: AgentAction, step: int, outcome: str, location: str) -> ActionExecutionState:
@@ -401,28 +478,40 @@ class SocialExecutor(ActionExecutor):
         initiator_ctx = dict(_EMPTY_CTX) if isinstance(initiator_ctx_r, BaseException) else initiator_ctx_r
         target_ctx = dict(_EMPTY_CTX) if isinstance(target_ctx_r, BaseException) else target_ctx_r
 
-        scene = assemble_scene_context(
-            initiator_id, environment=environment, directory=self._directory, agents=agents,
-            visibility=SceneVisibility.GOD,  # functional judge
-        ).text
-
         dialogue: list[dict] = []
         bystander_view = ""
         if initiator is not None and target is not None:
-            dialogue, bystander_view = await self._llm_full_dialogue(
-                initiator=initiator,
-                target=target,
-                initiator_name=initiator_name,
-                target_name=target_name,
-                purpose=state.purpose,
-                expected_outcome=state.expected_outcome,
-                # Don't use min(estimated_steps, MAX): a 1-step TALK would become a monologue.
-                turns=_MAX_DIALOGUE_TURNS,
-                initiator_ctx=initiator_ctx,
-                target_ctx=target_ctx,
-                scene=scene,
-                now_step=step,
-            )
+            if state.extra.get("live"):
+                dialogue = await self._live_dialogue(
+                    sides=(
+                        _LiveSide(initiator, initiator_name, initiator_ctx, is_initiator=True),
+                        _LiveSide(target, target_name, target_ctx, is_initiator=False),
+                    ),
+                    purpose=state.purpose,
+                    expected_outcome=state.expected_outcome,
+                    environment=environment,
+                    agents=agents,
+                    step=step,
+                )
+            else:
+                scene = assemble_scene_context(
+                    initiator_id, environment=environment, directory=self._directory, agents=agents,
+                    visibility=SceneVisibility.GOD,  # functional judge
+                ).text
+                dialogue, bystander_view = await self._llm_full_dialogue(
+                    initiator=initiator,
+                    target=target,
+                    initiator_name=initiator_name,
+                    target_name=target_name,
+                    purpose=state.purpose,
+                    expected_outcome=state.expected_outcome,
+                    # Don't use min(estimated_steps, MAX): a 1-step TALK would become a monologue.
+                    turns=_MAX_DIALOGUE_TURNS,
+                    initiator_ctx=initiator_ctx,
+                    target_ctx=target_ctx,
+                    scene=scene,
+                    now_step=step,
+                )
 
         transcript = (
             "\n".join(f"{t['speaker']}：{t['line']}" for t in dialogue) if dialogue else "无对话"
@@ -979,6 +1068,147 @@ class SocialExecutor(ActionExecutor):
             )
         return [], ""
 
+    async def _live_dialogue(
+        self,
+        *,
+        sides: "tuple[_LiveSide, _LiveSide]",
+        purpose: str,
+        expected_outcome: str,
+        environment: "EnvironmentSystem",
+        agents: dict[str, "Agent"],
+        step: int,
+    ) -> list[dict]:
+        """The live conversation, the initiator first, as turns like ``_llm_full_dialogue``'s.
+
+        It ends when a side ends it, when the turns run out, or when an AI turn can't be had: what
+        was said stands and nothing is filled in (Rule 1). Each turn, and the end, is told to the
+        performed side as it is spoken.
+        """
+        dialogue: list[DialogueTurn] = []
+        spoken = 0
+        while spoken < _LIVE_MAX_TURNS:
+            me, other = sides[spoken % 2], sides[1 - spoken % 2]
+            conversation = Conversation(
+                other=BriefPerson(
+                    agent_id=other.agent.agent_id, name=other.name,
+                    gender=other.agent.personality.soul.gender, present=True,
+                ),
+                dialogue=tuple(dialogue),
+                turns_left=_LIVE_MAX_TURNS - spoken,
+                last=spoken == _LIVE_MAX_TURNS - 1,
+                max_turn_chars=_LIVE_ACTOR_TURN_CHARS,
+            )
+            if me.agent.is_performed:
+                answer = await me.agent.actor_dialogue_turn(step=step, conversation=conversation)
+                line, end = answer.line, answer.end
+            else:
+                reply = await self._ai_turn(
+                    me=me, conversation=conversation, purpose=purpose,
+                    expected_outcome=expected_outcome, environment=environment, agents=agents,
+                    step=step,
+                )
+                line, end = reply if reply is not None else ("", True)
+            turn = DialogueTurn(speaker_id=me.agent.agent_id, speaker=me.name, line=line)
+            if line:
+                dialogue.append(turn)
+            end = end or conversation.last or not line
+            for side in sides:
+                side.agent.dialogue_turn_spoken(step=step, dialogue_turn=turn, end=end)
+            spoken += 1
+            if end:
+                break
+        return [dataclasses.asdict(t) for t in dialogue]
+
+    async def _ai_turn(
+        self,
+        *,
+        me: "_LiveSide",
+        conversation: Conversation,
+        purpose: str,
+        expected_outcome: str,
+        environment: "EnvironmentSystem",
+        agents: dict[str, "Agent"],
+        step: int,
+    ) -> "tuple[str, bool] | None":
+        """An AI side's dialogue turn, in character, from its own column only: ``(line, end)``,
+        or ``None`` when the call fails."""
+        agent = me.agent
+        other_name = conversation.other.name
+        situation_header = render_situation_header(
+            situation_for(environment, agent.agent_id), voice=SituationVoice.FIRST,
+        )
+        header_part = f"{situation_header}\n\n" if situation_header else ""
+        condition = condition_line(
+            agent.personality.state.condition, voice=SituationVoice.FIRST,
+            now_step=step, seconds_per_step=self._seconds_per_step,
+        )
+        scene = assemble_scene_context(
+            agent.agent_id, environment=environment, directory=self._directory, agents=agents,
+            include_header=False, voice=SituationVoice.FIRST, visibility=SceneVisibility.OWN_EYES,
+        ).text
+        scene_part = f"\n\n【我眼前】\n{scene}" if scene else ""
+        known = _format_context(
+            me.ctx, "我", other_name,
+            now_step=step, seconds_per_step=self._seconds_per_step,
+            world_start_second_of_day=self._world_start_second_of_day,
+        )
+        known_part = f"\n\n【我知道的】\n{known}" if known else ""
+        if me.is_initiator:
+            expected_part = f"我原本期望：{expected_outcome}" if expected_outcome else ""
+            opening = f"是我主动找{other_name}谈的，我想谈的是「{purpose}」。{expected_part}"
+        else:
+            opening = f"{other_name}来找我说话。"
+        said = "\n".join(
+            f"{'我' if t.speaker_id == agent.agent_id else t.speaker}：{t.line}"
+            for t in conversation.dialogue
+        ) or "（还没人开口，我先说。）"
+        user = f"""\
+{header_part}【我是谁】
+{agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{condition}{scene_part}{known_part}
+
+【这场对话】
+{opening}
+到现在说过的话：
+{said}
+
+依上面说定的 JSON 格式，先判断这场话说完了没有，再说出我这一轮的话；只输出 JSON、不写任何多余内容。"""
+        facts = (
+            GivenFacts()
+            .add("此刻何时何地", situation_header)
+            .add("我的处境", condition)
+            .add("我眼前", scene)
+            .add("我知道的", known)
+            .add("这场对话", opening)
+            .add("到现在说过的话", said)
+        )
+        call = (
+            self._llm.complete_with_retry if agent.is_main_character else self._llm.complete
+        )
+        try:
+            with observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
+                given_facts=facts, action_owner=agent.personality.soul.name,
+            ):
+                response = await call(
+                    LLMScene.AGENT_ACTION_NARRATION,
+                    [
+                        LLMMessage(role="system", content=_LIVE_TURN_SYSTEM),
+                        LLMMessage(role="user", content=user),
+                    ],
+                    temperature=0.8,
+                    # thought ≤40 chars ≈60 + end ≈3 + line ≤60 chars ≈90 + three fields'
+                    # structure ≈15; est. ~170 tok.
+                    max_tokens=output_budget(170),
+                    json_mode=True,
+                )
+            data = extract_json(response.content)
+        except Exception as exc:
+            logger.warning(
+                "talk_live_turn_failed",
+                extra={"agent_id": agent.agent_id, "step": step, "error": str(exc)},
+            )
+            return None
+        return str(data.get("line", "")).strip(), coerce_bool(data.get("end"), False)
+
     @staticmethod
     def _parse_dialogue(
         data: object, speaker_a: tuple[str, str], speaker_b: tuple[str, str]
@@ -1005,7 +1235,7 @@ class SocialExecutor(ActionExecutor):
                     extra={"speaker": repr(idx), "readable": len(turns), "total": len(raw)},
                 )
                 return []
-            turns.append({"speaker_id": who[0], "speaker": who[1], "line": line})
+            turns.append(dataclasses.asdict(DialogueTurn(speaker_id=who[0], speaker=who[1], line=line)))
         return turns
 
     async def _memory_summary(

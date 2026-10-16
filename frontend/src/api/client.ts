@@ -2,7 +2,15 @@
 // proxy (dev) or the backend static mount (prod) both work without config.
 
 import type {
+  ActorAmendResult,
+  ActorAmendments,
+  ActorResult,
+  ActorAnswer,
+  ActorEntry,
+  ActorMind,
+  ActorPace,
   AgentProfile,
+  CastCandidate,
   BuildJob,
   Deployment,
   DirectiveResult,
@@ -62,8 +70,14 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ world_name: worldName }),
     }),
-  confirmWorld: (id: string) =>
-    req<WorldMeta>(`/api/worlds/${id}/confirm`, { method: "POST" }),
+  // Shows the whole cast as the director. One way: the world takes no actor afterwards.
+  openReview: (id: string) => req<WorldMeta>(`/api/worlds/${id}/review`, { method: "POST" }),
+  // `characterId` casts the actor in the same act; without it the world is the director's.
+  confirmWorld: (id: string, characterId?: string) =>
+    req<WorldMeta>(`/api/worlds/${id}/confirm`, {
+      method: "POST",
+      body: JSON.stringify(characterId ? { character_id: characterId } : {}),
+    }),
   deleteWorld: (id: string) =>
     req<{ deleted: boolean }>(`/api/worlds/${id}`, { method: "DELETE" }),
 
@@ -105,4 +119,39 @@ export const api = {
   agents: (id: string) => req<AgentProfile[]>(`/api/worlds/${id}/agents`),
   agentProfile: (id: string, agentId: string) =>
     req<AgentProfile>(`/api/worlds/${id}/agents/${agentId}/profile`),
+
+  // --- Actor: the person performing one character -------------------------------
+  castCandidates: (id: string) => req<CastCandidate[]>(`/api/worlds/${id}/actor/candidates`),
+  // The vocabulary a character's feeling is named in: value and its name.
+  actorEmotions: (id: string) =>
+    req<{ value: string; label: string }[]>(`/api/worlds/${id}/actor/emotions`),
+  // The actor's thread over the latest steps, in order.
+  actorThread: (id: string) => req<{ entries: ActorEntry[] }>(`/api/worlds/${id}/actor/thread`),
+  // The actor's words, read against the open DECIDE turn; answers nothing. A refusal resolves
+  // with a reason.
+  sayActor: (id: string, text: string) =>
+    req<ActorResult>(`/api/worlds/${id}/actor/say`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
+  // Break off what the character is doing, outside any turn.
+  breakOffActor: (id: string) => req<ActorResult>(`/api/worlds/${id}/actor/break-off`, { method: "POST" }),
+  answerActor: (id: string, turnId: string, answer: ActorAnswer) =>
+    req<ActorResult>(`/api/worlds/${id}/actor/answer`, {
+      method: "POST",
+      body: JSON.stringify({ turn_id: turnId, answer }),
+    }),
+  setActorPace: (id: string, pace: ActorPace) =>
+    req<{ pace: ActorPace }>(`/api/worlds/${id}/actor/pace`, {
+      method: "PUT",
+      body: JSON.stringify({ pace }),
+    }),
+  actorMind: (id: string) => req<ActorMind>(`/api/worlds/${id}/actor/mind`),
+  amendActor: (id: string, amendments: ActorAmendments) =>
+    req<ActorAmendResult>(`/api/worlds/${id}/actor/amend`, {
+      method: "POST",
+      body: JSON.stringify(amendments),
+    }),
+  // For good: the character returns to AI cognition and the world to the director.
+  exitActor: (id: string) => req<WorldMeta>(`/api/worlds/${id}/actor/exit`, { method: "POST" }),
 };

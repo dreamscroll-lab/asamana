@@ -2,48 +2,11 @@ import { ActionType, Phase, actedOnAgents, claimedAgents } from "../../lib/contr
 import { avatarStyle } from "../../lib/avatar";
 import type { Placed, PlacedEntity } from "../../lib/step";
 import type { ActionSummary, DialogueTurn } from "../../types";
-import type { StepCast } from "./cast";
+import { type StepCast, initiatorFirst } from "./cast";
 import type { DeedThought } from "./feed";
 import { metaOf } from "./meta";
+import Transcript from "./Transcript";
 import Who from "./Who";
-
-// Fallback palette for a speaker the world carries no identity color for — per
-// CONVERSATION, so the two sides of an exchange at least stay apart from each other. Never
-// reached when the speaker is a known character: they wear their own color.
-const SPEAKER_COLORS = [
-  "text-indigo-300",
-  "text-teal-300",
-  "text-rose-300",
-  "text-amber-300",
-  "text-sky-300",
-  "text-fuchsia-300",
-];
-
-function Conversation({ turns, cast }: { turns: DialogueTurn[]; cast: StepCast }) {
-  const speakers = [...new Set(turns.map((t) => t.speaker).filter(Boolean))];
-  const colorOf = (s: string) => SPEAKER_COLORS[Math.max(0, speakers.indexOf(s)) % SPEAKER_COLORS.length];
-  return (
-    <div className="mt-2 space-y-1.5 rounded-lg bg-slate-950/50 border border-slate-800/60 px-3 py-2.5">
-      {turns.map((t, i) => {
-        const idColor = cast.inkOf(t.speaker_id);
-        return (
-          <div key={i} className="text-sm leading-relaxed">
-            {t.speaker && (
-              <span
-                className={`font-semibold ${idColor ? "" : colorOf(t.speaker)}`}
-                style={idColor ? { color: idColor } : undefined}
-              >
-                {t.speaker}
-              </span>
-            )}
-            {t.speaker && <span className="text-slate-600">：</span>}
-            <span className="text-slate-200">{t.line}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 /**
  * ONE beat of an execution, however many people were in it.
@@ -51,6 +14,10 @@ function Conversation({ turns, cast }: { turns: DialogueTurn[]; cast: StepCast }
  * `thoughts` are the deliberations behind it, one per person who decided on this beat.
  * `showConversation` is decided by the feed: a talk's transcript rides on its closing beat and
  * must not print twice.
+ *
+ * `inside` is whether the viewer knows the act from inside. Seen from outside, the row says only
+ * what an onlooker saw (`public.text`): the private side reached the viewer empty, so its
+ * description, progress, dialogue and outcome are not drawn as blanks.
  */
 export default function ActionRow({
   act,
@@ -60,6 +27,8 @@ export default function ActionRow({
   showConversation,
   born,
   entities,
+  inside = true,
+  mine = false,
 }: {
   act: Placed<ActionSummary>;
   thoughts: DeedThought[];
@@ -70,10 +39,11 @@ export default function ActionRow({
   // with `affected_entity_ids` does it say what this deed made.
   born?: ReadonlySet<string>;
   entities?: Record<string, PlacedEntity>;
+  inside?: boolean;
+  // The performed character took part: marked so the actor finds their own deeds at a glance.
+  mine?: boolean;
 }) {
-  // Everyone who spent a turn on it, initiator first: the sentence belongs to whoever started it.
-  const parts = [act.initiator_id, ...act.participant_ids.filter((id) => id !== act.initiator_id)]
-    .filter(Boolean)
+  const parts = initiatorFirst(act.initiator_id, act.participant_ids)
     .map((id) => ({ agent_id: id, agent_name: cast.nameOf(id) || "某人" }));
   // What THIS deed made: touched and born. A thing it merely changed is touched but not born.
   const made = (act.affected_entity_ids ?? [])
@@ -121,6 +91,7 @@ export default function ActionRow({
   // outcome (gist + verbatim transcript) must never become prose.
   const spokenFor = act.action_type === ActionType.talk && turns.length > 0;
   const showOutcome =
+    inside &&
     !!act.private.outcome &&
     // An opening's or a tick's outcome only restates the body; the result comes on the close.
     !opening &&
@@ -133,7 +104,7 @@ export default function ActionRow({
         nonEvent
           ? "bg-slate-900/20 border-slate-800/40 opacity-60"
           : "bg-slate-900/40 border-slate-800/60"
-      }`}
+      } ${mine ? "border-l-2 border-l-amber-400/80" : ""}`}
     >
       <div className="flex items-center gap-2 flex-wrap">
         {/* Everyone who was in it, each in their own identity color. The fallback gradient
@@ -252,15 +223,16 @@ export default function ActionRow({
         )}
       </div>
 
-      {/* Every beat says WHAT he is doing; the opening adds how long, the close how it went. */}
-      {act.private.action_description && (
+      {/* Every beat says WHAT he is doing; the opening adds how long, the close how it went.
+          From outside, what an onlooker saw of it. */}
+      {(inside ? act.private.action_description : act.public?.text) && (
         <p className={`mt-2 text-sm leading-relaxed ${nonEvent ? "text-slate-400" : "text-slate-200"}`}>
-          {act.private.action_description}
+          {inside ? act.private.action_description : act.public?.text}
         </p>
       )}
 
       {/* How far along: the middle beat's only payload beyond the description. */}
-      {tick && (
+      {tick && inside && (
         <div className="mt-2 h-1 rounded-full bg-slate-800/80 overflow-hidden">
           <div className="h-full rounded-full bg-sky-500/60" style={{ width: `${tickPct}%` }} />
         </div>
@@ -285,7 +257,7 @@ export default function ActionRow({
           </p>
         ))}
 
-      {showConversation && <Conversation turns={turns} cast={cast} />}
+      {showConversation && <Transcript turns={turns} inkOf={cast.inkOf} />}
 
       {showOutcome && (
         <p className="mt-2 pt-2 border-t border-slate-800/50 text-[13px] leading-relaxed text-slate-400">

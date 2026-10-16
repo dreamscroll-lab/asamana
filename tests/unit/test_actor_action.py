@@ -8,6 +8,7 @@ import json
 import pytest
 
 from agent.actor_briefing import build_actor_briefing
+from agent.actor_perception import build_perceived_entry
 from agent.decision import _ACTION_SPACE, DecisionEngine, candidate_lists
 from agent.memory_types import MemoryStream
 from agent.relation import PerceivedRelation
@@ -16,12 +17,13 @@ from core.interfaces.actor import (
     ActorAction,
     ActorAnswerRejected,
     ActorDecision,
-    ActorInterruptAnswer,
-    ActorWait,
-    BriefMemoryKind,
+    BriefMessage,
 )
 from core.interfaces.llm import LLMScene
-from core.interfaces.perception import LocationView, PerceivedIdentity, PerceivedPresence, VisibleEntity
+from core.interfaces.message import Message
+from core.interfaces.perception import (
+    Broadcast, BroadcastType, LocationView, PerceivedIdentity, PerceivedPresence, VisibleEntity,
+)
 from core.interfaces.urgency import Urgency
 from tests.unit.test_decision_m4_gaps import _make_packet, _make_personality, _mem
 
@@ -155,32 +157,16 @@ async def test_words_read_as_an_action_name_targets_by_id(container, engine) -> 
         action_type=ActionType.TALK, action_description="请大哥借一步说话",
         person_ids=(HERE,), message_content="大哥，借一步说话", estimated_steps=2,
     ))
-    # No goal was stated, so the goals stay as they are; and the action binds as read.
-    assert reading.short_term_goals is None and reading.long_term_goals is None
     assert _bind(engine, reading.action).target.acts_on == [Ref.agent(HERE)]
-
-
-@pytest.mark.asyncio
-async def test_stated_goals_change_only_what_was_stated(container, engine) -> None:
-    _reply(
-        container, reason="放下探听，改为稳住大哥，先等等", decision="wait", wait_steps=3,
-        new_short_term_goals=["稳住大哥"], dropped_short_term_goal_indices=[1, 7],
-    )
-
-    reading = await _read(
-        engine, "不探了，先稳住大哥，等三个时辰再说",
-        short_term_goals=["探明大哥的打算", "备好马匹"], long_term_goals=["登基为帝"],
-    )
-
-    assert reading.wait == ActorWait(steps=3)
-    assert reading.short_term_goals == ("备好马匹", "稳住大哥")
-    assert reading.long_term_goals is None
 
 
 @pytest.mark.asyncio
 async def test_words_that_name_nothing_doable_read_as_nothing(container, engine) -> None:
     _reply(container, reason="只是感慨", decision="unclear")
     assert await _read(engine, "唉") is None
+    # Waiting is chosen directly, never read from words.
+    _reply(container, reason="先等着", decision="wait")
+    assert await _read(engine, "先等等看") is None
 
     async def _down(*_args, **_kwargs):
         raise RuntimeError("provider down")
@@ -189,26 +175,7 @@ async def test_words_that_name_nothing_doable_read_as_nothing(container, engine)
     assert await _read(engine, "去玄武门") is None
 
 
-@pytest.mark.asyncio
-async def test_break_off_words_keep_what_comes_next_verbatim(container, engine) -> None:
-    async def _ask(text: str):
-        return await engine.interpret_actor_interrupt(text, personality=_make_personality(), doing="誊抄奏章")
-
-    _reply(container, reason="要停下赶去玄武门", interrupt=True, thought="此事耽搁不得", next="去玄武门")
-    assert await _ask("先放下，去玄武门") == ActorInterruptAnswer(
-        interrupt=True, thought="此事耽搁不得", then="去玄武门",
-    )
-
-    _reply(container, reason="接着抄", interrupt=False, thought="", next="去玄武门")
-    assert (await _ask("不理会，接着抄")).then == ""
-
-    # The reading is a plain instruction about the character; who gave it is not the model's concern.
-    system, user = (m.content for m in container.llm_router.get(LLMScene.ACTOR_INTENT).call_history[-1])
-    assert "演员" not in system + user
-    assert user.startswith("角色手头正在做：誊抄奏章") and "【指令】\n不理会，接着抄" in user
-
-
-def test_the_reading_prompt_shows_the_lists_and_goals_the_words_bind_against(engine) -> None:
+def test_the_reading_prompt_shows_the_lists_the_words_bind_against(engine) -> None:
     system, user = engine._build_interpret_prompt(  # noqa: SLF001
         "把奏章拿给大哥看", _make_personality(short_term_goals=["探明大哥的打算"]), _packet(),
     )
@@ -219,7 +186,8 @@ def test_the_reading_prompt_shows_the_lists_and_goals_the_words_bind_against(eng
     assert user.rstrip().endswith("只输出 JSON。")
     assert "【指令】\n把奏章拿给大哥看" in user
     assert "演员" not in system + user
-    assert "  #1 探明大哥的打算" in user
+    # Goals are amended in the mind, never read from words.
+    assert "探明大哥的打算" not in user
     # The prefix stays the same for every character and sentence.
     assert "李" not in system and "奏章" not in system
 
@@ -228,15 +196,30 @@ def test_the_briefing_lists_are_the_binding_lists() -> None:
     packet = _packet()
     lists = candidate_lists(packet)
 
-    briefing = build_actor_briefing(_make_personality(), packet, seconds_per_step=3600)
+    briefing = build_actor_briefing(packet)
 
     assert [p.agent_id for p in briefing.people] == lists.roster_ids == [HERE, AWAY]
-    assert [(p.present, p.condition) for p in briefing.people] == [(True, "面带倦色"), (False, "")]
+    assert [p.present for p in briefing.people] == [True, False]
     assert [p.location_id for p in briefing.places] == lists.reachable_ids
-    assert [(t.entity_id, t.held_by_me) for t in briefing.entities] == [("sword", True), ("memorial", False)]
-    assert briefing.entities[1].content == "请削秦王兵权"
-    assert [(r.agent_id, r.labels, r.summary) for r in briefing.relations] == [(AWAY, ("兄弟:弟弟",), "素来不睦")]
-    assert [(m.memory_id, m.kind) for m in briefing.memories] == [
-        ("f1", BriefMemoryKind.FACTUAL), ("e1", BriefMemoryKind.EXPERIENTIAL),
-    ]
-    assert briefing.location_name == "秦王府" and briefing.condition == ""
+    assert [(t.entity_id, t.name) for t in briefing.entities] == [("sword", "佩剑"), ("memorial", "奏章")]
+
+
+def test_the_perceived_entry_is_the_letters_and_broadcasts_that_reached_the_character() -> None:
+    letter = Message(
+        id="m1", world_id="w", sender_id=HERE, sender_name="李建成", content="今夜子时，玄武门见",
+        recipients=[ME], location_scope=None, created_step=1, deliver_step=2, urgency=Urgency.HIGH,
+    )
+    fire = Broadcast(
+        content="东宫走水", source="system", broadcast_type=BroadcastType.WORLD_EVENT, deliver_step=2,
+    )
+
+    perception = build_perceived_entry(2, [letter], [fire])
+
+    assert build_perceived_entry(2, [], []) is None   # nothing arrived, nothing to record
+    assert perception is not None and perception.acted_upon == ()
+    # What landed on him is told with what arrived, in the same step's entry.
+    together = build_perceived_entry(2, [letter], [], ["李建成一把将我推开"])
+    assert together is not None and together.acted_upon == ("李建成一把将我推开",)
+    assert len(together.messages) == 1
+    assert perception.messages == (BriefMessage(sender_name="李建成", content="今夜子时，玄武门见", urgency="high"),)
+    assert perception.broadcasts == ("东宫走水",)

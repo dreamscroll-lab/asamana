@@ -11,8 +11,9 @@ step began (letters, a place's announcements and broadcasts) reached it where it
 hence by audience, wherever it ended the step. Between two waypoints (in transit) there is no
 place to watch from, so only its own body and its own events.
 
-Of others it sees what shows at a glance (name, gender, age, appearance, condition), never
-their inner life or narrative tier: ``is_main_character`` is None, "not known to this viewer".
+Of others it sees who they are (name, gender, age, role, background, appearance: the identity a
+cast candidate shows) and how they look now, never their inner life or narrative tier:
+``is_main_character`` is None, "not known to this viewer".
 """
 
 from __future__ import annotations
@@ -54,38 +55,35 @@ def step_view_for(view: StepView, viewer_id: str) -> StepView:
                 scope,
                 agents=[_agent(a, viewer_id) for a in scope.agents],
                 npcs=[_npc(n) for n in scope.npcs],
-                entities={eid: _entity(e) for eid, e in scope.entities.items() if e.is_public},
-                events=[e for e in (_public_or_own(ev, viewer_id) for ev in scope.events) if e is not None],
+                entities=_seen_things({eid: e for eid, e in scope.entities.items() if e.is_public}),
+                events=_seen_here(scope.events, viewer_id),
             )
             continue
-        own = [e for e in scope.events if _in_audience(e, viewer_id)]
-        if own:
+        if own := _own(scope.events, viewer_id):
             locations[place_id] = LocationScope(location_id=place_id, name=scope.name, events=own)
     return replace(
         view,
         locations=locations,
         transit=TransitScope(
             agents=[a for a in view.transit.agents if a.agent_id == viewer_id],
-            events=[e for e in view.transit.events if _in_audience(e, viewer_id)],
+            events=_own(view.transit.events, viewer_id),
         ),
-        world=WorldScope(
-            events=[e for e in (_public_or_own(ev, viewer_id) for ev in view.world.events) if e is not None],
-        ),
+        world=WorldScope(events=_seen_here(view.world.events, viewer_id)),
         observer=ObserverView(),
     )
 
 
 def profile_for(profile: AgentProfile, viewer_id: str) -> AgentProfile:
-    """The viewer's own profile whole; anyone else's only as they look."""
+    """The viewer's own profile whole; anyone else's only who they are."""
     if profile.agent_id == viewer_id:
         return profile
     return AgentProfile(
         agent_id=profile.agent_id,
         name=profile.name,
-        role="",
+        role=profile.role,
         age=profile.age,
         gender=profile.gender,
-        background="",
+        background=profile.background,
         appearance=profile.appearance,
         color=profile.color,
         is_main_character=None,
@@ -98,7 +96,7 @@ def graph_for(graph: WorldGraph, viewer_id: str) -> WorldGraph:
     ids = {viewer_id, *(e.to_id for e in edges)}
     return WorldGraph(
         nodes=[
-            n if n.id == viewer_id else replace(n, role="", is_main_character=None)
+            n if n.id == viewer_id else replace(n, is_main_character=None)
             for n in graph.nodes if n.id in ids
         ],
         edges=edges,
@@ -126,6 +124,16 @@ def _in_audience(event: ScopeEvent, viewer_id: str) -> bool:
     return audience is not None and viewer_id in audience
 
 
+def _own(events: list[ScopeEvent], viewer_id: str) -> list[ScopeEvent]:
+    """Events somewhere the viewer isn't: only those it is inside."""
+    return [e for e in events if _in_audience(e, viewer_id)]
+
+
+def _seen_here(events: list[ScopeEvent], viewer_id: str) -> list[ScopeEvent]:
+    """Events where the viewer is: each as much of it as the viewer knows."""
+    return [e for e in (_public_or_own(ev, viewer_id) for ev in events) if e is not None]
+
+
 def _public_or_own(event: ScopeEvent, viewer_id: str) -> ScopeEvent | None:
     """An event in the viewer's place: whole if it is inside, its public side if not."""
     if _in_audience(event, viewer_id):
@@ -146,9 +154,7 @@ def _agent(agent: AgentView, viewer_id: str) -> AgentView:
     return replace(
         agent,
         is_main_character=None,
-        public=replace(
-            agent.public, carrying={eid: _entity(e) for eid, e in agent.public.carrying.items()},
-        ),
+        public=replace(agent.public, carrying=_seen_things(agent.public.carrying)),
         private=AgentPrivateView(emotion=""),
     )
 
@@ -156,11 +162,11 @@ def _agent(agent: AgentView, viewer_id: str) -> AgentView:
 def _npc(npc: NpcView) -> NpcView:
     return replace(
         npc,
-        public=replace(npc.public, carrying={eid: _entity(e) for eid, e in npc.public.carrying.items()}),
+        public=replace(npc.public, carrying=_seen_things(npc.public.carrying)),
         private=NpcPrivateView(),
     )
 
 
-def _entity(entity: EntityView) -> EntityView:
-    """A thing someone else has, or that lies about: seeing it is not reading it."""
-    return replace(entity, private=EntityPrivateView())
+def _seen_things(things: dict[str, EntityView]) -> dict[str, EntityView]:
+    """Things someone else has, or that lie about: seeing them is not reading them."""
+    return {eid: replace(e, private=EntityPrivateView()) for eid, e in things.items()}

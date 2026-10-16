@@ -5,7 +5,8 @@ from __future__ import annotations
 
 from engine.environment import IN_TRANSIT
 from engine.executors.social import SocialExecutor
-from interaction.models import DialogueTurn, EntityPrivateView, EntityView, StepView
+from core.interfaces.action import DialogueTurn
+from interaction.models import EntityPrivateView, EntityView, StepView
 from tests.unit.step_view import TRANSIT, agent, agents, events, npcs, snapshot_of
 
 PLACES = {"loc-gate": "玄武门", "loc-yard": "内院", "loc-hall": "大殿"}

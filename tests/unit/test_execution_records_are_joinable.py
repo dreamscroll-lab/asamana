@@ -12,7 +12,6 @@ at the source, because running the sim can't provoke the scenario reliably.
 from __future__ import annotations
 
 import pytest
-from types import SimpleNamespace
 
 from core.interfaces.action import ActionType, Ref
 from engine.executors.registry import ActionExecutorRegistry
@@ -205,9 +204,9 @@ async def test_a_leg_of_the_road_moves_the_anchor_with_the_body() -> None:
 
         def __init__(self) -> None:
             self.anchored_at: str | None = None
-            self.personality = SimpleNamespace(state=SimpleNamespace(
-                action_remaining_steps=3, action_status=None, current_action=None,
-            ), update_action_status=lambda **kw: None)
+
+        def advance_action(self, **_kw) -> None:  # noqa: ANN003
+            pass
 
         def refresh_situation(self, spatial) -> None:  # noqa: ANN001
             self.anchored_at = spatial.location_view.name if spatial.location_view else None

@@ -23,6 +23,7 @@ from engine.executors.base import (
 )
 from engine.executors.registry import ActionExecutorRegistry
 from engine.message_system import MessageSystem
+from engine.run_control import StepWithdrawn
 
 if TYPE_CHECKING:
     from agent.agent import Agent
@@ -75,11 +76,10 @@ class ExecutionProcessor:
             for pid in exec_state.participant_ids:
                 agent = agents_dict.get(pid)
                 if agent is not None:
-                    remaining = max(0, agent.personality.state.action_remaining_steps - 1)
-                    agent.personality.update_action_status(
-                        status=agent.personality.state.action_status,
-                        current_action=agent.personality.state.current_action,
-                        remaining_steps=remaining,
+                    agent.advance_action(
+                        step=step,
+                        elapsed_steps=exec_state.estimated_steps - max(0, exec_state.remaining_steps),
+                        total_steps=exec_state.estimated_steps,
                     )
 
             # On the final step emit only the completion, never a tick too: one record per agent
@@ -196,7 +196,7 @@ class ExecutionProcessor:
                 extra={"step": step, "action_type": exec_state.action_type.value,
                        "initiator_id": exec_state.initiator_id},
             )
-            self.release_stuck_participants(exec_state, agents_dict)
+            self.release_stuck_participants(exec_state, agents_dict, step)
             return []
         try:
             with observe_stage(Stage.ACTION, agent_id=exec_state.initiator_id), \
@@ -208,6 +208,10 @@ class ExecutionProcessor:
                     environment=self._environment,
                     message_system=self._message_system,
                 )
+        except StepWithdrawn:
+            # The run stopped while a conversation waited on the actor: the step is discarded, not
+            # adjudicated as a failure.
+            raise
         except Exception as exc:  # noqa: BLE001 — Rule 5: an executor exception must not kill the run
             # Null step; release participants as above.
             logger.warning(
@@ -219,7 +223,7 @@ class ExecutionProcessor:
                     "error": str(exc),
                 },
             )
-            self.release_stuck_participants(exec_state, agents_dict)
+            self.release_stuck_participants(exec_state, agents_dict, step)
             return []
         logger.info(
             "action_completed",
@@ -261,6 +265,8 @@ class ExecutionProcessor:
                 return_exceptions=True,
             )
             for es, res in zip(readonly, gathered):
+                if isinstance(res, StepWithdrawn):
+                    raise res
                 if isinstance(res, BaseException):  # defensive; _adjudicate_execution already guards
                     logger.warning(
                         "adjudication_slot_failed",
@@ -454,10 +460,11 @@ class ExecutionProcessor:
         self,
         exec_state: ActionExecutionState,
         agents_dict: Dict[str, "Agent"],
+        step: int,
     ) -> None:
-        """Reset to idle the surviving participants of an execution that couldn't finalize
-        normally; otherwise they stay IN_PROGRESS forever once it leaves the registry.
-        Touches only action-lifecycle fields (null step)."""
+        """Release the surviving participants of an execution that couldn't finalize normally
+        (``Agent.release_action``); otherwise they stay IN_PROGRESS forever once it leaves the
+        registry. A null step: nothing is written but the action's end."""
         for pid in exec_state.participant_ids:
             agent = agents_dict.get(pid)
             if agent is None or not agent.is_active:
@@ -467,9 +474,7 @@ class ExecutionProcessor:
             other = self._executor_registry.get_active_for_agent(pid)
             if other is not None and other.execution_id != exec_state.execution_id:
                 continue  # attached to another execution, which handles its own cleanup
-            agent.personality.update_action_status(
-                status=ActionStatus.IDLE, current_action=None, remaining_steps=0,
-            )
+            agent.release_action(step=step)
             logger.warning(
                 "stuck_participant_released",
                 extra={"agent_id": pid, "execution_id": exec_state.execution_id},
@@ -573,13 +578,11 @@ class ExecutionProcessor:
                 record["interrupted_by"] = ""
                 records.append(record)
             self._executor_registry.remove_active(exec_state.execution_id)
-            self.release_stuck_participants(exec_state, agents_dict)
+            self.release_stuck_participants(exec_state, agents_dict, step)
 
         # Otherwise next step's in_progress_at_step_start still counts him as busy.
         if agent.personality.state.action_status == ActionStatus.IN_PROGRESS:
-            agent.personality.update_action_status(
-                status=ActionStatus.IDLE, current_action=None, remaining_steps=0,
-            )
+            agent.release_action(step=step)
         return records
 
     def completion_record(

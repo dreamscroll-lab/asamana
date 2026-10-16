@@ -1052,6 +1052,7 @@ def _apply_stored_state(agent: Agent, stored: AgentState) -> None:
         condition=condition_from_dict(stored.condition),
         # Without restoring it, everyone's starvation resets to zero after restore and they all flood the decision loop next step (the cadence gate is bypassed for a beat).
         last_decision_step=stored.last_decision_step,
+        acted_upon=list(stored.acted_upon),
     )
     agent.personality.restore_state(restored)
     # vitality is the single source of truth for alive/dead: restore is_active from it, or the dead come

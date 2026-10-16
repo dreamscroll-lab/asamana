@@ -6,6 +6,7 @@ import { api } from "../api/client";
 import { reportedDead, unfinishedGoals } from "../lib/agentState";
 import { avatarStyle, emotionColor } from "../lib/avatar";
 import type { Placed } from "../lib/step";
+import type { Viewer } from "../lib/viewer";
 import type { AgentProfile, AgentView } from "../types";
 
 export interface CardAgent {
@@ -70,6 +71,7 @@ export default function CharacterCard({
   onActiveChange,
   liveStates,
   onExamine,
+  viewer = null,
 }: {
   worldId: string;
   roster: CardAgent[];
@@ -78,6 +80,9 @@ export default function CharacterCard({
   liveStates?: Record<string, Placed<AgentView>>;
   /** Clicking the portrait opens the body chart (observation only). */
   onExamine?: (id: string) => void;
+  // Whose view the world is filtered to; null for the director. Of anyone else the viewer knows
+  // only what shows: nothing of their private side or dossier, only how they look.
+  viewer?: Viewer;
 }) {
   const [profiles, setProfiles] = useState<Record<string, AgentProfile>>({});
   const [dossierOpen, setDossierOpen] = useState(false);
@@ -86,6 +91,8 @@ export default function CharacterCard({
   const active = roster.find((r) => r.id === activeId) ?? roster[0];
   const profile = active ? profiles[active.id] : undefined;
   const live = active && liveStates ? liveStates[active.id] : undefined;
+  const knowsPrivate = (id: string) => viewer === null || id === viewer;
+  const privateKnown = active ? knowsPrivate(active.id) : false;
 
   const { planned, owed } = useMemo(() => unfinishedGoals(live?.private), [live]);
 
@@ -160,14 +167,17 @@ export default function CharacterCard({
                   <div title={a.name} className={`text-sm truncate ${on ? "text-slate-100" : "text-slate-300"}`}>
                     {a.name}
                     {a.is_main_character && <span className="text-indigo-400"> ★</span>}
+                    {a.id === viewer && <span className="ml-1 text-[10px] text-amber-300">🧑 我</span>}
                   </div>
                   {ls && (
                     <div
-                      title={[ls.private.emotion_label, ls.location_name, ls.public.condition].filter(Boolean).join(" · ")}
+                      title={[knowsPrivate(a.id) ? ls.private.emotion_label : "", ls.location_name, ls.public.condition].filter(Boolean).join(" · ")}
                       className="text-[10px] text-slate-500 truncate"
                     >
-                      <span className={emotionColor(ls.private.emotion_valence)}>{ls.private.emotion_label}</span>
-                      <span> · 📍 {ls.location_name}</span>
+                      {knowsPrivate(a.id) && (
+                        <span className={emotionColor(ls.private.emotion_valence)}>{ls.private.emotion_label} · </span>
+                      )}
+                      <span>📍 {ls.location_name}</span>
                       {/* A standing condition is context, not an event: it rides the secondary
                           line. Amber, because rose is death's. */}
                       {ls.public.condition && <span className="text-amber-500/70"> · {ls.public.condition}</span>}
@@ -184,7 +194,7 @@ export default function CharacterCard({
 
       <div className="bg-gradient-to-b from-slate-900/95 to-slate-950/95 border border-slate-800 rounded-2xl p-4">
         <div className="flex items-center gap-3">
-          {onExamine ? (
+          {onExamine && privateKnown ? (
             <button
               onClick={() => onExamine(active.id)}
               title="查看认知体检"
@@ -204,6 +214,7 @@ export default function CharacterCard({
           <div className="min-w-0">
             <div title={active.name} className="text-lg font-extrabold text-slate-100 truncate">
               {active.name}
+              {active.id === viewer && <span className="ml-1.5 text-xs font-semibold text-amber-300">🧑 我</span>}
             </div>
             <div className="flex items-center gap-1 mt-1 flex-wrap">
               {active.is_main_character && (
@@ -218,6 +229,11 @@ export default function CharacterCard({
           </div>
         </div>
 
+        {/* Someone the viewer only sees: how they look is all there is to know. */}
+        {!privateKnown && profile?.appearance && (
+          <p className="mt-3 text-xs text-slate-400 leading-relaxed">{profile.appearance}</p>
+        )}
+
         {profile?.background && (
           // In full: the builder already caps `background`. Clamping here would push the rest
           // into a hover-only tooltip a touch screen can't reach.
@@ -227,7 +243,17 @@ export default function CharacterCard({
         )}
 
         {/* Evolving state (observation only) — the interesting, per-step data, first. */}
-        {observing && live && (
+        {observing && live && !privateKnown && (
+          <div className="mt-3 border-t border-slate-800/70 pt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <span className="text-slate-500">
+              📍 {live.location_name}
+              {live.public.activity_label && ` · ${live.public.activity_label}`}
+            </span>
+            {live.public.condition && <span className="text-amber-500/70">处境 {live.public.condition}</span>}
+            {live.is_active === false && <span className="text-rose-400">· OVER</span>}
+          </div>
+        )}
+        {observing && live && privateKnown && (
           <div className="mt-3 border-t border-slate-800/70 pt-3 space-y-2.5">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
               <span className={`font-medium ${emotionColor(live.private.emotion_valence)}`}>{live.private.emotion_label}</span>
@@ -259,8 +285,9 @@ export default function CharacterCard({
           </div>
         )}
 
-        {/* Static dossier — reference. Collapsed by default while observing; open in review. */}
-        <div className="mt-3 border-t border-slate-800/70 pt-3">
+        {/* Static dossier — reference. Collapsed by default while observing; open in review.
+            Nobody's but the viewer's own when the world is seen through a character. */}
+        {privateKnown && <div className="mt-3 border-t border-slate-800/70 pt-3">
           {observing && (
             <button
               onClick={() => setDossierOpen((o) => !o)}
@@ -281,7 +308,7 @@ export default function CharacterCard({
               <DossierBlock icon="🎯" title="人生目标" color="text-cyan-400" value={profile?.life_goal} />
             </div>
           )}
-        </div>
+        </div>}
       </div>
     </div>
   );

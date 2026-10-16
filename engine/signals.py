@@ -1,8 +1,8 @@
 """What reached one character this step, read off the perception everyone gets.
 
 One definition shared by every consumer, so they can't drift apart: the world-pressure
-evaluator (whether a character has anything to be pressed by) and the actor's turns (whether to
-wake or ask the actor).
+evaluator (whether a character has anything to be pressed by, and by what) and the actor's turns
+(whether to ask the actor, and the turn's reason).
 """
 
 from __future__ import annotations
@@ -23,9 +23,11 @@ def perceived_signals(
     inbox: Sequence["Message"],
     broadcasts: Sequence["Broadcast"],
     ambient: Sequence["AmbientEvent"],
+    acted_upon: Sequence[str] = (),
 ) -> PerceivedSignals:
     return PerceivedSignals(
         messages=tuple(inbox),
         broadcasts=tuple(BroadcastChannel.for_location(list(broadcasts), location_id)),
         ambient=tuple(ambient),
+        acted_upon=tuple(acted_upon),
     )

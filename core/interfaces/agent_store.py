@@ -42,6 +42,9 @@ class AgentState:
     # fresh world's step 1 isn't empty. Must keep a default: the file store rehydrates by keyword,
     # so a required field would raise TypeError on every existing save file.
     last_decision_step: int = 0
+    # Others' acts landed on him since he last perceived (StateLayer.acted_upon). Defaulted for
+    # the same reason as last_decision_step.
+    acted_upon: list[str] = field(default_factory=list)
 
 
 @dataclass

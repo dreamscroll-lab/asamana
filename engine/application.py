@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Sequence
 
@@ -12,7 +12,14 @@ from config.models import Config
 from core.container import Container
 from core.context import get_log_context, observe_stage, set_log_context
 from core.factory import ComponentKind, ProviderFactory
-from core.interfaces.actor import ActorDecision, ActorInterruptAnswer, ActorTurn
+from core.interfaces.actor import (
+    ActorAmendments,
+    ActorAnswer,
+    ActorMind,
+    ActorPace,
+    ActorTurn,
+    SaidEntry,
+)
 from core.interfaces.trace import Stage
 from core.interfaces.world_config import WorldConfig
 from core.logging import get_logger
@@ -315,10 +322,23 @@ class NarrativeApplication:
                 raise ValueError(f"World {world_id!r} is confirmed; its cast is locked.")
             if (casting := self._casting(world_id)) is not None and casting.exited:
                 raise ValueError(f"The actor has left world {world_id!r} and can't return.")
+            if self._catalog.director_reviewed(world_id):
+                raise ValueError(f"World {world_id!r} was reviewed by the director; nobody can be cast.")
             # The API can't run an unconfirmed world, but run_world isn't gated.
             if any(step > 0 for step in await self._container.snapshot.list_steps(world_id)):
                 raise ValueError(f"World {world_id!r} has already run; its cast is locked.")
             return await self._recast_locked(world_id, ActorCasting(character_id=character_id))
+
+    async def open_director_review(self, world_id: str) -> None:
+        """Show the user the whole cast, as the director. One way: whoever has read every
+        character's secrets can't then live in the world as one of them, so the world takes no
+        actor afterwards."""
+        async with self._lifecycle_lock(world_id):
+            if self._catalog is None or self._catalog.get(world_id) is None:
+                raise ValueError(f"World {world_id!r} is not cataloged.")
+            if self.performing_character(world_id) is not None:
+                raise ValueError(f"An actor performs in world {world_id!r}; the director's review is closed.")
+            self._catalog.mark_director_review(world_id)
 
     async def release_actor(self, world_id: str) -> World:
         """The actor steps out for good; the character goes back to AI cognition.
@@ -344,37 +364,70 @@ class NarrativeApplication:
         session = self._sessions.get(world_id)
         return session.runtime.actor.pending_turn if session is not None else None
 
-    async def interpret_actor_answer(
-        self, world_id: str, text: str,
-    ) -> tuple[ActorTurn, ActorDecision | ActorInterruptAnswer | None]:
-        """The actor's words read against the open turn, and that turn: the reading is an
-        answer to it alone, and the answer names it by ``turn_id`` (``answer_actor_turn``).
+    async def actor_say(self, world_id: str, text: str) -> SaidEntry:
+        """The actor's words read against the open DECIDE turn, for the actor to confirm and
+        answer it with (``answer_actor_turn``). ``ValueError`` when no DECIDE turn is open or
+        nobody is performed in this session."""
+        return await self.get_session(world_id).runtime.actor_say(text)
 
-        Raises ``ActorAnswerRejected`` for an action the character can't take, ``ValueError``
-        when no turn is waiting.
-        """
-        turn = self.actor_turn(world_id)
-        if turn is None:
-            raise ValueError("No turn is waiting for the actor")
-        return turn, await self.get_session(world_id).runtime.interpret_actor_answer(text)
+    def actor_break_off(self, world_id: str) -> None:
+        """Break off what the performed character is doing. Raises ``ActorAnswerRejected`` when
+        it is doing nothing, ``ValueError`` when nobody is performed in this session."""
+        self.get_session(world_id).runtime.actor_break_off()
+
+    async def actor_thread(self, world_id: str, *, steps: int) -> list[dict[str, Any]]:
+        """The actor's thread over the latest ``steps`` committed steps, as their snapshots keep
+        it, then what the step under way has recorded so far."""
+        store = self._container.snapshot
+        thread: list[dict[str, Any]] = []
+        for step in sorted(await store.list_steps(world_id))[-steps:]:
+            snapshot = await store.load(world_id, step)
+            if snapshot is not None:
+                thread.extend(snapshot.actor_thread)
+        session = self._sessions.get(world_id)
+        if session is not None:
+            thread.extend(session.runtime.actor_live_thread)
+        return thread
+
+    async def set_actor_pace(self, world_id: str, pace: ActorPace) -> None:
+        """Set when the performed character's actor is asked to decide; kept with the casting."""
+        async with self._lifecycle_lock(world_id):
+            casting = self._casting(world_id)
+            if casting is None or casting.exited:
+                raise ValueError(f"No actor is performing a character in world {world_id!r}.")
+            assert self._catalog is not None
+            self._catalog.set_actor_casting(world_id, replace(casting, pace=pace))
+            session = self._sessions.get(world_id)
+            if session is not None:
+                session.runtime.set_actor_pace(pace)
+
+    async def actor_mind(self, world_id: str) -> ActorMind:
+        """The performed character's mind as the actor sees it; ``ValueError`` if nobody is
+        performed in this session."""
+        return await self.get_session(world_id).runtime.actor_mind()
+
+    async def amend_actor_mind(self, world_id: str, amendments: ActorAmendments) -> bool:
+        """Save the actor's amendments to the character's mind; whether they landed now or wait
+        for the next step. Raises ``ActorAnswerRejected`` for one the mind doesn't list."""
+        return await self.get_session(world_id).runtime.amend_actor_mind(amendments)
 
     def answer_actor_turn(
         self,
         world_id: str,
         *,
         turn_id: str,
-        answer: ActorDecision | ActorInterruptAnswer,
+        answer: ActorAnswer,
     ) -> None:
         """Answer the open turn, which must be ``turn_id``: an answer meant for a turn that has
         since closed must not land on the next one.
 
         Raises ``ActorAnswerRejected`` when the turn refuses the answer (it stays open), and
-        ``ValueError`` when that turn is no longer waiting.
+        ``ValueError`` when that turn is no longer waiting or takes another kind of answer.
         """
         turn = self.actor_turn(world_id)
         if turn is None or turn.turn_id != turn_id:
             raise ValueError("That turn is no longer waiting for the actor")
-        self.get_session(world_id).runtime.actor.submit(answer)
+        self.get_session(world_id).runtime.answer_actor(answer)
 
     async def _recast_locked(self, world_id: str, casting: ActorCasting) -> World:
         """Rebuild the session under ``casting``, then record it.
@@ -845,5 +898,5 @@ class NarrativeApplication:
         )
         # Wired here, once: the step loop never asks who performs a character.
         if casting is not None and not casting.exited:
-            runtime.cast_actor(world.agents[casting.character_id])
+            runtime.cast_actor(world.agents[casting.character_id], pace=casting.pace)
         return runtime

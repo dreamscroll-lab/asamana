@@ -475,6 +475,15 @@ class NpcEffect:
     condition_cleared: bool = False
 
 
+@dataclass(frozen=True)
+class DialogueTurn:
+    """One line of a conversation: who said it, and what."""
+
+    speaker_id: str  # code layer — the join key; never rendered
+    speaker: str     # narrative layer — the name to print
+    line: str
+
+
 @dataclass
 class ActionResult:
     """Result of an executed action.
@@ -530,6 +539,7 @@ class ActionResult:
     # Whether a COVERT action was exposed; read directly by exposure propagation and
     # interrupt_coordinator, never parsed from text.
     detected: bool = False
+    # Each a ``DialogueTurn``, as a dict.
     dialogue: List[dict] = field(default_factory=list)
     relation_updates: list[tuple[str, float, float]] = field(default_factory=list)
     # (target_id, trust_delta, affection_delta) — applied to the doer's relations via _apply_feedback

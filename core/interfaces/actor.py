@@ -1,23 +1,33 @@
-"""Contracts for actor-mode turns.
+"""Contracts for actor mode: a person performing one character, in exchange with the world.
 
 An actor supplies the motivation and decision stages for one character; the engine still runs
 perception, adjudication and feedback for it. At those two stages the engine asks through an
 ``ActorTurn`` and continues the step with the actor's answer: an ``ActorDecision`` for a
-DECIDE turn, an ``ActorInterruptAnswer`` for an INTERRUPT turn.
+DECIDE turn, an ``ActorInterruptAnswer`` for an INTERRUPT turn. The actor speaks only when
+asked: words are read against an open DECIDE turn, into an ``ActorDecision`` the actor confirms
+before it is submitted; nothing the engine read into the words acts unconfirmed. Outside a turn
+the actor may only break off an act in progress, which lands at the next interrupt stage.
 
-The actor answers in their own words. The engine interprets them into an answer (for a
-decision: an ``ActorAction`` or a wait, plus any goals the actor stated) and the actor confirms
-it before it is submitted; nothing the engine read into the words acts unconfirmed.
+A DECIDE turn opens whenever the character is idle, at the actor's pace (``ActorPace``). An
+INTERRUPT turn opens when something reached the character mid-action. An INVITE turn opens at
+arbitration, when someone's act would enlist the free character by invitation; it is answered by an
+``ActorInvitationAnswer``. Compulsion is never asked. A SPEAK turn opens in a live conversation (spoken
+dialogue turn by dialogue turn, ``Conversation``) whenever it is the character's dialogue turn; it
+is answered by an ``ActorDialogueTurn``.
 
-A DECIDE turn carries an ``ActorBriefing``: what the character has in front of it, in the same
-lists an AI character's decision binds against. An ``ActorAction`` names its targets by the
-ids in those lists and is bound through the same per-type rules, so the actor can reach exactly
-what the character can, nothing more.
+A DECIDE turn carries an ``ActorBriefing``: the lists an AI character's decision binds
+against. An ``ActorAction`` names its targets by the ids in those lists and is bound through the
+same per-type rules, so the actor can reach exactly what the character can, nothing more.
 
-Feedback is the engine's: it lands as for any character, as soon as it is computed. A DECIDE
-turn lists the subjective part written since the actor last decided (``ActorFeedback``), and
-the actor may amend it with the decision (``ActorAmendments``). What happened stays as the
-engine recorded it: factual memories, outcomes, body and belongings are not amendable.
+The exchange is recorded as the actor's thread (``ActorEntry``), one entry per thing that passes
+between actor and world, in order: what reached the character, what the world asked, what the
+actor said and answered, the dialogue turns of its live conversations, and what the character set out to
+do and how it ended, in the words its own memory keeps. Each step's entries are kept with that step's snapshot.
+
+Apart from the thread the actor amends the character's mind (``ActorMind``, ``ActorAmendments``)
+at any time. The actor is a person and remembers for themselves, so the character's memories are
+not shown. Its body, belongings and surroundings are the world's to show (the map), not the
+actor's.
 """
 
 from __future__ import annotations
@@ -26,7 +36,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 
-from core.interfaces.action import ActionType
+from core.interfaces.action import ActionType, DialogueTurn
 from core.interfaces.urgency import Urgency
 from core.prompts import AFFECTION_RANGE, EMOTION_INTENSITY_RANGE, EMOTION_VALENCE_RANGE, TRUST_RANGE
 from core.validate import require_at_least, require_in_range, require_text
@@ -37,29 +47,10 @@ class TurnKind(str, Enum):
     DECIDE = "decide"
     # Interrupt stage: something reached the character mid-action; break off or carry on.
     INTERRUPT = "interrupt"
-
-
-class TriggerKind(str, Enum):
-    """What reached the character this step, from the same perception an AI character gets.
-
-    An AI character's signals go to the world-pressure LLM, which judges what they mean to it;
-    for the actor's character that judgment is the actor's, so every signal is passed on.
-    """
-
-    MESSAGE = "message"
-    BROADCAST = "broadcast"
-    AMBIENT = "ambient"
-    # Someone else's action landed on the character. This reaches a character through feedback
-    # (its own memory of the effect), not perception, so it is noted separately.
-    TARGETED = "targeted"
-
-
-@dataclass(frozen=True)
-class TurnTrigger:
-    kind: TriggerKind
-    # The perceived text (message, broadcast, onlooker's view of an act); empty for TARGETED,
-    # whose details reach the character through its own memory.
-    text: str = ""
+    # Arbitration: someone invites the free character into their act; accept or refuse.
+    INVITE = "invite"
+    # A live conversation: the character's dialogue turn, or the end of the conversation.
+    SPEAK = "speak"
 
 
 @dataclass(frozen=True)
@@ -70,8 +61,6 @@ class BriefPerson:
     name: str
     gender: str = ""
     present: bool = False
-    # How they look right now; only someone present can be seen.
-    condition: str = ""
 
 
 @dataclass(frozen=True)
@@ -80,46 +69,32 @@ class BriefNpc:
 
     npc_id: str
     name: str
-    description: str = ""
-    busy: bool = False
-    condition: str = ""
 
 
 @dataclass(frozen=True)
 class BriefPlace:
     location_id: str
     name: str
-    description: str = ""
     travel_seconds: int = 0
 
 
 @dataclass(frozen=True)
 class BriefEntity:
-    """A thing within reach: lying here, or in someone's hands here."""
+    """A thing within reach: lying here, or in someone's hands here, the character's own included."""
 
     entity_id: str
     name: str
-    description: str = ""
-    # What is written on it, if anything and readable.
-    content: str = ""
-    held_by_me: bool = False
-    # The holder as the character knows them; empty for something lying here.
-    holder_name: str = ""
-
-
-class BriefMemoryKind(str, Enum):
-    FACTUAL = "factual"            # what happened
-    EXPERIENTIAL = "experiential"  # how the character took it
-    INSIGHT = "insight"            # a judgment formed over time
-    PERIOD = "period"              # the impression a stretch of time left
 
 
 @dataclass(frozen=True)
-class BriefMemory:
-    memory_id: str
-    kind: BriefMemoryKind
-    text: str
-    created_step: int
+class BriefMessage:
+    """A message delivered to the character."""
+
+    # The sender as the message names them; empty when it names nobody.
+    sender_name: str
+    content: str
+    # A ``Urgency`` value.
+    urgency: str
 
 
 @dataclass(frozen=True)
@@ -138,46 +113,44 @@ class BriefRelation:
 
 @dataclass(frozen=True)
 class ActorBriefing:
-    """What the character has in front of it at a decision, as an AI character's decision sees it.
+    """What a decision can name: the lists an ``ActorAction`` picks its targets from, as an AI
+    character's decision binds against them, by the names the character knows.
 
-    ``people``, ``npcs``, ``places`` and ``entities`` are the lists an ``ActorAction`` picks its
-    targets from. Memories are those this moment called up, not everything the character
-    remembers.
+    It names the ids in a reading of the actor's words (``ActorDecision``), so the actor can see
+    what the words were bound to before confirming; binding itself checks the character's own
+    lists, never this. ``people`` are everyone the character can reach, present or not; ``npcs``
+    and ``entities`` are those within reach. Names only: the scene itself is the map's to show.
     """
 
-    time_label: str
-    location_id: str
-    location_name: str
-    # An ``EmotionType`` value.
-    emotion: str
-    emotion_intensity: float
-    emotion_valence: float
-    vitality: float
-    # The character's own condition (tied up, wounded...), as it knows it; empty if none.
-    condition: str
-    long_term_goals: tuple[str, ...]
-    short_term_goals: tuple[str, ...]
     people: tuple[BriefPerson, ...]
     npcs: tuple[BriefNpc, ...]
     places: tuple[BriefPlace, ...]
     entities: tuple[BriefEntity, ...]
-    memories: tuple[BriefMemory, ...]
-    relations: tuple[BriefRelation, ...]
-    # Recent attempts that didn't land; the world did not change.
-    foiled_attempts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
-class ActorFeedback:
-    """The subjective feedback written for the character since the actor last decided.
+class Invitation:
+    """Someone inviting the character to join their act, named as the character perceives them."""
 
-    ``memories`` are how the character took things (experiential memories, insights, period
-    impressions); ``relations`` are the people whose standing with the character changed. The
-    current emotion is in the briefing.
+    inviter: BriefPerson
+    # The kind of act it is invited into.
+    action_type: ActionType
+
+
+@dataclass(frozen=True)
+class Conversation:
+    """A live conversation the character is in, at the character's dialogue turn: whom with, and
+    what has been said so far.
+
+    ``turns_left`` counts the dialogue turns left, this one included; ``last``: the conversation
+    ends with this one whatever is said. ``max_turn_chars`` caps what the actor says in it.
     """
 
-    memories: tuple[BriefMemory, ...] = ()
-    relations: tuple[BriefRelation, ...] = ()
+    other: BriefPerson
+    dialogue: tuple[DialogueTurn, ...]
+    turns_left: int
+    last: bool
+    max_turn_chars: int
 
 
 @dataclass(frozen=True)
@@ -185,16 +158,19 @@ class ActorTurn:
     agent_id: str
     step: int
     kind: TurnKind
-    triggers: tuple[TurnTrigger, ...] = ()
     # DECIDE only.
     briefing: ActorBriefing | None = None
-    feedback: ActorFeedback | None = None
-    # DECIDE only: the engine's reading of what the actor already said for this step (with a
-    # break-off), for them to confirm or replace. None when there was nothing, or it can't be
-    # taken here.
-    proposal: "ActorDecision | None" = None
     # INTERRUPT only: the action the character is in the middle of.
     doing: str = ""
+    # INVITE only: the invitation, and the act the character decided on this step, which
+    # accepting sets aside ("" when it decided none).
+    invitation: Invitation | None = None
+    decided: str = ""
+    # SPEAK only.
+    conversation: Conversation | None = None
+    # Why the character is asked: what reached it this step, summed up in a sentence for the
+    # actor. Empty when nothing did (a decision at every step, or one after its own act ended).
+    reason: str = ""
     # Names this turn and no other. Step and kind don't: a step replayed after a restore, or
     # renumbered by a reset, asks the same (step, kind) again as a new turn.
     turn_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -220,7 +196,7 @@ class ActorAction:
     person_ids: tuple[str, ...] = ()
     # SEND_MESSAGE to everyone here instead of to named people.
     message_announce: bool = False
-    # SEND_MESSAGE: the words delivered; TALK: what I mean to say.
+    # SEND_MESSAGE: the words delivered. A TALK's words the actor speaks turn by turn.
     message_content: str = ""
     # SEND_MESSAGE: how pressing the words are to whoever receives them.
     urgency: Urgency = Urgency.NORMAL
@@ -257,19 +233,6 @@ class EmotionAmendment:
 
 
 @dataclass(frozen=True)
-class MemoryAmendment:
-    """Rewrite one listed memory, or forget it (``text`` None)."""
-
-    memory_id: str
-    text: str | None
-
-    def __post_init__(self) -> None:
-        # Forgetting is ``None``, never an empty rewrite.
-        if self.text is not None:
-            require_text(self.text, "text")
-
-
-@dataclass(frozen=True)
 class RelationAmendment:
     """How the character now regards one listed person; ``None`` keeps that value.
 
@@ -290,19 +253,79 @@ class RelationAmendment:
 
 @dataclass(frozen=True)
 class ActorAmendments:
-    """The actor's changes to the feedback listed in the turn it answers."""
+    """The actor's changes to the character's mind, each an outright value over what the engine
+    wrote; whatever is left out keeps its value. ``insights`` are added: judgments the character
+    has come to, kept among its memories like those its reflection forms.
+
+    They land where nothing else is writing the character: at once while a DECIDE or INTERRUPT
+    turn is open (the step waits on the actor), otherwise at the start of the next step. An INVITE
+    turn counts as otherwise: it opens after the step's plan is laid, and committing the plan
+    writes the goals it carries. So does a SPEAK turn: the conversation is spoken while the step's
+    other acts are adjudicated, before its own feedback lands. Never between steps: a
+    write outside a step belongs to no snapshot, and a restore would roll it back.
+    """
 
     emotion: EmotionAmendment | None = None
-    memories: tuple[MemoryAmendment, ...] = ()
     relations: tuple[RelationAmendment, ...] = ()
+    # The goal lists in full; ``None`` keeps that list.
+    long_term_goals: tuple[str, ...] | None = None
+    short_term_goals: tuple[str, ...] | None = None
+    insights: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for goals in (self.long_term_goals, self.short_term_goals):
+            for text in goals or ():
+                require_text(text, "goal")
+        for text in self.insights:
+            require_text(text, "insight")
+
+    def then(self, later: "ActorAmendments") -> "ActorAmendments":
+        """These amendments with ``later`` saved over them: a value given in both is ``later``'s;
+        insights from both are kept, in order."""
+        relations = {r.agent_id: r for r in self.relations}
+        for r in later.relations:
+            earlier = relations.get(r.agent_id)
+            relations[r.agent_id] = RelationAmendment(
+                r.agent_id,
+                trust=r.trust if r.trust is not None else (earlier.trust if earlier else None),
+                affection=r.affection if r.affection is not None else (earlier.affection if earlier else None),
+            )
+        return ActorAmendments(
+            emotion=later.emotion or self.emotion,
+            relations=tuple(relations.values()),
+            long_term_goals=later.long_term_goals if later.long_term_goals is not None else self.long_term_goals,
+            short_term_goals=(
+                later.short_term_goals if later.short_term_goals is not None else self.short_term_goals
+            ),
+            insights=self.insights + later.insights,
+        )
+
+
+@dataclass(frozen=True)
+class ActorMind:
+    """The character's mind as its actor sees it at any time, and amends it
+    (``ActorAmendments``).
+
+    ``relations`` are everyone the character has a relation with. ``pending`` holds amendments
+    saved but not landed yet; the values above don't include them.
+    """
+
+    # An ``EmotionType`` value.
+    emotion: str
+    emotion_intensity: float
+    emotion_valence: float
+    long_term_goals: tuple[str, ...]
+    short_term_goals: tuple[str, ...]
+    relations: tuple[BriefRelation, ...]
+    pending: ActorAmendments | None = None
 
 
 class ActorAnswerRejected(ValueError):
-    """The answer doesn't fit the step it answers: an action the character can't take, or an
-    amendment to something the turn didn't list.
+    """The answer doesn't fit: an action the character can't take this step, or an amendment
+    to something the character's mind doesn't list.
 
     ``reason`` is a code-layer slug (``talk_target_not_present``, ``person_ids_not_perceived``,
-    ``memory_not_listed``...).
+    ``relation_not_listed``...).
     """
 
     def __init__(self, reason: str) -> None:
@@ -310,53 +333,208 @@ class ActorAnswerRejected(ValueError):
         self.reason = reason
 
 
-@dataclass(frozen=True)
-class ActorWait:
-    """Stay idle until a trigger arrives, or until ``steps`` world steps pass if given."""
-
-    steps: int | None = None
-
-    def __post_init__(self) -> None:
-        if self.steps is not None:
-            require_at_least(self.steps, 1, "steps")
+# The reason given when the actor's words name nothing a decision can take.
+UNREADABLE = "unreadable"
 
 
 @dataclass(frozen=True)
 class ActorDecision:
-    """The answer to a DECIDE turn: exactly one of ``action`` or ``wait``.
-
-    The goal lists are the actor's motivation and replace the character's goals when given;
-    ``None`` keeps them unchanged. ``amendments`` change the feedback the turn listed.
-    """
+    """The answer to a DECIDE turn: exactly one of ``action`` or ``idle`` (the character does
+    nothing this step). Goals are not part of it: the actor amends them in the mind
+    (``ActorAmendments``) at any time."""
 
     action: ActorAction | None = None
-    wait: ActorWait | None = None
-    long_term_goals: tuple[str, ...] | None = None
-    short_term_goals: tuple[str, ...] | None = None
-    amendments: ActorAmendments | None = None
+    idle: bool = False
 
     def __post_init__(self) -> None:
-        if (self.action is None) == (self.wait is None):
-            raise ValueError("A decision is exactly one of an action or a wait")
-        for goals in (self.long_term_goals, self.short_term_goals):
-            for text in goals or ():
-                require_text(text, "goal")
+        if (self.action is None) != self.idle:
+            raise ValueError("A decision is exactly one of an action or idling")
 
 
 @dataclass(frozen=True)
 class ActorInterruptAnswer:
-    """The answer to an INTERRUPT turn: whether to break off, and why.
-
-    ``then`` keeps the actor's words about what to do next, said with the break-off. They are
-    read at that step's decision stage, against what the character then has in front of it, and
-    come back as the DECIDE turn's ``proposal`` to confirm.
-    """
+    """The answer to an INTERRUPT turn: break off or carry on. What to do instead the actor says
+    at the DECIDE turn the break-off leads into."""
 
     interrupt: bool
-    thought: str = ""
-    then: str = ""
+
+
+@dataclass(frozen=True)
+class ActorInvitationAnswer:
+    """The answer to an INVITE turn: join the inviter's act or not. Refusing turns the inviter
+    away; whatever the character decided this step goes ahead as if nobody had asked."""
+
+    accept: bool
+
+
+@dataclass(frozen=True)
+class ActorDialogueTurn:
+    """The answer to a SPEAK turn: the character's dialogue turn, what it says (``line``) and
+    whether the conversation ends with it. Ending may leave the line empty."""
+
+    line: str = ""
+    end: bool = False
 
     def __post_init__(self) -> None:
-        if self.then.strip() and not self.interrupt:
-            raise ValueError("Only a break-off leads into a next decision")
+        if not self.end:
+            require_text(self.line, "line")
 
+
+ActorAnswer = ActorDecision | ActorInterruptAnswer | ActorInvitationAnswer | ActorDialogueTurn
+
+
+class ActorPace(str, Enum):
+    """When an idle character's actor is asked to decide."""
+
+    # Every step it is idle.
+    EVERY_STEP = "every_step"
+    # Only when something reached it, or an act of its own has just ended.
+    WHEN_REACHED = "when_reached"
+
+
+# ----- the actor's thread ----------------------------------------------------------------------
+
+
+class EntryKind(str, Enum):
+    PERCEIVED = "perceived"
+    ASKED = "asked"
+    SAID = "said"
+    ANSWERED = "answered"
+    BREAK_OFF = "break_off"
+    BEGAN = "began"
+    PROGRESSED = "progressed"
+    ENDED = "ended"
+    DIALOGUE_TURN = "dialogue_turn"
+
+
+def _entry_id() -> str:
+    return uuid.uuid4().hex
+
+
+# Every entry carries ``step`` and ``time_label``: the step it belongs to (code layer) and the
+# world's own name for that moment (``WorldTime.time_label``). The coordinator stamps
+# ``time_label`` as it records the entry; constructors leave it empty.
+
+
+@dataclass(frozen=True)
+class PerceivedEntry:
+    """What reached the character: the letters and broadcasts arriving as a step begins, or an
+    act of someone else landing on it (``acted_upon``, as its own memory keeps it). Names come
+    from perception, as for an AI character's prompts."""
+
+    step: int
+    messages: tuple[BriefMessage, ...] = ()
+    broadcasts: tuple[str, ...] = ()
+    acted_upon: tuple[str, ...] = ()
+    time_label: str = ""
+    kind: EntryKind = field(default=EntryKind.PERCEIVED, init=False)
+    entry_id: str = field(default_factory=_entry_id)
+
+
+@dataclass(frozen=True)
+class AskedEntry:
+    """The world asks: a turn opened."""
+
+    step: int
+    turn: ActorTurn
+    time_label: str = ""
+    kind: EntryKind = field(default=EntryKind.ASKED, init=False)
+    entry_id: str = field(default_factory=_entry_id)
+
+
+@dataclass(frozen=True)
+class SaidEntry:
+    """The actor's words at an open DECIDE turn, and the engine's reading of them; ``reason``
+    (an ``ActorAnswerRejected`` reason, or ``UNREADABLE``) when there is none."""
+
+    step: int
+    turn_id: str
+    words: str
+    reading: ActorDecision | None = None
+    reason: str | None = None
+    time_label: str = ""
+    kind: EntryKind = field(default=EntryKind.SAID, init=False)
+    entry_id: str = field(default_factory=_entry_id)
+
+
+@dataclass(frozen=True)
+class AnsweredEntry:
+    """The actor answered the turn ``turn_id``."""
+
+    step: int
+    turn_id: str
+    answer: ActorAnswer
+    time_label: str = ""
+    kind: EntryKind = field(default=EntryKind.ANSWERED, init=False)
+    entry_id: str = field(default_factory=_entry_id)
+
+
+@dataclass(frozen=True)
+class BreakOffEntry:
+    """The actor asked to break off the act in progress, outside any turn."""
+
+    step: int
+    time_label: str = ""
+    kind: EntryKind = field(default=EntryKind.BREAK_OFF, init=False)
+    entry_id: str = field(default_factory=_entry_id)
+
+
+@dataclass(frozen=True)
+class BeganEntry:
+    """The character set out on an act of its own, or was drawn into someone else's, expected to
+    take ``total_steps`` steps, this one the first. It moves on with each ``ProgressedEntry`` and
+    ends with the next ``EndedEntry``."""
+
+    step: int
+    description: str
+    total_steps: int
+    time_label: str = ""
+    kind: EntryKind = field(default=EntryKind.BEGAN, init=False)
+    entry_id: str = field(default_factory=_entry_id)
+
+
+@dataclass(frozen=True)
+class ProgressedEntry:
+    """The act in progress went on another step: ``elapsed_steps`` of ``total_steps`` are done."""
+
+    step: int
+    elapsed_steps: int
+    total_steps: int
+    time_label: str = ""
+    kind: EntryKind = field(default=EntryKind.PROGRESSED, init=False)
+    entry_id: str = field(default_factory=_entry_id)
+
+
+@dataclass(frozen=True)
+class EndedEntry:
+    """How the act in progress ended, as the character's memory keeps it (``fact``, first
+    person). ``happened`` is False for an act that never engaged the world, which leaves no
+    memory; ``fact`` is empty when the act was never adjudicated."""
+
+    step: int
+    fact: str
+    succeeded: bool
+    happened: bool = True
+    time_label: str = ""
+    kind: EntryKind = field(default=EntryKind.ENDED, init=False)
+    entry_id: str = field(default_factory=_entry_id)
+
+
+@dataclass(frozen=True)
+class DialogueTurnEntry:
+    """A dialogue turn of a live conversation, either side's. ``end``: the conversation ends with
+    it, by the speaker's choice or because the turns ran out; an ending turn's line may be empty.
+    SPEAK turns leave no ``AskedEntry`` or ``AnsweredEntry``: these entries are their record."""
+
+    step: int
+    dialogue_turn: DialogueTurn
+    end: bool = False
+    time_label: str = ""
+    kind: EntryKind = field(default=EntryKind.DIALOGUE_TURN, init=False)
+    entry_id: str = field(default_factory=_entry_id)
+
+
+ActorEntry = (
+    PerceivedEntry | AskedEntry | SaidEntry | AnsweredEntry | BreakOffEntry | BeganEntry
+    | ProgressedEntry | EndedEntry | DialogueTurnEntry
+)

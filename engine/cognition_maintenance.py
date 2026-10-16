@@ -103,11 +103,9 @@ class CognitionMaintenance:
         if self._reflection_enabled and self._reflection_interval > 0 and step % self._reflection_interval == 0:
 
             async def _reflect_agent(agent: "Agent") -> None:
-                if agent.reflection_engine is None:
-                    return
                 try:
                     with observe_stage(Stage.REFLECTION, agent_id=agent.agent_id):
-                        await agent.reflection_engine.reflect(step)
+                        await agent.reflect(step)
                 except Exception as exc:
                     logger.warning(
                         "reflection_failed",

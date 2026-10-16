@@ -83,25 +83,21 @@ def _set_work_decision(container) -> None:
 
 class _SignalPressure:
     """Test double for WorldPressureEvaluator: emits one external goal for any agent the
-    world put a signal in front of this step (an inbox message, a perceivable broadcast, an
-    ambient trace where it stands).
+    world put a signal in front of this step (``PerceivedSignals``: an inbox message, a perceivable
+    broadcast, an ambient trace where it stands, an act landing on it).
 
     In production the cadence gate wakes an agent on ``pending_external_goals``, which the LLM
     pressure evaluator fills from those signals. With a mock LLM nothing fills it and signaled
     agents never wake; this reproduces the path deterministically through the real channel.
     """
 
-    async def evaluate(self, *, agents, agent_inboxes, broadcasts, world_time_label, agent_spatials):
+    async def evaluate(self, *, agents, signals, world_time_label, agent_spatials):
         from agent.motivation import ExternalDriveType, ExternalGoal
         from core.interfaces.action import Urgency
-        from engine.broadcast import BroadcastChannel
 
         out: dict[str, list] = {}
-        for agent_id, agent in agents.items():
-            spatial = agent_spatials.get(agent_id) if agent_spatials else None
-            location = agent.personality.state.current_location or (spatial.location_id if spatial else "")
-            ambient = list(spatial.ambient_events) if spatial is not None else []
-            if agent_inboxes.get(agent_id) or BroadcastChannel.for_location(broadcasts, location) or ambient:
+        for agent_id in agents:
+            if signals.get(agent_id):
                 out[agent_id] = [ExternalGoal(
                     text="respond to what just happened",
                     source_id="world",

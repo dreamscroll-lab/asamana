@@ -208,12 +208,16 @@ class ActionExecutionState:
         failure_result: "ActionResult",
         started_step: int,
         purpose: str = "",
+        not_executed: bool = True,
     ) -> "ActionExecutionState":
         """A feasibility/rejection failure as a doer-only, same-step-completing execution
         carrying its result in ``extra["completed_result"]``, so it flows through the one
-        completion path."""
-        # A "couldn't execute" non-event, not a defeat; the renderer mutes it.
-        failure_result.not_executed = True
+        completion path.
+
+        By default a "couldn't execute" non-event, not a defeat; the renderer mutes it.
+        ``not_executed=False`` for a failure that did happen to the doer (an invitation refused
+        to his face): remembered and fed back like any other failed act."""
+        failure_result.not_executed = not_executed
         state = cls.create(
             action_type=action_type,
             initiator_id=initiator_id,

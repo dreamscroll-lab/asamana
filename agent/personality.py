@@ -256,6 +256,9 @@ class StateLayer:
     condition: "BodyCondition | None" = None
     # 0 = never; the scheduler's cadence gate treats that as starved. See mark_decided.
     last_decision_step: int = 0
+    # Others' acts that landed on him since he last perceived, as he remembers each (first
+    # person); they reach him with his next perception (PerceivedSignals.acted_upon).
+    acted_upon: list[str] = field(default_factory=list)
 
 
 class PersonalityLayer:
@@ -377,6 +380,15 @@ class PersonalityLayer:
         layer (``NeedEngine.evolve_intensities``); separate from ``apply_need_state`` so it
         needn't rewrite dominant_need / goals."""
         self._state.need_intensities = dict(values)
+
+    def note_acted_upon(self, fact: str) -> None:
+        """Someone else's act landed on him, as he remembers it; it reaches him with his next
+        perception."""
+        self._state.acted_upon.append(fact)
+
+    def clear_acted_upon(self) -> None:
+        """He has perceived what landed on him."""
+        self._state.acted_upon = []
 
     def mark_decided(self, step: int) -> None:
         """Record entry to the decision loop. The scheduler's cadence gate reads it to find who is
@@ -643,6 +655,7 @@ def _copy_state(state: StateLayer) -> StateLayer:
         # it the field silently reads None everywhere.
         condition=state.condition,
         last_decision_step=state.last_decision_step,
+        acted_upon=list(state.acted_upon),
     )
 
 

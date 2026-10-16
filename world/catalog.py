@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from core.interfaces.actor import ActorPace
 from core.logging import get_logger
 from core.serialization import atomic_write_text, dump_json
 
@@ -40,14 +41,16 @@ MAX_WORLD_NAME_LEN = 40
 
 @dataclass(frozen=True)
 class ActorCasting:
-    """The character a world's actor plays, and whether the actor has stepped out for good.
+    """The character a world's actor plays, whether the actor has stepped out for good, and the
+    pace the actor is asked at.
 
-    Chosen once, before the world is confirmed; after an exit the character goes back to AI
-    cognition and stays there.
+    The character is chosen once, before the world is confirmed; after an exit it goes back to AI
+    cognition and stays there. The pace the actor sets at any time.
     """
 
     character_id: str
     exited: bool = False
+    pace: ActorPace = ActorPace.EVERY_STEP
 
 
 class WorldCatalog:
@@ -153,6 +156,7 @@ class WorldCatalog:
             return
         entry["actor_character_id"] = casting.character_id
         entry["actor_exited"] = casting.exited
+        entry["actor_pace"] = casting.pace.value
         self._flush()
 
     def actor_casting(self, world_id: str) -> ActorCasting | None:
@@ -164,7 +168,26 @@ class WorldCatalog:
         return ActorCasting(
             character_id=str(entry["actor_character_id"]),
             exited=bool(entry.get("actor_exited", False)),
+            pace=ActorPace(entry.get("actor_pace", ActorPace.EVERY_STEP.value)),
         )
+
+    def mark_director_review(self, world_id: str) -> None:
+        """Record that the whole cast has been shown to the user as the director.
+
+        Same re-read-before-write guard as ``register``. A no-op if the world is not cataloged.
+        """
+
+        if not self._refreshed_for_write(world_id, "mark_director_review"):
+            return
+        entry = self._entries.get(world_id)
+        if entry is None:
+            return
+        entry["director_reviewed"] = True
+        self._flush()
+
+    def director_reviewed(self, world_id: str) -> bool:
+        entry = self._entries.get(world_id)
+        return bool(entry.get("director_reviewed", False)) if entry is not None else False
 
     def set_name(self, world_id: str, world_name: str) -> None:
         """Rename a world's display name.

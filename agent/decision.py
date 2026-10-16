@@ -43,8 +43,6 @@ from core.interfaces.actor import (
     ActorAction,
     ActorAnswerRejected,
     ActorDecision,
-    ActorInterruptAnswer,
-    ActorWait,
 )
 from core.duration import describe_duration, describe_seconds
 from core.interfaces.llm import IndexedRef, LLMMessage, LLMRouter, LLMScene, extract_json_object, output_budget
@@ -653,10 +651,7 @@ class DecisionEngine:
         if selection.action_type == ActionType.SEND_MESSAGE:
             expected_outcome = _SEND_MESSAGE_EXPECTED_OUTCOME
         else:
-            expected_outcome = (
-                selection.expected_outcome
-                or self._expected_outcome(selection.action_type, packet.internal_context.need_evaluation)
-            )
+            expected_outcome = selection.expected_outcome
         intent = ActionIntent(
             purpose=selection.action_description,
             estimated_steps=selection.estimated_steps,
@@ -839,6 +834,12 @@ class DecisionEngine:
             return DecisionResult.failed()
         note_active_call_adoption(True)
         selection.llm_model = response.model or "llm"
+        # Only for the model, which may leave it out. Not for an actor: this guesses an intent
+        # they never stated, and MOVE writes it into the character's memory as "我打算「…」".
+        if not selection.expected_outcome:
+            selection.expected_outcome = self._expected_outcome(
+                selection.action_type, packet.internal_context.need_evaluation,
+            )
         action = self._build_action(selection, personality, packet)
         target = action.target
         target_ref = ",".join(target.acted_on_ids)
@@ -889,15 +890,13 @@ class DecisionEngine:
         personality: PersonalityLayer,
         packet: PerceptionPacket,
     ) -> ActorDecision | None:
-        """The actor's words read as a decision, for them to confirm: an action on the
-        character's own lists or a wait, plus the goals they stated.
+        """The actor's words read as an action on the character's own lists, for them to confirm.
+        Waiting is chosen directly, and goals are amended in the mind; neither is read from words.
 
-        A functional translation; it decides nothing for the character. Goals change only when
-        the words say so: a plain action keeps them as they are. ``None`` when the words name
-        nothing the character can do, or the call fails (Rule 1: nothing is persisted from it;
-        the actor says it again).
+        A functional translation; it decides nothing for the character. ``None`` when the words
+        name nothing the character can do, or the call fails (Rule 1: nothing is persisted from
+        it; the actor says it again).
         """
-        state = personality.state
         system, user = self._build_interpret_prompt(text, personality, packet)
         agent_id = personality.soul.agent_id
         try:
@@ -908,12 +907,11 @@ class DecisionEngine:
                     LLMMessage(role="user", content=user),
                 ],
                 temperature=0.2,
-                # reason ≤40 chars ≈60 + decision/wait_steps ≈10 + new short-term goals 3×≤20
-                # chars ≈90 + new long-term goals 2×≤30 ≈90 + two drop-index arrays ≈20 +
-                # action_description ≤40 ≈60 + estimated_steps ≈5; the costliest type adds
-                # ERRAND's four indices ≈44 + errand_message ≤60 ≈90 + errand_announce ≈8;
-                # ~22 fields ×5 overhead ≈110 → ~590.
-                max_tokens=output_budget(590),
+                # reason ≤40 chars ≈60 + decision ≈5 + action_description ≤40 ≈60 +
+                # estimated_steps ≈5; the costliest type adds ERRAND's four indices ≈44 +
+                # errand_message ≤60 ≈90 + errand_announce ≈8; ~17 fields ×5 overhead ≈85
+                # → ~360.
+                max_tokens=output_budget(360),
                 json_mode=True,
             )
         except Exception as exc:
@@ -925,114 +923,23 @@ class DecisionEngine:
         if not isinstance(payload, dict):
             logger.info("actor_decision_unreadable", extra={"agent_id": agent_id})
             return None
-        decision = payload.get("decision")
-        goals = {
-            "short_term_goals": _revised_goals(
-                state.short_term_goals, payload, new="new_short_term_goals",
-                dropped="dropped_short_term_goal_indices",
-            ),
-            "long_term_goals": _revised_goals(
-                state.long_term_goals, payload, new="new_long_term_goals",
-                dropped="dropped_long_term_goal_indices",
-            ),
-        }
-        if decision == "wait":
-            steps = payload.get("wait_steps")
-            timed = isinstance(steps, int) and not isinstance(steps, bool) and steps >= 1
-            return ActorDecision(wait=ActorWait(steps=steps if timed else None), **goals)
-        if decision == "act":
+        if payload.get("decision") == "act":
             action = _actor_action_from_payload(payload, candidate_lists(packet))
             if action is not None:
-                return ActorDecision(action=action, **goals)
+                return ActorDecision(action=action)
         logger.info("actor_decision_unclear", extra={"agent_id": agent_id})
         return None
-
-    async def interpret_actor_interrupt(
-        self, text: str, *, personality: PersonalityLayer, doing: str,
-    ) -> ActorInterruptAnswer | None:
-        """The actor's words read as an interrupt answer: break off or carry on, why, and what
-        they said to do next (kept as their words, read at the decision stage). ``None`` when
-        the call fails."""
-        system = """你是指令解读器：一个角色手头正做着一件事时，有事找上门来；你把关于这个角色的一条指令，读成它停不停下手头的事。你只翻译，不替角色拿主意。
-
-【输入】
-- 下面给出角色手头正在做的事，以及一条指令。
-- 指令里的「我」、「他」「她」或角色名，都指这个角色。
-
-【任务】
-- 判断指令是要角色停下手头的事，还是接着做。
-- 把停或不停的理由，用角色第一人称写成一句心里话；指令没说理由就留空。
-- 指令若还说了停下之后要做什么，把那部分原样摘出来，不改写。
-
-【约束】
-- 拿不准时按接着做处理：指令没说要停，就不停。
-- 只读出指令里有的内容，不补充指令里没有的意图或理由。
-
-【输出】
-严格 JSON：
-{
-  "reason": "<这条指令的意思，≤30字>",
-  "interrupt": <true=停下；false=接着做>,
-  "thought": "<角色第一人称的心里话，为什么停或不停，≤40字；指令没说则空字符串>",
-  "next": "<停下之后要做的事，指令原文摘录，≤60字；没说或不停则空字符串>"
-}
-"""
-        user = f"""角色手头正在做：{doing or "（一件事）"}
-
-【指令】
-{text.strip()}
-
-依上面说定的规则与 JSON 格式填写，只输出 JSON。"""
-        agent_id = personality.soul.agent_id
-        try:
-            response = await self._llm_router.complete(
-                LLMScene.ACTOR_INTENT,
-                [
-                    LLMMessage(role="system", content=system),
-                    LLMMessage(role="user", content=user),
-                ],
-                temperature=0.2,
-                # reason ≤30 chars ≈45 + interrupt ≈3 + thought ≤40 ≈60 + next ≤60 ≈90 + 4 fields
-                # ×5 overhead ≈20 → ~220.
-                max_tokens=output_budget(220),
-                json_mode=True,
-            )
-        except Exception as exc:
-            logger.warning(
-                "actor_interrupt_interpret_failed", extra={"agent_id": agent_id, "error": str(exc)},
-            )
-            return None
-        payload = extract_json_object(response.content)
-        if not isinstance(payload, dict):
-            logger.info("actor_interrupt_unreadable", extra={"agent_id": agent_id})
-            return None
-        interrupt = payload.get("interrupt") is True
-        return ActorInterruptAnswer(
-            interrupt=interrupt,
-            thought=_text(payload, "thought"),
-            then=_text(payload, "next") if interrupt else "",
-        )
 
     def _build_interpret_prompt(
         self, text: str, personality: PersonalityLayer, packet: PerceptionPacket,
     ) -> tuple[str, str]:
-        state = personality.state
         lines: List[str] = []
         situation_header = render_situation_header(
             Situation.from_spatial(packet.spatial), voice=SituationVoice.FIRST,
         )
         if situation_header:
             lines.extend([situation_header, ""])
-        lines.append("【我当前的目标】")
-        lines.append("短期目标：")
-        lines.extend(f"  #{i} {g}" for i, g in enumerate(state.short_term_goals, 1))
-        if not state.short_term_goals:
-            lines.append("  无")
-        lines.append("长期目标：")
-        lines.extend(f"  #{i} {g}" for i, g in enumerate(state.long_term_goals, 1))
-        if not state.long_term_goals:
-            lines.append("  无")
-        lines.extend(["", "【名单】"])
+        lines.append("【名单】")
         _render_candidate_lists(personality, packet, lines, GivenFacts())
         lines.extend([
             "",
@@ -1042,20 +949,18 @@ class DecisionEngine:
             "依上面说定的规则与 JSON 格式填写，只输出 JSON。",
         ])
         catalog = "\n".join(_format_candidate_line(i, c) for i, c in enumerate(_ACTION_SPACE))
-        system = f"""你是指令解读器：把关于一个角色的一条指令，读成这个角色这一拍的决定：做一件事（落到下面的行动类型和带 #序号 的名单上），或者先等着；指令若说了目标的变化，一并读出。你只翻译，不替角色拿主意。
+        system = f"""你是指令解读器：把关于一个角色的一条指令，读成这个角色这一拍要做的一件事（落到下面的行动类型和带 #序号 的名单上）。你只翻译，不替角色拿主意。
 
 【输入】
-- 下面给出角色此刻的处境、当前目标和可指认的名单，都以角色的「我」来写，目标和名单各带 #序号。
+- 下面给出角色此刻的处境和可指认的名单，都以角色的「我」来写，名单各带 #序号。
 - 最后是一条指令。指令里的「我」、「他」「她」或角色名，都指这个角色。
 
 【任务】
-- 先判断这条指令是要做一件事（act）、先等着不动（wait），还是读不出能做的事（unclear）。
+- 先判断这条指令是要做一件事（act），还是读不出能做的事（unclear）。只说先等着、不动、看情况的，也是 unclear。
 - 做一件事：从【行动类型】里挑恰好一个最贴合的；指向的人、地点、东西，用对应名单里的 #序号 指认；把指令写成角色第一人称的行动描述；要对人说出口的话，照录进对应的话语栏。
-- 先等着：指令说了等多久，就换算成步数；只说等等看、看情况，就不填。
-- 目标：只有指令明确说出要追求的新目标、或明确说放下某个当前目标时，才填目标栏。一个普通的行动不是新目标。
 
 【约束】
-- 只读出指令里有的内容，不补充指令里没有的意图、对象、话语或目标。
+- 只读出指令里有的内容，不补充指令里没有的意图、对象或话语。
 - 序号只取自对应名单，各份名单各自从 1 数起，不混用；名单上找不到的对象就留空，不要猜一个相近的。
 - TALK 只能找标(在场)的人；SEND_MESSAGE 可以发给标(不在场)的人。
 
@@ -1066,16 +971,11 @@ class DecisionEngine:
 严格 JSON，只填与判断和所选类型相关的栏，其余省略：
 {{
   "reason": "<这条指令要做什么、指向谁或何处，≤40字>",
-  "decision": "<act | wait | unclear>",
-  "wait_steps": <wait 且说了等多久时：整数，每步{self._step_duration_hint()}>,
-  "new_short_term_goals": ["<明确说出的新短期目标，≤20字>", "...最多3条"],
-  "dropped_short_term_goal_indices": <整数数组，明确说放下的短期目标，"短期目标"的序号>,
-  "new_long_term_goals": ["<明确说出的新长期目标，≤30字>", "...最多2条"],
-  "dropped_long_term_goal_indices": <整数数组，明确说放下的长期目标，"长期目标"的序号>,
+  "decision": "<act | unclear>",
   "selected_index": <act 时：【行动类型】里的序号，0 起>,
   "person_indices": <整数数组，"我能触及的人"的序号；TALK 第一个是交谈对象，SEND_MESSAGE 是收件人>,
   "message_announce": <SEND_MESSAGE 不指名、当众宣告时填 true>,
-  "message_content": "<SEND_MESSAGE 要送出的原话，或 TALK 打算说的话；第一人称对对方说，≤60字>",
+  "message_content": "<SEND_MESSAGE 要送出的原话，第一人称对收件人说，≤60字；TALK 不填：交谈的话由角色当面一句句说>",
   "destination_index": <MOVE 的去处，"我可前往"的序号>,
   "move_carry_indices": <整数数组，MOVE 时强行带走的在场者，"我能触及的人"的序号>,
   "physical_person_index": <PHYSICAL 对人，"我能触及的人"里标(在场)者的序号>,
@@ -1666,17 +1566,6 @@ def _actor_payload(action: ActorAction, lists: CandidateLists) -> dict:
         payload[key] = indices if isinstance(value, tuple) else indices[0]
     return payload
 
-
-def _revised_goals(current: Sequence[str], payload: dict, *, new: str, dropped: str) -> tuple[str, ...] | None:
-    """The goal list after the actor's stated changes; ``None`` when they stated none."""
-    drop = IndexedRef([str(i) for i in range(len(current))]).resolve(
-        payload.get(dropped) if isinstance(payload.get(dropped), list) else [],
-    )
-    added = [g.strip() for g in payload.get(new) or [] if isinstance(g, str) and g.strip()]
-    if not drop and not added:
-        return None
-    kept = [g for i, g in enumerate(current) if str(i) not in drop]
-    return tuple(dict.fromkeys(kept + added))
 
 def _actor_action_from_payload(payload: dict, lists: CandidateLists) -> ActorAction | None:
     """A model's slots as the actor's form. Indices off their list are left empty for the actor

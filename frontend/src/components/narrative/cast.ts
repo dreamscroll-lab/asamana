@@ -25,6 +25,11 @@ export interface StepCast {
   conditionOf(id: string | undefined): string;
 }
 
+/** Everyone in a deed, the one who started it first: the sentence belongs to them. */
+export function initiatorFirst(initiator_id: string, participant_ids: string[]): string[] {
+  return [initiator_id, ...participant_ids.filter((id) => id !== initiator_id)].filter(Boolean);
+}
+
 export function stepCast(step: StepView): StepCast {
   const index = indexStep(step);
   return {

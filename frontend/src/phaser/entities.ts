@@ -84,6 +84,11 @@ export class EntityLayer {
    * table may simply not exist yet: it leaves without the "destroyed" note.
    */
   private cut = false;
+  // Things a deed this step names. In a viewer's partial step, only these can have been
+  // destroyed; anything else missing from it is just out of sight.
+  private caused: Set<string> = new Set();
+  // Whether the step in hand is the whole world (see lib/viewer isWholeWorld).
+  private wholeWorld = true;
 
   /** Which things are still holding a change back; read by the beat scheduler. */
   get withheld(): ReadonlySet<string> {
@@ -98,10 +103,12 @@ export class EntityLayer {
    * the deeds name, this layer knows which would visibly change, and neither half is the test.
    */
   beginStep(
-    entities: Record<string, PlacedEntity>, causedIds: Set<string>, cut: boolean,
+    entities: Record<string, PlacedEntity>, causedIds: Set<string>, cut: boolean, wholeWorld = true,
   ): Record<string, PlacedEntity> {
     this.stepEntities = entities;
     this.cut = cut;
+    this.caused = causedIds;
+    this.wholeWorld = wholeWorld;
     // Things this step's table dropped count too: a destroyed thing must keep standing until the
     // blow that breaks it lands.
     const ids = new Set([...Object.keys(entities), ...Object.keys(this.lastEntityStates)]);
@@ -182,10 +189,11 @@ export class EntityLayer {
     this.host.hideTip();
     this.carriedBy.clear();
     // Gone from the table: destroyed, on a step that follows the last one drawn. Only a thing
-    // that has a marker gets a goodbye.
+    // that has a marker gets a goodbye. In a viewer's step absence proves nothing, so only a
+    // thing a deed names is mourned; the rest just leave the view.
     for (const [eid, e] of Object.entries(this.lastEntityStates)) {
       if (eid in entities) continue;
-      if (this.cut) {
+      if (this.cut || (!this.wholeWorld && !this.caused.has(eid))) {
         this.entityMarkers.get(eid)?.destroy();
         this.entityMarkers.delete(eid);
       } else {

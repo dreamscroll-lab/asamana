@@ -122,6 +122,9 @@ Mandatory for infrastructure and integration issues:
 - Small, focused modules. One clear owner per file.
 - No `print()` calls in production code.
 - No `logging.basicConfig()` inside feature modules.
+- Error and exception messages are in English: `raise` messages, API error details
+  (`HTTPException(detail=...)`) and frontend `Error`s. UI copy and narrative text are not
+  error messages; a client that shows an error in another language maps it itself.
 
 ---
 
@@ -1034,18 +1037,27 @@ Dependencies: `phaser/` may use `lib/`; `lib/` and `hooks/` may use `api/`; none
   (`doer_id`). Not "actor" or "acting agent": both collide with the vocabulary above.
 
 **Core principle: AI and actor are two drivers of one cognition loop.** At the same stages
-(interrupt, motivation, decision), a character's cognition is driven either by AI or by the
-actor. Which one is an implementation choice: the world and the narrative know only
-characters, never actors or Agents, so nothing in world state, events or narrative text depends
-on, or reveals, who drives a character.
+(interrupt, motivation, reflection, decision), a character's cognition is driven either by AI
+or by the actor; the actor reflects through the insights it adds. Which one is an
+implementation choice: the world and the narrative know only characters, never actors or
+Agents, so nothing in world state, events or narrative text depends on, or reveals, who drives
+a character.
 
 Accepted deviations, each for its reason:
-- The actor amends the subjective part of feedback (emotion, experiential memories,
-  trust/affection) at its next decision, not at the feedback stage, so a step doesn't stop
-  twice. What happened (facts, outcomes, body, belongings) is never amendable.
+- The actor amends the subjective part of feedback (emotion, trust/affection) and its goals,
+  and may add insights, at any time; it lands at its next decision or the next step, not at the
+  feedback stage, so a step doesn't stop twice. What happened (facts, outcomes, body,
+  belongings) is never amendable.
 - The actor sets its own pace and is asked about every interrupt trigger: judging what matters
   to the character is the actor's job.
 - The performed character is main tier for good: the user lives the story through it.
+- The actor is asked whether the character joins an act it is invited into, and may refuse;
+  an AI character always joins. The user's choice is not overruled by someone else's
+  invitation. Compulsion is never asked. A refusal is the character's own act in the
+  world; nothing in the narrative says who made it.
+- A conversation with the performed character is spoken turn by turn, each side voicing its
+  own; between AI characters one narrator writes it whole. The user speaks for themselves, and
+  the transcript is the same either way. The TALK executor is the one place that asks.
 
 What follows from the principle:
 - **The runtime never asks who drives a character.** The character consults its actor
@@ -1054,7 +1066,8 @@ What follows from the principle:
 - **The actor shares the character's information boundary, not the AI's input.** It knows only
   what the character perceived. Visibility is decided once, in each event's public side and
   audience; the actor's view of a step (`StepView`) is a filter over that, never a second
-  visibility rule.
+  visibility rule. What reached the character in a step (the actor thread's `PerceivedEntry`) is
+  its perception stage's own input, not a view built anew.
 
 The cognition loop is `perception → motivation → decision → action → feedback`. Each subsystem in `agent/` is distinct and cooperates through explicit state — do not collapse them into one convenience object.
 

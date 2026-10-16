@@ -214,6 +214,7 @@ def _stub_agent(agent_id: str):
             state=SimpleNamespace(current_location="loc_a"),
         ),
         is_main_character=False,
+        is_performed=False,
     )
 
 

@@ -55,7 +55,7 @@ def build_direct_router(services: ApiServices) -> Any:
         if len(text) > _MAX_DIRECTIVE_CHARS:
             raise HTTPException(
                 status_code=400,
-                detail=f"指令过长（{len(text)} 字），请压缩到 {_MAX_DIRECTIVE_CHARS} 字以内。",
+                detail=f"Directive too long ({len(text)} chars); keep it within {_MAX_DIRECTIVE_CHARS}.",
             )
 
         services.require_director(world_id)

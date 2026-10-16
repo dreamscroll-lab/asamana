@@ -22,6 +22,7 @@ from core.interfaces.perception import (
     SpatialPerception,
 )
 from core.interfaces.urgency import Urgency
+from engine.signals import perceived_signals
 from engine.world_pressure import (
     _GOAL_TEXT_MAX_CHARS,
     _MAX_TOKENS,
@@ -379,6 +380,23 @@ class _RecordingLLM:
         return LLMResponse(content=self._response, input_tokens=0, output_tokens=0, model="test")
 
 
+async def _evaluate(ev, *, agents, agent_inboxes, broadcasts, world_time_label, agent_spatials, acted_upon=None):
+    """The evaluator fed what reached each agent, built as the runtime builds it."""
+    signals = {
+        aid: perceived_signals(
+            location_id=agent_spatials[aid].location_id,
+            inbox=agent_inboxes.get(aid, []),
+            broadcasts=broadcasts,
+            ambient=agent_spatials[aid].ambient_events,
+            acted_upon=(acted_upon or {}).get(aid, ()),
+        )
+        for aid in agents
+    }
+    return await ev.evaluate(
+        agents=agents, signals=signals, world_time_label=world_time_label, agent_spatials=agent_spatials,
+    )
+
+
 @pytest.mark.asyncio
 async def test_evaluate_calls_once_per_signal_bearing_agent() -> None:
     llm = _RecordingLLM()
@@ -386,7 +404,7 @@ async def test_evaluate_calls_once_per_signal_bearing_agent() -> None:
     agents = {"a1": _stub_agent(name="甲", role="无", location="hall"),
               "a2": _stub_agent(name="乙", role="无", location="hall")}
     # both perceive a global broadcast → 2 calls
-    await ev.evaluate(agents=agents, agent_inboxes={"a1": [], "a2": []},
+    await _evaluate(ev, agents=agents, agent_inboxes={"a1": [], "a2": []},
                       broadcasts=[_bc("天下大乱", severity="high")], world_time_label="辰时",
                       agent_spatials={"a1": _spatial(location="hall"), "a2": _spatial(location="hall")})
     assert llm.calls == 2
@@ -399,7 +417,7 @@ async def test_evaluate_skips_dead_agent_even_on_global_broadcast() -> None:
     ev = WorldPressureEvaluator(llm_router=llm)
     agents = {"a1": _stub_agent(name="甲", role="无", location="hall"),
               "a2": _stub_agent(name="乙", role="无", location="hall", is_active=False)}
-    result = await ev.evaluate(agents=agents, agent_inboxes={"a1": [], "a2": []},
+    result = await _evaluate(ev, agents=agents, agent_inboxes={"a1": [], "a2": []},
                                broadcasts=[_bc("丙已身亡", severity="high")], world_time_label="辰时",
                                agent_spatials={"a1": _spatial(location="hall"), "a2": _spatial(location="hall")})
     assert llm.calls == 1
@@ -413,7 +431,7 @@ async def test_evaluate_skips_a_character_whose_motivation_is_its_actors() -> No
     ev = WorldPressureEvaluator(llm_router=llm)
     agents = {"a1": _stub_agent(name="甲", role="无", location="hall"),
               "a2": _stub_agent(name="乙", role="无", location="hall", reads_world_pressure=False)}
-    result = await ev.evaluate(agents=agents, agent_inboxes={"a1": [], "a2": []},
+    result = await _evaluate(ev, agents=agents, agent_inboxes={"a1": [], "a2": []},
                                broadcasts=[_bc("宫门失火", severity="high")], world_time_label="辰时",
                                agent_spatials={"a1": _spatial(location="hall"), "a2": _spatial(location="hall")})
     assert llm.calls == 1
@@ -428,7 +446,7 @@ async def test_evaluate_skips_pure_co_location() -> None:
               "a2": _stub_agent(name="乙", role="无", location="hall")}
     spatials = {"a1": _spatial(location="hall", visible={"a2": "乙"}),
                 "a2": _spatial(location="hall", visible={"a1": "甲"})}
-    result = await ev.evaluate(agents=agents, agent_inboxes={"a1": [], "a2": []}, broadcasts=[],
+    result = await _evaluate(ev, agents=agents, agent_inboxes={"a1": [], "a2": []}, broadcasts=[],
                                world_time_label="辰时", agent_spatials=spatials)
     assert result == {} and llm.calls == 0
 
@@ -438,7 +456,7 @@ async def test_evaluate_ambient_only_triggers_that_agent() -> None:
     llm = _RecordingLLM()
     ev = WorldPressureEvaluator(llm_router=llm)
     agents = {"a1": _stub_agent(name="甲", role="无", location="hall")}
-    await ev.evaluate(agents=agents, agent_inboxes={"a1": []}, broadcasts=[], world_time_label="辰时",
+    await _evaluate(ev, agents=agents, agent_inboxes={"a1": []}, broadcasts=[], world_time_label="辰时",
                       agent_spatials={"a1": _spatial(location="hall", ambient=["地上有血迹"])})
     assert llm.calls == 1
 
@@ -451,7 +469,7 @@ async def test_evaluate_location_broadcast_only_reaches_in_location() -> None:
     agents = {"a1": _stub_agent(name="甲", role="无", location="hallA"),
               "a2": _stub_agent(name="乙", role="无", location="hallB")}
     spatials = {"a1": _spatial(location="hallA"), "a2": _spatial(location="hallB")}
-    await ev.evaluate(agents=agents, agent_inboxes={"a1": [], "a2": []},
+    await _evaluate(ev, agents=agents, agent_inboxes={"a1": [], "a2": []},
                       broadcasts=[_bc("仅A厅事件", location_scope="hallA", severity="high")],
                       world_time_label="辰时", agent_spatials=spatials)
     assert llm.calls == 1  # only a1 (at hallA) perceives it; a2 skipped
@@ -468,7 +486,7 @@ async def test_evaluate_does_not_leak_other_agents_private_message() -> None:
     spatials = {"a1": _spatial(location="hall", visible={"a2": "乙"}),
                 "a2": _spatial(location="hall", visible={"a1": "甲"})}
     # a1 gets a private message; both perceive a global broadcast (so both get evaluated).
-    await ev.evaluate(
+    await _evaluate(ev, 
         agents=agents,
         agent_inboxes={"a1": [_msg("只给甲的密信", sender_name="信使")], "a2": []},
         broadcasts=[_bc("全局大事", severity="high")], world_time_label="辰时", agent_spatials=spatials,
@@ -494,7 +512,21 @@ async def test_evaluate_attributes_each_call_to_its_agent() -> None:
     ev = WorldPressureEvaluator(llm_router=_ContextLLM())
     agents = {"a1": _stub_agent(name="甲", role="无", location="hall"),
               "a2": _stub_agent(name="乙", role="无", location="hall")}
-    await ev.evaluate(agents=agents, agent_inboxes={"a1": [], "a2": []},
+    await _evaluate(ev, agents=agents, agent_inboxes={"a1": [], "a2": []},
                       broadcasts=[_bc("天下大乱", severity="high")], world_time_label="辰时",
                       agent_spatials={"a1": _spatial(location="hall"), "a2": _spatial(location="hall")})
     assert sorted(seen) == [("a1", "pressure"), ("a2", "pressure")]
+
+
+@pytest.mark.asyncio
+async def test_an_act_landing_on_an_agent_reaches_it_as_pressure() -> None:
+    """Being acted upon is a signal like any other: it brings the agent before the judgment, and
+    the prompt says what landed, as his own memory has it."""
+    llm = _RecordingLLM()
+    ev = WorldPressureEvaluator(llm_router=llm)
+    agents = {"a1": _stub_agent(name="甲", role="无", location="hall")}
+    await _evaluate(ev, agents=agents, agent_inboxes={"a1": []}, broadcasts=[], world_time_label="辰时",
+                    agent_spatials={"a1": _spatial(location="hall")},
+                    acted_upon={"a1": ("乙一把将我推开",)})
+    assert llm.calls == 1
+    assert "落到他身上的事（他自己的记忆，「我」即该角色）：乙一把将我推开" in llm.prompts[0]

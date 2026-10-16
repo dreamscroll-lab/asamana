@@ -3,7 +3,7 @@
 Design contract (see the CognitionMaintenance.run docstring in engine/cognition_maintenance.py):
 - Fixed order: decay -> compression -> reflection
 - Only Compression deletes memories (Decay and Reflection don't)
-- Reflection skips agents without a reflection_engine (here only the main-character stub has one)
+- Reflection runs through Agent.reflect; the stubs give only the main character a reflection_engine
 - Failure tolerance (CLAUDE.md Rule 1): if Compression/Reflection fails for one agent, it logs a
   warning and doesn't raise
 
@@ -78,6 +78,11 @@ def _stub_agent(*, agent_id: str, is_main: bool, call_log: list[tuple[str, str]]
     async def _revise(*, step):
         call_log.append((agent_id, "revise"))
     agent.revise_long_term_goals = AsyncMock(side_effect=_revise)
+
+    async def _agent_reflect(step):
+        if reflection is not None:
+            await reflection.reflect(step)
+    agent.reflect = AsyncMock(side_effect=_agent_reflect)
     return agent
 
 

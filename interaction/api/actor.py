@@ -2,16 +2,29 @@
 
 - ``GET /actor/candidates``: the cast as anyone could know them at a glance, to choose whom to
   perform. Casting itself happens at confirmation (``POST /confirm`` with ``character_id``).
+- ``GET /actor/emotions``: the vocabulary a character's feeling is named in, which an emotion
+  amendment picks from.
+- ``GET /actor/thread``: the actor's thread over the latest steps (``ActorEntry``s as JSON, in
+  order). Each new entry is pushed over the WebSocket as an ``actor_entry`` frame.
 - ``GET /actor/turn``: the turn waiting for the actor, if any. The same turn is pushed over the
   WebSocket as an ``actor_turn`` frame whenever one opens or closes.
-- ``POST /actor/interpret``: read the actor's own words against the open turn. Answers nothing:
-  the actor confirms the reading (or edits it) and submits it through ``/actor/answer``.
-- ``POST /actor/answer``: answer the open turn, naming it by ``turn_id``.
+- ``POST /actor/say``: the actor's own words, read against the open DECIDE turn. Answers
+  nothing: the reading comes as the thread's ``said`` entry, and the actor confirms it (or says
+  it again) by submitting it through ``/actor/answer``.
+- ``POST /actor/answer``: answer the open turn, naming it by ``turn_id``. A SPEAK turn is
+  answered with the character's dialogue turn (``ActorDialogueTurn``); one longer than the
+  conversation's ``max_turn_chars`` is refused (``turn_too_long``).
+- ``POST /actor/break-off``: break off what the character is doing, outside any turn.
+- ``PUT /actor/pace``: when an idle character's actor is asked to decide (``ActorPace``).
+- ``GET /actor/mind``: the character's mind as the actor sees it, at any time: feeling, goals,
+  relations, and any amendments saved but not landed yet.
+- ``POST /actor/amend``: amend the character's mind, or add an insight to it. ``landed`` says
+  whether it took effect now (a turn is open) or waits for the start of the next step.
 - ``POST /actor/exit``: the actor steps out for good.
 
-A refusal (an action the character can't take, an amendment to something the turn didn't list,
-words with nothing to read) is a normal answer, carried by ``accepted`` and a ``reason`` slug,
-the same way a refused directive is.
+A refusal (an action the character can't take, an amendment to something the mind doesn't list,
+words with nothing to read, a break-off with nothing to break off) is a normal answer, carried
+by ``accepted`` and a ``reason`` slug, the same way a refused directive is.
 """
 
 from __future__ import annotations
@@ -19,21 +32,24 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any, TypeVar
 
+from agent.personality import EmotionType
 from core.interfaces.action import ActionType
 from core.interfaces.actor import (
     ActorAction,
     ActorAmendments,
+    ActorAnswer,
     ActorAnswerRejected,
     ActorDecision,
     ActorInterruptAnswer,
-    ActorWait,
+    ActorInvitationAnswer,
+    ActorDialogueTurn,
+    ActorPace,
     EmotionAmendment,
-    MemoryAmendment,
     RelationAmendment,
-    TurnKind,
 )
 from core.interfaces.urgency import Urgency
 from core.logging import get_logger
+from core.validate import require_in_range
 
 from interaction.api.app import ApiServices
 from interaction.api.serialization import to_jsonable
@@ -41,11 +57,13 @@ from interaction.models import CastCandidate
 
 logger = get_logger(__name__)
 
-# Same quality limit as a directive: a few thousand characters is not one answer.
+# Same quality limit as a directive: a few thousand characters is not one answer, nor one insight.
 _MAX_ANSWER_CHARS = 500
 
-# The reason given when the words name nothing the turn can take.
-_UNREADABLE = "unreadable"
+# How many of the latest steps the thread covers unless asked otherwise, and at most: each step
+# read is a snapshot loaded.
+_THREAD_STEPS = 60
+_THREAD_STEPS_RANGE = (1, 500)
 
 
 def build_actor_router(services: ApiServices) -> Any:
@@ -57,8 +75,8 @@ def build_actor_router(services: ApiServices) -> Any:
 
     @router.get("/candidates")
     async def list_candidates(world_id: str) -> list[dict[str, Any]]:
-        """Whom the actor could perform: identity visible at a glance, nothing of anyone's
-        inner life, goals or relations, so choosing tells the actor nothing about the others."""
+        """Whom the actor could perform: who each character is, nothing of anyone's inner life,
+        goals, relations or tier, so choosing tells the actor nothing about the others."""
         if await manager.get_world(world_id) is None:
             raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
         profiles = await manager.character_profiles(world_id)
@@ -69,62 +87,124 @@ def build_actor_router(services: ApiServices) -> Any:
                 gender=entry.get("gender", ""),
                 age=entry.get("age"),
                 role=entry.get("role", ""),
+                background=entry.get("background", ""),
+                appearance=entry.get("appearance", ""),
                 color=entry.get("color", ""),
-                is_main_character=bool(entry.get("is_main_character", False)),
             ))
             for agent_id, entry in sorted(profiles.items())
         ]
+
+    @router.get("/emotions")
+    async def list_emotions(world_id: str) -> list[dict[str, str]]:
+        return [{"value": e.value, "label": e.label} for e in EmotionType]
 
     @router.get("/turn")
     async def get_turn(world_id: str) -> dict[str, Any]:
         return {"turn": to_jsonable(application.actor_turn(world_id))}
 
-    @router.post("/interpret")
-    async def interpret(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
-        """The open turn's reading of the actor's words; ``reading`` is the answer to confirm,
-        in the shape ``/actor/answer`` takes."""
+    @router.get("/thread")
+    async def get_thread(world_id: str, steps: int = _THREAD_STEPS) -> dict[str, Any]:
+        try:
+            require_in_range(steps, _THREAD_STEPS_RANGE, "steps")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if await manager.get_world(world_id) is None:
+            raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
+        return {"entries": await application.actor_thread(world_id, steps=steps)}
+
+    @router.post("/say")
+    async def say(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
+        """Whether the words have a reading, or the ``reason`` they have none. The reading itself
+        reaches the actor as the thread's ``said`` entry, the one place it is told."""
         text = str(payload.get("text", "")).strip()
         if not text:
             raise HTTPException(status_code=400, detail="text is required")
         if len(text) > _MAX_ANSWER_CHARS:
             raise HTTPException(
                 status_code=400,
-                detail=f"答复过长（{len(text)} 字），请压缩到 {_MAX_ANSWER_CHARS} 字以内。",
+                detail=f"Words too long ({len(text)} chars); keep them within {_MAX_ANSWER_CHARS}.",
             )
         services.require_model_keys()
-        turn = application.actor_turn(world_id)
-        if turn is None:
-            raise HTTPException(status_code=409, detail="No turn is waiting for the actor")
+        await services.ensure_session(world_id)
         try:
-            turn, reading = await application.interpret_actor_answer(world_id, text)
-        except ActorAnswerRejected as exc:
-            return _reading(turn.turn_id, None, exc.reason)
+            said = await application.actor_say(world_id, text)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return _reading(turn.turn_id, reading, None if reading is not None else _UNREADABLE)
+        return {"accepted": said.reading is not None, "reason": said.reason}
 
-    @router.post("/answer")
-    async def answer(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
-        turn_id = payload.get("turn_id")
-        turn = application.actor_turn(world_id)
-        if turn is None or turn.turn_id != turn_id:
-            raise HTTPException(status_code=409, detail="That turn is no longer waiting for the actor")
+    @router.post("/break-off")
+    async def break_off(world_id: str) -> dict[str, Any]:
+        await services.ensure_session(world_id)
         try:
-            decoded = _decode_answer(turn.kind, payload["answer"])
-        # AttributeError: a text member that isn't a string.
-        except (KeyError, TypeError, ValueError, AttributeError) as exc:
-            raise HTTPException(status_code=400, detail=f"Malformed answer: {exc}") from exc
-        try:
-            application.answer_actor_turn(world_id, turn_id=turn.turn_id, answer=decoded)
+            application.actor_break_off(world_id)
         except ActorAnswerRejected as exc:
             return {"accepted": False, "reason": exc.reason}
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        logger.info(
-            "actor_answered",
-            extra={"world_id": world_id, "step": turn.step, "kind": turn.kind.value, "turn_id": turn.turn_id},
-        )
+        logger.info("actor_break_off_requested", extra={"world_id": world_id})
         return {"accepted": True, "reason": None}
+
+    @router.post("/answer")
+    async def answer(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
+        turn_id = payload.get("turn_id")
+        if not isinstance(turn_id, str):
+            raise HTTPException(status_code=400, detail="turn_id is required")
+        try:
+            decoded = _decode_answer(payload["answer"])
+        # AttributeError: a text member that isn't a string.
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise HTTPException(status_code=400, detail=f"Malformed answer: {exc}") from exc
+        try:
+            application.answer_actor_turn(world_id, turn_id=turn_id, answer=decoded)
+        except ActorAnswerRejected as exc:
+            return {"accepted": False, "reason": exc.reason}
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        logger.info("actor_answered", extra={"world_id": world_id, "turn_id": turn_id})
+        return {"accepted": True, "reason": None}
+
+    @router.put("/pace")
+    async def set_pace(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
+        try:
+            pace = ActorPace(payload.get("pace"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Unknown pace: {payload.get('pace')!r}") from exc
+        try:
+            await application.set_actor_pace(world_id, pace)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        logger.info("actor_pace_set", extra={"world_id": world_id, "pace": pace.value})
+        return {"pace": pace.value}
+
+    @router.get("/mind")
+    async def get_mind(world_id: str) -> dict[str, Any]:
+        await services.ensure_session(world_id)
+        try:
+            mind = await application.actor_mind(world_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return to_jsonable(mind)
+
+    @router.post("/amend")
+    async def amend(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
+        await services.ensure_session(world_id)
+        try:
+            amendments = _decode_amendments(payload)
+        # AttributeError: a text member that isn't a string.
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise HTTPException(status_code=400, detail=f"Malformed amendments: {exc}") from exc
+        if any(len(text) > _MAX_ANSWER_CHARS for text in amendments.insights):
+            raise HTTPException(
+                status_code=400, detail=f"Insight too long; keep it within {_MAX_ANSWER_CHARS} chars.",
+            )
+        try:
+            landed = await application.amend_actor_mind(world_id, amendments)
+        except ActorAnswerRejected as exc:
+            return {"accepted": False, "reason": exc.reason, "landed": False}
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        logger.info("actor_amended", extra={"world_id": world_id, "landed": landed})
+        return {"accepted": True, "reason": None, "landed": landed}
 
     @router.post("/exit")
     async def exit_actor(world_id: str) -> dict[str, Any]:
@@ -144,36 +224,37 @@ def build_actor_router(services: ApiServices) -> Any:
     return router
 
 
-def _reading(turn_id: str, reading: Any, reason: str | None) -> dict[str, Any]:
-    return {
-        "turn_id": turn_id,
-        "accepted": reading is not None,
-        "reading": to_jsonable(reading),
-        "reason": reason,
-    }
-
-
 # ----- answer decoding -------------------------------------------------------
 # The wire shape is the contract's own (what ``to_jsonable`` makes of it), so a reading from
-# ``/actor/interpret`` goes back unchanged. Unknown keys and wrong types are refused, not
+# ``/actor/say`` goes back unchanged. Unknown keys and wrong types are refused, not
 # dropped: an answer that loses a field on the way in is not the answer the actor confirmed.
 
 _T = TypeVar("_T")
 
 
-def _decode_answer(kind: TurnKind, data: Any) -> ActorDecision | ActorInterruptAnswer:
-    if kind is TurnKind.INTERRUPT:
-        return _build(ActorInterruptAnswer, data)
+def _decode_answer(data: Any) -> ActorAnswer:
+    """By its own shape: an INTERRUPT turn's answer is the one with ``interrupt``, an INVITE
+    turn's the one with ``accept``, a SPEAK turn's the one with ``end``. Whether it fits the open
+    turn is the turn's to say (``ActorChannel.submit``)."""
+    if isinstance(data, Mapping) and "end" in data:
+        return _build(ActorDialogueTurn, data, {"line": _string, "end": _boolean})
+    if isinstance(data, Mapping) and "interrupt" in data:
+        return _build(ActorInterruptAnswer, data, {"interrupt": _boolean})
+    if isinstance(data, Mapping) and "accept" in data:
+        return _build(ActorInvitationAnswer, data, {"accept": _boolean})
     return _build(ActorDecision, data, {
         "action": _optional(lambda v: _build(ActorAction, v, _ACTION_FIELDS)),
-        "wait": _optional(lambda v: _build(ActorWait, v)),
+        "idle": _boolean,
+    })
+
+
+def _decode_amendments(data: Any) -> ActorAmendments:
+    return _build(ActorAmendments, data, {
+        "emotion": _optional(lambda e: _build(EmotionAmendment, e)),
+        "relations": lambda rs: tuple(_build(RelationAmendment, r) for r in _items(rs)),
         "long_term_goals": _optional(_strings),
         "short_term_goals": _optional(_strings),
-        "amendments": _optional(lambda v: _build(ActorAmendments, v, {
-            "emotion": _optional(lambda e: _build(EmotionAmendment, e)),
-            "memories": lambda ms: tuple(_build(MemoryAmendment, m) for m in _items(ms)),
-            "relations": lambda rs: tuple(_build(RelationAmendment, r) for r in _items(rs)),
-        })),
+        "insights": _strings,
     })
 
 
@@ -193,6 +274,18 @@ def _optional(decode: Callable[[Any], _T]) -> Callable[[Any], _T | None]:
 def _items(value: Any) -> list[Any]:
     if not isinstance(value, list):
         raise TypeError("expected a list")
+    return value
+
+
+def _boolean(value: Any) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError("expected true or false")
+    return value
+
+
+def _string(value: Any) -> str:
+    if not isinstance(value, str):
+        raise TypeError("expected a string")
     return value
 
 

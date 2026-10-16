@@ -5,10 +5,12 @@
 
 import { actedOnAgents } from "../../lib/contract";
 import { type Placed, type Scoped, indexStep } from "../../lib/step";
+import { type Viewer, knowsInside } from "../../lib/viewer";
 import type {
   ActionSummary,
   BroadcastSummary,
   MessageSummary,
+  ObservationSummary,
   StepView,
   InjectionSummary,
 } from "../../types";
@@ -22,22 +24,27 @@ export interface DeedThought {
 // Broadcasts (a death, an injected change) belong in the feed too, not only on the map.
 export type FeedItem =
   | { kind: "injection"; seq: number; data: InjectionSummary }
-  | { kind: "action"; seq: number; data: Placed<ActionSummary>; thoughts: DeedThought[] }
+  // `inside`: the viewer knows the act from inside (its private side), not only as seen.
+  | { kind: "action"; seq: number; data: Placed<ActionSummary>; thoughts: DeedThought[]; inside: boolean }
+  | { kind: "observation"; seq: number; data: Placed<ObservationSummary> }
   | { kind: "message"; seq: number; data: Scoped<MessageSummary> }
   | { kind: "broadcast"; seq: number; data: Scoped<BroadcastSummary> };
 
 /**
- * One seq-ordered stream of what happened, as the god view tells it.
+ * One seq-ordered stream of what happened, as the viewer knows it.
  *
- * Each event once: an action is told where it is recorded, so the places that only saw it
- * (observations) add nothing here. A letter whose recipients stood in several places arrives
- * as one entry per place under one seq; it is one letter, so they merge back into one row.
+ * Each event once: an action is told where it is recorded, so a place that only saw it (an
+ * observation under the same seq) adds nothing while the action is in the step. It is not in a
+ * viewer's step when it happened out of their sight; then what they saw of it is the observation.
+ * A letter whose recipients stood in several places arrives as one entry per place under one
+ * seq; it is one letter, so they merge back into one row.
  *
  * seq is used ONLY for sorting and is never rendered — it is an engine-layer ordinal, not
  * something the story knows about itself.
  */
-export function buildFeed(step: StepView): FeedItem[] {
+export function buildFeed(step: StepView, viewer: Viewer = null): FeedItem[] {
   const index = indexStep(step);
+  const acted = new Set(index.actions.map((a) => a.seq));
   const thoughts = new Map<number, DeedThought[]>();
   for (const agent of Object.values(index.agents)) {
     for (const t of agent.private.thoughts) {
@@ -53,7 +60,11 @@ export function buildFeed(step: StepView): FeedItem[] {
     ...step.observer.injections.map((inj) => ({ kind: "injection" as const, seq: inj.seq, data: inj })),
     ...index.actions.map((act) => ({
       kind: "action" as const, seq: act.seq, data: act, thoughts: thoughts.get(act.seq) ?? [],
+      inside: knowsInside(act, viewer),
     })),
+    ...index.observations
+      .filter((o) => !acted.has(o.seq))
+      .map((o) => ({ kind: "observation" as const, seq: o.seq, data: o })),
     ...[...letters.values()].map((m) => ({ kind: "message" as const, seq: m.seq, data: m })),
     ...index.broadcasts.map((b) => ({ kind: "broadcast" as const, seq: b.seq, data: b })),
   ].sort((a, b) => a.seq - b.seq);
@@ -62,6 +73,8 @@ export function buildFeed(step: StepView): FeedItem[] {
 /** A stable React key for a feed row. */
 export function itemKey(item: FeedItem): string {
   if (item.kind === "injection") return `injection-${item.data.id}`;
+  // One seq can be seen at several places; each is its own row.
+  if (item.kind === "observation") return `observation-${item.seq}-${item.data.location_id}`;
   return `${item.kind}-${item.seq}`;
 }
 
@@ -73,6 +86,7 @@ function itemCast(item: FeedItem): string[] {
     return [...act.participant_ids, act.initiator_id, ...actedOnAgents(act.target), act.interrupted_by]
       .filter(Boolean);
   }
+  if (item.kind === "observation") return [item.data.initiator_id, ...item.data.participant_ids].filter(Boolean);
   if (item.kind === "message") return [item.data.sender_id, ...item.data.receiver_ids];
   // An injection's only id-level cast is a closed director injection's receipt (who it was
   // delivered to); affected_names is narrative-layer, not ids.

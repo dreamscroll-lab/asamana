@@ -27,6 +27,7 @@ import { HoverTip } from "./hoverTip";
 import { type PostHost, PostLayer } from "./post";
 import { FONT, INITIAL_DIR, PLATE_GAP, PLATE_RISE, SPRITE_FOOT_Y, TEXT_RES, type AgentToken, type CarriedItem } from "./types";
 import { reportedDead } from "../lib/agentState";
+import { type Viewer, isWholeWorld } from "../lib/viewer";
 import { identityColor, toHex } from "../lib/color";
 import {
   type FxHost,
@@ -46,6 +47,8 @@ import {
 // art is served from. Nothing about a particular map is compiled in here.
 
 const NPC_DEED_INK = 0x8a93a6;
+// The marker over the performed character (see ensureToken): amber, outside the identity palette.
+const SELF_MARK_INK = "#fbbf24";
 
 // The objects a tween config's `targets` names (one or an array).
 function tweenTargets(targets: unknown): object[] {
@@ -109,6 +112,8 @@ export class TiledWorldScene
   // Focus/selection state (mirrors React's MapFocus). Drives emphasis/dim, the
   // spotlight overlay, and camera-follow. Empty = no focus → everything normal.
   private focus: MapFocus = { agents: [], place: null, follow: false };
+  // Whose view the steps are filtered to; null for the director (see lib/viewer).
+  private viewer: Viewer = null;
   private spotlight?: Phaser.GameObjects.Rectangle; // dim overlay for a location spotlight
   // agent_id → gender/age (from the step-0 profiles) — the only thing that picks a body.
   private demographics: Record<string, Demographics> = {};
@@ -597,6 +602,11 @@ export class TiledWorldScene
     this.onSelect(room ? { kind: "location", id: room.id } : { kind: "clear" });
   }
 
+  /** Whose view the steps handed in are filtered to; read on the next render. */
+  setViewer(viewer: Viewer): void {
+    this.viewer = viewer;
+  }
+
   // --- focus / selection -----------------------------------------------------
   /** Push the current focus state in (from React); re-applies emphasis + follow. */
   setFocus(focus: MapFocus): void {
@@ -725,7 +735,29 @@ export class TiledWorldScene
       0, this.body.measureHeadY(skinId) - PLATE_GAP, [vitTrack, vitFill, label, pouch],
     );
     parts.push(plate);
-    const container = this.add.container(0, 0, parts).setDepth(20);
+    // The character the actor performs wears a marker over the head, outside the plate so the
+    // zoom-out LOD that hides plates never hides "this is you".
+    let selfMark: Phaser.GameObjects.Text | undefined;
+    if (state.agent_id === this.viewer) {
+      const you = this.add
+        .text(0, this.body.measureHeadY(skinId) - PLATE_GAP - 16, "▼", {
+          fontFamily: FONT, fontSize: "14px", color: SELF_MARK_INK,
+        })
+        .setOrigin(0.5)
+        .setResolution(TEXT_RES)
+        .setStroke("#0a0e1a", 3);
+      this.tweens.add({ targets: you, y: you.y - 4, duration: 700, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
+      parts.push(you);
+      selfMark = you;
+    }
+    // Born transparent: the per-frame alpha easing (update) fades him in, so someone coming into
+    // view appears rather than pops.
+    const container = this.add.container(0, 0, parts).setDepth(20).setAlpha(0);
+    // The bob repeats forever: end it with the token, or it keeps driving a destroyed object.
+    if (selfMark) {
+      const mark = selfMark;
+      container.once(Phaser.GameObjects.Events.DESTROY, () => this.tweens.killTweensOf(mark));
+    }
     // Hit area is a circle over the figure, independent of the container's child bounds.
     container.setInteractive(new Phaser.Geom.Circle(0, -16, 22), Phaser.Geom.Circle.Contains);
     container.setData("agentId", state.agent_id);
@@ -787,7 +819,7 @@ export class TiledWorldScene
     this.noteNpcs(index.npcs);
     this.staging.setRelations(index.relations);
     const states = figuresOf(index);
-    const actions = beatsOf(index);
+    const actions = beatsOf(index, this.viewer);
     const entities = index.entities;
     // `step.observer.injections` is deliberately not read: an injection's record summarizes a
     // broadcast or message this same step already carries, with no place or cast by contract.
@@ -825,13 +857,24 @@ export class TiledWorldScene
     // before layout so a withheld item still on the ground gets a cell from layoutFixtures.
     const causedEntityIds = new Set<string>();
     for (const a of actions) for (const eid of a.affected_entity_ids ?? []) causedEntityIds.add(eid);
-    const shownEntities = this.entities.beginStep(entities, causedEntityIds, cut);
+    const shownEntities = this.entities.beginStep(entities, causedEntityIds, cut, isWholeWorld(this.viewer));
 
     // Clear corpses shown dead in a prior step (a backward scrub re-creates them below). Runs
     // before layout so "has a token" means "has a body on this map" for the rest of the render
     // — see gone().
     for (const [id, tok] of [...this.tokens]) {
       if (!tok.dead) continue;
+      this.body.removeToken(tok);
+      this.tokens.delete(id);
+      this.placed.delete(id);
+    }
+    // A body this step doesn't report is not on the map: out of the viewer's sight. The god view
+    // reports every body every step, so there it never happens. Don't leave the token standing
+    // where it was last seen: letters, dialogue and the camera would treat the ghost as present.
+    const reported = new Set(states.map((s) => s.agent_id));
+    for (const [id, tok] of [...this.tokens]) {
+      if (reported.has(id)) continue;
+      this.pockets.close(id);
       this.body.removeToken(tok);
       this.tokens.delete(id);
       this.placed.delete(id);
@@ -1113,13 +1156,15 @@ export class TiledWorldScene
         if (act.action_type === ActionType.covert) stealthVeil(this, tok, act.detected);
         // Its await also covers the veil above: without a wait, the next clearEphemeral would wipe
         // it mid-draw.
-        await this.hud.playActionCaption(tok, act, chipOf(act.action_type) ?? "•", gen);
+        // Seen from outside with nothing to say (its motion shows it), the pose holds the beat.
+        if (act.caption) await this.hud.playActionCaption(tok, act, chipOf(act.action_type) ?? "•", gen);
+        else await this.delayP(1500);
         // The deed's own icon, not ⏳, so the glyph never switches mid-act; "开始 · 预计X" carries
         // the temporal state.
         this.hud.setActionChip(
           tok, chipOf(act.action_type) ?? "⏳",
           act.private.duration_label ? `开始 · 预计${act.private.duration_label}` : "开始",
-          "ok", undefined, act.private.action_description,
+          "ok", undefined, act.caption,
         );
         continue;
       }
@@ -1133,7 +1178,7 @@ export class TiledWorldScene
         this.hud.setActionChip(
           tok, chipOf(act.action_type) ?? "⏳", "进行中", "ok",
           act.private.total_steps > 0 ? act.private.elapsed_steps / act.private.total_steps : undefined,
-          act.private.action_description,
+          act.caption,
         );
         continue;
       }
@@ -1168,7 +1213,7 @@ export class TiledWorldScene
       // The closing beat gets no intent bubble (it was said when he set out; the chip carries it).
       // The wait stays: it covers the fire-and-forget effects above, which the next clearEphemeral
       // would otherwise wipe mid-swing.
-      if (act.phase === Phase.ongoing_complete) {
+      if (act.phase === Phase.ongoing_complete || !act.caption) {
         await this.delayP(1500);
       } else {
         await this.hud.playActionCaption(tok, act, chipOf(act.action_type) ?? "•", gen);
@@ -1182,14 +1227,15 @@ export class TiledWorldScene
         else await localAnnounce(this, tok);
       }
       // On a failure the chip says why: `failure_reason` is a short phrase written for this spot,
-      // never parsed out of `outcome`. Falls back to the gist, then the intent.
+      // never parsed out of `outcome`. Falls back to the gist, then the caption; from outside
+      // there is no gist, and a deed its motion showed gets no chip at all.
       this.hud.setActionChip(
         tok,
         chipOf(act.action_type) ?? "•",
-        act.failure_reason || act.private.gist || act.private.action_description,
+        act.failure_reason || (act.inside ? act.private.gist : "") || act.caption,
         act.succeeded === false ? "fail" : "ok",
         undefined,
-        act.private.action_description,
+        act.caption,
       );
       afterBeat(actIdx);
     }

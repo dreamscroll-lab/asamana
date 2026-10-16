@@ -171,7 +171,6 @@ class InterruptCoordinator:
             *(
                 self._decide_interrupt(
                     c.agent, c.exec_state, "\n".join(c.reason_parts), step,
-                    signals.get(c.agent.agent_id, PerceivedSignals()),
                 )
                 for c in ordered
             ),
@@ -230,7 +229,6 @@ class InterruptCoordinator:
         exec_state: ActionExecutionState,
         reason: str,
         step: int,
-        signals: PerceivedSignals,
     ) -> tuple[bool, str]:
         """Read-only, so safe to run concurrently. Missing agent → don't interrupt (the
         conservative side)."""
@@ -246,7 +244,6 @@ class InterruptCoordinator:
                     self._directory, agent.agent_id, exec_state),
                 intent=participant_intent(agent.agent_id, exec_state),
                 progress_hint=self._render_progress_hint(exec_state),
-                signals=signals,
             )
 
     def _render_progress_hint(self, exec_state: ActionExecutionState) -> str:

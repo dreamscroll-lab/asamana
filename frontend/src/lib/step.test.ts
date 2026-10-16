@@ -76,6 +76,31 @@ describe("beatsOf", () => {
     expect(beats.map((b) => [b.agent_id, b.seq])).toEqual([["a", 7], ["b", 7]]);
     expect(beats[1].agent_name).toBe("名-b");
   });
+
+  // One act of one type, seen by "me" from inside or out.
+  const seen = (action_type: string, audience: string[]): StepView => ({
+    ...step,
+    locations: { hall: { ...step.locations.hall, events: [{
+      ...talk, action_type, deed: action_type, participant_ids: ["a"],
+      public: { text: "旁人所见", strength: null },
+      private: { ...talk.private, audience, action_description: "我自己的说法", gist: "要旨" },
+    }] } },
+  });
+
+  it("亲历的事用行动者自己的说法", () => {
+    const [beat] = beatsOf(indexStep(seen("work", ["me"])), "me");
+    expect([beat.inside, beat.caption]).toEqual([true, "我自己的说法"]);
+  });
+
+  it("旁观时动作能说明的事不配字", () => {
+    expect(beatsOf(indexStep(seen("physical", [])), "me")[0].caption).toBe("");
+    expect(beatsOf(indexStep(seen("talk", [])), "me")[0].caption).toBe("");
+  });
+
+  it("旁观时动作说不清的事用旁人所见兜底", () => {
+    const [beat] = beatsOf(indexStep(seen("work", [])), "me");
+    expect([beat.inside, beat.caption]).toEqual([false, "旁人所见"]);
+  });
 });
 
 describe("figuresOf", () => {

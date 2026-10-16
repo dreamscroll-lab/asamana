@@ -96,6 +96,26 @@ describe("buildFeed", () => {
     expect(item.kind === "action" && item.thoughts).toEqual([{ agent_id: "a", text: "我得走" }]);
   });
 
+  it("角色视角:事发在视野外时,所见的目击自成一行", () => {
+    const seen: ObservationSummary = {
+      kind: "observation", seq: 5, initiator_id: "a", participant_ids: ["a"], text: "甲离开了", strength: null,
+    };
+    const feed = buildFeed(at(1, [place("loc-gate", { events: [seen] })]), "me");
+    expect(feed.map((i) => i.kind)).toEqual(["observation"]);
+  });
+
+  it("角色视角:不在其中的事只算旁观,身在其中的才算亲历", () => {
+    const outside = act(5, { public: { text: "甲在打点行装", strength: null }, private: { ...act(5).private, audience: [] } });
+    const mine = act(6, { private: { ...act(6).private, audience: ["a", "me"] } });
+    const feed = buildFeed(at(1, [place("loc-hall", { events: [outside, mine] })]), "me");
+    expect(feed.map((i) => i.kind === "action" && i.inside)).toEqual([false, true]);
+  });
+
+  it("导演视角什么都算亲历", () => {
+    const feed = buildFeed(at(1, [place("loc-hall", { events: [act(5)] })]));
+    expect(feed[0].kind === "action" && feed[0].inside).toBe(true);
+  });
+
   it("收信人分在两处的一封信仍是一行", () => {
     const feed = buildFeed(at(1, [
       place("loc-gate", { events: [letter("b")] }),

@@ -14,15 +14,11 @@ from core.interfaces.actor import (
     ActorDecision,
     ActorInterruptAnswer,
     ActorTurn,
-    ActorWait,
-    TriggerKind,
     TurnKind,
-    TurnTrigger,
 )
 from engine.run_control import StepWithdrawn
 from engine.actor_channel import ActorChannel
 
-_MESSAGE = (TurnTrigger(TriggerKind.MESSAGE, "速来"),)
 
 
 def _work() -> ActorAction:
@@ -31,24 +27,16 @@ def _work() -> ActorAction:
 
 def test_each_answer_type_holds_its_own_stage() -> None:
     ActorDecision(action=_work())
-    ActorDecision(wait=ActorWait())
+    ActorDecision(idle=True)
     with pytest.raises(ValueError):
         ActorDecision()
     with pytest.raises(ValueError):
-        ActorDecision(action=_work(), wait=ActorWait())
-    with pytest.raises(ValueError):
-        ActorDecision(wait=ActorWait(), short_term_goals=("  ",))
-    with pytest.raises(ValueError):
-        ActorWait(steps=0)
+        ActorDecision(action=_work(), idle=True)
     with pytest.raises(ValueError):
         ActorAction(action_type=ActionType.WORK, action_description="  ")
     with pytest.raises(ValueError):
         ActorAction(action_type=ActionType.WORK, action_description="批阅文书", estimated_steps=0)
 
-    ActorInterruptAnswer(interrupt=False)
-    ActorInterruptAnswer(interrupt=True, then="去玄武门")
-    with pytest.raises(ValueError):   # carrying on leads into no decision
-        ActorInterruptAnswer(interrupt=False, then="去玄武门")
 
 
 @pytest.mark.asyncio
@@ -73,19 +61,19 @@ async def test_submit_rejects_answers_that_do_not_fit_the_turn() -> None:
     channel = ActorChannel()
     channel.follow("hero")
     with pytest.raises(ValueError):
-        channel.submit(ActorDecision(wait=ActorWait()))   # nothing is waiting
+        channel.submit(ActorDecision(idle=True))   # nothing is waiting
 
     waiting = asyncio.create_task(channel.request(ActorTurn("hero", 1, TurnKind.DECIDE)))
     await asyncio.sleep(0)
     with pytest.raises(ValueError):
         channel.submit(ActorInterruptAnswer(interrupt=False))   # wrong stage
-    channel.submit(ActorDecision(wait=ActorWait()))
+    channel.submit(ActorDecision(idle=True))
     await waiting
 
     waiting = asyncio.create_task(channel.request(ActorTurn("hero", 2, TurnKind.INTERRUPT)))
     await asyncio.sleep(0)
     with pytest.raises(ValueError):
-        channel.submit(ActorDecision(wait=ActorWait()))   # wrong stage
+        channel.submit(ActorDecision(idle=True))   # wrong stage
     channel.submit(ActorInterruptAnswer(interrupt=False))
     await waiting
 
@@ -108,8 +96,8 @@ async def test_a_refused_answer_leaves_the_turn_open() -> None:
     assert refused.value.reason == "talk_target_not_present"
     assert channel.pending_turn is not None and not waiting.done()
 
-    channel.submit(ActorDecision(wait=ActorWait()))
-    assert (await waiting).wait == ActorWait()
+    channel.submit(ActorDecision(idle=True))
+    assert (await waiting).idle
 
 
 @pytest.mark.asyncio
@@ -146,7 +134,7 @@ async def test_every_opening_and_closing_is_announced() -> None:
     await asyncio.sleep(0)
     with pytest.raises(ValueError):
         channel.submit(ActorInterruptAnswer(interrupt=False))   # refused: still open, nothing said
-    channel.submit(ActorDecision(wait=ActorWait()))
+    channel.submit(ActorDecision(idle=True))
     await waiting
 
     waiting = asyncio.create_task(channel.request(second))
@@ -168,68 +156,28 @@ async def test_every_opening_and_closing_is_announced() -> None:
     channel.follow("hero")
     waiting = asyncio.create_task(channel.request(first))
     await asyncio.sleep(0)
-    channel.submit(ActorDecision(wait=ActorWait()))
-    assert (await waiting).wait == ActorWait()
+    channel.submit(ActorDecision(idle=True))
+    assert (await waiting).idle
 
 
-def test_an_idle_character_decides_every_step_unless_waiting() -> None:
+def test_a_break_off_is_taken_once() -> None:
     channel = ActorChannel()
     channel.follow("hero")
-    assert channel.wants_decision(step=1, triggers=())
-
-    channel.start_wait(ActorWait(), step=1)
-    assert not channel.wants_decision(step=2, triggers=())
-    assert not channel.wants_decision(step=50, triggers=())
-    assert channel.wants_decision(step=51, triggers=_MESSAGE)
-    # The wait ended with the trigger.
-    assert channel.wants_decision(step=52, triggers=())
+    assert not channel.break_off_requested
+    channel.request_break_off()
+    assert channel.break_off_requested
+    assert channel.take_break_off()
+    assert not channel.take_break_off()
 
 
-def test_a_timed_wait_ends_on_time_or_on_a_trigger() -> None:
+def test_a_change_of_character_drops_a_break_off() -> None:
     channel = ActorChannel()
     channel.follow("hero")
-    channel.start_wait(ActorWait(steps=3), step=1)
-    assert not channel.wants_decision(step=2, triggers=())
-    assert not channel.wants_decision(step=3, triggers=())
-    assert channel.wants_decision(step=4, triggers=())
-
-    channel.start_wait(ActorWait(steps=10), step=4)
-    assert channel.wants_decision(step=5, triggers=_MESSAGE)
-
-
-def test_words_for_the_next_step_belong_to_their_step_only() -> None:
-    """Said with a break-off that then didn't happen, they must not surface in a later step."""
-    channel = ActorChannel()
+    channel.request_break_off()
     channel.follow("hero")
-
-    channel.hold_next_words("去玄武门", step=4)
-    assert channel.take_next_words(step=4) == "去玄武门"
-    assert channel.take_next_words(step=4) == ""
-
-    channel.hold_next_words("去玄武门", step=4)
-    assert channel.take_next_words(step=5) == ""
-
-
-def test_following_the_same_character_keeps_turn_state() -> None:
-    channel = ActorChannel()
-    channel.follow("hero")
-    channel.start_wait(ActorWait(), step=1)
-    channel.note_targeted()
-    channel.follow("hero")
-    assert not channel.wants_decision(step=2, triggers=())
-    assert channel.take_targeted()
-
-
-def test_a_change_of_character_clears_turn_state() -> None:
-    channel = ActorChannel()
-    channel.follow("hero")
-    channel.start_wait(ActorWait(), step=1)
-    channel.note_targeted()
-    channel.hold_next_words("去玄武门", step=1)
+    assert channel.break_off_requested   # same character: kept
     channel.follow("rival")
-    assert channel.wants_decision(step=2, triggers=())
-    assert not channel.take_targeted()
-    assert channel.take_next_words(step=1) == ""
+    assert not channel.break_off_requested
 
 
 def test_the_actors_goal_list_becomes_the_live_queue() -> None:

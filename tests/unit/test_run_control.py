@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import pytest
 
@@ -13,22 +14,35 @@ from engine.run_control import RunController, RunState
 # --- RunController (deterministic, no runtime) ---------------------------------
 
 
-def test_controller_state_transitions() -> None:
+async def _parks(c: RunController) -> bool:
+    """Whether the loop would park at the next step boundary now."""
+    waiter = asyncio.create_task(c.wait_if_paused())
+    await asyncio.sleep(0)
+    parked = not waiter.done()
+    waiter.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await waiter
+    return parked
+
+
+@pytest.mark.asyncio
+async def test_controller_state_transitions() -> None:
     c = RunController()
-    assert not c.is_paused and not c.stop_requested
+    assert not await _parks(c) and not c.stop_requested
     c.pause()
-    assert c.is_paused
+    assert await _parks(c)
     c.resume()
-    assert not c.is_paused
+    assert not await _parks(c)
     c.stop()
-    assert c.stop_requested and not c.is_paused
+    assert c.stop_requested and not await _parks(c)
 
 
-def test_controller_stop_wins_over_pause() -> None:
+@pytest.mark.asyncio
+async def test_controller_stop_wins_over_pause() -> None:
     c = RunController()
     c.stop()
     c.pause()  # no-op once stopping
-    assert not c.is_paused
+    assert not await _parks(c)
     c.resume()  # no-op once stopping
     assert c.stop_requested
 
@@ -72,7 +86,6 @@ async def test_step_once_releases_exactly_one_step_then_parks_again() -> None:
     second = asyncio.create_task(c.wait_if_paused())
     await asyncio.sleep(0)
     assert not second.done()                        # the next step is blocked again
-    assert c.is_paused
 
     c.step_once()                                   # press again, one more step
     await asyncio.wait_for(second, timeout=1.0)
@@ -86,7 +99,6 @@ async def test_step_once_is_a_noop_once_stopping() -> None:
     c.stop()
     c.step_once()
     assert c.stop_requested
-    assert not c.is_paused
     await asyncio.wait_for(asyncio.create_task(c.wait_if_paused()), timeout=1.0)
 
 
@@ -164,7 +176,6 @@ async def test_step_world_on_a_paused_run_advances_one_and_stays_parked(
 
     assert after == before + 1
     assert app.run_status(wid) == RunState.PAUSED   # still paused, not running
-    assert app.get_session(wid).controller.is_paused
 
     app.stop_run(wid)
     task = app.get_session(wid).task

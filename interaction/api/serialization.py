@@ -15,6 +15,9 @@ from typing import Any
 
 
 def _default(obj: Any) -> Any:
+    # Reached for a dataclass anywhere in the value, not only at its top: a list of them too.
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.asdict(obj)
     if isinstance(obj, datetime):
         return obj.isoformat()
     if isinstance(obj, Enum):
@@ -24,8 +27,6 @@ def _default(obj: Any) -> Any:
 
 def to_json(obj: Any) -> str:
     """Serialize *obj* to a JSON string, handling dataclasses and special types."""
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        obj = dataclasses.asdict(obj)
     return json.dumps(obj, default=_default, ensure_ascii=False)
 
 

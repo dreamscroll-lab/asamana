@@ -1,6 +1,7 @@
 """World lifecycle + run-control routes.
 
-Create/build (async job), delete, and run control (run/pause/resume/stop/reset).
+Create/build (async job), the director's review, delete, and run control
+(run/pause/resume/stop/reset).
 Build is a one-shot LLM operation that can take minutes, so it runs as a
 background job the client polls — the request never blocks on it. Run control
 maps 1:1 onto ``NarrativeApplication``'s background-run surface.
@@ -10,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from config.content import theme_presets
@@ -180,6 +181,19 @@ def build_lifecycle_router(services: ApiServices) -> Any:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _with_run_state(meta)
 
+    @router.post("/{world_id}/review")
+    async def open_review(world_id: str) -> dict[str, Any]:
+        """Open the director's review: the whole cast, secrets and relations included. One way:
+        the world takes no actor afterwards."""
+        if await manager.get_world(world_id) is None:
+            raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
+        try:
+            await application.open_director_review(world_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        meta = await manager.get_world(world_id)
+        return _with_run_state(meta)
+
     @router.post("/{world_id}/confirm")
     async def confirm_world(world_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
         """Lock the world's setup. ``character_id`` casts the actor in the same act: the cast is
@@ -274,7 +288,12 @@ def build_lifecycle_router(services: ApiServices) -> Any:
         return _status_payload(world_id)
 
     def _with_run_state(meta: Any) -> dict[str, Any]:
-        """A world's catalog entry plus its run state — what every per-world route answers with."""
+        """A world's catalog entry plus its run state — what every per-world route answers with.
+
+        While an actor performs, who the main characters are is not theirs to know (see
+        ``interaction.actor_view``)."""
+        if application.performing_character(meta.world_id) is not None:
+            meta = replace(meta, main_agent_names=[])
         return {**to_jsonable(meta), "run_state": services.run_state(meta.world_id)}
 
     def _status_payload(world_id: str) -> dict[str, Any]:
