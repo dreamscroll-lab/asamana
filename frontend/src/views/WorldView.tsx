@@ -4,6 +4,7 @@ import { useNavigate, useOutletContext, useParams } from "react-router-dom";
 import type { ShellContext } from "../App";
 import { api } from "../api/client";
 import { WorldSocket } from "../api/ws";
+import ActorIcon from "../components/ActorIcon";
 import ActorConsole from "../components/actor/ActorConsole";
 import { mergeEntries } from "../components/actor/thread";
 import { BTN, BTN_PRIMARY } from "../components/buttonStyles";
@@ -14,6 +15,7 @@ import EditableWorldName from "../components/EditableWorldName";
 import NarrativeStep from "../components/narrative/NarrativeStep";
 import RelationshipGraph from "../components/RelationshipGraph";
 import WorldClock from "../components/WorldClock";
+import { useCast } from "../lib/cast";
 import { indexStep } from "../lib/step";
 import { viewerOf } from "../lib/viewer";
 import { useStepPlayer } from "../hooks/useStepPlayer";
@@ -46,6 +48,7 @@ export default function WorldView() {
 
 function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) {
   const navigate = useNavigate();
+  const { cast } = useCast(id);
   const { setImmersive: setShellImmersive } = useOutletContext<ShellContext>();
   const { worlds, refresh: refreshWorlds } = useWorlds();
   const modelKeys = useModelKeys();
@@ -146,7 +149,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
     .sort((a, b) =>
       Number(b.agent_id === viewer) - Number(a.agent_id === viewer)
       || Number(b.is_main_character) - Number(a.is_main_character))
-    .map((a) => ({ id: a.agent_id, name: a.name, is_main_character: a.is_main_character ?? false, color: a.color }));
+    .map((a) => ({ id: a.agent_id, is_main_character: a.is_main_character ?? false }));
   const activeAgentId = focus.agents[focus.agents.length - 1] ?? viewer ?? roster[0]?.id ?? null;
   const activeAgent = roster.find((a) => a.id === activeAgentId);
 
@@ -282,6 +285,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
     <div className="space-y-4">
       {isolatedFeed.map((ev) => (
         <NarrativeStep
+          cast={cast}
           key={ev.step}
           step={ev}
           viewer={viewer}
@@ -465,7 +469,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
                 onClick={exitActor}
                 title={isBusy ? "先停止运行再退出" : modelKeys ? "把角色交还给 AI，回到导演视角" : NO_MODEL_KEYS_HINT}
               >
-                🧑 退出演员模式
+                <ActorIcon /> 退出演员模式
               </button>
             ) : (
               <button
@@ -570,7 +574,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
                 </button>
               </div>
               <div className="flex-1 min-h-0">
-                <RelationshipGraph graph={graph} activeId={activeAgentId} onNodeClick={selectOne} />
+                <RelationshipGraph cast={cast} graph={graph} activeId={activeAgentId} onNodeClick={selectOne} />
               </div>
             </div>
           )}
@@ -586,6 +590,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
               </div>
               <div className="flex-1 min-h-0">
                 <CharacterBody
+                  viewer={viewer}
                   worldId={id}
                   agent={activeAgent}
                   live={liveAgents?.[activeAgent.id]}

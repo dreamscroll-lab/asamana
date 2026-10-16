@@ -11,8 +11,8 @@ step began (letters, a place's announcements and broadcasts) reached it where it
 hence by audience, wherever it ended the step. Between two waypoints (in transit) there is no
 place to watch from, so only its own body and its own events.
 
-Of others it sees who they are (name, gender, age, role, background, appearance: the identity a
-cast candidate shows) and how they look now, never their inner life or narrative tier:
+Of others it sees their public CharacterIdentity (name, gender, age, role, background, appearance,
+color) and how they look now, never their inner life or narrative tier:
 ``is_main_character`` is None, "not known to this viewer".
 """
 

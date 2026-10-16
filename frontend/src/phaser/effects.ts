@@ -347,17 +347,11 @@ export function directedMessages(host: FxHost, tok: AgentToken, targetIds: strin
   return Promise.all(flights).then(() => undefined);
 }
 
-/**
- * A letter with NO SENDER (the NarrativeEditor posts as narrator: "不知来源"), landing on its reader.
- * With no origin on the map, it arcs in from beyond the world, in neutral slate, marked ？.
- *
- * This idiom means only that: a signed letter is drawn once, when it leaves its sender's hand
- * (directedMessages), and never on the step it lands.
- */
-export function arrivingMessage(host: FxHost, rt: AgentToken): Promise<void> {
+/** A letter from beyond the visible map; only an unsigned one uses slate and ？. */
+export function arrivingMessage(host: FxHost, rt: AgentToken, seal?: { color: number }): Promise<void> {
   const origin = host.beyondTheMap(rt.container.x, rt.container.y);
   return flyMessageArc(host, origin.x, origin.y, rt.container.x, rt.container.y, {
-    color: 0x8a94a8, glyph: "✉？",
+    color: seal?.color ?? 0x8a94a8, glyph: seal ? "✉" : "✉？",
   });
 }
 

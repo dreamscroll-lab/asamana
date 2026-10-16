@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 
+import type { Cast } from "../lib/cast";
 import type { BroadcastSummary, MapFocus, MapSelect, NpcView, StepView } from "../types";
 import { type Placed, type PlacedEntity, type Scoped, indexStep } from "../lib/step";
 import { type Beat, type Figure, beatsOf, figuresOf } from "./figures";
@@ -172,12 +173,16 @@ export class TiledWorldScene
   }
 
 
-  /**
-   * Feed the cast's gender/age (from the step-0 profiles) so each figure gets the right body;
-   * re-skins tokens created before it landed. Color is not part of this — it comes from each
-   * step's state (see ensureToken → RecolorFX).
-   */
-  setCast(cast: Record<string, Demographics>): void {
+  private castById: Cast = {};
+
+  identityColor(id: string): number {
+    return identityColor(this.castById[id]?.color ?? this.npcById.get(id)?.color, id);
+  }
+
+
+  /** Public identities supply bodies and colors independently of the current step. */
+  setCast(cast: Cast): void {
+    this.castById = cast;
     for (const [id, who] of Object.entries(cast)) this.learnBody(id, who);
   }
 
@@ -818,7 +823,7 @@ export class TiledWorldScene
     const index = indexStep(step);
     this.noteNpcs(index.npcs);
     this.staging.setRelations(index.relations);
-    const states = figuresOf(index);
+    const states = figuresOf(index, this.castById);
     const actions = beatsOf(index, this.viewer);
     const entities = index.entities;
     // `step.observer.injections` is deliberately not read: an injection's record summarizes a

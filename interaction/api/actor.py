@@ -53,7 +53,6 @@ from core.validate import require_in_range
 
 from interaction.api.app import ApiServices
 from interaction.api.serialization import to_jsonable
-from interaction.models import CastCandidate
 
 logger = get_logger(__name__)
 
@@ -72,27 +71,6 @@ def build_actor_router(services: ApiServices) -> Any:
     router = APIRouter(prefix="/api/worlds/{world_id}/actor", tags=["actor"])
     application = services.application
     manager = services.manager
-
-    @router.get("/candidates")
-    async def list_candidates(world_id: str) -> list[dict[str, Any]]:
-        """Whom the actor could perform: who each character is, nothing of anyone's inner life,
-        goals, relations or tier, so choosing tells the actor nothing about the others."""
-        if await manager.get_world(world_id) is None:
-            raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
-        profiles = await manager.character_profiles(world_id)
-        return [
-            to_jsonable(CastCandidate(
-                agent_id=agent_id,
-                name=entry.get("name", ""),
-                gender=entry.get("gender", ""),
-                age=entry.get("age"),
-                role=entry.get("role", ""),
-                background=entry.get("background", ""),
-                appearance=entry.get("appearance", ""),
-                color=entry.get("color", ""),
-            ))
-            for agent_id, entry in sorted(profiles.items())
-        ]
 
     @router.get("/emotions")
     async def list_emotions(world_id: str) -> list[dict[str, str]]:

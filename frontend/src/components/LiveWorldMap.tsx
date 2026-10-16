@@ -1,9 +1,11 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 
-import { api, API_BASE } from "../api/client";
+import { API_BASE } from "../api/client";
 import type { TiledWorldScene } from "../phaser/TiledWorldScene";
 import { renderStepInto } from "../phaser/driveStep";
 import { loadMapSource, type MapSource } from "../phaser/mapSource";
+import { useCast, loadCast } from "../lib/cast";
+import { identityColor, toHex } from "../lib/color";
 import { indexStep } from "../lib/step";
 import type { Viewer } from "../lib/viewer";
 import type { MapFocus, MapSelect, StepView } from "../types";
@@ -48,6 +50,7 @@ export default function LiveWorldMap({
   viewer = null,
   children,
 }: Props) {
+  const { cast, status: castStatus } = useCast(worldId);
   const [scene, setScene] = useState<TiledWorldScene | null>(null);
   const sceneRef = useRef<TiledWorldScene | null>(null);
   sceneRef.current = scene;
@@ -60,16 +63,15 @@ export default function LiveWorldMap({
     const m = new Map<string, string>();
     if (step) {
       const index = indexStep(step);
-      for (const s of Object.values(index.agents)) m.set(s.agent_id, s.name);
+      for (const s of Object.values(index.agents)) m.set(s.agent_id, cast[s.agent_id]?.name ?? "某人");
       for (const n of index.npcs) if (n.name) m.set(n.npc_id, n.name);
     }
     return (id: string) => m.get(id) ?? "某人";
-  }, [step]);
-  const colorOf = useMemo(() => {
-    const m = new Map<string, string>();
-    if (step) for (const s of Object.values(indexStep(step).agents)) if (s.color) m.set(s.agent_id, s.color);
-    return (id: string) => m.get(id) ?? null;
-  }, [step]);
+  }, [step, cast]);
+  const colorOf = (id: string) => {
+    const npc = step ? indexStep(step).npcs.find((n) => n.npc_id === id) : undefined;
+    return toHex(identityColor(cast[id]?.color ?? npc?.color, id));
+  };
   const placeName = focus.place ? sceneRef.current?.locationName(focus.place.id) ?? focus.place.id : null;
   const ready = scene !== null;
   const [animSpeed, setAnimSpeed] = useState(1); // animation-speed multiplier
@@ -93,28 +95,16 @@ export default function LiveWorldMap({
     if (ready) sceneRef.current?.setSpeed(animSpeed);
   }, [ready, animSpeed]);
 
-  // Feed the scene each agent's gender + age (from the step-0 /agents profiles) so it can
-  // pick the right body. Keyed on the scene, not the world id: a scene rebuilt under the
-  // same id would otherwise get no cast and every figure falls back to the default body.
-  const castFed = useRef<TiledWorldScene | null>(null);
-  useEffect(() => {
-    const target = sceneRef.current;
-    if (!ready || !target || castFed.current === target) return;
-    castFed.current = target;
-    api
-      .agents(worldId)
-      .then((cast) => target.setCast(
-        Object.fromEntries(cast.map((p) => [p.agent_id, { gender: p.gender, age: p.age }])),
-      ))
-      .catch(() => {}); // no roster → figures stay on the default adult body
-  }, [ready, worldId]);
-
   useEffect(() => {
     if (ready) sceneRef.current?.setFocus(focus);
   }, [ready, focus]);
 
   useEffect(() => {
-    if (!ready || !sceneRef.current || !step) return;
+    if (scene && castStatus === "ready") scene.setCast(cast);
+  }, [scene, castStatus, cast]);
+
+  useEffect(() => {
+    if (!ready || !sceneRef.current || !step || castStatus !== "ready") return;
     // A new step supersedes any in-flight render (scrub); its onRendered is
     // suppressed via `cancelled` so only the current step's completion advances.
     let cancelled = false;
@@ -129,15 +119,15 @@ export default function LiveWorldMap({
     return () => {
       cancelled = true;
     };
-  }, [ready, step, viewer]);
+  }, [scene, ready, step, viewer, castStatus, cast]);
 
   // With no map the scene never mounts and onRendered never fires, freezing the driver's
   // gate (clock, roster, cards, DirectorBar all stall). No render timeline to wait for, so
   // this step counts as already drawn.
   useEffect(() => {
-    if (mapSource !== false || !step) return;
+    if ((mapSource !== false && castStatus !== "error") || !step) return;
     onRenderedRef.current?.(step.step);
-  }, [mapSource, step]);
+  }, [mapSource, step, castStatus]);
 
   if (mapSource === false) {
     return (
@@ -148,6 +138,7 @@ export default function LiveWorldMap({
         {/* The two fetches loadMapSource refuses to carry on without — a missing
             tileset or no derived ground still draws, so neither lands here. */}
         <p className="text-slate-500 text-sm">取不到这个世界的地图文件或人物资产。</p>
+        {castStatus === "error" && <button className="absolute bottom-2 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
         {children}
       </div>
     );
@@ -195,12 +186,8 @@ export default function LiveWorldMap({
                 <button
                   key={id}
                   onClick={() => onFocusChange({ ...focus, agents: focus.agents.filter((a) => a !== id) })}
-                  className={`pointer-events-auto text-[11px] px-2 py-0.5 rounded-md border font-medium transition hover:brightness-125 ${
-                    c ? "" : "border-violet-500/60 bg-violet-950/70 text-violet-200"
-                  }`}
-                  // Identity color, with a faint wash behind (8-digit hex = color + alpha);
-                  // violet only when the step carries no color for this id.
-                  style={c ? { color: c, borderColor: c, backgroundColor: `${c}22` } : undefined}
+                  className="pointer-events-auto text-[11px] px-2 py-0.5 rounded-md border font-medium transition hover:brightness-125"
+                  style={{ color: c, borderColor: c, backgroundColor: `${c}22` }}
                   title="移出焦点"
                 >
                   {nameOf(id)} ✕
@@ -234,6 +221,7 @@ export default function LiveWorldMap({
             </button>
           </div>
         )}
+        {castStatus === "error" && <button className="absolute bottom-2 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
         {children}
       </div>
       <div className="shrink-0 flex items-center justify-end gap-1 px-3 py-2 border-t border-slate-800/70 bg-slate-950/50">

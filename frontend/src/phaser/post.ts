@@ -27,6 +27,7 @@ const LETTER_LINES = 3;
 export interface PostHost extends FxHost {
   tweenP(config: Phaser.Types.Tweens.TweenBuilderConfig): Promise<void>;
   readonly renderGen: number;
+  identityColor(id: string): number;
   focusActive(): boolean;
   isFocused(agentId: string): boolean;
   holdPose(tok: AgentToken, pose: PoseName, sustained?: boolean): void;
@@ -64,6 +65,7 @@ export class PostLayer {
       return !!tok && !tok.dead;
     };
     const flights: Promise<void>[] = [];
+    const senderInk = (id: string) => id && id !== "narrator" ? this.host.identityColor(id) : UNSIGNED_INK;
     // reader → every `direct` letter addressed to him; a letter to five lands in all five piles.
     // Crowding is handled below by how many piles open themselves, never by withholding mail.
     const post = new Map<string, MessageSummary[]>();
@@ -81,7 +83,9 @@ export class PostLayer {
       if (!this.host.token(m.sender_id)) {
         for (const rid of readers) {
           if (this.host.focusActive() && !this.host.isFocused(rid)) continue;
-          flights.push(arrivingMessage(this.host, this.host.token(rid)!));
+          flights.push(arrivingMessage(this.host, this.host.token(rid)!,
+            m.sender_id && m.sender_id !== "narrator" ? { color: senderInk(m.sender_id) } : undefined,
+          ));
         }
       }
       const said = m.content.trim();
@@ -91,7 +95,7 @@ export class PostLayer {
       // lands there with the speaker's name; don't badge every listener — that turns one
       // proclamation into N private letters (see the `scope` contract). Badges are `direct` only.
       if (m.scope !== "direct") {
-        const from = { name: m.sender_name, ink: this.host.token(m.sender_id)?.color ?? UNSIGNED_INK };
+        const from = { name: m.sender_name, ink: senderInk(m.sender_id) };
         heard.push({
           content: said, location_id: m.scope === "place" ? m.location_id : null,
           speaker: m.sender_id, from,
@@ -108,7 +112,7 @@ export class PostLayer {
       const tok = this.host.token(rid)!;
       tok.postData = letters.map((m) => ({
         from: m.sender_name,
-        ink: this.host.token(m.sender_id)?.color ?? UNSIGNED_INK,
+        ink: senderInk(m.sender_id),
         said: (m.spoken || m.content).trim(),
       }));
       this.renderPostBadge(tok);

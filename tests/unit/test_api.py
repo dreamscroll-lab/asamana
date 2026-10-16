@@ -235,22 +235,61 @@ async def test_agent_profile_returns_static_identity(container, test_config) -> 
 
 @pytest.mark.asyncio
 async def test_agent_roster_carries_demographics(container, test_config) -> None:
-    """The cast roster carries each agent's gender and age.
-
-    These two fields alone pick a figure's body on the map (frontend/src/phaser/skins.ts),
-    and nothing else reads them. Losing them fails silently: every agent falls through to the
-    default adult male body and nothing errors.
-    """
+    """Demographics and identity colors remain available without fetching private profiles."""
     world_id = "world-api"
     await container.snapshot.save(world_id, 0, _snapshot(
         world_id, 0, {},
         profiles={
-            "agent-1": {"name": "甲", "role": "皇子", "age": 24, "gender": "男"},
-            "agent-2": {"name": "乙", "role": "女官", "age": 61, "gender": "女"},
+            "agent-1": {
+                "name": "甲", "role": "皇子", "age": 24, "gender": "男",
+                "background": "自幼习武", "appearance": "高大", "color": "#123456",
+                "secret": "藏有密信", "is_main_character": True,
+            },
+            "agent-2": {
+                "name": "乙", "role": "女官", "age": 61, "gender": "女",
+                "background": "久居宫中", "appearance": "瘦削", "color": "",
+            },
         },
     ))
     roster = _client(container, test_config).get(f"/api/worlds/{world_id}/agents").json()
-    assert [(p["age"], p["gender"]) for p in roster] == [(24, "男"), (61, "女")]
+    assert roster == [
+        {
+            "agent_id": "agent-1", "name": "甲", "role": "皇子", "age": 24, "gender": "男",
+            "background": "自幼习武", "appearance": "高大", "color": "#123456",
+        },
+        {
+            "agent_id": "agent-2", "name": "乙", "role": "女官", "age": 61, "gender": "女",
+            "background": "久居宫中", "appearance": "瘦削", "color": "",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_identity_color_is_in_cast_and_snapshot_but_not_step_or_graph(container, test_config) -> None:
+    world_id = "world-api"
+    snapshot = _snapshot(world_id, 0, {}, profiles={
+        "agent-1": {"name": "甲", "color": "#123456"},
+        "agent-2": {"name": "乙", "color": "#abcdef"},
+    })
+    for agent_id, profile in snapshot.build["character_profiles"].items():
+        snapshot.state.agents[agent_id]["color"] = profile["color"]
+    await container.snapshot.save(world_id, 0, snapshot)
+
+    client = _client(container, test_config)
+    step = client.get(f"/api/worlds/{world_id}/steps/0").json()
+    graph = client.get(f"/api/worlds/{world_id}/graph").json()
+    cast = client.get(f"/api/worlds/{world_id}/agents").json()
+    agents = step["locations"]["palace"]["agents"]
+    assert len(agents) == len(graph["nodes"]) == 2
+    assert all("color" not in agent for agent in agents)
+    assert all("color" not in node for node in graph["nodes"])
+    assert {entry["agent_id"]: entry["color"] for entry in cast} == {
+        "agent-1": "#123456", "agent-2": "#abcdef",
+    }
+    persisted = await container.snapshot.load(world_id, 0)
+    assert persisted is not None
+    assert persisted.state.agents["agent-1"]["color"] == "#123456"
+    assert persisted.build["character_profiles"]["agent-1"]["color"] == "#123456"
 
 
 @pytest.mark.asyncio

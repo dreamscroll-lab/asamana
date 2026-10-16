@@ -18,8 +18,9 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import ActorIcon from "../ActorIcon";
 import { api } from "../../api/client";
-import { useAgentProfiles } from "../../hooks/useAgentProfiles";
+import { useCast } from "../../lib/cast";
 import { identityColor, toHex } from "../../lib/color";
 import { durationLabel } from "../../lib/duration";
 import type {
@@ -116,9 +117,8 @@ export default function ActorConsole({
     setWindowed({ index: live ? conversations.indexOf(live) : conversations.length, otherId });
   }, [speaking, live, windowed, shownOver, selfId, conversations]);
 
-  const speakers = items.flatMap((i) => (i.kind === "conversation" ? i.dialogue.map((t) => t.speaker_id) : []));
-  const profiles = useAgentProfiles(worldId, [selfId, ...speakers, ...(windowed ? [windowed.otherId] : [])]);
-  const ink: Ink = (id) => toHex(identityColor(profiles[id]?.color, id));
+  const { cast } = useCast(worldId);
+  const ink: Ink = (id) => toHex(identityColor(cast[id]?.color, id));
 
   useEffect(() => {
     // A conversation asks turn after turn in its own window; only other turns open the console.
@@ -186,9 +186,9 @@ export default function ActorConsole({
         <ConversationWindow
           worldId={worldId}
           selfId={selfId}
-          self={profiles[selfId]}
+          self={cast[selfId]}
           otherId={windowed.otherId}
-          other={profiles[windowed.otherId]}
+          other={cast[windowed.otherId]}
           ink={ink}
           dialogue={shown?.dialogue ?? []}
           conversation={speaking}
@@ -203,7 +203,7 @@ export default function ActorConsole({
           onClick={() => setCollapsed(false)}
           title="展开演员台"
         >
-          🧑
+          <ActorIcon />
           {turn && <span className="absolute top-0 right-0 w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />}
         </button>
       )}
@@ -213,7 +213,7 @@ export default function ActorConsole({
       >
         <div className="shrink-0 space-y-1.5 px-3 pt-2.5 pb-2 border-b border-slate-800/50">
           <div className="flex items-start gap-2">
-            <span className="text-sm pt-1" title="演员台">🧑</span>
+            <span className="text-sm pt-1" title="演员台"><ActorIcon /></span>
             <div className="min-w-0 flex-1 max-h-72 overflow-y-auto">
               <MindPanel worldId={worldId} refreshKey={`${step}:${turnId ?? ""}`} turnId={turnId} running={running} />
             </div>
@@ -238,7 +238,7 @@ export default function ActorConsole({
 
         <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-3 py-2 space-y-2">
           {items.length === 0 && (
-            <p className="text-[12px] text-slate-600">世界问你想做什么时，就在这里回答。</p>
+            <p className="text-[12px] text-slate-600">在这里与世界互动...</p>
           )}
           {items.map((item) => (
             <Line
@@ -274,7 +274,7 @@ export default function ActorConsole({
             disabled={!deciding}
             maxLength={MAX_WORDS}
             rows={2}
-            placeholder={deciding ? "想做什么？用你自己的话说，比如：去找大哥，劝他今晚别进宫" : "等世界问你想做什么时再说"}
+            placeholder={deciding ? "说你想做的任何事情..." : "别着急，再等等，世界很忙！"}
             className="w-full resize-none bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-[13px] text-slate-200 focus:outline-none focus:border-indigo-500/70 disabled:opacity-50"
           />
           <div className="flex items-center gap-2">
@@ -317,7 +317,7 @@ function Line({
     case "perceived":
       return <Perceived item={item} />;
     case "asked":
-      return <Asked item={item} busy={busy} onAnswer={onAnswer} />;
+      return <Asked item={item} busy={busy} ink={ink} onAnswer={onAnswer} />;
     case "said":
       return <Said item={item} busy={busy} secondsPerStep={secondsPerStep} onAnswer={onAnswer} />;
     case "chose":
@@ -383,19 +383,23 @@ function Perceived({ item }: { item: Extract<ThreadItem, { kind: "perceived" }> 
 function Asked({
   item,
   busy,
+  ink,
   onAnswer,
 }: {
   item: Extract<ThreadItem, { kind: "asked" }>;
   busy: boolean;
+  ink: Ink;
   onAnswer: (a: ActorAnswer) => void;
 }) {
   const { turn, open } = item;
   if (turn.kind === "invite") {
-    const who = turn.invitation?.inviter.name || "有人";
+    const inviter = turn.invitation?.inviter;
+    const who = inviter?.name || "有人";
     return (
       <div className={`${WORLD} ${open ? "border-amber-800/60" : "opacity-70"} space-y-2`}>
         <p>
-          {turn.invitation?.action_type === ActionType.talk ? `${who}想与你交谈。` : `${who}邀你一起行动。`}
+          <span style={inviter ? { color: ink(inviter.agent_id) } : undefined}>{who}</span>
+          {turn.invitation?.action_type === ActionType.talk ? "想与你交谈。" : "邀你一起行动。"}
           {turn.decided && <span className="text-slate-400">接受邀请就要放下：{turn.decided}。</span>}
         </p>
         {open && (

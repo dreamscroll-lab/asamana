@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import { indexStep } from "./step";
 import { beatsOf, figuresOf } from "../phaser/figures";
-import type { ActionSummary, AgentView, EntityView, NpcView, StepView } from "../types";
+import type { ActionSummary, AgentView, CharacterIdentity, EntityView, NpcView, StepView } from "../types";
 
 const thing = (is_public = true): EntityView => ({
   name: "书信", entity_type: "item", state: "", description: "", is_public, created_step: 0, private: { content: "" },
 });
 
 const agent = (agent_id: string, carrying: { open?: Record<string, EntityView>; hidden?: Record<string, EntityView> } = {}): AgentView => ({
-  agent_id, name: `名-${agent_id}`, gender: "", age: null, color: "", is_main_character: false, is_active: true,
+  agent_id, name: `名-${agent_id}`, gender: "", age: null, is_main_character: false, is_active: true,
   public: { activity_status: "", activity_label: "", condition: "", displaced: false, carrying: carrying.open ?? {} },
   private: {
     emotion: "", emotion_label: "", emotion_intensity: null, emotion_valence: null, dominant_need: null,
@@ -104,6 +104,21 @@ describe("beatsOf", () => {
 });
 
 describe("figuresOf", () => {
+  it("takes agent colors from public identities and keeps NPC colors on their own contract", () => {
+    const identity: CharacterIdentity = {
+      agent_id: "a", name: "甲", gender: "女", age: 24, role: "旅人",
+      background: "", appearance: "", color: "#123456",
+    };
+    const index = indexStep(step);
+    const figures = Object.fromEntries(figuresOf(index, { a: identity }).map((f) => [f.agent_id, f]));
+    expect(figures.a.color).toBe(identity.color);
+    expect(figures.b.color).toBe("");
+    expect(figures.n1.color).toBe(runner.color);
+    expect(Object.keys(figures).sort()).toEqual([
+      ...Object.keys(index.agents), ...index.npcs.map((npc) => npc.npc_id),
+    ].sort());
+  });
+
   it("走到的那条路挂在他那一拍 MOVE 上,身体从那里读", () => {
     const route = {
       from_location_id: "gate", to_location_id: "hall", path: ["gate", "yard", "hall"],
@@ -113,7 +128,7 @@ describe("figuresOf", () => {
       ...step,
       locations: { hall: { ...step.locations.hall, events: [{ ...talk, action_type: "move", deed: "move", participant_ids: ["a"], private: { ...talk.private, route } }] } },
     };
-    const figures = Object.fromEntries(figuresOf(indexStep(arrived)).map((f) => [f.agent_id, f]));
+    const figures = Object.fromEntries(figuresOf(indexStep(arrived), {}).map((f) => [f.agent_id, f]));
     expect(figures.a.arrival).toEqual(route);
     expect(figures.b.arrival).toBeNull();
   });
@@ -127,7 +142,7 @@ describe("figuresOf", () => {
       ...step,
       locations: { hall: { ...step.locations.hall, events: [{ ...talk, action_type: "move", deed: "move", participant_ids: ["a", "b"], private: { ...talk.private, route } }] } },
     };
-    const figures = Object.fromEntries(figuresOf(indexStep(carried)).map((f) => [f.agent_id, f]));
+    const figures = Object.fromEntries(figuresOf(indexStep(carried), {}).map((f) => [f.agent_id, f]));
     expect(figures.a.arrival).toEqual(route);
     expect(figures.b.arrival).toEqual(route);
   });
@@ -141,7 +156,7 @@ describe("figuresOf", () => {
       ...step,
       locations: { hall: { ...step.locations.hall, events: [{ ...talk, action_type: "move", deed: "move", participant_ids: ["a", "b"], private: { ...talk.private, route } }] } },
     };
-    const figures = Object.fromEntries(figuresOf(indexStep(astray)).map((f) => [f.agent_id, f]));
+    const figures = Object.fromEntries(figuresOf(indexStep(astray), {}).map((f) => [f.agent_id, f]));
     expect(figures.a.arrival).toBeNull();
     expect(figures.b.arrival).toBeNull();
   });

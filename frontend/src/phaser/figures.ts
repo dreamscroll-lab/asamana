@@ -7,6 +7,7 @@
  * track plays them as one moment.
  */
 
+import type { Cast } from "../lib/cast";
 import { ActionType } from "../lib/contract";
 import type { ActionSummary, Transit } from "../types";
 import type { Placed, StepIndex } from "../lib/step";
@@ -49,7 +50,7 @@ const SHOWN_BY_MOTION: ReadonlySet<string> = new Set([
   ActionType.physical, ActionType.talk, ActionType.covert, ActionType.send_message, ActionType.move,
 ]);
 
-export function figuresOf(index: StepIndex): Figure[] {
+export function figuresOf(index: StepIndex, cast: Cast): Figure[] {
   // A mover's walk in rides the beat his MOVE ended (`route`); the figure needs it to walk. Whoever
   // he brought along walked the same way, so every participant standing at its end takes it;
   // otherwise the one carried finds his own way there.
@@ -65,7 +66,7 @@ export function figuresOf(index: StepIndex): Figure[] {
     agent_id: a.agent_id,
     agent_name: a.name,
     location_id: a.location_id,
-    color: a.color,
+    color: cast[a.agent_id]?.color ?? "",
     is_main_character: a.is_main_character ?? false,
     is_active: a.is_active,
     condition: a.public.condition,

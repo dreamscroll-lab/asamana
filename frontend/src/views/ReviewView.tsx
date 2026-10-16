@@ -10,18 +10,20 @@
 //   - as a character: the cast as anyone could know them, one picked, then confirm. Their own
 //     full dossier waits until they are in the world, or browsing candidates would reveal
 //     everyone's.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
+import ActorIcon from "../components/ActorIcon";
 import CharacterCard, { type CardAgent } from "../components/CharacterCard";
 import EditableWorldName from "../components/EditableWorldName";
 import RelationshipGraph from "../components/RelationshipGraph";
+import { useCast, loadCast } from "../lib/cast";
 import { avatarStyle } from "../lib/avatar";
 import { durationLabel } from "../lib/duration";
 import { viewerOf } from "../lib/viewer";
 import { useWorlds } from "../lib/worldsContext";
-import type { CastCandidate, WorldGraph, WorldMeta } from "../types";
+import type { CharacterIdentity, WorldGraph, WorldMeta } from "../types";
 
 /**
  * Keyed on the world for the same reason WorldView is (see its header): this screen holds
@@ -49,7 +51,8 @@ function WorldReview({ id }: { id: string }) {
   const [graphExpanded, setGraphExpanded] = useState(false);
   // Picking whom to perform; chosen with the confirmation and locked by it.
   const [casting, setCasting] = useState(false);
-  const [candidates, setCandidates] = useState<CastCandidate[]>([]);
+  const { cast, status: castStatus } = useCast(id);
+  const candidates = Object.values(cast);
   const [castId, setCastId] = useState("");
 
   // The whole cast is the director's: once reviewed (or once the world is confirmed without an
@@ -81,15 +84,10 @@ function WorldReview({ id }: { id: string }) {
     if (viewerOf(meta)) navigate(`/worlds/${id}`, { replace: true });
   }, [meta, id, navigate]);
 
-  // Fetched only once the page is the director's: before that, nothing of the cast is loaded.
+  // Private relations are loaded only after the director enters review.
   useEffect(() => {
     if (stage !== "director") return;
     api.graph(id).then(setGraph).catch((e) => setError(String(e)));
-  }, [id, stage]);
-
-  useEffect(() => {
-    if (stage !== "casting") return;
-    api.castCandidates(id).then(setCandidates).catch((e) => setError(String(e)));
   }, [id, stage]);
 
   async function openDirectorReview() {
@@ -111,10 +109,7 @@ function WorldReview({ id }: { id: string }) {
         .sort((a, b) => Number(b.is_main_character) - Number(a.is_main_character))
         .map((n) => ({
           id: n.id,
-          name: n.name,
           is_main_character: n.is_main_character ?? false,
-          role: n.role,
-          color: n.color, // identity color → avatar matches the map token + graph node
         })),
     [graph],
   );
@@ -184,7 +179,7 @@ function WorldReview({ id }: { id: string }) {
               className="text-xs font-semibold px-5 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 border border-indigo-500 shadow-lg shadow-indigo-600/30 transition disabled:opacity-40"
             >
               {stage === "casting"
-                ? `🧑 我是${candidates.find((c) => c.agent_id === castId)?.name ?? "所选角色"} →`
+                ? <><ActorIcon /> 我是{candidates.find((c) => c.agent_id === castId)?.name ?? "所选角色"} →</>
                 : meta?.confirmed ? "进入叙事 →" : "确认并进入叙事 →"}
             </button>
           )}
@@ -256,7 +251,7 @@ function WorldReview({ id }: { id: string }) {
             onClick={openDirectorReview}
           />
           <EntryChoice
-            icon="🧑"
+            icon={<ActorIcon />}
             title="演员模式"
             description="扮演世界中的一个角色，以第一视角与世界中的其他角色共同叙事。"
             disabled={busy}
@@ -269,6 +264,7 @@ function WorldReview({ id }: { id: string }) {
         <div className="space-y-3">
           <p className="text-xs text-slate-500">选择一个想要扮演的角色</p>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {castStatus === "error" && <button onClick={() => { void loadCast(id).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
             {candidates.map((c) => (
               <CandidateCard key={c.agent_id} c={c} picked={c.agent_id === castId} onPick={() => setCastId(c.agent_id)} />
             ))}
@@ -323,7 +319,7 @@ function WorldReview({ id }: { id: string }) {
                 </div>
               </div>
               <div className="flex-1 min-h-0">
-                <RelationshipGraph graph={graph} activeId={effectiveId} onNodeClick={setActiveId} />
+                <RelationshipGraph cast={cast} graph={graph} activeId={effectiveId} onNodeClick={setActiveId} />
               </div>
             </div>
           </div>
@@ -341,7 +337,7 @@ function EntryChoice({
   disabled,
   onClick,
 }: {
-  icon: string;
+  icon: ReactNode;
   title: string;
   description: string;
   disabled: boolean;
@@ -365,7 +361,7 @@ function EntryChoice({
 }
 
 /** A character as anyone could know them; the identity color is their face. */
-function CandidateCard({ c, picked, onPick }: { c: CastCandidate; picked: boolean; onPick: () => void }) {
+function CandidateCard({ c, picked, onPick }: { c: CharacterIdentity; picked: boolean; onPick: () => void }) {
   return (
     <button
       onClick={onPick}

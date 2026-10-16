@@ -32,7 +32,7 @@
 import { Phase, RefKind } from "../../lib/contract";
 import type { PlacedEntity } from "../../lib/step";
 import type { ActionTarget } from "../../types";
-import type { Demographics } from "../../phaser/skins";
+import type { Cast } from "../../lib/cast";
 import type { LabRoom } from "../places";
 import type {
   ActionSummary,
@@ -183,9 +183,12 @@ export const BODIES: LabCharacter[] = [
  * Every figure the bench can put on a map, as the renderer's cast feed takes it: whole, like the
  * observation view's roster from step-0 profiles.
  */
-export function castDemographics(): Record<string, Demographics> {
+export function fixtureCast(): Cast {
   return Object.fromEntries(
-    [...CAST, ...BODIES].map((a) => [a.id, { gender: a.gender, age: a.age }]),
+    [...CAST, ...BODIES].map((a) => [a.id, {
+      agent_id: a.id, name: a.name, gender: a.gender, age: a.age, color: a.color,
+      role: "", background: "", appearance: "",
+    }]),
   );
 }
 
@@ -513,7 +516,6 @@ export function step({
       name: s.agent_name,
       gender: s.gender,
       age: s.age,
-      color: s.color,
       is_main_character: s.is_main_character,
       is_active: s.is_active,
       public: {

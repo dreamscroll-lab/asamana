@@ -173,7 +173,7 @@ def test_profiles_show_others_only_who_they_are() -> None:
 
 def test_the_graph_is_the_characters_own_relations() -> None:
     graph = WorldGraph(
-        nodes=[GraphNode(id=i, name=i, role="r", is_main_character=True, color="") for i in (ME, "b", "c")],
+        nodes=[GraphNode(id=i, name=i, role="r", is_main_character=True) for i in (ME, "b", "c")],
         edges=[
             GraphEdge(from_id=ME, to_id="b", trust=0.1, affection=0.2),
             GraphEdge(from_id="b", to_id=ME, trust=0.3, affection=0.4),

@@ -2,7 +2,9 @@
 // observation (liveStates present: evolving state first, static dossier collapsed) and
 // creation review (no liveStates: dossier open).
 import { useEffect, useMemo, useState } from "react";
+import ActorIcon from "./ActorIcon";
 import { api } from "../api/client";
+import { useCast, loadCast } from "../lib/cast";
 import { reportedDead, unfinishedGoals } from "../lib/agentState";
 import { avatarStyle, emotionColor } from "../lib/avatar";
 import type { Placed } from "../lib/step";
@@ -11,10 +13,7 @@ import type { AgentProfile, AgentView } from "../types";
 
 export interface CardAgent {
   id: string;
-  name: string;
   is_main_character: boolean;
-  role?: string;
-  color?: string; // fixed identity color (#RRGGBB); empty when the world gave none
 }
 
 function Badge({ children }: { children: React.ReactNode }) {
@@ -80,11 +79,14 @@ export default function CharacterCard({
   liveStates?: Record<string, Placed<AgentView>>;
   /** Clicking the portrait opens the body chart (observation only). */
   onExamine?: (id: string) => void;
-  // Whose view the world is filtered to; null for the director. Of anyone else the viewer knows
-  // only what shows: nothing of their private side or dossier, only how they look.
+  // Public identity is shared; private dossiers belong to the director or the character.
   viewer?: Viewer;
 }) {
-  const [profiles, setProfiles] = useState<Record<string, AgentProfile>>({});
+  const { cast, status: castStatus } = useCast(worldId);
+  const scope = JSON.stringify([worldId, viewer]);
+  const [loaded, setLoaded] = useState<{ scope: string; profiles: Record<string, AgentProfile>; failed: string[] }>({ scope, profiles: {}, failed: [] });
+  const profiles = loaded.scope === scope ? loaded.profiles : {};
+  const failed = loaded.scope === scope ? loaded.failed : [];
   const [dossierOpen, setDossierOpen] = useState(false);
 
   const observing = !!liveStates;
@@ -98,38 +100,19 @@ export default function CharacterCard({
 
   useEffect(() => {
     const aid = active?.id;
-    if (!aid || profiles[aid]) return;
+    if (!aid || !privateKnown || profiles[aid] || failed.includes(aid)) return;
     let alive = true;
-    api
-      .agentProfile(worldId, aid)
-      .then((p) => alive && setProfiles((prev) => ({ ...prev, [aid]: p })))
+    api.agentProfile(worldId, aid)
+      .then((p) => {
+        if (!alive) return;
+        setLoaded((prev) => ({ scope, profiles: { ...(prev.scope === scope ? prev.profiles : {}), [aid]: p }, failed: prev.scope === scope ? prev.failed : [] }));
+      })
       .catch(() => {
         if (!alive) return;
-        // Degrade to an empty profile so fields show "—" instead of spinning.
-        setProfiles((prev) => ({
-          ...prev,
-          [aid]: {
-            agent_id: aid,
-            name: active?.name ?? aid,
-            role: active?.role ?? "",
-            age: null,
-            gender: "",
-            background: "",
-            appearance: "",
-            color: active?.color ?? "",
-            core_traits: [],
-            core_values: [],
-            self_image: "",
-            life_goal: "",
-            secret: "",
-            is_main_character: active?.is_main_character ?? false,
-          },
-        }));
+        setLoaded((prev) => ({ scope, profiles: prev.scope === scope ? prev.profiles : {}, failed: [...(prev.scope === scope ? prev.failed : []), aid] }));
       });
-    return () => {
-      alive = false;
-    };
-  }, [active?.id, worldId]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { alive = false; };
+  }, [active?.id, worldId, scope, privateKnown, failed.includes(active?.id ?? "")]);
 
   if (!active) {
     return (
@@ -139,10 +122,13 @@ export default function CharacterCard({
     );
   }
 
-  const role = active.role || profile?.role;
+  const identity = cast[active.id];
+  const role = identity?.role;
 
   return (
     <div className="space-y-3">
+      {castStatus === "error" && <button className="text-xs text-rose-300" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
+      {active && privateKnown && failed.includes(active.id) && <button className="text-xs text-rose-300" onClick={() => setLoaded((prev) => ({ ...prev, failed: prev.failed.filter((id) => id !== active.id) }))}>角色资料加载失败，点击重试</button>}
       <div className="bg-slate-900/40 border border-slate-800/70 rounded-2xl p-2">
         <div className="space-y-0.5 max-h-[38vh] overflow-y-auto">
           {roster.map((a) => {
@@ -159,15 +145,15 @@ export default function CharacterCard({
               >
                 <div
                   className={`w-7 h-7 rounded-lg grid place-items-center text-white text-xs font-bold shrink-0`}
-                  style={avatarStyle(a.color, a.id)}
+                  style={avatarStyle(cast[a.id]?.color, a.id)}
                 >
-                  {a.name[0]}
+                  {(cast[a.id]?.name ?? "某人")[0]}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div title={a.name} className={`text-sm truncate ${on ? "text-slate-100" : "text-slate-300"}`}>
-                    {a.name}
+                  <div title={cast[a.id]?.name} className={`text-sm truncate ${on ? "text-slate-100" : "text-slate-300"}`}>
+                    {cast[a.id]?.name ?? "某人"}
                     {a.is_main_character && <span className="text-indigo-400"> ★</span>}
-                    {a.id === viewer && <span className="ml-1 text-[10px] text-amber-300">🧑 我</span>}
+                    {a.id === viewer && <span className="ml-1 text-[10px] text-amber-300"><ActorIcon /> 我</span>}
                   </div>
                   {ls && (
                     <div
@@ -199,22 +185,22 @@ export default function CharacterCard({
               onClick={() => onExamine(active.id)}
               title="查看认知体检"
               className={`w-12 h-12 rounded-2xl grid place-items-center text-white text-2xl font-black shrink-0 border border-slate-100/10 shadow-[0_6px_20px_rgb(0,0,0,0.4)] cursor-zoom-in hover:ring-2 hover:ring-slate-100/40 transition`}
-              style={avatarStyle(active.color, active.id)}
+              style={avatarStyle(identity?.color, active.id)}
             >
-              {active.name[0]}
+              {(identity?.name ?? "某人")[0]}
             </button>
           ) : (
             <div
               className={`w-12 h-12 rounded-2xl grid place-items-center text-white text-2xl font-black shrink-0 border border-slate-100/10 shadow-[0_6px_20px_rgb(0,0,0,0.4)]`}
-              style={avatarStyle(active.color, active.id)}
+              style={avatarStyle(identity?.color, active.id)}
             >
-              {active.name[0]}
+              {(identity?.name ?? "某人")[0]}
             </div>
           )}
           <div className="min-w-0">
-            <div title={active.name} className="text-lg font-extrabold text-slate-100 truncate">
-              {active.name}
-              {active.id === viewer && <span className="ml-1.5 text-xs font-semibold text-amber-300">🧑 我</span>}
+            <div title={identity?.name} className="text-lg font-extrabold text-slate-100 truncate">
+              {identity?.name ?? "某人"}
+              {active.id === viewer && <span className="ml-1.5 text-xs font-semibold text-amber-300"><ActorIcon /> 我</span>}
             </div>
             <div className="flex items-center gap-1 mt-1 flex-wrap">
               {active.is_main_character && (
@@ -223,22 +209,21 @@ export default function CharacterCard({
                 </span>
               )}
               {role && <Badge>{role}</Badge>}
-              {profile?.gender && <Badge>{profile.gender}</Badge>}
-              {profile?.age != null && <Badge>{profile.age} 岁</Badge>}
+              {identity?.gender && <Badge>{identity.gender}</Badge>}
+              {identity?.age != null && <Badge>{identity.age} 岁</Badge>}
             </div>
           </div>
         </div>
 
-        {/* Someone the viewer only sees: how they look is all there is to know. */}
-        {!privateKnown && profile?.appearance && (
-          <p className="mt-3 text-xs text-slate-400 leading-relaxed">{profile.appearance}</p>
+        {identity?.appearance && (
+          <p className="mt-3 text-xs text-slate-400 leading-relaxed">{identity.appearance}</p>
         )}
 
-        {profile?.background && (
+        {identity?.background && (
           // In full: the builder already caps `background`. Clamping here would push the rest
           // into a hover-only tooltip a touch screen can't reach.
           <p className="mt-3 text-xs text-slate-400 leading-relaxed">
-            {profile.background}
+            {identity.background}
           </p>
         )}
 

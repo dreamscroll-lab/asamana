@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { indexStep } from "../lib/step";
 import MapStage from "../components/MapStage";
+import { identityColor, toHex } from "../lib/color";
 import NarrativeStep from "../components/narrative/NarrativeStep";
 import Checklist from "./Checklist";
 import FrameReadout, { type Figure } from "./FrameReadout";
 import { loadMarks, markKey, saveMarks, type Mark, type Marks } from "./marks";
 import { resolvePlaces } from "./places";
-import { buildScenes, castDemographics } from "./scenes";
+import { buildScenes, fixtureCast } from "./scenes";
 import { renderStepInto } from "../phaser/driveStep";
 import type { MapSource } from "../phaser/mapSource";
 import type { TiledWorldScene } from "../phaser/TiledWorldScene";
@@ -78,10 +79,10 @@ export default function SceneBench({
     if (pick && pick.id !== pickId) onPick(pick.id);
   }, [pick, pickId, onPick]);
 
-  // The roster's gender and age, as the observation view feeds from step-0 profiles. Declared
+  // Public identities arrive through the same cast contract as the observation view. Declared
   // before the playback effect so a token is built with the right body, not re-skinned a frame later.
   useEffect(() => {
-    scene?.setCast(castDemographics());
+    scene?.setCast(fixtureCast());
   }, [scene]);
 
   // Every figure this scene puts on the map, read off its steps. Focus is always all of them,
@@ -93,7 +94,7 @@ export default function SceneBench({
       const index = indexStep(st);
       for (const s of Object.values(index.agents)) {
         if (!seen.has(s.agent_id)) {
-          seen.set(s.agent_id, { id: s.agent_id, name: s.name, color: s.color || "#94a3b8" });
+          seen.set(s.agent_id, { id: s.agent_id, name: s.name, color: toHex(identityColor(fixtureCast()[s.agent_id]?.color, s.agent_id)) });
         }
       }
       for (const n of index.npcs) {
@@ -445,7 +446,7 @@ export default function SceneBench({
           <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-2">
             Feed · beat {beat + 1}
           </div>
-          <NarrativeStep step={pick.steps[beat] ?? pick.steps[0]} />
+          <NarrativeStep cast={fixtureCast()} step={pick.steps[beat] ?? pick.steps[0]} />
         </aside>
       )}
     </>

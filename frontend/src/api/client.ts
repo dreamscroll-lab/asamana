@@ -10,7 +10,7 @@ import type {
   ActorMind,
   ActorPace,
   AgentProfile,
-  CastCandidate,
+  CharacterIdentity,
   BuildJob,
   Deployment,
   DirectiveResult,
@@ -116,12 +116,11 @@ export const api = {
     ),
   // The whole cast as persisted at step 0 — stable for the world's life, unlike a
   // StepView's agents, so stable things (character-skin dealing) key off this.
-  agents: (id: string) => req<AgentProfile[]>(`/api/worlds/${id}/agents`),
+  agents: (id: string) => req<CharacterIdentity[]>(`/api/worlds/${id}/agents`),
   agentProfile: (id: string, agentId: string) =>
     req<AgentProfile>(`/api/worlds/${id}/agents/${agentId}/profile`),
 
   // --- Actor: the person performing one character -------------------------------
-  castCandidates: (id: string) => req<CastCandidate[]>(`/api/worlds/${id}/actor/candidates`),
   // The vocabulary a character's feeling is named in: value and its name.
   actorEmotions: (id: string) =>
     req<{ value: string; label: string }[]>(`/api/worlds/${id}/actor/emotions`),

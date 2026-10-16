@@ -1000,6 +1000,14 @@ data added to suit one component.
 
 ---
 
+Public character identities are served by `GET /api/worlds/{id}/agents` as `CharacterIdentity`:
+name, gender, age, role, background, appearance and color, keyed by agent id. They are identical
+for every viewer. The frontend shares this table per world in `lib/cast.ts`; filtered steps and
+graphs decide which characters a viewer sees, never the full identity table. Private profile
+fields remain viewpoint-filtered and must not enter the shared table. Identity color comes from
+the table, with `identityColor` as the sole missing-color fallback; step agents and graph nodes
+carry no color.
+
 ## Frontend layout (`frontend/src`)
 
 Each directory has one job.

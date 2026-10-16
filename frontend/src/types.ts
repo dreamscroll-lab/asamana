@@ -344,7 +344,6 @@ export interface AgentView {
   // Visible at a glance, like the name.
   gender: string;
   age: number | null;
-  color: string;
   // null: not known to this viewer (the actor's view).
   is_main_character: boolean | null;
   is_active: boolean;
@@ -497,7 +496,6 @@ export interface GraphNode {
   role: string;
   // null: not known to this viewer (the actor's view).
   is_main_character: boolean | null;
-  color: string;
 }
 
 export interface GraphEdge {
@@ -513,6 +511,18 @@ export interface GraphEdge {
 export interface WorldGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
+}
+
+/** Public character identity, identical for every viewer (GET /worlds/{id}/agents). */
+export interface CharacterIdentity {
+  agent_id: string;
+  name: string;
+  gender: string;
+  age: number | null;
+  role: string;
+  background: string;
+  appearance: string;
+  color: string;
 }
 
 // Static agent identity (GET /api/worlds/{id}/agents/{agent_id}/profile).
@@ -565,18 +575,6 @@ export type WsFrame =
 // --- Actor mode (core/interfaces/actor.py; interaction/api/actor.py) ---------------------------
 // Field for field with the contracts. An answer is sent back in this same shape: the backend
 // refuses unknown keys, so build answers from these types, never by adding fields.
-
-/** A character as anyone could know them: whom the actor may choose to perform. */
-export interface CastCandidate {
-  agent_id: string;
-  name: string;
-  gender: string;
-  age: number | null;
-  role: string;
-  background: string;
-  appearance: string;
-  color: string;
-}
 
 // `decide`: the character's turn, whether or not the world changed. `interrupt`: something reached
 // it mid-action (what, is in the step's perception). `invite`: someone invites the free character

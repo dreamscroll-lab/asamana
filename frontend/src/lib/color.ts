@@ -7,9 +7,7 @@ export function parseHex(hex: string | null | undefined): number | null {
   return m ? parseInt(m[1], 16) : null;
 }
 
-// For an agent whose state carries no color (the read model sends "" for one seen only through an
-// action). Keyed off the immutable id, so the same person wears it on the map and in every DOM
-// avatar, step after step. Don't key it off a position in this step's list.
+// Missing or malformed world colors resolve by immutable id on every surface.
 const FALLBACK_IDENTITY_COLORS = [0x7c83ff, 0x3fb98f, 0xe0607a, 0x59b0e6, 0xd98cf0, 0xe0a94f, 0x6fae7a];
 
 /** An agent's identity color: its own when the world gave one, else the id's fallback. */

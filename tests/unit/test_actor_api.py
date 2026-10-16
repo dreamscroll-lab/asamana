@@ -79,15 +79,23 @@ async def test_casting_happens_at_confirmation(mock_build_container, test_config
 
 
 @pytest.mark.asyncio
-async def test_candidates_show_only_what_anyone_could_see(mock_build_container, test_config) -> None:
+async def test_public_cast_is_identical_before_during_and_after_performing(mock_build_container, test_config) -> None:
     catalog = WorldCatalog(None)
     world_id, character_id = await _unconfirmed_world(mock_build_container, test_config, catalog)
 
     with _client(mock_build_container, test_config, catalog) as client:
-        candidates = client.get(f"/api/worlds/{world_id}/actor/candidates").json()
+        before = client.get(f"/api/worlds/{world_id}/agents").json()
+        assert client.post(f"/api/worlds/{world_id}/confirm", json={"character_id": character_id}).status_code == 200
+        performing = client.get(f"/api/worlds/{world_id}/agents").json()
+        assert client.post(f"/api/worlds/{world_id}/actor/exit").status_code == 200
+        released = client.get(f"/api/worlds/{world_id}/agents").json()
+        assert client.get(f"/api/worlds/{world_id}/actor/candidates").status_code == 404
 
-    assert character_id in {c["agent_id"] for c in candidates}
-    assert set(candidates[0]) == {"agent_id", "name", "gender", "age", "role", "background", "appearance", "color"}
+    assert before == performing == released
+    assert character_id in {c["agent_id"] for c in before}
+    assert all(set(candidate) == {
+        "agent_id", "name", "gender", "age", "role", "background", "appearance", "color",
+    } for candidate in before)
 
 
 @pytest.mark.asyncio
@@ -331,20 +339,46 @@ async def test_observation_routes_answer_as_the_character_until_the_actor_exits(
 ) -> None:
     catalog = WorldCatalog(None)
     world_id, character_id = await _unconfirmed_world(mock_build_container, test_config, catalog)
+    snapshot = await mock_build_container.snapshot.load(world_id, 0)
+    assert snapshot is not None
+    private = {
+        "core_traits": ["谨慎"], "core_values": ["家人"], "self_image": "守护者",
+        "life_goal": "保全家人", "secret": "藏有密信",
+    }
+    for profile in snapshot.build["character_profiles"].values():
+        profile.update(private)
+    await mock_build_container.snapshot.save(world_id, 0, snapshot)
 
     with _client(mock_build_container, test_config, catalog) as client:
+        profiles = {
+            agent_id: client.get(f"/api/worlds/{world_id}/agents/{agent_id}/profile").json()
+            for agent_id in snapshot.build["character_profiles"]
+        }
         client.post(f"/api/worlds/{world_id}/confirm", json={"character_id": character_id})
-        performing = client.get(f"/api/worlds/{world_id}/agents").json()
+        performing = {
+            agent_id: client.get(f"/api/worlds/{world_id}/agents/{agent_id}/profile").json()
+            for agent_id in profiles
+        }
         graph = client.get(f"/api/worlds/{world_id}/graph").json()
         step = client.get(f"/api/worlds/{world_id}/steps/0").json()
         client.post(f"/api/worlds/{world_id}/actor/exit")
-        released = client.get(f"/api/worlds/{world_id}/agents").json()
+        released = {
+            agent_id: client.get(f"/api/worlds/{world_id}/agents/{agent_id}/profile").json()
+            for agent_id in profiles
+        }
 
-    others = [p for p in performing if p["agent_id"] != character_id]
-    assert others and all(p["is_main_character"] is None and p["secret"] == "" for p in others)
-    assert all(p["role"] for p in others)
+    assert performing[character_id] == profiles[character_id]
+    others = [p for agent_id, p in performing.items() if agent_id != character_id]
+    assert others
+    for profile in others:
+        expected = profiles[profile["agent_id"]] | {
+            "core_traits": [], "core_values": [], "self_image": "", "life_goal": "",
+            "secret": "", "is_main_character": None,
+        }
+        assert profile == expected
+    assert all({key: profile[key] for key in private} == private for profile in profiles.values())
     assert all(e["from_id"] == character_id for e in graph["edges"])
     assert step["observer"] == {"injections": []}
-    assert all(p["is_main_character"] is not None for p in released)
+    assert released == profiles
 
 

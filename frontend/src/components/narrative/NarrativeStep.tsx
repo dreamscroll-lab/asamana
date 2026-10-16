@@ -6,6 +6,8 @@
 // wire means belongs to feed.ts.
 import { useState } from "react";
 
+import type { Cast } from "../../lib/cast";
+import type { StepCast } from "./cast";
 import { Phase } from "../../lib/contract";
 import type { AgentView, NpcView, StepView } from "../../types";
 import { type Placed, indexStep } from "../../lib/step";
@@ -23,12 +25,14 @@ import { collapsedOf } from "./meta";
 
 export default function NarrativeStep({
   step,
+  cast: publicCast,
   focusAgents = [],
   isolated = false,
   onToggleIsolate,
   viewer = null,
 }: {
   step: StepView;
+  cast: Cast;
   focusAgents?: string[];
   // Whether the feed is showing this step ALONE; owned by the feed, which sees the other steps.
   isolated?: boolean;
@@ -43,7 +47,7 @@ export default function NarrativeStep({
   const born = bornInStep(step);
   const focusSet = new Set(focusAgents);
   const focusActive = focusSet.size > 0;
-  const cast = stepCast(step);
+  const cast = stepCast(step, publicCast);
   const feed = buildFeed(step, viewer);
   const index = indexStep(step);
   // A transcript prints once even if two beats carry it; the first card in feed order claims
@@ -89,7 +93,7 @@ export default function NarrativeStep({
           where. Any later step where nothing happened SAYS SO (e.g. every decision failed and was
           skipped): blank would look like a broken feed, rows would dress the absence up as deeds. */}
       {step.step === 0 ? (
-        <AgentRollRow agents={Object.values(index.agents)} />
+        <AgentRollRow agents={Object.values(index.agents)} cast={cast} />
       ) : feed.length === 0 && (
         <div className="mt-2 text-[13px] text-slate-600 italic">本步无人行动。</div>
       )}
@@ -147,14 +151,14 @@ export default function NarrativeStep({
 }
 
 /** The opening roll call: every character and where they stand, main characters first. */
-function AgentRollRow({ agents }: { agents: Placed<AgentView>[] }): JSX.Element | null {
+function AgentRollRow({ agents, cast }: { agents: Placed<AgentView>[]; cast: StepCast }): JSX.Element | null {
   if (!agents.length) return null;
   const ordered = [...agents].sort((a, b) => Number(b.is_main_character) - Number(a.is_main_character));
   return (
     <div className="mt-2 space-y-0.5 text-[13px] text-slate-400">
       {ordered.map((a) => (
         <div key={a.agent_id}>
-          <span style={a.color ? { color: a.color } : undefined} className="font-medium">{a.name}</span>
+          <span style={{ color: cast.inkOf(a.agent_id) }} className="font-medium">{cast.nameOf(a.agent_id)}</span>
           {a.is_main_character && <span className="text-[10px] text-indigo-400"> ★</span>}
           <span className="text-slate-600">（{a.location_name}）</span>
         </div>

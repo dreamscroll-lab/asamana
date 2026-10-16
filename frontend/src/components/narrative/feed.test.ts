@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import { stepCast } from "./cast";
+import { identityColor, toHex } from "../../lib/color";
+import { indexStep } from "../../lib/step";
+import type { Cast } from "../../lib/cast";
 import { bornInStep, buildFeed } from "./feed";
 import type {
   ActionSummary, AgentView, EntityView, LocationScope, MessageSummary, ObservationSummary, StepView,
@@ -30,7 +34,7 @@ const at = (step: number, locations: LocationScope[]): StepView => ({
 });
 
 const agent = (agent_id: string, thoughts: AgentView["private"]["thoughts"] = []): AgentView => ({
-  agent_id, name: agent_id, gender: "", age: null, color: "", is_main_character: false, is_active: true,
+  agent_id, name: agent_id, gender: "", age: null, is_main_character: false, is_active: true,
   public: { activity_status: "", activity_label: "", condition: "", displaced: false, carrying: {} },
   private: {
     emotion: "", emotion_label: "", emotion_intensity: null, emotion_valence: null, dominant_need: null,
@@ -123,5 +127,30 @@ describe("buildFeed", () => {
     ]));
     expect(feed).toHaveLength(1);
     expect(feed[0].kind === "message" && feed[0].data.receiver_ids.sort()).toEqual(["b", "c"]);
+  });
+});
+
+
+describe("stepCast public identity", () => {
+  const cast: Cast = {
+    absent: { agent_id: "absent", name: "Public name", gender: "", age: null, role: "", background: "", appearance: "", color: "#336699" },
+    malformed: { agent_id: "malformed", name: "Other", gender: "", age: null, role: "", background: "", appearance: "", color: "invalid" },
+  };
+
+  it("resolves identities in dialogue even when their bodies are absent from the step", () => {
+    const current = at(1, [place("here", { agents: [agent("present")] })]);
+    const lookup = stepCast(current, cast);
+    expect(lookup.nameOf("absent")).toBe("Public name");
+    expect(lookup.inkOf("absent")).toBe("#336699");
+    expect(Object.keys(indexStep(current).agents)).toEqual(["present"]);
+    expect(lookup.isMain("absent")).toBe(false);
+    expect(lookup.conditionOf("absent")).toBe("");
+  });
+
+  it("uses the shared identity fallback for missing or malformed colors", () => {
+    const lookup = stepCast(at(1, []), cast);
+    for (const id of ["missing", "malformed"]) {
+      expect(lookup.inkOf(id)).toBe(toHex(identityColor(cast[id]?.color, id)));
+    }
   });
 });

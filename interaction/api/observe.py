@@ -4,8 +4,9 @@ Render-neutral: every payload is semantic world state (steps, the relationship
 graph). No coordinates/layout — a client lays it out. A 2D renderer turns the
 symbolic state into a map on the client; a text view ignores the geometry.
 
-While an actor performs a character, every route here and the feed answer as that character
-perceived the world (``interaction.actor_view``); once the actor exits, they answer in full again.
+Public cast identities are independent of viewpoint. While an actor performs a character,
+steps, profiles, graphs and the feed answer as that character perceived the world
+(``interaction.actor_view``); once the actor exits, they answer in full again.
 
 The WebSocket pushes off the in-process event bus (subscribe, not poll): on
 connect it sends the current run state, the turn waiting for the actor (if one is) and the latest
@@ -32,6 +33,7 @@ from interaction.actor_view import graph_for, profile_for, step_view_for
 from interaction.api.serialization import to_jsonable
 from interaction.models import (
     AgentProfile,
+    CharacterIdentity,
     GraphNode,
     StepView,
     WorldGraph,
@@ -93,8 +95,6 @@ def build_observe_router(services: ApiServices) -> Any:
                 name=s.get("agent_name") or "某人",
                 role=profiles.get(aid, {}).get("role", ""),
                 is_main_character=bool(s.get("is_main_character", False)),
-                # Fixed identity color — same value the map/card use.
-                color=s.get("color", ""),
             )
             for aid, s in snapshot.state.agents.items()
         ]
@@ -121,15 +121,24 @@ def build_observe_router(services: ApiServices) -> Any:
         )
 
     @router.get("/api/worlds/{world_id}/agents")
-    async def list_profiles(world_id: str) -> list[dict[str, Any]]:
-        """The world's whole cast as persisted at step 0, the same list at every step.
-
-        A stable identity key can't come from a step's agents (the roster would
-        depend on the loaded step); the map deals each agent a skin from this list, so a body
-        is the same in every step, replay and session.
-        """
+    async def list_cast(world_id: str) -> list[dict[str, Any]]:
+        """The world's public identities, identical for every viewer."""
+        if await manager.get_world(world_id) is None:
+            raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
         profiles = await manager.character_profiles(world_id)
-        return [_profile(world_id, _make_profile(agent_id, entry)) for agent_id, entry in sorted(profiles.items())]
+        return [
+            to_jsonable(CharacterIdentity(
+                agent_id=agent_id,
+                name=entry.get("name", ""),
+                gender=entry.get("gender", ""),
+                age=entry.get("age"),
+                role=entry.get("role", ""),
+                background=entry.get("background", ""),
+                appearance=entry.get("appearance", ""),
+                color=entry.get("color", ""),
+            ))
+            for agent_id, entry in sorted(profiles.items())
+        ]
 
     @router.get("/api/worlds/{world_id}/agents/{agent_id}/profile")
     async def get_profile(world_id: str, agent_id: str) -> dict[str, Any]:

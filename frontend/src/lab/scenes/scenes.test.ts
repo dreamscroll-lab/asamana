@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { indexStep } from "../../lib/step";
 import { buildScenes } from "./index";
-import { castDemographics } from "./fixtures";
+import { fixtureCast } from "./fixtures";
 import { DEED_BODY } from "../../phaser/deedPose";
 import type { LabPlaces } from "../places";
 
@@ -46,7 +46,7 @@ describe("lab scenes", () => {
   it("every figure staged has a registered gender and age", () => {
     // A character missing from the setCast table still draws, on the fallback body, so the bench
     // would quietly examine a figure no world produces.
-    const known = castDemographics();
+    const known = fixtureCast();
     for (const s of scenes) {
       for (const st of s.steps) {
         for (const id of Object.keys(indexStep(st).agents)) {

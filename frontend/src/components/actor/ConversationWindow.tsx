@@ -18,7 +18,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api/client";
 import { avatarStyle } from "../../lib/avatar";
 import { DIALOGUE_TYPE_MS } from "../../lib/dialogue";
-import type { ActorDialogueTurn, AgentProfile, BriefRelation, Conversation, DialogueTurn } from "../../types";
+import type { ActorDialogueTurn, CharacterIdentity, BriefRelation, Conversation, DialogueTurn } from "../../types";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
 import SendButton, { SEND_HINT, isSendKey } from "./SendButton";
 
@@ -37,10 +37,10 @@ export default function ConversationWindow({
 }: {
   worldId: string;
   selfId: string;
-  // Profiles; undefined while they load.
-  self: AgentProfile | undefined;
+  // Public identities; undefined while they load.
+  self: CharacterIdentity | undefined;
   otherId: string;
-  other: AgentProfile | undefined;
+  other: CharacterIdentity | undefined;
   ink: (id: string) => string;
   dialogue: DialogueTurn[];
   // The open SPEAK turn's conversation; null while it is not the character's line.
@@ -150,7 +150,7 @@ export default function ConversationWindow({
           className="min-h-[8rem] flex-1 space-y-3 overflow-y-auto border-y border-slate-800/60 bg-slate-950/40 px-4 py-4"
         >
           {dialogue.length === 0 && !over && conversation && (
-            <p className="py-6 text-center text-[12px] text-slate-500">轮到你先开口。</p>
+            <p className="py-6 text-center text-[12px] text-slate-500">你先说...</p>
           )}
           {dialogue.map((t, i) => (
             <Bubble

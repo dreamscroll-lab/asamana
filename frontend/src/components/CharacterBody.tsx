@@ -4,6 +4,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { api, API_BASE } from "../api/client";
+import { useCast } from "../lib/cast";
 import { reportedDead, unfinishedGoals } from "../lib/agentState";
 import { avatarStyle, emotionColor } from "../lib/avatar";
 import { identityColor, parseHex, toHex } from "../lib/color";
@@ -11,6 +12,7 @@ import { dyePixels, hsvOf } from "../lib/dye";
 import { type FrameRect, loadAtlasFrames } from "../lib/atlasFrames";
 import { loadCast } from "../phaser/mapSource";
 import type { CharacterSet, Demographics } from "../phaser/skins";
+import type { Viewer } from "../lib/viewer";
 import type { Placed } from "../lib/step";
 import type { AgentProfile, AgentView, WorldGraph } from "../types";
 import type { CardAgent } from "./CharacterCard";
@@ -210,13 +212,19 @@ export default function CharacterBody({
   agent,
   live,
   graph,
+  viewer,
 }: {
   worldId: string;
   agent: CardAgent;
   live?: Placed<AgentView>;
   graph: WorldGraph | null;
+  viewer: Viewer;
 }) {
-  const [profile, setProfile] = useState<AgentProfile | null>(null);
+  const { cast, status: castStatus } = useCast(worldId);
+  const identity = cast[agent.id];
+  const scope = JSON.stringify([worldId, viewer, agent.id]);
+  const [loaded, setLoaded] = useState<{ scope: string; profile: AgentProfile } | null>(null);
+  const profile = loaded?.scope === scope && (viewer === null || viewer === agent.id) ? loaded.profile : null;
   const [figure, setFigure] = useState<Figure | null>(null);
   const [figureFailed, setFigureFailed] = useState(false);
   const [hovered, setHovered] = useState<OrganKey | null>(null);
@@ -224,33 +232,30 @@ export default function CharacterBody({
 
   useEffect(() => {
     let alive = true;
-    setProfile(null);
-    setFigure(null);
-    setFigureFailed(false);
+    setLoaded(null);
+    if (viewer !== null && viewer !== agent.id) return;
     api
       .agentProfile(worldId, agent.id)
-      .then((p) => alive && setProfile(p))
-      // No profile, no body to choose: say so rather than leave the figure loading.
-      .catch(() => alive && setFigureFailed(true));
+      .then((p) => alive && setLoaded({ scope, profile: p }))
+      .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [worldId, agent.id]);
+  }, [worldId, agent.id, viewer, scope]);
 
-  // Wait for the profile: the body is chosen by gender and age, and drawing a guess first would
-  // swap one person for another on screen.
+  // Wait for public identity so the body never switches after it appears.
   useEffect(() => {
-    if (!profile) return;
+    if (!identity) return;
     let alive = true;
     setFigure(null);
     setFigureFailed(false);
-    drawFigure(worldId, { gender: profile.gender, age: profile.age }, agent.color || profile.color)
+    drawFigure(worldId, { gender: identity.gender, age: identity.age }, toHex(identityColor(identity.color, agent.id)))
       .then((f) => alive && setFigure(f))
       .catch(() => alive && setFigureFailed(true));
     return () => {
       alive = false;
     };
-  }, [worldId, profile, agent.color]);
+  }, [worldId, identity, agent.id]);
 
   const dead = live ? reportedDead(live.is_active, live.private.vitality) : false;
   const { planned, owed } = useMemo(() => unfinishedGoals(live?.private), [live]);
@@ -316,9 +321,9 @@ export default function CharacterBody({
               <div className="flex items-center gap-1.5">
                 <span
                   className={`w-4 h-4 rounded shrink-0`}
-                  style={avatarStyle(to.color, to.id)}
+                  style={avatarStyle(cast[to.id]?.color, to.id)}
                 />
-                <span className="text-slate-100 font-medium truncate">{to.name}</span>
+                <span className="text-slate-100 font-medium truncate">{cast[to.id]?.name ?? "某人"}</span>
                 <span className="text-slate-500 truncate">{edge.labels.join(" · ")}</span>
               </div>
               <div className="grid grid-cols-[3rem_1fr_2rem] items-center gap-x-2 gap-y-1 text-[10px] text-slate-500">
@@ -397,8 +402,8 @@ export default function CharacterBody({
       return { o, y, edgeX, ax, ay, elbowX, up: up > down, room: Math.max(up, down) };
     });
   });
-  const accent = toHex(identityColor(agent.color, agent.id));
-  const role = agent.role || profile?.role;
+  const accent = toHex(identityColor(identity?.color, agent.id));
+  const role = identity?.role;
 
   return (
     <div ref={stageRef} className="relative h-full min-h-0" onMouseLeave={() => setHovered(null)}>
@@ -422,11 +427,11 @@ export default function CharacterBody({
             style={{ left: figX + figW / 2, top: figY - plateH - plateGap, width: Math.max(220, figW * 1.6) }}
           >
             <div className="text-base font-extrabold text-slate-100 truncate max-w-full">
-              {agent.name}
+              {identity?.name ?? "某人"}
               {agent.is_main_character && <span className="text-indigo-400"> ★</span>}
             </div>
             <div className="text-[11px] text-slate-400 truncate max-w-full">
-              {[role, profile?.gender, profile?.age != null ? `${profile.age} 岁` : ""].filter(Boolean).join(" · ")}
+              {[role, identity?.gender, identity?.age != null ? `${identity.age} 岁` : ""].filter(Boolean).join(" · ")}
             </div>
             {live?.private.vitality != null && (
               <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
@@ -442,7 +447,7 @@ export default function CharacterBody({
           {figure ? (
             <img
               src={figure.url}
-              alt={agent.name}
+              alt={identity?.name ?? "某人"}
               draggable={false}
               className={`absolute select-none ${dead ? "grayscale opacity-50" : ""}`}
               style={{ left: figX, top: figY, width: figW, height: figH }}
@@ -452,7 +457,7 @@ export default function CharacterBody({
               className="absolute grid place-items-center text-xs text-slate-500"
               style={{ left: figX, top: figY, width: figW, height: figH }}
             >
-              {figureFailed ? "形象图不可用" : <span className="animate-pulse">描绘中…</span>}
+              {figureFailed || castStatus === "error" ? "形象图不可用" : <span className="animate-pulse">描绘中…</span>}
             </div>
           )}
           {dead && (

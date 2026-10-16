@@ -72,12 +72,10 @@ class WorldMeta:
 
 
 @dataclass(frozen=True)
-class CastCandidate:
-    """A character as anyone could know them: whom an actor may choose to perform.
+class CharacterIdentity:
+    """A character's public identity, identical for every viewer.
 
-    The same identity an actor sees of anyone else once performing (``interaction.actor_view``).
-    Nothing of the inner life (traits, values, goals, secret), of relations or of narrative tier:
-    choosing a character must not tell the actor about the others.
+    Inner life, relations and narrative tier belong to viewpoint-filtered contracts.
     """
 
     agent_id: str
@@ -99,7 +97,6 @@ class GraphNode:
     role: str
     # None: not known to this viewer (the actor's view, ``interaction.actor_view``).
     is_main_character: bool | None
-    color: str
 
 
 @dataclass(frozen=True)
@@ -563,7 +560,6 @@ class AgentView:
     # Visible at a glance, like the name. "" / None when the world never fixed them.
     gender: str = ""
     age: int | None = None
-    color: str = ""  # fixed identity color (#RRGGBB)
     # None: not known to this viewer (the actor's view, ``interaction.actor_view``).
     is_main_character: bool | None = False
     is_active: bool = True
@@ -970,7 +966,6 @@ class _StepAssembler:
             name=str(record.get("agent_name") or "某人"),
             gender=str(record.get("gender") or ""),
             age=record.get("age") if isinstance(record.get("age"), int) and record.get("age") else None,
-            color=str(record.get("color") or ""),
             is_main_character=bool(record.get("is_main_character", False)),
             is_active=bool(record.get("is_active", True)),
             public=AgentPublicView(
