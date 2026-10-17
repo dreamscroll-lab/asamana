@@ -559,6 +559,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
                   step={feed[0]?.step ?? 0}
                   pace={meta?.actor_pace ?? "every_step"}
                   secondsPerStep={meta?.seconds_per_step ?? 0}
+                  immersive={immersive}
                 />
               )}
             </LiveWorldMap>

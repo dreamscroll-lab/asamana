@@ -26,6 +26,18 @@ describe("lab scenes", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  it("stages actor entrances and departures with no private route to follow", () => {
+    const scene = scenes.find((s) => s.id === "actor-presence")!;
+    expect(scene.viewer).toBeTruthy();
+    const indexes = scene.steps.map(indexStep);
+    expect(indexes.map((s) => Object.keys(s.agents).length)).toEqual([1, 2, 1, 2, 2]);
+    const visitor = Object.values(indexes[1].agents).find((a) => a.agent_id !== scene.viewer)!;
+    expect(visitor.private.transit).toBeNull();
+    expect(visitor.is_main_character).toBeNull();
+    expect(visitor.private.vitality).toBeNull();
+    expect(indexes[3].agents[scene.viewer!].location_id).not.toBe(indexes[4].agents[scene.viewer!].location_id);
+  });
+
   it("a scene's beats are consecutive steps", () => {
     // The map walks a figure only to the step right after the one it drew (TiledWorldScene's
     // drawnStep); any other is a cut. Beats out of sequence would turn every walk into a cut.

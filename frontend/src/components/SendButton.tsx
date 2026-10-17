@@ -7,22 +7,24 @@ export function isSendKey(e: KeyboardEvent<HTMLTextAreaElement>): boolean {
 
 export const SEND_HINT = "↵ 发送 · ⇧↵ 换行";
 
-/** The actor's send button: a paper plane, a spinner while the words are on their way. */
+/** A paper plane, replaced by a spinner while the words are on their way. */
 export default function SendButton({
   disabled,
   busy,
   onClick,
+  title = "发送（↵）",
 }: {
   disabled: boolean;
   busy: boolean;
   onClick: () => void;
+  title?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled || busy}
-      title="发送（↵）"
+      title={title}
       aria-label="发送"
       className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-indigo-600 text-white shadow-[0_4px_12px_-4px_rgba(79,70,229,0.7)] transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
     >

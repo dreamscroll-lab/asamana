@@ -115,6 +115,7 @@ export default function SceneBench({
   useEffect(() => {
     const st = pick?.steps[beat];
     if (!scene || !pick || !st) return;
+    scene.setViewer(pick.viewer ?? null);
     let cancelled = false;
     setReady(false);
     setCrash(null);

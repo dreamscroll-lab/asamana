@@ -615,6 +615,7 @@ export interface LabScene {
   title: string;
   watch: string;
   steps: StepView[];
+  viewer?: string;
 }
 
 // Props for the object deeds: one takeable, one fixed. Re-declared per step because the entity

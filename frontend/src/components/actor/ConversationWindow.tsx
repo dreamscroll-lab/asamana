@@ -20,7 +20,7 @@ import { avatarStyle } from "../../lib/avatar";
 import { DIALOGUE_TYPE_MS } from "../../lib/dialogue";
 import type { ActorDialogueTurn, CharacterIdentity, BriefRelation, Conversation, DialogueTurn } from "../../types";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
-import SendButton, { SEND_HINT, isSendKey } from "./SendButton";
+import SendButton, { SEND_HINT, isSendKey } from "../SendButton";
 
 export default function ConversationWindow({
   worldId,

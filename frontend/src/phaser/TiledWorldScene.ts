@@ -24,6 +24,7 @@ import { type AnnounceHost, Announcer } from "./announce";
 import { type CameraHost, MapCamera } from "./camera";
 import { type StagingHost, Staging, subjectEntityIds, subjectPeopleIds } from "./staging";
 import { type WalkHost, Walker } from "./walking";
+import { Presence, type PresenceView, continuesPresence } from "./presence";
 import { HoverTip } from "./hoverTip";
 import { type PostHost, PostLayer } from "./post";
 import { FONT, INITIAL_DIR, PLATE_GAP, PLATE_RISE, SPRITE_FOOT_Y, TEXT_RES, type AgentToken, type CarriedItem } from "./types";
@@ -227,6 +228,9 @@ export class TiledWorldScene
   private readonly staging = new Staging(this, this.entities);
   /** Routes and walking. See walking.ts. */
   private readonly walker = new Walker(this, this.placed);
+  private readonly presence = new Presence(this, this.walker);
+  private presenceView: PresenceView | null = null;
+  private entering = new Set<string>();
   /** Zoom, pan and follow — the viewer's eye on the map. See camera.ts. */
   private readonly camera: MapCamera;
 
@@ -344,14 +348,16 @@ export class TiledWorldScene
     // How far this frame carries a fade, as a fraction of what is left to travel.
     // Framed in TIME, not frames, so the fade lasts as long on a 30fps tab as on 120.
     const fadeStep = 1 - Math.exp((-dt * 3000) / HIDDEN_FADE_MS);
-    for (const [id, tok] of this.tokens) {
+    const bodies = this.presence.departing.size
+      ? [...this.tokens, ...this.presence.departing] : this.tokens;
+    for (const [id, tok] of bodies) {
       // A figure on ground the map's art hides fades — the only occlusion handling. The test is
       // the backend's `standable` grid, the same one A* tolls (HIDDEN_STEP_TOLL) and findStanding
       // refuses: one truth, no second opinion about the art.
       const want = tok.baseAlpha * (this.map.hiddenGround(tok.container.x, tok.container.y) ? HIDDEN_ALPHA : 1);
       tok.container
         .setDepth(sortDepth(tok.container.y, geometry))
-        .setAlpha(tok.container.alpha + (want - tok.container.alpha) * fadeStep)
+        .setAlpha(tok.container.alpha + (want * tok.presenceAlpha - tok.container.alpha) * fadeStep)
         .setScale(lodScale);
       // Idle bob on the sprite only (the container anchors bubbles/effects); the dead lie still.
       // Skipped while posed: writing sprite.y every frame would erase the vertical half of every
@@ -554,6 +560,12 @@ export class TiledWorldScene
   }
 
   create(): void {
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.ready = false;
+      this.unwinding = true;
+      this.renderGen++;
+      this.cancelPending();
+    });
     // The document was already fetched (to resolve its asset URLs), so hand it
     // straight to Phaser instead of making it fetch the same map a second time.
     this.cache.tilemap.add(MAP_KEY, {
@@ -595,20 +607,26 @@ export class TiledWorldScene
     // in hit order could select the owner on a click meant for the handle.
     for (const obj of hits) {
       const owner = obj.getData?.("pocketOf");
-      if (owner) return this.pockets.toggle(String(owner));
+      if (owner && this.canSelect(String(owner))) return this.pockets.toggle(String(owner));
       if (obj.getData?.("pocketPanel")) return; // reading is not selecting
     }
     for (const obj of hits) {
       const agentId = obj.getData?.("agentId");
-      if (agentId) return this.onSelect({ kind: "agent", id: String(agentId) });
+      if (agentId && this.canSelect(String(agentId))) return this.onSelect({ kind: "agent", id: String(agentId) });
     }
     const world = this.cameras.main.getWorldPoint(p.x, p.y);
     const room = this.map.roomAt(world.x, world.y);
     this.onSelect(room ? { kind: "location", id: room.id } : { kind: "clear" });
   }
 
+  canSelect(id: string): boolean {
+    const tok = this.tokens.get(id);
+    return !!tok && !this.entering.has(id) && !this.presence.entering.has(tok);
+  }
+
   /** Whose view the steps handed in are filtered to; read on the next render. */
   setViewer(viewer: Viewer): void {
+    if (viewer !== this.viewer) this.presenceView = null;
     this.viewer = viewer;
   }
 
@@ -772,12 +790,12 @@ export class TiledWorldScene
     container.on("pointerover", () => {
       const npc = this.npcById.get(state.agent_id);
       const tok = this.tokens.get(state.agent_id);
-      if (npc && tok) this.hoverTip.show(tok, npc);
+      if (npc && tok && this.canSelect(state.agent_id)) this.hoverTip.show(tok, npc);
     });
     container.on("pointerout", () => this.hoverTip.hide());
     tok = {
       container, sprite, skinId, posed: false, headY: this.body.measureHeadY(skinId),
-      plate, focusRing, label, color, baseAlpha: 1, floor: 0, vitTrack, vitFill,
+      plate, focusRing, label, color, baseAlpha: 1, presenceAlpha: 1, floor: 0, vitTrack, vitFill,
       condPip: pip, pouch, condText: "",
       locationId: state.location_id, dead: false, hurt: false, vit: 1, phase: Math.random() * Math.PI * 2,
       dir: INITIAL_DIR,
@@ -823,7 +841,16 @@ export class TiledWorldScene
     const index = indexStep(step);
     this.noteNpcs(index.npcs);
     this.staging.setRelations(index.relations);
+    // A canceled step can stop before its pending entrances start walking.
+    for (const tok of this.tokens.values()) tok.presenceAlpha = 1;
     const states = figuresOf(index, this.castById);
+    const location = states.find((s) => s.agent_id === this.viewer)?.location_id ?? "";
+    const view = { viewer: this.viewer, location };
+    const localContinuity = continuesPresence(this.presenceView, view, cut);
+    this.presenceView = view;
+    this.entering = new Set(localContinuity ? states.filter((s) =>
+      !this.tokens.has(s.agent_id) && !s.displaced && !reportedDead(s.is_active, s.vitality),
+    ).map((s) => s.agent_id) : []);
     const actions = beatsOf(index, this.viewer);
     const entities = index.entities;
     // `step.observer.injections` is deliberately not read: an injection's record summarizes a
@@ -877,12 +904,16 @@ export class TiledWorldScene
     // reports every body every step, so there it never happens. Don't leave the token standing
     // where it was last seen: letters, dialogue and the camera would treat the ghost as present.
     const reported = new Set(states.map((s) => s.agent_id));
+    const departures: Promise<void>[] = [];
     for (const [id, tok] of [...this.tokens]) {
       if (reported.has(id)) continue;
       this.pockets.close(id);
-      this.body.removeToken(tok);
       this.tokens.delete(id);
       this.placed.delete(id);
+      this.walker.clearTransit(id);
+      if (!isWholeWorld(this.viewer)) {
+        departures.push(this.presence.leave(id, tok, localContinuity ? "walk" : "fade"));
+      } else this.body.removeToken(tok);
     }
 
     // Resting slots, relationship- and interaction-aware: figures about to deal with each other
@@ -915,6 +946,7 @@ export class TiledWorldScene
       // Creating a token here would resurrect a corpse every other step. See gone().
       if (this.gone(state)) return;
       const tok = this.ensureToken(state);
+      if (this.entering.has(state.agent_id)) tok.presenceAlpha = 0;
       tok.locationId = state.location_id;
       // A standing condition is state, not a beat: written every step from the report, never
       // withheld, so it also vanishes when it wears off unannounced.
@@ -961,7 +993,7 @@ export class TiledWorldScene
     const tracks = this.partition(states, actions).map((p, i) =>
       this.playTrack(p, stateById, states, gen, i, withheldAgents, cut),
     );
-    await Promise.all(tracks);
+    await Promise.all([...tracks, ...departures]);
     // Past this line everything writes to the map; a superseded render must not.
     if (this.renderGen !== gen) return;
 
@@ -1279,6 +1311,15 @@ export class TiledWorldScene
     // A body already drawn down does not travel. Keyed on the token, not the report: the report
     // says "dead" for the whole step he dies in, and a withheld death must still walk to the fight.
     if (tok.dead) return Promise.resolve();
+    if (this.entering.delete(state.agent_id)) {
+      const at = this.staging.positionFor(state, states);
+      if (!at) {
+        tok.presenceAlpha = 1;
+        return Promise.resolve();
+      }
+      this.placed.add(state.agent_id);
+      return this.presence.enter(tok, at);
+    }
     if (state.transit && state.transit.total_steps > 0) {
       return this.walker.walkTransit(tok, state.agent_id, state.transit);
     }

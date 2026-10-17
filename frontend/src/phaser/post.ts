@@ -30,6 +30,7 @@ export interface PostHost extends FxHost {
   identityColor(id: string): number;
   focusActive(): boolean;
   isFocused(agentId: string): boolean;
+  canSelect(agentId: string): boolean;
   holdPose(tok: AgentToken, pose: PoseName, sustained?: boolean): void;
 }
 
@@ -230,6 +231,7 @@ export class PostLayer {
       .on("pointerdown", (p: Phaser.Input.Pointer, _x: number, _y: number, e: Phaser.Types.Input.EventData) => {
         e.stopPropagation();
         p.event.stopPropagation();
+        if (!this.host.canSelect(String(tok.container.getData("agentId")))) return;
         void this.openPost(tok);
       });
     tok.container.add(badge);

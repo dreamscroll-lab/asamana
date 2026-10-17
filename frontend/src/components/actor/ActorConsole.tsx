@@ -28,15 +28,17 @@ import type {
 } from "../../types";
 import { ActionType } from "../../lib/contract";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
+import {
+  CONSOLE_USER_MESSAGE, CONSOLE_WORLD_MESSAGE, CONSOLE_RAISED, CONSOLE_COLLAPSED, CONSOLE_PANEL, CONSOLE_HEADER,
+  CONSOLE_CLOSE, CONSOLE_THREAD, CONSOLE_FOOTER, CONSOLE_INPUT,
+} from "../consoleStyles";
 import Transcript from "../narrative/Transcript";
 import ConversationWindow from "./ConversationWindow";
 import MindPanel from "./MindPanel";
 import { goalChoices, type GoalRow } from "./goals";
-import SendButton, { SEND_HINT, isSendKey } from "./SendButton";
+import SendButton, { SEND_HINT, isSendKey } from "../SendButton";
 import { describeDecision, reasonText } from "./reading";
 import { breakableAct, buildThread, conversationsOf, liveConversation, type ThreadItem } from "./thread";
-
-const DOCK = "absolute top-2 right-2 z-30";
 
 // The backend's cap on what the actor says at once (interaction/api/actor.py).
 const MAX_WORDS = 500;
@@ -44,14 +46,6 @@ const MAX_WORDS = 500;
 // Only the pressing levels are worth a mark; the rest read as plain words.
 const URGENCY_MARK: Record<string, string> = { high: "（急）", critical: "（十万火急）" };
 
-
-// Every bubble sits a little above the console: a faint lit top edge and a soft drop shadow, so
-// neighbouring bubbles read as separate pieces rather than one band.
-const RAISED = "shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_4px_10px_-4px_rgba(0,0,0,0.6)]";
-const WORLD =
-  `max-w-[92%] rounded-xl rounded-tl-sm border border-slate-800/70 bg-slate-900/70 px-3 py-2 text-[13px] leading-relaxed text-slate-200 ${RAISED}`;
-const ACTOR =
-  `max-w-[85%] rounded-xl rounded-tr-sm bg-indigo-600/35 px-3 py-2 text-[13px] leading-relaxed text-slate-100 ${RAISED}`;
 
 // A person's name in their identity color.
 type Ink = (id: string) => string;
@@ -65,6 +59,7 @@ export default function ActorConsole({
   step,
   pace: initialPace,
   secondsPerStep,
+  immersive,
 }: {
   worldId: string;
   // The performed character.
@@ -78,8 +73,10 @@ export default function ActorConsole({
   pace: ActorPace;
   // World time per step, for durations; 0 when unknown.
   secondsPerStep: number;
+  immersive: boolean;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsedOverride, setCollapsed] = useState<boolean | null>(null);
+  const collapsed = collapsedOverride ?? !immersive;
   const [pace, setPace] = useState(initialPace);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -202,7 +199,7 @@ export default function ActorConsole({
       )}
       {collapsed && (
         <button
-          className={`${DOCK} w-9 h-9 grid place-items-center rounded-full text-sm bg-slate-950/75 border border-slate-800/70 backdrop-blur-md shadow-lg shadow-black/40 hover:border-indigo-700/70 transition`}
+          className={CONSOLE_COLLAPSED}
           onClick={() => setCollapsed(false)}
           title="展开演员台"
         >
@@ -212,9 +209,9 @@ export default function ActorConsole({
       )}
       {/* Collapsing only hides the console: unsent words and an unsaved edit to the mind survive it. */}
       <section
-        className={`${DOCK} ${collapsed ? "hidden" : "flex"} w-[min(26rem,calc(100%-1rem))] h-[min(42rem,calc(100%-1rem))] flex-col rounded-2xl border border-slate-800/70 bg-slate-950/80 backdrop-blur-md shadow-xl shadow-black/40`}
+        className={`${CONSOLE_PANEL} ${collapsed ? "hidden" : "flex"}`}
       >
-        <div className="shrink-0 space-y-1.5 px-3 pt-2.5 pb-2 border-b border-slate-800/50">
+        <div className={CONSOLE_HEADER}>
           <div className="flex items-start gap-2">
             <span className="text-sm pt-1" title="演员台"><ActorIcon /></span>
             <div className="min-w-0 flex-1 max-h-72 overflow-y-auto">
@@ -222,7 +219,7 @@ export default function ActorConsole({
                 immediate={turn?.kind === "decide" || turn?.kind === "interrupt"} mind={mind} onMindChange={setMind} />
             </div>
             <button
-              className="pt-1 text-[11px] text-slate-500 hover:text-slate-200 transition"
+              className={CONSOLE_CLOSE}
               onClick={() => setCollapsed(true)}
               title="收起演员台"
             >
@@ -240,7 +237,7 @@ export default function ActorConsole({
           </label>
         </div>
 
-        <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto px-3 py-2 space-y-2">
+        <div ref={scroller} className={CONSOLE_THREAD}>
           {items.length === 0 && (
             <p className="text-[12px] text-slate-600">在这里与世界互动...</p>
           )}
@@ -261,13 +258,13 @@ export default function ActorConsole({
           ))}
           {pending && (
             <div className="flex justify-end">
-              <div className={`${ACTOR} opacity-60`}>{pending.words}</div>
+              <div className={`${CONSOLE_USER_MESSAGE} opacity-60`}>{pending.words}</div>
             </div>
           )}
-          {!turn && running && <p className="text-[12px] text-slate-500">世界在运转中…</p>}
+          {!turn && running && <p className="text-[12px] text-slate-500">世界在忙碌着...</p>}
         </div>
 
-        <div className="shrink-0 border-t border-slate-800/50 px-3 py-2 space-y-1.5">
+        <div className={CONSOLE_FOOTER}>
           {message && <p className="text-[12px] text-rose-400">{message}</p>}
           <textarea
             value={text}
@@ -280,8 +277,8 @@ export default function ActorConsole({
             disabled={!deciding}
             maxLength={MAX_WORDS}
             rows={2}
-            placeholder={deciding ? "说你想做的任何事情..." : "别着急，再等等，世界很忙！"}
-            className="w-full resize-none bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-[13px] text-slate-200 focus:outline-none focus:border-indigo-500/70 disabled:opacity-50"
+            placeholder={deciding ? "做你想做的任何事儿～" : "别着急，再等等，世界很忙的～～"}
+            className={CONSOLE_INPUT}
           />
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-slate-600">{SEND_HINT}</span>
@@ -333,7 +330,7 @@ function Line({
     case "chose":
       return (
         <div className="flex justify-end">
-          <div className={ACTOR}>{CHOICE_TEXT[item.choice] || item.description}</div>
+          <div className={CONSOLE_USER_MESSAGE}>{CHOICE_TEXT[item.choice] || item.description}</div>
         </div>
       );
     case "act":
@@ -360,7 +357,7 @@ function Perceived({ item }: { item: Extract<ThreadItem, { kind: "perceived" }> 
   const open = toggled ?? item.asking;
   const count = item.messages.length + item.broadcasts.length + item.acted_upon.length;
   return (
-    <div className={`${WORLD} ${item.asking ? "border-amber-800/60" : ""}`}>
+    <div className={`${CONSOLE_WORLD_MESSAGE} ${item.asking ? "border-amber-800/60" : ""}`}>
       <button type="button" onClick={() => setToggled(!open)} className="flex w-full items-baseline gap-2 text-left">
         <span className="text-[12px] text-slate-400">
           <span className="text-slate-600">{open ? "▾" : "▸"} </span>最新动态
@@ -410,7 +407,7 @@ function Asked({
     const inviter = turn.invitation?.inviter;
     const who = inviter?.name || "有人";
     return (
-      <div className={`${WORLD} ${open ? "border-amber-800/60" : "opacity-70"} space-y-2`}>
+      <div className={`${CONSOLE_WORLD_MESSAGE} ${open ? "border-amber-800/60" : "opacity-70"} space-y-2`}>
         <p>
           <span style={inviter ? { color: ink(inviter.agent_id) } : undefined}>{who}</span>
           {turn.invitation?.action_type === ActionType.talk ? "想与你交谈。" : "邀你一起行动。"}
@@ -428,7 +425,7 @@ function Asked({
   if (turn.kind === "decide") {
     if (!open) return null;
     return (
-      <div className={`${WORLD} border-indigo-800/60 space-y-2`}>
+      <div className={`${CONSOLE_WORLD_MESSAGE} border-indigo-800/60 space-y-2`}>
         <p>{turn.reason && `${turn.reason}。`}想做什么？</p>
         {choices.length > 0 && (
           <div className="space-y-1">
@@ -452,7 +449,7 @@ function Asked({
     );
   }
   return (
-    <div className={`${WORLD} ${open ? "border-amber-800/60" : "opacity-70"} space-y-2`}>
+    <div className={`${CONSOLE_WORLD_MESSAGE} ${open ? "border-amber-800/60" : "opacity-70"} space-y-2`}>
       <p>{turn.reason && `${turn.reason}。`}{turn.doing && <>你正在：{turn.doing}。</>}要停下吗？</p>
       {open && (
         <div className="flex gap-2">
@@ -478,7 +475,7 @@ function Said({
   return (
     <div className="space-y-1.5">
       <div className="flex justify-end">
-        <div className={ACTOR}>{item.words}</div>
+        <div className={CONSOLE_USER_MESSAGE}>{item.words}</div>
       </div>
       {item.reading && item.briefing ? (
         <ReadingCard
@@ -490,7 +487,7 @@ function Said({
           onConfirm={() => onAnswer(item.reading!)}
         />
       ) : (
-        <div className={`${WORLD} text-rose-300`}>{reasonText(item.reason)}</div>
+        <div className={`${CONSOLE_WORLD_MESSAGE} text-rose-300`}>{reasonText(item.reason)}</div>
       )}
     </div>
   );
@@ -514,7 +511,7 @@ function ReadingCard({
   const text = describeDecision(reading, briefing, secondsPerStep);
   return (
     <div
-      className={`max-w-[92%] rounded-xl rounded-tl-sm border px-3 py-2 ${RAISED} ${
+      className={`max-w-[92%] rounded-xl rounded-tl-sm border px-3 py-2 ${CONSOLE_RAISED} ${
         state === "declined" ? "border-slate-800/60 bg-slate-900/30 opacity-60" : "border-indigo-800/50 bg-indigo-950/40"
       }`}
     >
@@ -546,7 +543,7 @@ function Act({
 }) {
   const ratio = item.total > 0 ? item.elapsed / item.total : 1;
   return (
-    <div className={WORLD}>
+    <div className={CONSOLE_WORLD_MESSAGE}>
       <div>
         {!item.ended && <span className="text-slate-400">正在：</span>}
         {item.description || "（一件事）"}
@@ -570,14 +567,14 @@ function Act({
 }
 
 function Ended({ item }: { item: Extract<ThreadItem, { kind: "ended" }> }) {
-  if (!item.fact) return <div className={`${WORLD} text-slate-500`}>（没有下文）</div>;
+  if (!item.fact) return <div className={`${CONSOLE_WORLD_MESSAGE} text-slate-500`}>（没有下文）</div>;
   const mark = !item.happened
     ? <span className="text-slate-500">未成事 · </span>
     : item.succeeded
       ? <span className="text-teal-400">✓ </span>
       : <span className="text-rose-400">✗ </span>;
   return (
-    <div className={`${WORLD} ${item.happened ? "" : "text-slate-400"}`}>
+    <div className={`${CONSOLE_WORLD_MESSAGE} ${item.happened ? "" : "text-slate-400"}`}>
       {mark}
       {item.fact}
     </div>
@@ -600,7 +597,7 @@ function ConversationCard({
   // The character first.
   const sides = [...names].sort(([a], [b]) => Number(b === selfId) - Number(a === selfId));
   return (
-    <div className={WORLD}>
+    <div className={CONSOLE_WORLD_MESSAGE}>
       <button type="button" onClick={() => setOpen((o) => !o)} className="flex w-full items-baseline gap-2 text-left">
         <span className="text-[12px]">
           <span className="text-slate-600">{open ? "▾" : "▸"} </span>💬{" "}
