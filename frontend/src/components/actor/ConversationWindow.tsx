@@ -19,7 +19,7 @@ import { api } from "../../api/client";
 import { avatarStyle } from "../../lib/avatar";
 import { DIALOGUE_TYPE_MS } from "../../lib/dialogue";
 import type { ActorDialogueTurn, CharacterIdentity, BriefRelation, Conversation, DialogueTurn } from "../../types";
-import { BTN, BTN_PRIMARY } from "../buttonStyles";
+import { BTN } from "../buttonStyles";
 import SendButton, { SEND_HINT, isSendKey } from "../SendButton";
 
 export default function ConversationWindow({
@@ -141,6 +141,7 @@ export default function ConversationWindow({
               </div>
               {identity && <div className="mt-0.5 truncate text-[12px] text-slate-400">{identity}</div>}
             </div>
+            {over && <button type="button" className={`${BTN} shrink-0 self-start`} aria-label="关闭" title="关闭" onClick={onClose}><span aria-hidden="true">×</span></button>}
           </div>
           <RelationStrip relation={relation} />
         </header>
@@ -186,11 +187,7 @@ export default function ConversationWindow({
 
         <footer className="shrink-0 px-4 pt-3 pb-4">
           {message && <p className="mb-2 text-[12px] text-rose-400">{message}</p>}
-          {over ? (
-            <div className="flex justify-end">
-              <button className={BTN_PRIMARY} onClick={onClose}>关闭</button>
-            </div>
-          ) : (
+          {!over && (
             <>
               <div
                 className={`rounded-xl border bg-slate-950/80 transition ${

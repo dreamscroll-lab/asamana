@@ -5,7 +5,7 @@ perception, adjudication and feedback for it. At those two stages the engine ask
 ``ActorTurn`` and continues the step with the actor's answer: an ``ActorDecision`` for a
 DECIDE turn, an ``ActorInterruptAnswer`` for an INTERRUPT turn. The actor speaks only when
 asked: words are read against an open DECIDE turn, into an ``ActorDecision`` the actor confirms
-before it is submitted; nothing the engine read into the words acts unconfirmed. Outside a turn
+before it is submitted. Explicit operations without supplementary interpretation submit directly. Outside a turn
 the actor may only break off an act in progress, which lands at the next interrupt stage.
 
 A DECIDE turn opens whenever the character is idle, at the actor's pace (``ActorPace``). An
@@ -35,11 +35,12 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Literal
 
-from core.interfaces.action import ActionType, DialogueTurn
+from core.interfaces.action import ActionType, DialogueTurn, Ref
 from core.interfaces.urgency import Urgency
 from core.prompts import AFFECTION_RANGE, EMOTION_INTENSITY_RANGE, EMOTION_VALENCE_RANGE, TRUST_RANGE
-from core.validate import require_at_least, require_in_range, require_text
+from core.validate import require_at_least, require_in_range, require_member, require_text
 
 
 class TurnKind(str, Enum):
@@ -84,6 +85,9 @@ class BriefEntity:
 
     entity_id: str
     name: str
+    entity_type: str = "item"
+    holder_id: str | None = None
+    is_takeable: bool = False
 
 
 @dataclass(frozen=True)
@@ -116,16 +120,17 @@ class ActorBriefing:
     """What a decision can name: the lists an ``ActorAction`` picks its targets from, as an AI
     character's decision binds against them, by the names the character knows.
 
-    It names the ids in a reading of the actor's words (``ActorDecision``), so the actor can see
+    It names the ids in an action summary (``ActorActionSummary``), so the actor can see
     what the words were bound to before confirming; binding itself checks the character's own
     lists, never this. ``people`` are everyone the character can reach, present or not; ``npcs``
-    and ``entities`` are those within reach. Names only: the scene itself is the map's to show.
+    and ``entities`` are those within reach. The scene itself is the map's to show.
     """
 
     people: tuple[BriefPerson, ...]
     npcs: tuple[BriefNpc, ...]
     places: tuple[BriefPlace, ...]
     entities: tuple[BriefEntity, ...]
+    location: BriefPlace | None = None
 
 
 @dataclass(frozen=True)
@@ -218,6 +223,111 @@ class ActorAction:
     def __post_init__(self) -> None:
         require_text(self.action_description, "action_description")
         require_at_least(self.estimated_steps, 1, "estimated_steps")
+
+
+class ActorOperation(str, Enum):
+    MOVE = "move"
+    BROADCAST = "broadcast"
+    TALK = "talk"
+    ERRAND = "errand"
+    TAKE = "take"
+    USE = "use"
+    DESTROY = "destroy"
+    PHYSICAL = "physical"
+    WORK = "work"
+    REST = "rest"
+    COVERT = "covert"
+
+
+@dataclass(frozen=True)
+class ActorOperationParameters:
+    destination_id: str | None = None
+    item_id: str | None = None
+    recipient_id: str | None = None
+    message: str | None = None
+    announce: bool | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("destination_id", "item_id", "recipient_id"):
+            value = getattr(self, name)
+            if value is not None:
+                require_text(value, name)
+
+
+@dataclass(frozen=True)
+class ActorIntent:
+    """User intent; execution slots and parsing policy remain server-owned."""
+
+    turn_id: str
+    text: str | None = None
+    operation: ActorOperation | None = None
+    target: Ref | None = None
+    parameters: ActorOperationParameters = field(default_factory=ActorOperationParameters)
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        require_text(self.turn_id, "turn_id")
+        if self.text is not None:
+            require_text(self.text, "text")
+            if self.operation is not None or self.target is not None or self.description or self.parameters != ActorOperationParameters():
+                raise ValueError("Text and operation intents are mutually exclusive")
+        elif self.operation is None or self.target is None:
+            raise ValueError("An operation intent requires operation and target")
+        if self.target is not None:
+            require_member(self.target.kind, ("agent", "location", "npc", "item", "landmark"), "target.kind")
+            require_text(self.target.id, "target.id")
+        if self.operation is not None:
+            if self.operation is ActorOperation.BROADCAST:
+                require_member(self.description.strip(), ("",), "broadcast.description")
+            allowed = {
+                ActorOperation.ERRAND: {"destination_id", "item_id", "recipient_id", "message", "announce"},
+                ActorOperation.BROADCAST: {"message"},
+            }.get(self.operation, set())
+            for name in ("destination_id", "item_id", "recipient_id", "message", "announce"):
+                if getattr(self.parameters, name) is not None and name not in allowed:
+                    raise ValueError(f"Parameter {name} does not apply to {self.operation.value}")
+
+
+@dataclass(frozen=True)
+class ActorActionSummary:
+    """A public action summary, without executor slots or executable authority."""
+
+    action_summary_id: str
+    description: str
+    operation: str
+    target: Ref | None
+    estimated_duration_seconds: int
+    parameters: dict[str, str | bool | list[str]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ActorIntentResult:
+    status: Literal["submitted", "needs_confirmation", "rejected"]
+    reason: str | None = None
+    action_summary: ActorActionSummary | None = None
+
+
+@dataclass(frozen=True)
+class ActorOperationCapability:
+    operation: ActorOperation
+    available: bool
+    reason: str | None = None
+    required_parameters: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ActorOperations:
+    turn_id: str
+    target: Ref
+    operations: tuple[ActorOperationCapability, ...]
+
+
+@dataclass(frozen=True)
+class ActorConfirmation:
+    action_summary_id: str
+
+    def __post_init__(self) -> None:
+        require_text(self.action_summary_id, "action_summary_id")
 
 
 @dataclass(frozen=True)
@@ -391,9 +501,10 @@ class ActorDecision:
 @dataclass(frozen=True)
 class ActorInterruptAnswer:
     """The answer to an INTERRUPT turn: break off or carry on. What to do instead the actor says
-    at the DECIDE turn the break-off leads into."""
+    at the DECIDE turn the break-off leads into. ``thought`` explains the choice in character."""
 
     interrupt: bool
+    thought: str = ""
 
 
 @dataclass(frozen=True)
@@ -417,7 +528,21 @@ class ActorDialogueTurn:
             require_text(self.line, "line")
 
 
+@dataclass(frozen=True)
+class ActorIdleAnswer:
+    idle: Literal[True] = True
+
+    def __post_init__(self) -> None:
+        require_member(type(self.idle), (bool,), "idle type")
+        require_member(self.idle, (True,), "idle")
+
+
+# Resolved internal answers consumed by the runtime channel, including executable decisions.
 ActorAnswer = ActorDecision | ActorInterruptAnswer | ActorInvitationAnswer | ActorDialogueTurn
+
+
+# Client submissions and public records; decisions are referenced by action summary id.
+ActorPublicAnswer = ActorConfirmation | ActorIdleAnswer | ActorInterruptAnswer | ActorInvitationAnswer | ActorDialogueTurn
 
 
 class ActorPace(str, Enum):
@@ -481,14 +606,15 @@ class AskedEntry:
 
 @dataclass(frozen=True)
 class SaidEntry:
-    """The actor's words at an open DECIDE turn, and the engine's reading of them; ``reason``
-    (an ``ActorAnswerRejected`` reason, or ``UNREADABLE``) when there is none."""
+    """An intention submitted at a DECIDE turn, its action summary or rejection, and the original
+    request. Explicit operations retain their selected target and parameters even when rejected."""
 
     step: int
     turn_id: str
     words: str
-    reading: ActorDecision | None = None
+    action_summary: ActorActionSummary | None = None
     reason: str | None = None
+    intent: ActorIntent | None = None
     time_label: str = ""
     kind: EntryKind = field(default=EntryKind.SAID, init=False)
     entry_id: str = field(default_factory=_entry_id)
@@ -500,7 +626,7 @@ class AnsweredEntry:
 
     step: int
     turn_id: str
-    answer: ActorAnswer
+    answer: ActorPublicAnswer
     time_label: str = ""
     kind: EntryKind = field(default=EntryKind.ANSWERED, init=False)
     entry_id: str = field(default_factory=_entry_id)

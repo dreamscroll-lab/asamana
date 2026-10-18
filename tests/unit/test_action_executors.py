@@ -675,9 +675,8 @@ class TestSimpleExecutor:
         assert "。，" not in done.factual_memory and "」。。" not in done.factual_memory
 
     @pytest.mark.asyncio
-    async def test_send_message_outcome_quotes_the_first_person_intent(self) -> None:
-        """SEND_MESSAGE's 3p outcome works the same way: intent_text is the sender's own narration,
-        so it is quoted and attributed."""
+    async def test_send_message_outcome_quotes_delivered_words_and_preserves_intent(self) -> None:
+        """The words delivered are distinct from the sender's description of the action."""
         class _Sink:
             async def dispatch_from_action(self, action, *, current_step, sender_name="", location_scope=None):
                 return None
@@ -694,9 +693,37 @@ class TestSimpleExecutor:
             action, 1, agents={}, environment=env, message_system=_Sink(),
         )
         result = state.extra["completed_result"]
-        assert "：「我传话给他，约他今夜在府中相见」" in result.outcome
-        assert "传讯：我传话给他" not in result.outcome
-        assert result.factual_memory.startswith("我成功在")   # 1p channel unchanged
+        assert "：「今夜府中一见。」" in result.outcome
+        assert "我传话给他" not in result.outcome
+        assert "今夜府中一见。" in result.factual_memory
+        assert result.factual_memory.startswith("我成功在")
+        assert result.action.action_description == action.action_description
+        assert result.action.content == action.content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("directed", [True, False])
+    @pytest.mark.parametrize("heard", [True, False])
+    async def test_message_results_retain_verbatim_words_for_delivery_and_unheard_attempts(
+        self, directed: bool, heard: bool,
+    ) -> None:
+        executor = SimpleExecutor(_directory())
+        env = _make_environment()
+        if not heard:
+            env.move_body(body_id="agent-b", location_id="garden")
+        recipient = "agent-b" if heard else "agent-a"
+        message = "今夜你会来吗？别走！"
+        description = "我传话提醒大家"
+        action = AgentAction(
+            agent_id="agent-a", step=1, action_type=ActionType.SEND_MESSAGE,
+            action_description=description, content=message,
+            target=ActionTarget(acts_on=[Ref.agent(recipient)] if directed else []),
+        )
+        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
+        result = (await executor.complete(state, 1, agents={}, environment=env, message_system=None))[0]
+        assert result.succeeded is heard
+        assert message in result.outcome and message in result.factual_memory
+        assert description not in result.outcome and description not in result.factual_memory
+        assert result.action.action_description == description and result.action.content == message
 
     @pytest.mark.asyncio
     async def test_rest_outcome_without_description_uses_default(self) -> None:
@@ -2924,6 +2951,29 @@ class TestInterruptDefault:
 # ---------------------------------------------------------------------------
 
 class TestPhysicalExecutor:
+    @pytest.mark.parametrize("visibility", [SceneVisibility.GOD, SceneVisibility.OWN_EYES])
+    def test_npc_held_item_names_the_holder_in_target_and_scene(self, container, visibility: SceneVisibility) -> None:
+        from engine.executors.physical import PhysicalExecutor
+        from engine.scene import assemble_scene_context
+        from world.models import NpcSeed
+
+        env = _make_environment()
+        env.place_agent(agent_id="observer", location_id="hall")
+        assert env.spawn_npc(NpcSeed(name="信使", gender="男"), location_id="hall")
+        npc_id = env.all_npcs()[0].npc_id
+        item = WorldEntity(
+            entity_id="parcel", name="包裹", entity_type=WorldEntityType.ITEM,
+            presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True, is_public=True,
+        )
+        env.register_entity(item)
+        directory = LiveWorldDirectory.from_agents({}, env)
+        executor = PhysicalExecutor(container.llm_router, directory)
+        target = executor._entity_target_block(item, doer_id="observer")
+        scene = assemble_scene_context("observer", environment=env, directory=directory, visibility=visibility).text
+        for text in (target, scene):
+            assert "包裹（由信使持有）" in text
+            assert "由某人持有" not in text and npc_id not in text
+
     @pytest.mark.asyncio
     async def test_entity_target_block_shows_owner_id_translated_to_name(self, container) -> None:
         """When the action targets something another person holds, the adjudication material

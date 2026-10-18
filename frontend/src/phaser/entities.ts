@@ -225,7 +225,7 @@ export class EntityLayer {
           this.carriedBy.set(holderId, [
             ...(this.carriedBy.get(holderId) ?? []),
             {
-              name: e.name, state: e.state ?? "", concealed: e.is_public === false,
+              id: eid, name: e.name, state: e.state ?? "", concealed: e.is_public === false,
               description: e.description ?? "", content: e.private.content,
             },
           ]);
@@ -257,6 +257,7 @@ export class EntityLayer {
           // Restore scale: an arrival tween (playArrival) cut off mid-way would otherwise leave
           // the marker permanently shrunk.
           const marker = this.entityMarkers.get(eid) ?? make(eid);
+          marker.setData("entityKind", e.entity_type);
           marker.setVisible(true).setPosition(at.x, at.y).setScale(1);
           this.refreshEntityMarker(marker, room, eid, e);
           if (this.bornEntities.delete(eid)) this.playArrival(marker, room, e.name);

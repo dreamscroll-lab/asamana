@@ -46,6 +46,7 @@ def build_actor_briefing(packet: "PerceptionPacket") -> ActorBriefing:
             for rl in spatial.reachable_locations
         ),
         entities=_seen_entities(spatial),
+        location=BriefPlace(spatial.location_id, (spatial.location_view.name if spatial.location_view else "") or "某处"),
     )
 
 
@@ -57,4 +58,8 @@ def _seen_npcs(spatial: "SpatialPerception") -> tuple[BriefNpc, ...]:
 
 
 def _seen_entities(spatial: "SpatialPerception") -> tuple[BriefEntity, ...]:
-    return tuple(BriefEntity(entity_id=e.entity_id, name=e.name or "某物") for e in spatial.visible_entities)
+    return tuple(
+        BriefEntity(entity_id=e.entity_id, name=e.name or "某物", entity_type=e.entity_type,
+                    holder_id=e.holder_id, is_takeable=e.is_takeable)
+        for e in spatial.visible_entities
+    )

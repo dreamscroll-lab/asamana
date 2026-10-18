@@ -4,7 +4,7 @@
  *
  * Top to bottom: the character's mind (MindPanel, folded to its tabs) and the actor's pace; the
  * thread (thread.ts): what reached the character, folded; the world's questions as cards; the
- * actor's words and the world's reading of them, confirmed on the card; each act with its
+ * actor's words and the world's action summary of them, confirmed on the card; each act with its
  * progress, and how it ended as the character remembers it; each live conversation as a folded
  * card; then the actor's words box. A live conversation going on is spoken in its own window over
  * the map (ConversationWindow), which the actor closes once it is over.
@@ -24,7 +24,7 @@ import { useCast } from "../../lib/cast";
 import { identityColor, toHex } from "../../lib/color";
 import { durationLabel } from "../../lib/duration";
 import type {
-  ActorAnswer, ActorBriefing, ActorDecision, ActorEntry, ActorDialogueTurn, ActorMind, ActorPace, ActorTurn, RunState,
+  ActorPublicAnswer, ActorBriefing, ActorActionSummary, ActorEntry, ActorDialogueTurn, ActorMind, ActorPace, ActorTurn, CharacterIdentity, RunState,
 } from "../../types";
 import { ActionType } from "../../lib/contract";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
@@ -35,9 +35,11 @@ import {
 import Transcript from "../narrative/Transcript";
 import ConversationWindow from "./ConversationWindow";
 import MindPanel from "./MindPanel";
+import InterruptQuestion from "./InterruptQuestion";
 import { goalChoices, type GoalRow } from "./goals";
 import SendButton, { SEND_HINT, isSendKey } from "../SendButton";
-import { describeDecision, reasonText } from "./reading";
+import { useActorSubmission } from "./submission";
+import { describeActionSummary, describeIntent, reasonText } from "./actionSummary";
 import { breakableAct, buildThread, conversationsOf, liveConversation, type ThreadItem } from "./thread";
 
 // The backend's cap on what the actor says at once (interaction/api/actor.py).
@@ -58,7 +60,6 @@ export default function ActorConsole({
   runState,
   step,
   pace: initialPace,
-  secondsPerStep,
   immersive,
 }: {
   worldId: string;
@@ -71,18 +72,15 @@ export default function ActorConsole({
   // The latest step shown: a new one may have moved the character's mind.
   step: number;
   pace: ActorPace;
-  // World time per step, for durations; 0 when unknown.
-  secondsPerStep: number;
   immersive: boolean;
 }) {
   const [collapsedOverride, setCollapsed] = useState<boolean | null>(null);
   const collapsed = collapsedOverride ?? !immersive;
   const [pace, setPace] = useState(initialPace);
   const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
+  const { busy, message, run } = useActorSubmission();
   const [mind, setMind] = useState<ActorMind | null>(null);
-  // Words just said, shown at once until their reading comes back as a `said` entry: `after` is
+  // Words just said, shown at once until their action summary comes back as a `said` entry: `after` is
   // how many there were when they were said.
   const [pending, setPending] = useState<{ words: string; after: number } | null>(null);
   const saidCount = entries.filter((e) => e.kind === "said").length;
@@ -92,9 +90,13 @@ export default function ActorConsole({
   const scroller = useRef<HTMLDivElement>(null);
 
   const turnId = turn?.turn_id ?? null;
+  const currentTurn = useRef(turnId);
+  currentTurn.current = turnId;
   const running = runState === "running" || runState === "stopping";
   const deciding = turn?.kind === "decide";
   const items = useMemo(() => buildThread(entries, turn), [entries, turn]);
+  const latestSaid = [...items].reverse().find((item) => item.kind === "said");
+  useEffect(() => { if (latestSaid) setCollapsed(false); }, [latestSaid?.key]);
   const breakable = breakableAct(items);
   const choices = useMemo(() => mind ? goalChoices(mind) : [], [mind]);
   const speaking = turn?.kind === "speak" ? turn.conversation : null;
@@ -123,7 +125,7 @@ export default function ActorConsole({
   useEffect(() => {
     // A conversation asks turn after turn in its own window; only other turns open the console.
     if (turnId && turn?.kind !== "speak") setCollapsed(false);
-    setMessage("");
+    setPending(null);
   }, [turnId, turn?.kind]);
 
   // Follow the newest line, as a chat does.
@@ -132,35 +134,32 @@ export default function ActorConsole({
     if (el) el.scrollTop = el.scrollHeight;
   }, [items.length, turnId, collapsed, pending]);
 
-  const run = async (fn: () => Promise<string>) => {
-    setBusy(true);
-    setMessage("");
-    try {
-      setMessage(await fn());
-    } catch (e) {
-      setMessage(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   // Each answer comes back over the socket as entries of the thread; only a refusal is said here.
   const say = (choice?: string) => run(async () => {
+    if (!turn || turn.kind !== "decide") return "";
+    const started = turn.turn_id;
     const words = (choice ?? text).trim();
     if (!words) return "";
     setPending({ words, after: saidCount });
     if (choice === undefined) setText("");
     try {
-      await api.sayActor(worldId, words);
+      const result = await api.actorIntent(worldId, { turn_id: turn!.turn_id, text: words });
+      if (currentTurn.current !== started) return "";
+      if (result.status === "rejected") {
+        setPending(null);
+        return result.reason === "stale_intent" ? reasonText(result.reason) : "";
+      }
     } catch (e) {
       // Not taken: the words go back into the box, to be said again.
-      setPending(null);
-      if (choice === undefined) setText(words);
+      if (currentTurn.current === started) {
+        setPending(null);
+        if (choice === undefined) setText(words);
+      }
       throw e;
     }
     return "";
   });
-  const answer = (a: ActorAnswer) => run(async () => {
+  const answer = (a: ActorPublicAnswer) => run(async () => {
     if (!turn) return "";
     const r = await api.answerActor(worldId, turn.turn_id, a);
     return r.accepted ? "" : reasonText(r.reason);
@@ -246,8 +245,8 @@ export default function ActorConsole({
               key={item.key}
               item={item}
               busy={busy}
-              secondsPerStep={secondsPerStep}
               selfId={selfId}
+              self={{ agent_id: selfId, name: cast[selfId]?.name ?? "自己" }}
               ink={ink}
               onAnswer={answer}
               onBreakOff={breakOff}
@@ -298,8 +297,8 @@ export default function ActorConsole({
 function Line({
   item,
   busy,
-  secondsPerStep,
   selfId,
+  self,
   ink,
   onAnswer,
   onBreakOff,
@@ -309,10 +308,10 @@ function Line({
 }: {
   item: ThreadItem;
   busy: boolean;
-  secondsPerStep: number;
   selfId: string;
+  self: Pick<CharacterIdentity, "agent_id" | "name">;
   ink: Ink;
-  onAnswer: (a: ActorAnswer) => void;
+  onAnswer: (a: ActorPublicAnswer) => void;
   onBreakOff: () => void;
   canBreakOff: boolean;
   choices: GoalRow[];
@@ -326,11 +325,14 @@ function Line({
     case "asked":
       return <Asked item={item} busy={busy} ink={ink} onAnswer={onAnswer} choices={choices} onChoose={onChoose} />;
     case "said":
-      return <Said item={item} busy={busy} secondsPerStep={secondsPerStep} onAnswer={onAnswer} />;
+      return <Said item={item} busy={busy} self={self} onAnswer={onAnswer} />;
     case "chose":
       return (
         <div className="flex justify-end">
-          <div className={CONSOLE_USER_MESSAGE}>{CHOICE_TEXT[item.choice] || item.description}</div>
+          <div className={CONSOLE_USER_MESSAGE}>
+            <div>{CHOICE_TEXT[item.choice]}</div>
+            {item.description && <p className="text-xs opacity-80 whitespace-pre-wrap">{item.description}</p>}
+          </div>
         </div>
       );
     case "act":
@@ -348,7 +350,6 @@ const CHOICE_TEXT: Record<Extract<ThreadItem, { kind: "chose" }>["choice"], stri
   break_off: "✋ 停下手上的事",
   accept: "✔ 接受",
   refuse: "✘ 拒绝",
-  act: "",
 };
 
 /** What reached the character: folded to a line, open while it is what the world is asking about. */
@@ -398,7 +399,7 @@ function Asked({
   item: Extract<ThreadItem, { kind: "asked" }>;
   busy: boolean;
   ink: Ink;
-  onAnswer: (a: ActorAnswer) => void;
+  onAnswer: (a: ActorPublicAnswer) => void;
   choices: GoalRow[];
   onChoose: (words: string) => void;
 }) {
@@ -441,74 +442,68 @@ function Asked({
             ))}
           </div>
         )}
-        <button className={BTN} disabled={busy} onClick={() => onAnswer({ action: null, idle: true })}>
+        <button className={BTN} disabled={busy} onClick={() => onAnswer({ idle: true })}>
           ⏸ 这次先不动
         </button>
         {turn.briefing && <Reference briefing={turn.briefing} />}
       </div>
     );
   }
-  return (
-    <div className={`${CONSOLE_WORLD_MESSAGE} ${open ? "border-amber-800/60" : "opacity-70"} space-y-2`}>
-      <p>{turn.reason && `${turn.reason}。`}{turn.doing && <>你正在：{turn.doing}。</>}要停下吗？</p>
-      {open && (
-        <div className="flex gap-2">
-          <button className={BTN} disabled={busy} onClick={() => onAnswer({ interrupt: false })}>▶ 继续</button>
-          <button className={BTN} disabled={busy} onClick={() => onAnswer({ interrupt: true })}>✋ 停下</button>
-        </div>
-      )}
-    </div>
-  );
+  return <InterruptQuestion turn={turn} open={open} busy={busy} maxLength={MAX_WORDS} onAnswer={onAnswer} />;
 }
 
 function Said({
   item,
   busy,
-  secondsPerStep,
+  self,
   onAnswer,
 }: {
   item: Extract<ThreadItem, { kind: "said" }>;
   busy: boolean;
-  secondsPerStep: number;
-  onAnswer: (a: ActorDecision) => void;
+  self: Pick<CharacterIdentity, "agent_id" | "name">;
+  onAnswer: (a: ActorPublicAnswer) => void;
 }) {
+  const submitted = item.intent && item.briefing ? describeIntent(item.intent, item.briefing, self) : null;
   return (
     <div className="space-y-1.5">
       <div className="flex justify-end">
-        <div className={CONSOLE_USER_MESSAGE}>{item.words}</div>
+        <div className={CONSOLE_USER_MESSAGE}>{submitted ? <>
+          <div>{submitted.headline}</div>
+          {submitted.details.map((detail, index) => <div key={index} className="text-xs opacity-80">{detail}</div>)}
+        </> : item.words}</div>
       </div>
-      {item.reading && item.briefing ? (
-        <ReadingCard
-          reading={item.reading}
+      {item.action_summary && item.briefing ? (
+        <ActionSummaryCard
+          actionSummary={item.action_summary}
           briefing={item.briefing}
-          secondsPerStep={secondsPerStep}
+          self={self}
           state={item.state}
           busy={busy}
-          onConfirm={() => onAnswer(item.reading!)}
+          onConfirm={() => onAnswer({ action_summary_id: item.action_summary!.action_summary_id })}
         />
       ) : (
-        <div className={`${CONSOLE_WORLD_MESSAGE} text-rose-300`}>{reasonText(item.reason)}</div>
+        <div role="alert" className={`${CONSOLE_WORLD_MESSAGE} border border-rose-400/30 bg-rose-950/30 text-rose-200`}>{reasonText(item.reason)}</div>
       )}
     </div>
   );
 }
 
-function ReadingCard({
-  reading,
+function ActionSummaryCard({
+  actionSummary,
   briefing,
-  secondsPerStep,
   state,
   busy,
+  self,
   onConfirm,
 }: {
-  reading: ActorDecision;
+  actionSummary: ActorActionSummary;
   briefing: ActorBriefing;
-  secondsPerStep: number;
   state: Extract<ThreadItem, { kind: "said" }>["state"];
   busy: boolean;
+  self: Pick<CharacterIdentity, "agent_id" | "name">;
   onConfirm: () => void;
 }) {
-  const text = describeDecision(reading, briefing, secondsPerStep);
+  const text = describeActionSummary(actionSummary, briefing, self);
   return (
     <div
       className={`max-w-[92%] rounded-xl rounded-tl-sm border px-3 py-2 ${CONSOLE_RAISED} ${
@@ -516,6 +511,7 @@ function ReadingCard({
       }`}
     >
       <div className="text-[13px] font-semibold text-slate-100">{text.headline}</div>
+      <div className="text-[12px] leading-relaxed text-slate-300">预计耗时：{actionSummary.estimated_duration_seconds / 3600}h</div>
       {text.details.map((d, i) => (
         <div key={i} className="text-[12px] leading-relaxed text-slate-300">{d}</div>
       ))}

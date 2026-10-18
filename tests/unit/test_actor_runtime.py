@@ -8,6 +8,7 @@ import inspect
 import json
 import re
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -16,9 +17,12 @@ from agent.personality import ActionStatus
 from core.interfaces.action import ActionType, TargetAgentEffect
 from core.interfaces.actor import (
     ActorAction,
-    ActorAnswer,
+    ActorPublicAnswer,
     ActorAnswerRejected,
+    ActorIdleAnswer,
     ActorDecision,
+    ActorIntent,
+    ActorConfirmation,
     ActorInterruptAnswer,
     ActorInvitationAnswer,
     ActorDialogueTurn,
@@ -60,7 +64,7 @@ def _work(steps: int = 1) -> ActorAction:
     )
 
 
-_IDLE = ActorDecision(idle=True)
+_IDLE = ActorIdleAnswer()
 
 _WORK_INDEX = next(i for i, c in enumerate(_ACTION_SPACE) if c.action_type is ActionType.WORK)
 _TALK_INDEX = next(i for i, c in enumerate(_ACTION_SPACE) if c.action_type is ActionType.TALK)
@@ -82,15 +86,29 @@ async def _next_turn(runtime, step_task: "asyncio.Task") -> ActorTurn:
     raise AssertionError("No turn opened")
 
 
-async def _step_answering(runtime, agents, *answers: "ActorAnswer"):
+async def _step_answering(runtime, agents, *answers: "ActorDecision | ActorPublicAnswer"):
     """Run one step, answering each turn it opens in order."""
     task = asyncio.create_task(runtime.run_step(agents))
     turns = []
     for answer in answers:
         turns.append(await _next_turn(runtime, task))
-        runtime.answer_actor(answer)
+        if isinstance(answer, ActorDecision):
+            await _answer_decision(runtime, agents[0], answer)
+        else:
+            runtime.answer_actor(answer)
     result = await task
     return result, turns
+
+
+async def _answer_decision(runtime, agent, decision: ActorDecision) -> None:
+    """Submit a fixture decision through the public intent and confirmation boundary."""
+    assert decision.action is not None
+    with patch.object(agent, "interpret_actor_decision", new=AsyncMock(return_value=decision)):
+        result = await _say(runtime, decision.action.action_description)
+    if result.status == "rejected":
+        raise ActorAnswerRejected(result.reason or "unreadable")
+    assert result.action_summary is not None
+    runtime.answer_actor(ActorConfirmation(result.action_summary.action_summary_id))
 
 
 async def _thread(container, runtime, world_id: str, kind: str | None = None) -> list[dict]:
@@ -281,7 +299,8 @@ async def test_a_busy_character_can_carry_on(container) -> None:
 
 
 @pytest.mark.asyncio
-async def test_breaking_off_leads_into_the_decision_stage(container) -> None:
+@pytest.mark.parametrize("thought", ["", "我得先处理刚收到的消息"])
+async def test_breaking_off_leads_into_the_decision_stage(container, thought: str) -> None:
     """Interrupt and decision stay two stages: the break-off goes through the interrupt
     coordinator, then the character decides like anyone torn down this step."""
     world_id = "world-actor-break-off"
@@ -290,13 +309,18 @@ async def test_breaking_off_leads_into_the_decision_stage(container) -> None:
     await _publish_to_hero(message_system, world_id, step=1, text="殿下，速来")
 
     result, turns = await _step_answering(
-        runtime, agents, ActorInterruptAnswer(interrupt=True), ActorDecision(action=_work()),
+        runtime, agents, ActorInterruptAnswer(interrupt=True, thought=thought), ActorDecision(action=_work()),
     )
 
     assert [t.kind for t in turns] == [TurnKind.INTERRUPT, TurnKind.DECIDE]
     assert HERO in result.scheduled_agent_ids
     snapshot = await container.snapshot.load(world_id, 2)
-    assert [r for r in beats(snapshot) if r.get("interrupted_by") == HERO]
+    interrupted = [r for r in beats(snapshot) if r.get("interrupted_by") == HERO]
+    assert interrupted
+    if thought:
+        assert thought in json.dumps(interrupted, ensure_ascii=False)
+    answered = next(e for e in snapshot.actor_thread if e["kind"] == "answered")
+    assert answered["answer"] == {"interrupt": True, "thought": thought}
 
 
 @pytest.mark.asyncio
@@ -508,6 +532,24 @@ async def test_the_actor_performs_one_character(container) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("decision", [ActorDecision(idle=True), ActorDecision(action=_work())])
+async def test_public_answer_boundary_resolves_idle_and_refuses_internal_decisions(container, decision: ActorDecision) -> None:
+    runtime, _ms, agents = _setup(container, "world-actor-public-answer")
+    task = asyncio.create_task(runtime.run_step(agents))
+    turn = await _next_turn(runtime, task)
+    with pytest.raises(ValueError, match="Expected a public actor answer"):
+        runtime.answer_actor(decision)
+    assert runtime.actor.pending_turn is turn
+    assert not any(e["kind"] == "answered" for e in runtime.actor_live_thread)
+    with patch.object(runtime.actor, "submit", wraps=runtime.actor.submit) as submit:
+        runtime.answer_actor(ActorIdleAnswer())
+        assert submit.call_args.args[0] == ActorDecision(idle=True)
+    answered = next(e for e in runtime.actor_live_thread if e["kind"] == "answered")
+    assert answered["answer"] == {"idle": True}
+    await task
+
+
+@pytest.mark.asyncio
 async def test_a_decision_turn_is_briefed_on_whom_it_can_name(container) -> None:
     runtime, _ms, agents = _setup(container, "world-actor-briefing", other_at="palace")
     _result, (turn,) = await _step_answering(runtime, agents, _IDLE)
@@ -523,13 +565,18 @@ async def test_an_action_the_character_cannot_take_is_refused_and_the_turn_stays
     await _next_turn(runtime, task)
 
     with pytest.raises(ActorAnswerRejected):
-        runtime.answer_actor(ActorDecision(action=ActorAction(
+        await _answer_decision(runtime, agents[0], ActorDecision(action=ActorAction(
             action_type=ActionType.TALK, action_description="找大哥说话", person_ids=(OTHER,),
         )))
     assert runtime.actor.pending_turn is not None and not task.done()
 
-    runtime.answer_actor(ActorDecision(action=_work()))
+    await _answer_decision(runtime, agents[0], ActorDecision(action=_work()))
     await task
+
+
+async def _say(runtime, text: str):
+    turn = runtime.actor.pending_turn
+    return await runtime.actor_intent(ActorIntent(turn_id=turn.turn_id if turn else "closed", text=text))
 
 
 @pytest.mark.asyncio
@@ -538,24 +585,24 @@ async def test_words_are_read_only_while_a_decision_turn_waits(container) -> Non
     runtime, _ms, agents = _setup(container, world_id)
     _read_as(container, decision="act", selected_index=_WORK_INDEX, action_description="亲自誊抄奏章")
     with pytest.raises(ValueError):
-        await runtime.actor_say("抄奏章")
+        await _say(runtime, "抄奏章")
 
     task = asyncio.create_task(runtime.run_step(agents))
     turn = await _next_turn(runtime, task)
-    said = await runtime.actor_say("抄奏章")
-    assert (said.turn_id, said.words, said.reading, said.reason) == (
-        turn.turn_id, "抄奏章", ActorDecision(action=_work()), None,
-    )
-    assert runtime.actor.pending_turn is not None   # reading answers nothing
+    said = await _say(runtime, "抄奏章")
+    assert said.status == "needs_confirmation" and said.reason is None
+    assert said.action_summary.description == "亲自誊抄奏章"
+    assert runtime.actor_live_thread[-1]["turn_id"] == turn.turn_id
+    assert runtime.actor.pending_turn is not None   # action_summary answers nothing
 
-    runtime.answer_actor(said.reading)
+    runtime.answer_actor(ActorConfirmation(said.action_summary.action_summary_id))
     await task
     with pytest.raises(ValueError):
-        await runtime.actor_say("抄奏章")
+        await _say(runtime, "抄奏章")
 
 
 @pytest.mark.asyncio
-async def test_words_with_no_reading_say_why(container) -> None:
+async def test_words_with_no_action_summary_say_why(container) -> None:
     runtime, _ms, agents = _setup(container, "world-actor-read-refused")   # OTHER is in the garden
     _read_as(container, decision="act", selected_index=_TALK_INDEX, action_description="找大哥说话",
              person_indices=[1])
@@ -563,12 +610,12 @@ async def test_words_with_no_reading_say_why(container) -> None:
     turn = await _next_turn(runtime, task)
     assert turn.briefing.people == ()   # nobody within reach to name
 
-    refused = await runtime.actor_say("去找大哥当面说")
+    refused = await _say(runtime, "去找大哥当面说")
     _read_as(container, decision="unclear")
-    unreadable = await runtime.actor_say("唉")
+    unreadable = await _say(runtime, "唉")
 
-    assert (refused.reading, refused.reason) == (None, "talk_without_target")
-    assert (unreadable.reading, unreadable.reason) == (None, "unreadable")
+    assert (refused.action_summary, refused.reason) == (None, "talk_without_target")
+    assert (unreadable.action_summary, unreadable.reason) == (None, "unreadable")
     runtime.answer_actor(_IDLE)
     await task
 
@@ -583,15 +630,17 @@ async def test_the_thread_records_the_exchange_and_the_act_in_order(container) -
 
     task = asyncio.create_task(runtime.run_step(agents))
     await _next_turn(runtime, task)
-    said = await runtime.actor_say("抄奏章")
-    runtime.answer_actor(said.reading)
+    said = await _say(runtime, "抄奏章")
+    runtime.answer_actor(ActorConfirmation(said.action_summary.action_summary_id))
     await task
 
     thread = (await container.snapshot.load(world_id, 1)).actor_thread
     assert [e["kind"] for e in thread] == ["asked", "said", "answered", "began", "ended"]
     asked, said_entry, answered, began, ended = thread
     assert said_entry["turn_id"] == answered["turn_id"] == asked["turn"]["turn_id"]
-    assert answered["answer"]["action"]["action_description"] == "亲自誊抄奏章"
+    assert answered["answer"] == {"action_summary_id": said.action_summary.action_summary_id}
+    assert said_entry["action_summary"]["description"] == "亲自誊抄奏章"
+    assert "action" not in said_entry["action_summary"]
     assert (began["description"], began["total_steps"]) == ("亲自誊抄奏章", 1)
     assert ended["fact"] and ended["succeeded"] and ended["happened"]
     # Each entry names its step's moment in the world's own calendar, never by step.
@@ -611,7 +660,7 @@ async def test_an_interrupt_turn_takes_no_words(container) -> None:
     task = asyncio.create_task(runtime.run_step(agents))
     interrupt = await _next_turn(runtime, task)
     with pytest.raises(ValueError):
-        await runtime.actor_say("去找大哥当面说")
+        await _say(runtime, "去找大哥当面说")
     runtime.answer_actor(ActorInterruptAnswer(interrupt=False))
     await task
 
@@ -810,7 +859,7 @@ async def test_amendments_during_an_invitation_wait_for_the_next_step(container)
 
     task = asyncio.create_task(runtime.run_step(agents))
     await _next_turn(runtime, task)
-    runtime.answer_actor(ActorDecision(action=_work()))
+    await _answer_decision(runtime, agents[0], ActorDecision(action=_work()))
     for _ in range(2000):
         turn = runtime.actor.pending_turn
         if turn is not None and turn.kind is TurnKind.INVITE:
@@ -872,7 +921,7 @@ async def test_a_turn_too_long_is_refused_and_the_turn_stays_open(container) -> 
     runtime, _ms, agents = _setup(container, "world-actor-talk-long", other_at="palace")
     task = asyncio.create_task(runtime.run_step(agents))
     await _next_turn(runtime, task)
-    runtime.answer_actor(_talk_to_other())
+    await _answer_decision(runtime, agents[0], _talk_to_other())
     for _ in range(2000):
         turn = runtime.actor.pending_turn
         if turn is not None and turn.kind is TurnKind.SPEAK:
@@ -897,7 +946,7 @@ async def test_amendments_during_a_conversation_wait_for_the_next_step(container
     runtime, _ms, agents = _setup(container, "world-actor-talk-amend", other_at="palace")
     task = asyncio.create_task(runtime.run_step(agents))
     await _next_turn(runtime, task)
-    runtime.answer_actor(_talk_to_other())
+    await _answer_decision(runtime, agents[0], _talk_to_other())
     for _ in range(2000):
         turn = runtime.actor.pending_turn
         if turn is not None and turn.kind is TurnKind.SPEAK:

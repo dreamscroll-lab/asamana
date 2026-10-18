@@ -2,19 +2,19 @@
  * The actor's conversation with the world, read off the actor's thread (`ActorEntry`): one line
  * per thing that passed between them, in the order the backend recorded it.
  *
- * Derived here, never stored: whether a reading was confirmed or declined, how far an act has
+ * Derived here, never stored: whether an action summary was confirmed or declined, how far an act has
  * come, whether it can still be broken off, which perceptions belong to the question open now,
  * and where the world's time is shown: once per step, above the first line that step adds. The
  * backend's entries are the only facts.
  */
 
 import type {
-  ActorAnswer, ActorBriefing, ActorDecision, ActorEntry, ActorTurn, BriefMessage, DialogueTurn,
+  ActorPublicAnswer, ActorBriefing, ActorActionSummary, ActorRecordedIntent, ActorEntry, ActorTurn, BriefMessage, DialogueTurn,
 } from "../../types";
 
-// A reading waiting for the actor while its turn is open; confirmed when the turn was answered
-// with it; declined otherwise (a later reading, another answer, or the turn closing unanswered).
-export type ReadingState = "pending" | "confirmed" | "declined";
+// An action summary waiting for the actor while its turn is open; confirmed when the turn was answered
+// with it; declined otherwise (a later action summary, another answer, or the turn closing unanswered).
+export type ActionSummaryState = "pending" | "confirmed" | "declined";
 
 export type ThreadItem =
   // The world's time for the lines after it, up to the next one.
@@ -23,10 +23,10 @@ export type ThreadItem =
   | { kind: "perceived"; key: string; messages: BriefMessage[]; broadcasts: string[]; acted_upon: string[]; asking: boolean }
   // A question the world asked; `open` while it still waits for the actor.
   | { kind: "asked"; key: string; turn: ActorTurn; open: boolean }
-  // The actor's words, and the world's reading of them or why there is none.
-  | { kind: "said"; key: string; words: string; reading: ActorDecision | null; reason: string | null; briefing: ActorBriefing | null; state: ReadingState }
-  // An answer that is a choice of its own, not the confirming of a reading.
-  | { kind: "chose"; key: string; choice: "idle" | "carry_on" | "break_off" | "accept" | "refuse" | "act"; description: string }
+  // The actor's intent, its action summary or the reason it was rejected.
+  | { kind: "said"; key: string; words: string; action_summary: ActorActionSummary | null; reason: string | null; intent: ActorRecordedIntent | null; briefing: ActorBriefing | null; state: ActionSummaryState }
+  // An answer that is a choice of its own, not the confirming of an action summary.
+  | { kind: "chose"; key: string; choice: "idle" | "carry_on" | "break_off" | "accept" | "refuse"; description: string }
   // An act of the character's, from its start: `elapsed` of `total` steps, `ended` once it is over.
   | { kind: "act"; key: string; description: string; elapsed: number; total: number; ended: boolean; breakingOff: boolean }
   | { kind: "ended"; key: string; fact: string; succeeded: boolean; happened: boolean }
@@ -35,12 +35,12 @@ export type ThreadItem =
 
 /** The thread as lines, oldest first. `turn` is the turn open now (null when none). */
 export function buildThread(entries: ActorEntry[], turn: ActorTurn | null): ThreadItem[] {
-  const answered = new Map<string, ActorAnswer>();
-  const lastReading = new Map<string, string>();
+  const answered = new Map<string, ActorPublicAnswer>();
+  const lastActionSummary = new Map<string, string>();
   const briefings = new Map<string, ActorBriefing | null>();
   for (const e of entries) {
     if (e.kind === "answered") answered.set(e.turn_id, e.answer);
-    if (e.kind === "said" && e.reading) lastReading.set(e.turn_id, e.entry_id);
+    if (e.kind === "said") lastActionSummary.set(e.turn_id, e.entry_id);
     if (e.kind === "asked") briefings.set(e.turn.turn_id, e.turn.briefing);
   }
   const lastAnswer = entries.map((e) => e.kind).lastIndexOf("answered");
@@ -88,13 +88,13 @@ export function buildThread(entries: ActorEntry[], turn: ActorTurn | null): Thre
         break;
       case "said": {
         const answer = answered.get(e.turn_id);
-        const latest = lastReading.get(e.turn_id) === e.entry_id;
-        const state: ReadingState =
-          latest && answer && "action" in answer && answer.action ? "confirmed"
-          : latest && !answer && turn?.turn_id === e.turn_id ? "pending"
+        const latest = lastActionSummary.get(e.turn_id) === e.entry_id;
+        const state: ActionSummaryState =
+          answer && "action_summary_id" in answer && answer.action_summary_id === e.action_summary?.action_summary_id ? "confirmed"
+          : latest && e.action_summary && !answer && turn?.turn_id === e.turn_id ? "pending"
           : "declined";
         push(e, {
-          kind: "said", key: e.entry_id, words: e.words, reading: e.reading, reason: e.reason,
+          kind: "said", key: e.entry_id, words: e.words, action_summary: e.action_summary, reason: e.reason, intent: e.intent,
           briefing: briefings.get(e.turn_id) ?? null, state,
         });
         break;
@@ -102,16 +102,13 @@ export function buildThread(entries: ActorEntry[], turn: ActorTurn | null): Thre
       case "answered": {
         const a = e.answer;
         if ("interrupt" in a) {
-          push(e, { kind: "chose", key: e.entry_id, choice: a.interrupt ? "break_off" : "carry_on", description: "" });
+          push(e, { kind: "chose", key: e.entry_id, choice: a.interrupt ? "break_off" : "carry_on", description: a.thought ?? "" });
         } else if ("accept" in a) {
           push(e, { kind: "chose", key: e.entry_id, choice: a.accept ? "accept" : "refuse", description: "" });
         } else if ("end" in a) {
           // A dialogue turn is recorded as a `dialogue_turn` entry, never as an answer.
-        } else if (a.idle) {
+        } else if ("idle" in a && a.idle) {
           push(e, { kind: "chose", key: e.entry_id, choice: "idle", description: "" });
-        } else if (a.action && !lastReading.has(e.turn_id)) {
-          // Answered with an action no reading carried: say what it was.
-          push(e, { kind: "chose", key: e.entry_id, choice: "act", description: a.action.action_description });
         }
         break;
       }

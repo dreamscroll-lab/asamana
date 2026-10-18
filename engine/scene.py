@@ -54,7 +54,8 @@ def _scene_owner_name(
         return None
     if first_person and item.owner_id == viewer_id:
         return "我"
-    return directory.agent_name(item.owner_id)
+    holder = directory.describe(item.owner_id)
+    return holder.name if holder is not None else "某人"
 
 
 def scene_npc_view(npc: "Npc") -> PerceivedNpc:

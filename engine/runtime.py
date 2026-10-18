@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import asyncio
 import time
 from collections import defaultdict
@@ -16,13 +17,16 @@ from agent.personality import ActionStatus, activity_status_for
 from core.context import annotate_call, observe_stage, set_log_context
 from core.event_bus import NarrativeEventBus
 from core.interfaces.action import COVERTABLE_ACTION_TYPES
+from core.interfaces.action import Ref
 from core.interfaces.actor import (
     ActorAmendments,
-    ActorAnswer,
+    ActorPublicAnswer,
     ActorMind,
     ActorPace,
     ActorTurn,
-    SaidEntry,
+    ActorIntent,
+    ActorIntentResult,
+    ActorOperations,
 )
 from core.interfaces.agent_store import AgentStoreProvider, relations_snapshot
 from core.interfaces.directory import WorldDirectory
@@ -230,7 +234,7 @@ class NarrativeRuntime:
         """The actor's channel: the turn waiting for the actor, and its withdrawal."""
         return self._actor.channel
 
-    def answer_actor(self, answer: ActorAnswer) -> None:
+    def answer_actor(self, answer: ActorPublicAnswer) -> None:
         """Answer the turn waiting for the actor (``ActorCoordinator.answer``)."""
         self._actor.answer(answer)
 
@@ -260,9 +264,11 @@ class NarrativeRuntime:
         """Save the actor's amendments; whether they landed now (``ActorCoordinator.amend``)."""
         return await self._actor.amend(amendments)
 
-    async def actor_say(self, text: str) -> SaidEntry:
-        """The actor's words read against the open DECIDE turn (``ActorCoordinator.say``)."""
-        return await self._actor.say(text)
+    async def actor_intent(self, intent: ActorIntent) -> ActorIntentResult:
+        return await self._actor.intent(intent)
+
+    def actor_operations(self, turn_id: str, target: Ref) -> ActorOperations:
+        return self._actor.operations(turn_id, target)
 
     def actor_break_off(self) -> None:
         """Break off what the performed character is doing (``ActorCoordinator.break_off``)."""

@@ -52,7 +52,11 @@ def _until(probe: Callable[[], Any], *, timeout: float = 20.0) -> Any:
 
 
 def _open_turn(client: TestClient, world_id: str) -> dict[str, Any]:
-    return _until(lambda: client.get(f"/api/worlds/{world_id}/actor/turn").json()["turn"])
+    with client.websocket_connect(f"/ws/{world_id}") as ws:
+        while True:
+            frame = ws.receive_json()
+            if frame["type"] == "actor_turn" and frame["data"] is not None:
+                return frame["data"]
 
 
 def _intent(container, **payload) -> None:
@@ -167,27 +171,28 @@ async def test_the_actor_reads_confirms_and_answers_a_turn(mock_build_container,
         # Words naming nobody the character can talk to: refused with the reason, nothing answered.
         _intent(mock_build_container, reason="找人说话", decision="act", selected_index=_talk_index(),
                 person_indices=[99], action_description="找人说话")
-        refused = client.post(f"/api/worlds/{world_id}/actor/say", json={"text": "找个人说话"}).json()
+        refused = client.post(f"/api/worlds/{world_id}/actor/intent", json={"turn_id": turn["turn_id"], "text": "找个人说话"}).json()
         _intent(mock_build_container, reason="只是叹气", decision="unclear")
-        unreadable = client.post(f"/api/worlds/{world_id}/actor/say", json={"text": "唉"}).json()
+        unreadable = client.post(f"/api/worlds/{world_id}/actor/intent", json={"turn_id": turn["turn_id"], "text": "唉"}).json()
         _intent(mock_build_container, reason="誊抄奏章", decision="act", selected_index=_work_index(),
                 action_description="亲自誊抄奏章", estimated_steps=1)
-        reading = client.post(f"/api/worlds/{world_id}/actor/say", json={"text": "抄奏章"}).json()
+        action_summary = client.post(f"/api/worlds/{world_id}/actor/intent", json={"turn_id": turn["turn_id"], "text": "抄奏章"}).json()
 
-        assert refused == {"accepted": False, "reason": "talk_without_target"}
-        assert unreadable == {"accepted": False, "reason": "unreadable"}
-        assert reading == {"accepted": True, "reason": None}
-        assert client.get(f"/api/worlds/{world_id}/actor/turn").json()["turn"] is not None
+        assert refused == {"status": "rejected", "reason": "talk_without_target", "action_summary": None}
+        assert unreadable == {"status": "rejected", "reason": "unreadable", "action_summary": None}
+        assert action_summary["status"] == "needs_confirmation" and action_summary["reason"] is None
+        assert _open_turn(client, world_id)["turn_id"] == turn["turn_id"]
 
-        # The reading itself is in the thread, where the actor reads it.
+        # The action summary itself is in the thread, where the actor reads it.
         said = client.get(f"/api/worlds/{world_id}/actor/thread").json()["entries"][-1]
         assert said["kind"] == "said" and said["turn_id"] == turn["turn_id"]
-        assert said["reading"]["action"]["action_type"] == "work"
+        assert said["action_summary"]["operation"] == "work"
+        assert "action" not in said["action_summary"]
         stale = client.post(f"/api/worlds/{world_id}/actor/answer", json={
-            "turn_id": "a-closed-turn", "answer": said["reading"],
+            "turn_id": "a-closed-turn", "answer": {"action_summary_id": said["action_summary"]["action_summary_id"]},
         })
         answered = client.post(f"/api/worlds/{world_id}/actor/answer", json={
-            "turn_id": said["turn_id"], "answer": said["reading"],
+            "turn_id": said["turn_id"], "answer": {"action_summary_id": said["action_summary"]["action_summary_id"]},
         })
         assert stale.status_code == 409
         assert answered.json() == {"accepted": True, "reason": None}
@@ -207,7 +212,7 @@ async def test_words_and_break_offs_outside_a_turn_are_refused(mock_build_contai
 
     with _client(mock_build_container, test_config, catalog) as client:
         client.post(f"/api/worlds/{world_id}/confirm", json={"character_id": character_id})
-        said = client.post(f"/api/worlds/{world_id}/actor/say", json={"text": "抄奏章"})
+        said = client.post(f"/api/worlds/{world_id}/actor/intent", json={"turn_id": "closed-turn", "text": "抄奏章"})
         # Idle, so nothing to break off.
         break_off = client.post(f"/api/worlds/{world_id}/actor/break-off").json()
 
@@ -258,13 +263,15 @@ async def test_a_refused_or_malformed_answer_leaves_the_turn_open(mock_build_con
         not_a_line = answer({"line": 3, "end": False})
         # A line that doesn't end the conversation has to say something.
         nothing_said = answer({"line": " ", "end": False})
+        invalid_thought = answer({"interrupt": True, "thought": 3})
+        long_thought = answer({"interrupt": True, "thought": "想" * 501})
         # Well formed, but a decision turn takes no interrupt, invitation or line.
         wrong_kinds = [answer({"interrupt": True}), answer({"accept": True}), answer({"line": "大哥", "end": False})]
 
-        malformed = (unknown_key, no_type, not_a_flag, no_turn, not_an_accept, not_a_line, nothing_said)
-        assert [r.status_code for r in malformed] == [400] * 7
+        malformed = (unknown_key, no_type, not_a_flag, no_turn, not_an_accept, not_a_line, nothing_said, invalid_thought, long_thought)
+        assert [r.status_code for r in malformed] == [400] * len(malformed)
         assert [r.status_code for r in wrong_kinds] == [409, 409, 409]
-        assert client.get(f"/api/worlds/{world_id}/actor/turn").json()["turn"]["turn_id"] == turn["turn_id"]
+        assert _open_turn(client, world_id)["turn_id"] == turn["turn_id"]
 
         assert answer({"idle": True}).json()["accepted"] is True
         client.post(f"/api/worlds/{world_id}/stop")
@@ -318,6 +325,38 @@ async def test_director_routes_close_while_an_actor_performs(mock_build_containe
     assert (exited.json()["actor_character_id"], exited.json()["actor_exited"]) == (character_id, True)
     assert exit_again.status_code == 409
     assert directives_after.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_actor_turn_is_delivered_and_restored_only_through_websocket(mock_build_container, test_config) -> None:
+    catalog = WorldCatalog(None)
+    world_id, character_id = await _unconfirmed_world(mock_build_container, test_config, catalog)
+    base = f"/api/worlds/{world_id}"
+    with _client(mock_build_container, test_config, catalog) as client:
+        assert client.get(f"{base}/actor/turn").status_code == 404
+        assert "/api/worlds/{world_id}/actor/turn" not in client.get("/openapi.json").json()["paths"]
+        assert client.post(f"{base}/confirm", json={"character_id": character_id}).status_code == 200
+        with client.websocket_connect(f"/ws/{world_id}") as ws:
+            assert ws.receive_json()["type"] == "status"
+            assert ws.receive_json()["type"] == "latest_step"
+            assert client.post(f"{base}/run", json={"steps": 1}).status_code == 200
+            while True:
+                frame = ws.receive_json()
+                if frame["type"] == "actor_turn" and frame["data"] is not None:
+                    turn = frame["data"]
+                    break
+            assert turn["kind"] == "decide" and turn["agent_id"] == character_id
+            assert _open_turn(client, world_id) == turn
+            answered = client.post(f"{base}/actor/answer", json={
+                "turn_id": turn["turn_id"], "answer": {"idle": True},
+            })
+            assert answered.json()["accepted"] is True
+            while True:
+                frame = ws.receive_json()
+                if frame["type"] == "actor_turn":
+                    assert frame["data"] is None
+                    break
+        _until(lambda: meta if (meta := client.get(base).json())["run_state"] == "completed" else None)
 
 
 @pytest.mark.asyncio
@@ -392,3 +431,115 @@ async def test_observation_routes_answer_as_the_character_until_the_actor_exits(
     assert released == profiles
 
 
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("description", ["", " \n "])
+async def test_broadcast_skips_interpretation_and_uses_only_session_model_gate(
+    mock_build_container, test_config, monkeypatch, description: str,
+) -> None:
+    from unittest.mock import AsyncMock, Mock
+
+    from interaction.api.app import ApiServices
+
+    catalog = WorldCatalog(None)
+    world_id, character_id = await _unconfirmed_world(mock_build_container, test_config, catalog)
+    base = f"/api/worlds/{world_id}"
+    with _client(mock_build_container, test_config, catalog) as client:
+        client.post(f"{base}/confirm", json={"character_id": character_id})
+        client.post(f"{base}/run", json={"steps": 1})
+        turn = _open_turn(client, world_id)
+        model_gate = Mock()
+        parser = AsyncMock(side_effect=AssertionError("must not parse"))
+        monkeypatch.setattr(ApiServices, "require_model_keys", model_gate)
+        monkeypatch.setattr(mock_build_container.llm_router.get(LLMScene.ACTOR_INTENT), "complete", parser)
+        rejected = client.post(f"{base}/actor/intent", json={
+            "turn_id": turn["turn_id"], "operation": "broadcast",
+            "target": {"kind": "location", "id": turn["briefing"]["location"]["location_id"]},
+            "parameters": {"message": "请大家留意这里"}, "description": "只悄悄告诉一个人",
+        })
+        assert rejected.status_code == 400
+        assert "broadcast.description" in rejected.json()["detail"]
+        model_gate.assert_not_called()
+        parser.assert_not_awaited()
+        submitted = client.post(f"{base}/actor/intent", json={
+            "turn_id": turn["turn_id"], "operation": "broadcast",
+            "target": {"kind": "location", "id": turn["briefing"]["location"]["location_id"]},
+            "parameters": {"message": "请大家留意这里"}, "description": description,
+        })
+        assert submitted.status_code == 200
+        assert submitted.json()["status"] == "submitted"
+        # Session access checks keys independently of intent interpretation.
+        model_gate.assert_called_once_with()
+        parser.assert_not_awaited()
+        _until(lambda: m if (m := client.get(base).json())["run_state"] == "completed" else None)
+        thread = client.get(f"{base}/actor/thread").json()["entries"]
+        said = next(entry for entry in thread if entry["kind"] == "said")
+        assert said["intent"]["description"] == description
+        assert said["action_summary"]["parameters"]["message"] == "请大家留意这里"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["work", "rest", "covert"])
+async def test_self_operations_use_turn_identity_and_follow_description_requirements(
+    mock_build_container, test_config, monkeypatch, operation: str,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    catalog = WorldCatalog(None)
+    world_id, character_id = await _unconfirmed_world(mock_build_container, test_config, catalog)
+    provider = mock_build_container.llm_router.get(LLMScene.ACTOR_INTENT)
+    provider.fixed_response = json.dumps({
+        "decision": "act", "operation": operation, "operation_consistent": True,
+        "action_description": "我按描述完成自己的行动", "estimated_steps": 3,
+    })
+    parser = AsyncMock(wraps=provider.complete)
+    monkeypatch.setattr(provider, "complete", parser)
+    base = f"/api/worlds/{world_id}"
+    with _client(mock_build_container, test_config, catalog) as client:
+        client.post(f"{base}/confirm", json={"character_id": character_id})
+        client.post(f"{base}/run", json={"steps": 1})
+        turn = _open_turn(client, world_id)
+        assert turn["agent_id"] == character_id
+        assert "character" not in turn["briefing"]
+        assert character_id not in {person["agent_id"] for person in turn["briefing"]["people"]}
+        capabilities = client.get(f"{base}/actor/operations", params={
+            "turn_id": turn["turn_id"], "target_kind": "agent", "target_id": character_id,
+        })
+        assert capabilities.status_code == 200
+        assert [capability["operation"] for capability in capabilities.json()["operations"]] == ["work", "rest", "covert"]
+        assert all(capability["available"] for capability in capabilities.json()["operations"])
+        requirements = {c["operation"]: c["required_parameters"] for c in capabilities.json()["operations"]}
+        assert requirements == {"work": ["description"], "rest": [], "covert": ["description"]}
+        target = {"kind": "agent", "id": character_id}
+        payload = {"turn_id": turn["turn_id"], "operation": operation, "target": target, "parameters": {}}
+        if operation != "rest":
+            rejected = client.post(f"{base}/actor/intent", json=payload)
+            assert rejected.json()["reason"] == "description_required"
+            parser.assert_not_awaited()
+            payload["description"] = "整理账册" if operation == "work" else "观察此处正在进行的谈话"
+        submitted = client.post(f"{base}/actor/intent", json=payload)
+        assert submitted.status_code == 200
+        if operation == "rest":
+            assert submitted.json()["status"] == "submitted"
+            parser.assert_not_awaited()
+        else:
+            assert submitted.json()["status"] == "needs_confirmation"
+            parser.assert_awaited_once()
+            assert client.post(f"{base}/actor/answer", json={
+                "turn_id": turn["turn_id"], "answer": {
+                    "action_summary_id": submitted.json()["action_summary"]["action_summary_id"],
+                },
+            }).json()["accepted"] is True
+        _until(lambda: m if (m := client.get(base).json())["run_state"] == "completed" else None)
+        thread = client.get(f"{base}/actor/thread").json()["entries"]
+        said = next(entry for entry in thread if entry["kind"] == "said" and entry["action_summary"] is not None)
+        step_seconds = client.get(base).json()["seconds_per_step"]
+        assert said["action_summary"]["estimated_duration_seconds"] == step_seconds * (1 if operation == "rest" else 3)
+        answered = next(entry for entry in thread if entry["kind"] == "answered")
+        assert said["intent"]["operation"] == said["action_summary"]["operation"] == operation
+        assert said["intent"]["target"] == said["action_summary"]["target"] == target
+        assert answered["answer"] == {"action_summary_id": said["action_summary"]["action_summary_id"]}
+        assert "action_description" not in json.dumps(thread)
+    snapshot = await mock_build_container.snapshot.load(world_id, 1)
+    assert snapshot.actor_thread == thread

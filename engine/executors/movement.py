@@ -8,6 +8,7 @@ from core.interfaces.action import ActionResult, ActionTarget, ActionType, Agent
 from core.interfaces.directory import WorldDirectory
 from core.logging import get_logger
 from core.duration import describe_duration, describe_seconds
+from core.action_duration import travel_duration_steps
 from engine.environment import IN_TRANSIT
 from core.interfaces.execution import TickResult
 from engine.executors.base import ActionExecutionState, ActionExecutor, Conscription
@@ -44,7 +45,7 @@ def _arrival_steps(path: list[str], environment: "EnvironmentSystem", seconds_pe
     elapsed_seconds = 0
     for a, b in zip(path, path[1:]):
         elapsed_seconds += environment.space.edge_seconds(a, b)
-        arrivals.append(max(1, round(elapsed_seconds / seconds_per_step)))
+        arrivals.append(travel_duration_steps(elapsed_seconds, seconds_per_step))
     return arrivals
 
 

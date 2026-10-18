@@ -13,6 +13,7 @@ from core.interfaces.action import (
     ActionResult, ActionTarget, ActionType, AgentAction, DialogueTurn, Observed, Ref, TargetAgentEffect,
 )
 from core.interfaces.actor import BriefPerson, Conversation
+from core.action_duration import action_duration_steps
 from core.interfaces.directory import WorldDirectory
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, coerce_bool, extract_json, output_budget
 from core.interfaces.trace import Stage
@@ -368,7 +369,7 @@ class SocialExecutor(ActionExecutor):
         live = any(agents[pid].is_performed for pid in participant_ids if pid in agents)
         # A live conversation takes one step, so it is spoken the step it starts; a longer act
         # would ask the actor whether to break off a talk not yet spoken.
-        duration = 1 if live else max(action.estimated_steps, 1)
+        duration = action_duration_steps(action.action_type, action.estimated_steps, live_talk=live)
         initiator_name = self._directory.agent_name(action.agent_id)
         target_name = self._directory.agent_name(target_ids[0])
         # The opening is public; the privileged transcript appears only in complete's outcome.

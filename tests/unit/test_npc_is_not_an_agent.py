@@ -228,10 +228,14 @@ def test_the_code_layer_tier_never_crosses_into_the_narrative_layer() -> None:
     # Scan only the human-readable half: key names (errand_npc_index etc.) are machine contract,
     # like physical_entity_index; the model just fills them and never writes them into narrative.
     # The text after the colon does.
-    from agent import decision as _d
+    import inspect
+
+    prompt_source = "\n".join(inspect.getsource(method) for method in (
+        DecisionEngine._build_decision_prompt, DecisionEngine._actor_interpret_output_fields,
+    ))
     source_schema = "\n".join(
         ln.split(":", 1)[1] if ":" in ln else ln
-        for ln in pathlib.Path(_d.__file__).read_text().splitlines()
+        for ln in prompt_source.splitlines()
         if ln.lstrip().startswith(('"errand_', '"physical_npc'))
     )
     for text, where in ((menu, "行动菜单"), (schema, "prompt docstring"),

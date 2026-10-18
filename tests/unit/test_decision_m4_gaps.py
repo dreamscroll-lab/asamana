@@ -38,6 +38,7 @@ from agent.personality import (
 from core.interfaces.action import ActionType
 from core.interfaces.message import Message
 from core.interfaces.perception import (
+    NpcIdentity, PerceivedNpc,
     PerceivedIdentity,
     PerceivedPresence,
     Broadcast, BroadcastType, LocationView, ReachableLocation, SpatialPerception, VisibleEntity,
@@ -1064,6 +1065,7 @@ def test_item_list_marks_who_holds_what(main_engine) -> None:
         visible_agent_ids=["agent-weichi"],
         visible_agents={"agent-weichi": PerceivedIdentity(name="尉迟恭")},
     )
+    packet.spatial.visible_npcs["npc-runner"] = PerceivedNpc(NpcIdentity(name="信使"))
     packet.spatial.visible_entities.extend([
         VisibleEntity(entity_id="e1", name="灯笼", entity_type="item"),
         VisibleEntity(entity_id="e2", name="短刀", entity_type="item", holder_id="agent-shimin",
@@ -1071,6 +1073,7 @@ def test_item_list_marks_who_holds_what(main_engine) -> None:
         VisibleEntity(entity_id="e3", name="虎符", entity_type="item", holder_id="agent-weichi",
                       is_takeable=True),
         VisibleEntity(entity_id="e4", name="密函", entity_type="item", holder_id="agent-ghost"),
+        VisibleEntity(entity_id="e5", name="包裹", entity_type="item", holder_id="npc-runner", is_takeable=True),
     ])
     prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
 
@@ -1079,7 +1082,10 @@ def test_item_list_marks_who_holds_what(main_engine) -> None:
     assert "#2 短刀（由我持有；可交出）" in prompt     # in my hands: what I can do is hand it over
     assert "#3 虎符（由尉迟恭持有）" in prompt       # in someone else's hands: not marked "可取"
     assert "#4 密函（由某人持有" in prompt      # an unrecognized holder falls back to a descriptive referent
-    for leaked in ("agent-shimin", "agent-weichi", "agent-ghost", "e1", "e2"):
+    assert "#5 包裹（由信使持有）" in prompt
+    _system, actor_prompt = main_engine._build_interpret_prompt("拿回包裹", _make_personality(), packet)
+    assert "#5 包裹（由信使持有）" in actor_prompt
+    for leaked in ("agent-shimin", "agent-weichi", "agent-ghost", "npc-runner", "e1", "e2"):
         assert leaked not in prompt
 
 

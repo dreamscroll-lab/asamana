@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List
 
+from core.action_duration import action_duration_steps
 from core.context import GivenFacts, annotate_call, note_active_call_adoption
 from core.interfaces.action import (
     ActionTarget, ActionResult, ActionType, AgentAction, EntitySpawn, EntityStateChange,
@@ -123,7 +124,7 @@ class WorkExecutor(ActionExecutor):
             participant_ids=[action.agent_id],
             purpose=description,
             started_step=step,
-            estimated_steps=action.estimated_steps,
+            estimated_steps=action_duration_steps(action.action_type, action.estimated_steps),
             target=action.target,
             opening_outcome=opening,
             opening_observations=observed_here(environment, action.agent_id, opening),

@@ -2,21 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import { breakableAct, buildThread, conversationsOf, liveConversation, mergeEntries } from "./thread";
 import type {
-  ActorAction, ActorAnswer, ActorBriefing, ActorDecision, ActorEntry, ActorTurn,
+  ActorPublicAnswer, ActorBriefing, ActorActionSummary, ActorEntry, ActorTurn,
 } from "../../types";
 
-const briefing: ActorBriefing = { people: [], npcs: [], places: [], entities: [] };
+const briefing: ActorBriefing = { location: null, people: [], npcs: [], places: [], entities: [] };
 
-const action = (action_description: string): ActorAction => ({
-  action_type: "work", action_description, inner_monologue: "", expected_outcome: "",
-  estimated_steps: 1, person_ids: [], message_announce: false, message_content: "", urgency: "normal",
-  destination_id: null, move_carry_ids: [], physical_person_id: null, physical_npc_id: null,
-  physical_entity_id: null, item_name: "", physical_recipient_id: null, errand_npc_id: null,
-  errand_destination_id: null, errand_item_id: null, errand_recipient_id: null, errand_announce: false,
-  errand_message: "",
+const act = (description: string): ActorActionSummary => ({
+  action_summary_id: `action_summary-${description}`, description, operation: "work", target: null, parameters: {}, estimated_duration_seconds: 7200,
 });
-const act = (description: string): ActorDecision => ({ action: action(description), idle: false });
-const IDLE: ActorDecision = { action: null, idle: true };
+const IDLE: ActorPublicAnswer = { idle: true };
 
 const turn = (turn_id: string, kind: ActorTurn["kind"] = "decide"): ActorTurn => ({
   agent_id: "me", step: 1, kind, briefing: kind === "decide" ? briefing : null, doing: kind === "interrupt" ? "抄奏章" : "",
@@ -29,10 +23,10 @@ const turn = (turn_id: string, kind: ActorTurn["kind"] = "decide"): ActorTurn =>
 let n = 0;
 const id = () => `e${++n}`;
 const asked = (t: ActorTurn): ActorEntry => ({ kind: "asked", entry_id: id(), time_label: "", step: t.step, turn: t });
-const said = (turn_id: string, words: string, reading: ActorDecision | null, reason: string | null = null): ActorEntry => ({
-  kind: "said", entry_id: id(), time_label: "", step: 1, turn_id, words, reading, reason,
+const said = (turn_id: string, words: string, action_summary: ActorActionSummary | null, reason: string | null = null): ActorEntry => ({
+  kind: "said", entry_id: id(), time_label: "", step: 1, turn_id, words, action_summary, reason, intent: null,
 });
-const answered = (turn_id: string, answer: ActorAnswer): ActorEntry => ({
+const answered = (turn_id: string, answer: ActorPublicAnswer): ActorEntry => ({
   kind: "answered", entry_id: id(), time_label: "", step: 1, turn_id, answer,
 });
 const began = (step: number, total_steps: number): ActorEntry => ({
@@ -55,7 +49,7 @@ describe("buildThread · 卡片", () => {
   });
 
   it("用理解作答的那张打勾,其余与选了不动的都是未采用", () => {
-    const confirmed = buildThread([asked(turn("t1")), said("t1", "抄", act("抄")), answered("t1", act("抄"))], null);
+    const confirmed = buildThread([asked(turn("t1")), said("t1", "抄", act("抄")), answered("t1", { action_summary_id: act("抄").action_summary_id })], null);
     expect(confirmed.find((i) => i.kind === "said")).toMatchObject({ state: "confirmed" });
     // Its answer is the tick on the card, not a line of its own.
     expect(confirmed.map((i) => i.kind)).toEqual(["asked", "said"]);
@@ -65,19 +59,41 @@ describe("buildThread · 卡片", () => {
     expect(idle.at(-1)).toMatchObject({ kind: "chose", choice: "idle" });
   });
 
+  it("retains a failed structured operation and description in the actor thread", () => {
+    const t = turn("t1");
+    const entry = said("t1", "避开要害", null, "operation_constraint_conflict");
+    if (entry.kind !== "said") throw new Error("Unexpected test entry");
+    entry.intent = {
+      turn_id: t.turn_id, text: null, operation: "physical", target: { kind: "agent", id: "li" },
+      parameters: { destination_id: null, item_id: null, recipient_id: null, message: null, announce: null }, description: "避开要害",
+    };
+    expect(buildThread([asked(t), entry], t).at(-1)).toMatchObject({ kind: "said", intent: entry.intent });
+  });
+
+  it("declines an earlier action summary when the latest intent could not be read", () => {
+    const t = turn("t1");
+    const items = buildThread([asked(t), said("t1", "抄", act("抄")), said("t1", "唉", null, "unreadable")], t);
+    expect(items.filter((item) => item.kind === "said").map((item) => item.kind === "said" && item.state)).toEqual(["declined", "declined"]);
+  });
+
+  it("confirms the exact action summary id rather than the last action summary", () => {
+    const items = buildThread([asked(turn("t1")), said("t1", "抄", act("甲")), said("t1", "抄", act("乙")), answered("t1", { action_summary_id: act("甲").action_summary_id })], null);
+    expect(items.filter((item) => item.kind === "said").map((item) => item.kind === "said" && item.state)).toEqual(["confirmed", "declined"]);
+  });
+
   it("回合没答就关了,理解也算未采用;读不成的话带着原因", () => {
     const items = buildThread([asked(turn("t1")), said("t1", "抄", act("抄")), said("t1", "唉", null, "unreadable")], null);
-    expect(items.filter((i) => i.kind === "said")).toMatchObject([{ state: "declined" }, { reading: null, reason: "unreadable" }]);
+    expect(items.filter((i) => i.kind === "said")).toMatchObject([{ state: "declined" }, { action_summary: null, reason: "unreadable" }]);
   });
 
   it("没有理解垫着的行动、打断的回答都各成一行", () => {
     const items = buildThread([
-      asked(turn("t1")), answered("t1", act("抄奏章")),
-      asked(turn("t2", "interrupt")), answered("t2", { interrupt: false }),
-      asked(turn("t3", "interrupt")), answered("t3", { interrupt: true }),
+      asked(turn("t1")), answered("t1", { action_summary_id: act("抄奏章").action_summary_id }),
+      asked(turn("t2", "interrupt")), answered("t2", { interrupt: false, thought: "先做完" }),
+      asked(turn("t3", "interrupt")), answered("t3", { interrupt: true, thought: "我得先处理来信" }),
     ], null);
     expect(items.filter((i) => i.kind === "chose")).toMatchObject([
-      { choice: "act", description: "抄奏章" }, { choice: "carry_on" }, { choice: "break_off" },
+      { choice: "carry_on", description: "先做完" }, { choice: "break_off", description: "我得先处理来信" },
     ]);
   });
 

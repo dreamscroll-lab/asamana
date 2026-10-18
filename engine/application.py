@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+
 import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -12,13 +13,16 @@ from config.models import Config
 from core.container import Container
 from core.context import get_log_context, observe_stage, set_log_context
 from core.factory import ComponentKind, ProviderFactory
+from core.interfaces.action import Ref
 from core.interfaces.actor import (
     ActorAmendments,
-    ActorAnswer,
+    ActorPublicAnswer,
     ActorMind,
     ActorPace,
     ActorTurn,
-    SaidEntry,
+    ActorIntent,
+    ActorIntentResult,
+    ActorOperations,
 )
 from core.interfaces.trace import Stage
 from core.interfaces.world_config import WorldConfig
@@ -362,10 +366,8 @@ class NarrativeApplication:
         session = self._sessions.get(world_id)
         return session.runtime.actor.pending_turn if session is not None else None
 
-    async def actor_say(self, world_id: str, text: str) -> SaidEntry:
-        """The actor's words read against the open DECIDE turn, for the actor to confirm and
-        answer it with (``answer_actor_turn``). ``ValueError`` when no DECIDE turn is open or
-        nobody is performed in this session."""
+    async def actor_intent(self, world_id: str, intent: ActorIntent) -> ActorIntentResult:
+        """Interpret or submit actor intent in the suspended character's decision trace."""
         session = self.get_session(world_id)
         turn = session.runtime.actor.pending_turn
         step = turn.step if turn is not None else session.runtime.clock.current_step
@@ -374,10 +376,13 @@ class NarrativeApplication:
         set_log_context(world_id=world_id, step=str(step))
         try:
             with observe_stage(Stage.DECISION, agent_id=turn.agent_id if turn is not None else ""):
-                return await session.runtime.actor_say(text)
+                return await session.runtime.actor_intent(intent)
         finally:
             set_log_context(**previous)
             self._flush_trace_async(world_id, step)
+
+    def actor_operations(self, world_id: str, turn_id: str, target: Ref) -> ActorOperations:
+        return self.get_session(world_id).runtime.actor_operations(turn_id, target)
 
     def actor_break_off(self, world_id: str) -> None:
         """Break off what the performed character is doing. Raises ``ActorAnswerRejected`` when
@@ -425,7 +430,7 @@ class NarrativeApplication:
         world_id: str,
         *,
         turn_id: str,
-        answer: ActorAnswer,
+        answer: ActorPublicAnswer,
     ) -> None:
         """Answer the open turn, which must be ``turn_id``: an answer meant for a turn that has
         since closed must not land on the next one.

@@ -22,6 +22,7 @@ from core.interfaces.action import (
     ActionResult, ActionType, AgentAction, EntityStateChange, ErrandOrder,
 )
 from core.interfaces.directory import WorldDirectory
+from core.action_duration import action_duration_steps
 from core.logging import get_logger
 from core.interfaces.execution import TickResult
 from engine.executors.base import ActionExecutionState, ActionExecutor
@@ -127,7 +128,7 @@ class ErrandExecutor(ActionExecutor):
             # Giving an order takes one beat however far the bearer goes (see
             # test_executor_duration_authority). Don't trust the doer's estimate: one sentence
             # would pin him in place.
-            estimated_steps=1,
+            estimated_steps=action_duration_steps(action.action_type, action.estimated_steps),
             opening_outcome="",
             target=action.target,
             expected_outcome=action.expected_outcome,

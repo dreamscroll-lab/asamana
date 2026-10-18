@@ -603,6 +603,9 @@ export interface BriefPlace {
 export interface BriefEntity {
   entity_id: string;
   name: string;
+  entity_type: string;
+  holder_id: string | null;
+  is_takeable: boolean;
 }
 
 export interface BriefMessage {
@@ -624,35 +627,65 @@ export interface BriefRelation {
 
 /** What a decision can name: the lists an action picks its targets from. */
 export interface ActorBriefing {
+  location: BriefPlace | null;
   people: BriefPerson[]; // everyone it can reach, present or not
   npcs: BriefNpc[];
   places: BriefPlace[];
   entities: BriefEntity[];
 }
 
-export interface ActorAction {
-  action_type: string;
-  action_description: string;
-  inner_monologue: string;
-  expected_outcome: string;
-  estimated_steps: number;
-  person_ids: string[];
-  message_announce: boolean;
-  message_content: string;
-  urgency: string;
-  destination_id: string | null;
-  move_carry_ids: string[];
-  physical_person_id: string | null;
-  physical_npc_id: string | null;
-  physical_entity_id: string | null;
-  item_name: string;
-  physical_recipient_id: string | null;
-  errand_npc_id: string | null;
-  errand_destination_id: string | null;
-  errand_item_id: string | null;
-  errand_recipient_id: string | null;
-  errand_announce: boolean;
-  errand_message: string;
+export interface ActorTarget {
+  kind: "location" | "agent" | "npc" | "item" | "landmark";
+  id: string;
+}
+
+export interface MapOperationTarget { target: ActorTarget; x: number; y: number }
+export type ActorOperation = "move" | "broadcast" | "talk" | "errand" | "take" | "use" | "destroy" | "physical" | "work" | "rest" | "covert";
+export interface ActorOperationParameters {
+  message?: string;
+  destination_id?: string;
+  item_id?: string;
+  recipient_id?: string;
+  announce?: boolean;
+}
+export type ActorIntent = { turn_id: string; text: string } | {
+  turn_id: string; operation: ActorOperation; target: ActorTarget;
+  parameters: ActorOperationParameters; description?: string;
+};
+export interface ActorRecordedIntent {
+  turn_id: string;
+  text: string | null;
+  operation: ActorOperation | null;
+  target: ActorTarget | null;
+  parameters: {
+    destination_id: string | null; item_id: string | null; recipient_id: string | null;
+    message: string | null; announce: boolean | null;
+  };
+  description: string;
+}
+export interface ActorActionSummary {
+  action_summary_id: string;
+  description: string;
+  operation: string;
+  target: ActorTarget | null;
+  estimated_duration_seconds: number;
+  parameters: Record<string, string | boolean | string[]>;
+}
+export interface ActorOperationCapability {
+  operation: ActorOperation;
+  available: boolean;
+  reason: string | null;
+  required_parameters: string[];
+}
+export interface ActorOperations {
+  turn_id: string;
+  target: ActorTarget;
+  operations: ActorOperationCapability[];
+}
+export interface ActorIntentResult {
+  status: "submitted" | "needs_confirmation" | "rejected";
+  reason: string | null;
+  action_summary: ActorActionSummary | null;
 }
 
 export interface EmotionAmendment {
@@ -716,17 +749,16 @@ export interface ActorAmendResult {
 }
 
 /**
- * The answer to a DECIDE turn: exactly one of `action` or `idle` (the character does nothing
- * this step). Goals are amended in the mind.
+ * A DECIDE answer confirms a server-held action summary, or leaves the character idle this step.
+ * Goals are amended in the mind.
  */
-export interface ActorDecision {
-  action: ActorAction | null;
-  idle: boolean;
-}
+export interface ActorConfirmation { action_summary_id: string }
+export interface ActorIdleAnswer { idle: true }
 
 /** The answer to an INTERRUPT turn. What to do instead is said at the DECIDE turn it leads into. */
 export interface ActorInterruptAnswer {
   interrupt: boolean;
+  thought?: string;
 }
 
 /** The answer to an INVITE turn: join the inviter's act or not. */
@@ -741,7 +773,8 @@ export interface ActorDialogueTurn {
   end: boolean;
 }
 
-export type ActorAnswer = ActorDecision | ActorInterruptAnswer | ActorInvitationAnswer | ActorDialogueTurn;
+// Client submissions and public records reference server-held decisions by action summary id.
+export type ActorPublicAnswer = ActorConfirmation | ActorIdleAnswer | ActorInterruptAnswer | ActorInvitationAnswer | ActorDialogueTurn;
 
 /**
  * When an idle character's actor is asked to decide: every step, or only when something
@@ -796,9 +829,9 @@ export type ActorEntry =
   | { kind: "perceived"; entry_id: string; step: number; time_label: string; messages: BriefMessage[]; broadcasts: string[]; acted_upon: string[] }
   // The world asks: a turn opened.
   | { kind: "asked"; entry_id: string; step: number; time_label: string; turn: ActorTurn }
-  // The actor's words at a DECIDE turn and their reading; `reason` (a refusal slug) when none.
-  | { kind: "said"; entry_id: string; step: number; time_label: string; turn_id: string; words: string; reading: ActorDecision | null; reason: string | null }
-  | { kind: "answered"; entry_id: string; step: number; time_label: string; turn_id: string; answer: ActorAnswer }
+  // The actor's words at a DECIDE turn and their action summary; `reason` (a refusal slug) when none.
+  | { kind: "said"; entry_id: string; step: number; time_label: string; turn_id: string; words: string; action_summary: ActorActionSummary | null; reason: string | null; intent: ActorRecordedIntent | null }
+  | { kind: "answered"; entry_id: string; step: number; time_label: string; turn_id: string; answer: ActorPublicAnswer }
   // The actor asked to break off the act in progress, outside any turn.
   | { kind: "break_off"; entry_id: string; step: number; time_label: string }
   // The character set out on an act, expected to take `total_steps` steps, this one the first.
@@ -814,7 +847,7 @@ export type ActorEntry =
   | { kind: "dialogue_turn"; entry_id: string; step: number; time_label: string; dialogue_turn: DialogueTurn; end: boolean };
 
 /**
- * `/actor/say`, `/actor/answer`, `/actor/break-off`: a refusal is a normal answer, with a reason
+ * `/actor/answer`, `/actor/break-off`: a refusal is a normal answer, with a reason
  * slug. What was taken comes as entries of the thread.
  */
 export interface ActorResult {

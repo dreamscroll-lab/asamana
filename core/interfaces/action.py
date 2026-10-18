@@ -253,7 +253,6 @@ class AgentAction:
     urgency: Urgency = Urgency.NORMAL   # SEND_MESSAGE only; see URGENCY_SCALE_DESCRIPTION
     remaining_steps: int = 1
     status: Any = None
-    llm_model: str = "rule"
     reason: str = ""
     content: str = ""
     intent: Any = None

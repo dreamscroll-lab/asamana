@@ -139,6 +139,7 @@ export const DEAD_MARK_PAD_Y = 1;
  * sealed letter) would vanish the moment someone picked it up. The pocket shows it.
  */
 export interface CarriedItem {
+  id: string;
   name: string;
   state: string;
   // Nobody standing beside him can perceive this one (`is_public: false` on the wire). Shown

@@ -22,7 +22,7 @@ from core.interfaces.actor import (
 from core.interfaces.llm import LLMScene
 from core.interfaces.message import Message
 from core.interfaces.perception import (
-    Broadcast, BroadcastType, LocationView, PerceivedIdentity, PerceivedPresence, VisibleEntity,
+    Broadcast, BroadcastType, LocationView, NpcIdentity, PerceivedIdentity, PerceivedNpc, PerceivedPresence, VisibleEntity,
 )
 from core.interfaces.urgency import Urgency
 from tests.unit.test_decision_m4_gaps import _make_packet, _make_personality, _mem
@@ -84,7 +84,7 @@ def test_a_form_binds_like_the_models_answer(engine) -> None:
 
     assert by_actor.target == by_model.target
     assert by_actor.action_description == by_model.action_description
-    assert by_actor.agent_id == ME and by_actor.llm_model == "actor"
+    assert by_actor.agent_id == ME
 
 
 def test_a_target_the_character_does_not_perceive_is_refused(engine) -> None:
@@ -161,6 +161,41 @@ async def test_words_read_as_an_action_name_targets_by_id(container, engine) -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action_type,related,unrelated", [
+    (ActionType.PHYSICAL, {"physical_person_index": 1}, {"person_indices": [2], "destination_index": 1}),
+    (ActionType.TALK, {"person_indices": [1]}, {"physical_entity_index": 1}),
+    (ActionType.SEND_MESSAGE, {"person_indices": [2], "message_content": "请留步"}, {"physical_person_index": 1}),
+    (ActionType.MOVE, {"destination_index": 1}, {"person_indices": [1]}),
+    (ActionType.WORK, {}, {"physical_person_index": 1, "message_content": "不应传出的话"}),
+    (ActionType.REST, {}, {"destination_index": 1}),
+    (ActionType.COVERT, {}, {"person_indices": [1], "physical_entity_index": 1}),
+    (ActionType.ERRAND, {"errand_npc_index": 1, "errand_destination_index": 1}, {"person_indices": [1]}),
+])
+async def test_free_text_and_autonomous_decisions_bind_only_relevant_fields(container, engine, action_type: ActionType, related: dict, unrelated: dict) -> None:
+    packet = _packet()
+    packet.spatial.visible_npcs["runner"] = PerceivedNpc(NpcIdentity("信使", "男"))
+    payload = {
+        "selected_index": _index_of(action_type), "action_description": "我按计划行动", "estimated_steps": 3,
+        "inner_monologue": "我想清楚了", "expected_outcome": "完成眼前的事", "urgency": "high",
+        "unknown_field": {"noise": True}, **related, **unrelated,
+    }
+    selection = engine._parse_llm_selection(payload, _ACTION_SPACE, packet)
+    assert selection is not None
+    assert selection.inner_monologue == "我想清楚了" and selection.expected_outcome == "完成眼前的事"
+    assert selection.estimated_steps == 3 and selection.urgency is Urgency.HIGH
+    _reply(container, decision="act", **payload)
+    decision = await engine.interpret_actor_decision("具体行动", personality=_make_personality(), packet=packet)
+    bound = engine.bind_actor_action(decision.action, personality=_make_personality(), packet=packet)
+    assert bound.action_type is action_type and bound.target == selection.target
+    assert bound.intent.errand == selection.errand
+    assert decision.action.inner_monologue == "" and decision.action.expected_outcome == ""
+    assert decision.action.estimated_steps == 3
+    if action_type not in (ActionType.TALK, ActionType.SEND_MESSAGE):
+        assert selection.message_content == ""
+        assert decision.action.person_ids == () and decision.action.message_content == ""
+
+
+@pytest.mark.asyncio
 async def test_words_that_name_nothing_doable_read_as_nothing(container, engine) -> None:
     _reply(container, reason="只是感慨", decision="unclear")
     assert await _read(engine, "唉") is None
@@ -190,6 +225,10 @@ def test_the_reading_prompt_shows_the_lists_the_words_bind_against(engine) -> No
     assert "探明大哥的打算" not in user
     # The prefix stays the same for every character and sentence.
     assert "李" not in system and "奏章" not in system
+    assert "从【行动类型】里挑恰好一个" in system
+    assert "【固定操作】" not in system
+    assert '"operation_consistent"' not in system
+    assert system.index("【角色】") < system.index("【任务】") < system.index("【输出】")
 
 
 def test_the_briefing_lists_are_the_binding_lists() -> None:
@@ -198,6 +237,8 @@ def test_the_briefing_lists_are_the_binding_lists() -> None:
 
     briefing = build_actor_briefing(packet)
 
+    assert "character" not in vars(briefing)
+    assert ME not in lists.roster_ids
     assert [p.agent_id for p in briefing.people] == lists.roster_ids == [HERE, AWAY]
     assert [p.present for p in briefing.people] == [True, False]
     assert [p.location_id for p in briefing.places] == lists.reachable_ids

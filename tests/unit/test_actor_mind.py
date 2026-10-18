@@ -14,14 +14,14 @@ from agent.memory_types import MemoryKind, MemoryStream
 from core.interfaces.actor import (
     ActorAmendments,
     ActorAnswerRejected,
-    ActorDecision,
+    ActorIdleAnswer,
     EmotionAmendment,
     GoalAmendment,
     RelationAmendment,
 )
 from tests.unit.test_actor_runtime import HERO, OTHER, _next_turn, _setup, _step_answering
 
-_IDLE = ActorDecision(idle=True)
+_IDLE = ActorIdleAnswer()
 
 
 async def _insights(container, agent) -> list[str]:

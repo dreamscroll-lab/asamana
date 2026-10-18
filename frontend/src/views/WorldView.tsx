@@ -5,6 +5,8 @@ import type { ShellContext } from "../App";
 import { api } from "../api/client";
 import { WorldSocket } from "../api/ws";
 import ActorIcon from "../components/ActorIcon";
+import MapOperations from "../components/actor/MapOperations";
+import { ActorSubmission } from "../components/actor/submission";
 import ActorConsole from "../components/actor/ActorConsole";
 import { mergeEntries } from "../components/actor/thread";
 import { BTN, BTN_PRIMARY } from "../components/buttonStyles";
@@ -21,7 +23,7 @@ import { viewerOf } from "../lib/viewer";
 import { useStepPlayer } from "../hooks/useStepPlayer";
 import { NO_MODEL_KEYS_HINT, useModelKeys } from "../lib/deployment";
 import { useWorlds } from "../lib/worldsContext";
-import type { ActorEntry, ActorTurn, MapFocus, MapSelect, RunState, WorldMeta, WsFrame } from "../types";
+import type { ActorEntry, ActorTurn, MapFocus, MapOperationTarget, MapSelect, RunState, WorldMeta, WsFrame } from "../types";
 
 // Phaser is ~1.4 MB — load the 2D map only when its view is opened.
 const LiveWorldMap = lazy(() => import("../components/LiveWorldMap"));
@@ -67,7 +69,9 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
   const [error, setError] = useState("");
   const [stepsInput, setStepsInput] = useState("50");
 
+  const [operationTarget, setOperationTarget] = useState<(MapOperationTarget & { turnId: string }) | null>(null);
   const [mode, setMode] = useState<"live" | "playback">("live");
+  useEffect(() => setOperationTarget(null), [id, turn?.turn_id, mode]);
   // The 2D map is the permanent stage. Everything else is a selectively-summoned
   // lens onto it: the roster and narrative dock as push-drawers beside the map
   // (the map yields width), the relationship graph opens as an overlay over the
@@ -526,6 +530,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
           >
             {/* Held until the world's meta says whose view the steps are: drawn as the director's
                 first, a character's step would show its blanks as the god view. */}
+            <ActorSubmission scope={`${id}:${mode}:${turn?.turn_id ?? ""}`}>
             <LiveWorldMap
               worldId={id}
               step={meta ? displayStep : null}
@@ -533,6 +538,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
               onRendered={doneRendering}
               focus={focus}
               onSelect={handleMapSelect}
+              onOperation={viewer && mode === "live" && turn?.kind === "decide" && turn.briefing ? (target) => setOperationTarget({ ...target, turnId: turn.turn_id }) : undefined}
               onFocusChange={setFocus}
               immersive={immersive}
               onToggleImmersive={() => setImmersive((o) => !o)}
@@ -549,7 +555,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
 
               {/* The actor's console takes the director console's corner: a viewer has no director
                   console, and deciding over the map keeps what they decide next to where it happens. */}
-              {viewer && (
+              {viewer && mode === "live" && (
                 <ActorConsole
                   worldId={id}
                   selfId={viewer}
@@ -558,11 +564,15 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
                   runState={runState}
                   step={feed[0]?.step ?? 0}
                   pace={meta?.actor_pace ?? "every_step"}
-                  secondsPerStep={meta?.seconds_per_step ?? 0}
                   immersive={immersive}
                 />
               )}
+              {viewer && mode === "live" && turn?.kind === "decide" && turn.briefing && operationTarget?.turnId === turn.turn_id && (
+                <MapOperations key={`${turn.turn_id}:${operationTarget.target.kind}:${operationTarget.target.id}:${operationTarget.x}:${operationTarget.y}`}
+                  worldId={id} turn={turn} selection={operationTarget} onClose={() => setOperationTarget(null)} />
+              )}
             </LiveWorldMap>
+            </ActorSubmission>
           </Suspense>
 
           {/* Relationship graph — a summoned overlay over the map, dismissible. */}

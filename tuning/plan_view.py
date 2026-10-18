@@ -119,6 +119,5 @@ def plan_step_view(agent: Agent, plan: AgentStepPlan) -> dict[str, Any]:
             "inner_monologue": action.inner_monologue,
             "expected_outcome": action.expected_outcome,
             "estimated_steps": action.estimated_steps,
-            "llm_model": action.llm_model,
         },
     }

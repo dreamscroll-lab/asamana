@@ -13,7 +13,7 @@ Asamana is an AI-driven emergent narrative simulation. Users select a world them
 ## Architecture Layers
 
 ```
-interaction/    — Reactor, WorldManager, api/ (read-only user-facing; REST + WebSocket)
+interaction/    — Reactor, WorldManager, api/ (observation and user commands; REST + WebSocket)
 world/          — WorldBuilder: one-shot theme→world construction
 engine/         — Runtime loop: Clock, Scheduler, Environment, Message, Event
 agent/          — Per-agent cognition: Personality, Memory, Need, Relation, Decision
@@ -287,7 +287,7 @@ except Exception as exc:
 ```
 
 - The fallback value must be directly usable by the caller — not `None` unless the caller explicitly handles `None`.
-- Tag the source where a metadata channel already exists: `llm_model="fallback"` or `metadata={"source": "fallback"}`.
+- Tag the source where a metadata channel already exists: `metadata={"source": "fallback"}`.
 - Log at `warning`, not `error`.
 
 **Fallback tiers.** Fallback output can enter persistent narrative state and be retrieved later.
@@ -434,6 +434,12 @@ succeeded = bool(data.get("success", True))
 - Use `extract_json()` from `core/interfaces/llm.py` — it strips markdown fences and finds the first `{...}` block.
 - Always provide `.get(key, default)` fallbacks so a missing field degrades gracefully rather than raising.
 - Migrate any remaining line-format parsers (custom `KEY: value` parsers) to JSON when the surrounding code is touched — do not do a standalone mass migration.
+
+**LLM structured-output parsing:** read only fields applicable to the current task or selected
+output branch; ignore unknown or unrelated model-generated fields. Validate applicable fields
+and reject contradictions with authoritative inputs, including explicit user choices. Never
+silently restore a conflicting target or parameter. Keep prompt schemas and parser field
+definitions consistent; correctness must not depend on the model omitting extra fields.
 
 ### Every text output declares a length limit
 
@@ -1008,6 +1014,11 @@ fields remain viewpoint-filtered and must not enter the shared table. Identity c
 the table, with `identityColor` as the sole missing-color fallback; step agents and graph nodes
 carry no color.
 
+**Reuse shared character identity:** frontend features should resolve stable character identity
+from the shared identity table. Outside the identity source itself, backend payloads reference
+characters by id instead of duplicating their identity fields. Identity lookup grants no
+visibility or actionability; viewpoint-dependent perception and runtime state remain separate.
+
 ## Frontend layout (`frontend/src`)
 
 Each directory has one job.
@@ -1078,6 +1089,14 @@ What follows from the principle:
   its perception stage's own input, not a view built anew.
 
 The cognition loop is `perception → motivation → decision → action → feedback`. Each subsystem in `agent/` is distinct and cooperates through explicit state — do not collapse them into one convenience object.
+
+**Actor input boundary:** clients submit intent; executable actions stay on the backend.
+Operation semantics determine whether description is supported and required. Complete explicit
+operations bypass interpretation; free text and descriptions need interpretation and actor
+confirmation. Interpretation preserves the chosen
+operation, target and explicit parameters. Every path shares perception, binding, execution and
+feedback rules: skipping interpretation never skips adjudication. Confirmation belongs to the
+current turn and latest intent; historical records cannot authorize actions.
 
 - Do not mix scheduler, environment, or event logic into `agent/`.
 - Do not call concrete storage or LLM implementations directly from cognition code.

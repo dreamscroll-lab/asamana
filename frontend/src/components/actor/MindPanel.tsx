@@ -18,7 +18,7 @@ import { api } from "../../api/client";
 import { AFFECTION_RANGE, EMOTION_INTENSITY_RANGE, EMOTION_VALENCE_RANGE, TRUST_RANGE } from "../../lib/contract";
 import type { ActorAmendments, ActorMind, BriefRelation, EmotionAmendment, GoalAmendment } from "../../types";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
-import { reasonText } from "./reading";
+import { reasonText } from "./actionSummary";
 import GoalPanel from "./GoalPanel";
 import { goalRows, goalsChanged, shortTermAmendments } from "./goals";
 

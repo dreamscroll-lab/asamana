@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, List
 
 from core.interfaces.action import ActionResult, ActionType, AgentAction
+from core.action_duration import action_duration_steps
 from core.interfaces.directory import WorldDirectory
 from core.duration import describe_duration
 from core.prompts import strip_end_punct
@@ -53,7 +54,7 @@ class SimpleExecutor(ActionExecutor):
                 participant_ids=[action.agent_id],
                 purpose=action.action_description or "send message",
                 started_step=step,
-                estimated_steps=1,
+                estimated_steps=action_duration_steps(action.action_type, action.estimated_steps),
                 opening_outcome="",
                 target=action.target,
                 expected_outcome=action.expected_outcome,
@@ -61,7 +62,7 @@ class SimpleExecutor(ActionExecutor):
             state.extra["completed_result"] = result
             return state
 
-        duration = action.estimated_steps
+        duration = action_duration_steps(action.action_type, action.estimated_steps)
         purpose = action.action_description or action.action_type.value
         duration_label = describe_duration(duration, self._seconds_per_step)
         doer_name = self._directory.agent_name(action.agent_id)
@@ -192,26 +193,25 @@ class SimpleExecutor(ActionExecutor):
                 location_scope=location_scope,
             )
 
-        # Memory uses his own description of the act, not the delivered words.
-        intent_text = action.action_description or "（无明确内容）"
-        # Quoted in the 3p line: unquoted, his first-person words read as the narrator's.
-        quoted_intent = strip_end_punct(intent_text)
+        # The description is intent; only content is spoken to the recipients.
+        message_text = action.content or "（无明确内容）"
         place = observe_location(environment, action.agent_id)
         doer_name = self._directory.agent_name(action.agent_id)
         if directed:
             recipient_text = "、".join(self._directory.agent_name(aid) for aid in recipient_ids)
-            factual = f"我成功在{place}传讯给{recipient_text}：{intent_text}"
-            outcome = scene_line(place, f"{doer_name}成功向{recipient_text}传讯：「{quoted_intent}」。")
+            factual = f"我成功在{place}传讯给{recipient_text}：「{message_text}」"
+            outcome = scene_line(place, f"{doer_name}成功向{recipient_text}传讯：「{message_text}」")
         else:
             # Name everyone: the memory must later answer "who heard this".
             heard_text = "、".join(self._directory.agent_name(aid) for aid in receivers)
-            factual = f"我在{place}当着{heard_text}的面宣告：{intent_text}"
-            outcome = scene_line(place, f"{doer_name}成功向在场的{heard_text}宣告：「{quoted_intent}」。")
+            factual = f"我在{place}当着{heard_text}的面宣告：「{message_text}」"
+            outcome = scene_line(place, f"{doer_name}成功向在场的{heard_text}宣告：「{message_text}」")
         stub = AgentAction(
             agent_id=action.agent_id,
             step=step,
             action_type=ActionType.SEND_MESSAGE,
             action_description=action.action_description or "send message",
+            content=action.content,
             estimated_steps=1,
             # The record is rebuilt from this stub; without the target a letter renders as a notice.
             target=action.target,
@@ -236,23 +236,23 @@ class SimpleExecutor(ActionExecutor):
     ) -> ActionResult:
         """A message nobody could receive: a failure, or the sender would wait forever for a
         reply. Not dispatched."""
-        intent_text = action.action_description or "（无明确内容）"
-        quoted_intent = strip_end_punct(intent_text)
+        message_text = action.content or "（无明确内容）"
         place = observe_location(environment, action.agent_id)
         doer_name = self._directory.agent_name(action.agent_id)
         if directed:
             reason = "没有能送到的人"
-            factual = f"我在{place}传讯：{intent_text}，但没有一个人收得到"
-            outcome = scene_line(place, f"{doer_name}发出传讯「{quoted_intent}」，但没有一个人收得到。")
+            factual = f"我在{place}传讯：「{message_text}」，但没有一个人收得到"
+            outcome = scene_line(place, f"{doer_name}发出传讯「{message_text}」，但没有一个人收得到。")
         else:
             reason = "此处无人"
-            factual = f"我在{place}宣告：{intent_text}，但此处无人，没有人听见"
-            outcome = scene_line(place, f"{doer_name}向四下宣告「{quoted_intent}」，但此处无人，没有人听见。")
+            factual = f"我在{place}宣告：「{message_text}」，但此处无人，没有人听见"
+            outcome = scene_line(place, f"{doer_name}向四下宣告「{message_text}」，但此处无人，没有人听见。")
         stub = AgentAction(
             agent_id=action.agent_id,
             step=step,
             action_type=ActionType.SEND_MESSAGE,
             action_description=action.action_description or "send message",
+            content=action.content,
             estimated_steps=1,
             target=action.target,
         )

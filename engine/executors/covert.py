@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List
 
+from core.action_duration import action_duration_steps
 from core.interfaces.action import ActionTarget, ActionResult, ActionType, AgentAction
 from core.interfaces.directory import WorldDirectory
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, coerce_bool, extract_json, output_budget
@@ -80,7 +81,7 @@ class CovertExecutor(ActionExecutor):
             participant_ids=[action.agent_id],
             purpose=description,
             started_step=step,
-            estimated_steps=action.estimated_steps,
+            estimated_steps=action_duration_steps(action.action_type, action.estimated_steps),
             opening_outcome=scene_line(
                 location, f"{self._directory.agent_name(action.agent_id)}悄悄着手做「{description}」。"
             ),

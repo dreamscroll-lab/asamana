@@ -55,6 +55,7 @@ from core.interfaces.actor import (
     ActorAnswerRejected,
     ActorBriefing,
     ActorDecision,
+    ActorIntent,
     ActorDialogueTurn,
     ActorMind,
     BriefPerson,
@@ -506,9 +507,12 @@ class Agent:
         bound.agent_id = self.agent_id
         return bound
 
-    async def interpret_actor_decision(self, text: str, packet: PerceptionPacket) -> ActorDecision | None:
+    async def interpret_actor_decision(
+        self, text: str, packet: PerceptionPacket, *, intent: ActorIntent | None = None,
+        base: ActorAction | None = None,
+    ) -> ActorDecision | None:
         return await self.decision_engine.interpret_actor_decision(
-            text, personality=self.personality, packet=packet,
+            text, personality=self.personality, packet=packet, intent=intent, base=base,
         )
 
     async def actor_mind(self, *, pending: ActorAmendments | None, step: int) -> ActorMind:

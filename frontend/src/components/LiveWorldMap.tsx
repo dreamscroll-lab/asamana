@@ -8,7 +8,7 @@ import { useCast, loadCast } from "../lib/cast";
 import { identityColor, toHex } from "../lib/color";
 import { indexStep } from "../lib/step";
 import type { Viewer } from "../lib/viewer";
-import type { MapFocus, MapSelect, StepView } from "../types";
+import type { MapFocus, MapSelect, MapOperationTarget, StepView } from "../types";
 import MapStage from "./MapStage";
 import WorldClock from "./WorldClock";
 
@@ -20,6 +20,7 @@ interface Props {
   onRendered?: (stepNo: number) => void;
   focus: MapFocus;
   onSelect: (t: MapSelect) => void;
+  onOperation?: (t: MapOperationTarget) => void;
   onFocusChange: (next: MapFocus) => void; // toolbar: toggle follow / clear / drop a chip
   // Immersive is owned by WorldView, not the map, so the whole surface (playback bar
   // included) goes immersive together; the map only reflects the flag in its button.
@@ -44,6 +45,7 @@ export default function LiveWorldMap({
   onRendered,
   focus,
   onSelect,
+  onOperation,
   onFocusChange,
   immersive,
   onToggleImmersive,
@@ -162,6 +164,7 @@ export default function LiveWorldMap({
             source={mapSource}
             onScene={setScene}
             onSelect={onSelect}
+            onOperation={onOperation}
             // A hand on the camera drops follow, keeps the rest of the focus.
             onGrabCamera={() => onFocusChange({ ...focus, follow: false })}
             // Immersive collapses the shell's chrome, which resizes this box through a

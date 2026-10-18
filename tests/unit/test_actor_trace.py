@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from core.context import get_log_context, set_log_context
-from core.interfaces.actor import ActorDecision
+from core.interfaces.actor import ActorIdleAnswer, ActorIntent, ActorConfirmation
 from core.interfaces.llm import LLMScene
 from core.interfaces.trace import Stage
 from engine.application import NarrativeApplication
@@ -54,7 +54,7 @@ async def test_actor_requests_record_context_and_result(
                         stage=Stage.DIRECTOR.value, request_id="actor-request")
         caller = get_log_context()
 
-        said = await app.actor_say(world_id, "抄奏章")
+        said = await app.actor_intent(world_id, ActorIntent(turn_id=runtime.actor.pending_turn.turn_id, text="抄奏章"))
 
         assert get_log_context() == caller
         calls = [c for c in sink.read_calls(world_id) if c.scene == LLMScene.ACTOR_INTENT.value]
@@ -65,7 +65,7 @@ async def test_actor_requests_record_context_and_result(
         assert (call.ok, call.parse_ok, call.adopted, call.reject_reason) == (
             response is not None, parse_ok, adopted, reason,
         )
-        assert (said.reading is not None) is (adopted is True)
+        assert (said.action_summary is not None) is (adopted is True)
         if response is None:
             assert "provider down" in call.error
         # Arbitration still annotates this step, so the request must not flush it early.
@@ -74,7 +74,7 @@ async def test_actor_requests_record_context_and_result(
     finally:
         set_log_context(**previous)
         if not task.done():
-            runtime.answer_actor(ActorDecision(idle=True))
+            runtime.answer_actor(ActorIdleAnswer())
         await task
         await asyncio.gather(*runtime._trace_flush_tasks, return_exceptions=True)  # noqa: SLF001
     sink.flush.assert_awaited_with(world_id, turn.step)
@@ -101,13 +101,13 @@ async def test_actor_trace_flush_does_not_block_the_request(container, test_conf
     try:
         await _next_turn(runtime, task)
         container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = '{"decision":"unclear"}'
-        await asyncio.wait_for(app.actor_say("actor-slow-trace", "唉"), timeout=1)
+        await asyncio.wait_for(app.actor_intent("actor-slow-trace", ActorIntent(turn_id=runtime.actor.pending_turn.turn_id, text="唉")), timeout=1)
         assert not flushed.is_set()
     finally:
         release.set()
         await asyncio.gather(*app._trace_flush_tasks, return_exceptions=True)  # noqa: SLF001
         if not task.done():
-            runtime.answer_actor(ActorDecision(idle=True))
+            runtime.answer_actor(ActorIdleAnswer())
         await task
         await asyncio.gather(*runtime._trace_flush_tasks, return_exceptions=True)  # noqa: SLF001
     assert flushed.is_set()
@@ -131,12 +131,12 @@ async def test_live_actor_trace_stays_annotatable_until_step_commit(container, t
     task = asyncio.create_task(runtime.run_step(agents))
     try:
         await _next_turn(runtime, task)
-        said = await app.actor_say(world_id, "抄奏章")
+        said = await app.actor_intent(world_id, ActorIntent(turn_id=runtime.actor.pending_turn.turn_id, text="抄奏章"))
         await asyncio.sleep(0)
         calls = [c for c in sink.read_calls(world_id) if c.scene == LLMScene.ACTOR_INTENT.value]
         assert len(calls) == 1 and "verdict" not in calls[0].extra
         assert not (tmp_path / world_id / "step_000001.jsonl").exists()
-        runtime.answer_actor(said.reading)
+        runtime.answer_actor(ActorConfirmation(said.action_summary.action_summary_id))
         await task
         await asyncio.gather(*runtime._trace_flush_tasks, return_exceptions=True)  # noqa: SLF001
         calls = [c for c in sink.read_calls(world_id) if c.scene == LLMScene.ACTOR_INTENT.value]
@@ -145,5 +145,5 @@ async def test_live_actor_trace_stays_annotatable_until_step_commit(container, t
         assert (tmp_path / world_id / "step_000001.jsonl").exists()
     finally:
         if not task.done():
-            runtime.answer_actor(ActorDecision(idle=True))
+            runtime.answer_actor(ActorIdleAnswer())
         await task

@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 
 import type { Cast } from "../lib/cast";
-import type { BroadcastSummary, MapFocus, MapSelect, NpcView, StepView } from "../types";
+import type { ActorTarget, BroadcastSummary, MapFocus, MapSelect, NpcView, StepView } from "../types";
 import { type Placed, type PlacedEntity, type Scoped, indexStep } from "../lib/step";
 import { type Beat, type Figure, beatsOf, figuresOf } from "./figures";
 import { THEME } from "../lib/theme";
@@ -18,6 +18,7 @@ import { HIDDEN_ALPHA, HIDDEN_FADE_MS, sortDepth } from "./isoDepth";
 import { RECOLOR_FX, RecolorFX } from "./recolorPipeline";
 import type { MapSource } from "./mapSource";
 import { type CharacterSet, type Demographics, type Dir, type PoseName, bearing, dirOf } from "./skins";
+import { operationTarget } from "./operationTarget";
 import { PocketLayer } from "./pocket";
 import { type AmbientHost, AmbientLight } from "./ambient";
 import { type AnnounceHost, Announcer } from "./announce";
@@ -541,6 +542,7 @@ export class TiledWorldScene
     onReady?: () => void,
     onSelect?: (t: MapSelect) => void,
     onGrabCamera?: () => void,
+    private onOperation?: (target: ActorTarget, clientX: number, clientY: number) => void,
   ) {
     super("tiled-world");
     this.source = source;
@@ -584,7 +586,7 @@ export class TiledWorldScene
     this.walker.mount();
     this.map.drawLabels();
     this.ambient.mount();
-    this.camera.mount(() => this.hoverTip.hide(), (p) => this.handleClick(p));
+    this.camera.mount(() => this.hoverTip.hide(), (p) => this.handleClick(p), (p) => this.handleContext(p));
     // `pointerout` does not fire when the pointer leaves the canvas entirely, so the hover card
     // would stay up indefinitely; `gameout` covers that. (A press hides it too, via camera.mount.)
     this.input.on("gameout", () => this.hoverTip.hide());
@@ -597,9 +599,18 @@ export class TiledWorldScene
     this.ambient.setHour(hour);
   }
 
-  // Resolve a click into a selection: an agent token, a location region, or
-  // empty → clear. Entity markers are info-only — clicking one does not change
-  // the MapFocus (WorldView ignores the entity variant; MapSelect has none).
+  private handleContext(p: Phaser.Input.Pointer): void {
+    if (!this.onOperation) return;
+    if (!("clientX" in p.event)) return;
+    const hits = this.input.hitTestPointer(p) as Phaser.GameObjects.GameObject[];
+    const world = this.cameras.main.getWorldPoint(p.x, p.y);
+    const target = operationTarget(hits.map((obj) => ({
+      entityId: obj.getData?.("entityId"), entityKind: obj.getData?.("entityKind"),
+      agentId: obj.getData?.("agentId"), pocketPanel: !!obj.getData?.("pocketPanel"),
+    })), this.map.roomAt(world.x, world.y)?.id ?? null, (id) => this.canSelect(id), (id) => this.npcById.has(id));
+    if (target) this.onOperation(target, p.event.clientX, p.event.clientY);
+  }
+
   private handleClick(p: Phaser.Input.Pointer): void {
     if (!this.onSelect) return;
     const hits = this.input.hitTestPointer(p) as Phaser.GameObjects.GameObject[];

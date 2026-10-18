@@ -62,16 +62,22 @@ export class MapCamera {
    * pinch midpoint) and drag-to-pan, all in screen space and clamped to [minZoom, maxZoom]. A press
    * calls `onPress`; a release after negligible movement with no pinch is a click → `onClick`.
    */
-  mount(onPress: () => void, onClick: (p: Phaser.Input.Pointer) => void): void {
+  mount(onPress: () => void, onClick: (p: Phaser.Input.Pointer) => void, onContext?: (p: Phaser.Input.Pointer) => void): void {
     this.fit();
     this.host.scale.on("resize", () => this.fit());
     this.host.game.canvas.style.touchAction = "none"; // let the scene own pinch, not the browser
     this.host.input.addPointer(1); // enable a 2nd pointer so pinch works
+    this.host.input.mouse?.disableContextMenu();
     const cam = this.host.cameras.main;
+    // Phaser forwards window presses too; overlay controls must never start map gestures.
+    const onCanvas = (p: Phaser.Input.Pointer) => p.event.target === this.host.game.canvas;
     this.host.input.on("wheel", (p: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => {
-      this.zoomAtScreen(Math.exp(-this.wheelPixels(p, dy) * ZOOM_RATE), p.x, p.y);
+      if (onCanvas(p)) this.zoomAtScreen(Math.exp(-this.wheelPixels(p, dy) * ZOOM_RATE), p.x, p.y);
     });
     this.host.input.on("pointerdown", (p: Phaser.Input.Pointer) => {
+      if (!onCanvas(p)) return;
+      if (p.rightButtonDown()) { onContext?.(p); return; }
+      if (!p.leftButtonDown()) return;
       onPress();
       this.downPos = { x: p.x, y: p.y };
       this.pinched = false;
@@ -79,7 +85,7 @@ export class MapCamera {
     this.host.input.on("pointermove", (p: Phaser.Input.Pointer) => {
       const p1 = this.host.input.pointer1;
       const p2 = this.host.input.pointer2;
-      if (p1.isDown && p2.isDown) {
+      if (this.downPos && p1.isDown && p2.isDown) {
         // Two-finger pinch (touch): zoom by the change in finger distance.
         const d = Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y);
         if (this.pinchPrev > 0 && d > 0) {
@@ -88,7 +94,7 @@ export class MapCamera {
         this.pinchPrev = d;
         this.pinched = true;
         this.dragFrom = null;
-      } else if (p.isDown) {
+      } else if (this.downPos && p.isDown && p.leftButtonDown()) {
         // Drag-pan — gate on THIS pointer (works for mouse, which is not pointer1,
         // and single touch). Track the anchor manually so the delta is exact.
         if (this.dragFrom) {
@@ -102,7 +108,7 @@ export class MapCamera {
     });
     const endInput = (p: Phaser.Input.Pointer) => {
       // A click (negligible movement since down, no pinch) selects; a drag/pinch panned.
-      if (!this.pinched && this.downPos && Phaser.Math.Distance.Between(this.downPos.x, this.downPos.y, p.x, p.y) < 6) {
+      if (onCanvas(p) && p.button === 0 && !this.pinched && this.downPos && Phaser.Math.Distance.Between(this.downPos.x, this.downPos.y, p.x, p.y) < 6) {
         onClick(p);
       }
       this.downPos = null;

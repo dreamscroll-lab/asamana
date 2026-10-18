@@ -56,8 +56,8 @@ class Actor(Protocol):
         ...
 
     async def evaluate_interrupt(self, agent: "Agent", *, step: int) -> tuple[bool, str]:
-        """Break off or carry on, as the actor asked already or answers now. The thought is
-        empty: what the actor means to do instead is read at the decision stage."""
+        """Break off or carry on, with the actor's optional first-person thought.
+        What to do instead is read at the decision stage."""
         ...
 
     async def consider_invitation(

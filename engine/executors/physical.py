@@ -11,6 +11,7 @@ from agent.relation import (
     NEUTRAL_AFFECTION, NEUTRAL_TRUST, format_relation_block, parse_relation_direction,
 )
 from core.context import GivenFacts, annotate_call, note_active_call_adoption, observe_stage
+from core.action_duration import action_duration_steps
 from core.interfaces.action import (
     KIND_OBJECT, ActionResult, ActionType, AgentAction, Deed, EntityStateChange,
     NpcEffect, TargetAgentEffect, parse_deed,
@@ -333,7 +334,7 @@ class PhysicalExecutor(ActionExecutor):
             participant_ids=[agent_id],
             purpose=description,
             started_step=step,
-            estimated_steps=1,
+            estimated_steps=action_duration_steps(action.action_type, action.estimated_steps),
             opening_outcome="",
             target=action.target,
             expected_outcome=action.expected_outcome,
@@ -739,7 +740,10 @@ class PhysicalExecutor(ActionExecutor):
     def _entity_target_block(self, item: "WorldEntity", *, doer_id: str) -> str:
         type_label = "物品" if item.is_takeable else "据点标记"
         # Ownership matters: taking or damaging someone else's thing is a contest or an offense.
-        owner_name = self._directory.agent_name(item.owner_id) if item.owner_id else None
+        owner_name = None
+        if item.owner_id:
+            holder = self._directory.describe(item.owner_id)
+            owner_name = holder.name if holder is not None else "某人"
         # No content: the outcome goes verbatim to onlookers, and the whole room would read the
         # letter. Takeable is from the doer's view, to match the deed options.
         return f"【{type_label}】{render_entity(item, owner_name=owner_name, held_by_viewer=item.owner_id == doer_id)}"

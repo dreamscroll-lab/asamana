@@ -2,10 +2,14 @@
 // proxy (dev) or the backend static mount (prod) both work without config.
 
 import type {
+  ActorIntent,
+  ActorIntentResult,
+  ActorOperations,
+  ActorTarget,
   ActorAmendResult,
   ActorAmendments,
   ActorResult,
-  ActorAnswer,
+  ActorPublicAnswer,
   ActorEntry,
   ActorMind,
   ActorPace,
@@ -126,16 +130,17 @@ export const api = {
     req<{ value: string; label: string }[]>(`/api/worlds/${id}/actor/emotions`),
   // The actor's thread over the latest steps, in order.
   actorThread: (id: string) => req<{ entries: ActorEntry[] }>(`/api/worlds/${id}/actor/thread`),
-  // The actor's words, read against the open DECIDE turn; answers nothing. A refusal resolves
-  // with a reason.
-  sayActor: (id: string, text: string) =>
-    req<ActorResult>(`/api/worlds/${id}/actor/say`, {
-      method: "POST",
-      body: JSON.stringify({ text }),
+  actorIntent: (id: string, intent: ActorIntent) =>
+    req<ActorIntentResult>(`/api/worlds/${id}/actor/intent`, {
+      method: "POST", body: JSON.stringify(intent),
     }),
+  actorOperations: (id: string, turnId: string, target: ActorTarget) =>
+    req<ActorOperations>(`/api/worlds/${id}/actor/operations?${new URLSearchParams({
+      turn_id: turnId, target_kind: target.kind, target_id: target.id,
+    })}`),
   // Break off what the character is doing, outside any turn.
   breakOffActor: (id: string) => req<ActorResult>(`/api/worlds/${id}/actor/break-off`, { method: "POST" }),
-  answerActor: (id: string, turnId: string, answer: ActorAnswer) =>
+  answerActor: (id: string, turnId: string, answer: ActorPublicAnswer) =>
     req<ActorResult>(`/api/worlds/${id}/actor/answer`, {
       method: "POST",
       body: JSON.stringify({ turn_id: turnId, answer }),
