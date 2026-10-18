@@ -246,7 +246,10 @@ export class WorldMap {
         .setOrigin(0.5)
         .setDepth(5)
         .setResolution(TEXT_RES)
-        .setStroke("#1a1420", 5);
+        .setStroke("#1a1420", 5)
+        // Hovering the name asks what the place is; the scene answers (see hoverPlace).
+        .setInteractive()
+        .setData("locationId", room.id);
     }
   }
 
@@ -364,9 +367,5 @@ export class WorldMap {
       }
     }
     return null;
-  }
-
-  locationName(id: string): string {
-    return this.rooms.get(id)?.name ?? id;
   }
 }

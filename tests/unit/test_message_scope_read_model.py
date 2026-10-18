@@ -24,8 +24,6 @@ from tests.unit.bus_tap import tap
 from tests.unit.step_view import TRANSIT, WORLD, events, snapshot_of
 from tests.unit.test_runtime_smoke import _build_agent, _build_runtime, _set_work_decision
 
-PLACES = {"loc-gate": "玄武门", "loc-yard": "内院"}
-
 
 def _message(**fields: Any) -> dict[str, Any]:
     """A delivered message as the step record writes it: who got it and where each stood."""
@@ -42,7 +40,7 @@ def _message(**fields: Any) -> dict[str, Any]:
 
 
 def _step(message: dict[str, Any]) -> StepView:
-    return StepView.from_snapshot(snapshot_of(places=PLACES, events=[message]))
+    return StepView.from_snapshot(snapshot_of(events=[message]))
 
 
 def test_named_recipients_are_a_private_letter_where_each_of_them_stands() -> None:
@@ -81,17 +79,14 @@ def test_no_recipients_and_no_location_is_a_world_proclamation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_producer_names_places_once_and_leaks_no_enum(container) -> None:
-    """The broadcast is routed by the place's id, and the snapshot carries the environment's own
-    name for it in its place table, so no consumer resolves ids itself. ``broadcast_type`` gets
-    the same treatment as ``action_type``: the VALUE, never the live enum, which would reach live
-    observers as "BroadcastType.WORLD_EVENT".
+async def test_a_broadcast_is_routed_by_place_id_and_leaks_no_enum(container) -> None:
+    """The broadcast is routed by the place's id; its name is the world's place table's, never
+    the record's. ``broadcast_type`` gets the same treatment as ``action_type``: the VALUE, never
+    the live enum, which would reach live observers as "BroadcastType.WORLD_EVENT".
     """
     published = tap(container.event_bus)
     world_id = "world-broadcast-place"
     runtime, environment, _ = _build_runtime(container, world_id=world_id)
-    # A location that HAS a name, so a real resolution is distinguishable from the directory's
-    # miss-fallback (「某地」).
     environment.space.register_place(Place(place_id="palace", name="太极宫"))
     environment.place_agent(agent_id="agent-1", location_id="palace")
     agents = [_build_agent(container, world_id=world_id, agent_id="agent-1", name="Li Shimin",
@@ -113,7 +108,6 @@ async def test_the_producer_names_places_once_and_leaks_no_enum(container) -> No
     (record,) = snapshot.events_of("broadcast")
 
     assert record["location_scope"] == "palace"          # the id routes it…
-    assert snapshot.state.places["palace"] == "太极宫"    # …and the world names it once
     assert isinstance(record["broadcast_type"], str)
     assert "BroadcastType" not in record["broadcast_type"]
     [(where, _)] = events(StepView.from_snapshot(snapshot), "broadcast")
@@ -127,7 +121,6 @@ def test_a_broadcast_lands_in_the_scope_that_perceived_it() -> None:
     there, and a world one to everybody.
     """
     step = StepView.from_snapshot(snapshot_of(
-        places={"loc-gate": "玄武门"},
         events=[
             {"kind": "broadcast", "seq": 1, "content": "门外有异动。", "location_scope": "loc-gate",
              "severity": "low"},
@@ -138,7 +131,6 @@ def test_a_broadcast_lands_in_the_scope_that_perceived_it() -> None:
     local, world = events(step, "broadcast")
 
     assert local[0] == "loc-gate"
-    assert step.locations["loc-gate"].name == "玄武门"
     assert world[0] == WORLD  # no place at all — that IS "everyone heard it"
     assert world[1].severity == "high"
 
@@ -153,7 +145,7 @@ def test_a_place_broadcast_names_who_heard_it_and_a_world_broadcast_nobody() -> 
         Broadcast(content="大赦", source="system", broadcast_type=BroadcastType.WORLD_EVENT,
                   deliver_step=1, location_scope=None, severity=Severity.LOW),
     ], where=where)
-    view = StepView.from_snapshot(snapshot_of(places=PLACES, events=[place, world]))
+    view = StepView.from_snapshot(snapshot_of(events=[place, world]))
 
     [(at, heard)] = [(s, e) for s, e in events(view, "broadcast") if e.content == "走水"]
     [(_, everyone)] = [(s, e) for s, e in events(view, "broadcast") if e.content == "大赦"]

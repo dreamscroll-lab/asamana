@@ -18,6 +18,7 @@ import NarrativeStep from "../components/narrative/NarrativeStep";
 import RelationshipGraph from "../components/RelationshipGraph";
 import WorldClock from "../components/WorldClock";
 import { useCast } from "../lib/cast";
+import { usePlaces } from "../lib/places";
 import { indexStep } from "../lib/step";
 import { viewerOf } from "../lib/viewer";
 import { useStepPlayer } from "../hooks/useStepPlayer";
@@ -51,6 +52,7 @@ export default function WorldView() {
 function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) {
   const navigate = useNavigate();
   const { cast } = useCast(id);
+  const { places } = usePlaces(id);
   const { setImmersive: setShellImmersive } = useOutletContext<ShellContext>();
   const { worlds, refresh: refreshWorlds } = useWorlds();
   const modelKeys = useModelKeys();
@@ -290,6 +292,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
       {isolatedFeed.map((ev) => (
         <NarrativeStep
           cast={cast}
+          places={places}
           key={ev.step}
           step={ev}
           viewer={viewer}

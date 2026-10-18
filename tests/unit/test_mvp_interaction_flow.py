@@ -41,7 +41,6 @@ async def test_world_builder_persists_real_step_zero_snapshot(container) -> None
     assert {a["location_id"] for a in snapshot.state.agents.values()} <= set(
         world.world_config.get_places()
     )
-    assert set(snapshot.state.places) == set(world.world_config.get_places())
     first_state = next(iter(snapshot.state.agents.values()))
     assert {
         "agent_id",

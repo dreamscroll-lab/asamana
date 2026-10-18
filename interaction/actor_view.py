@@ -60,7 +60,7 @@ def step_view_for(view: StepView, viewer_id: str) -> StepView:
             )
             continue
         if own := _own(scope.events, viewer_id):
-            locations[place_id] = LocationScope(location_id=place_id, name=scope.name, events=own)
+            locations[place_id] = LocationScope(location_id=place_id, events=own)
     return replace(
         view,
         locations=locations,

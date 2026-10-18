@@ -89,6 +89,15 @@ class CharacterIdentity:
 
 
 @dataclass(frozen=True)
+class PlaceIdentity:
+    """A place's public identity, fixed at build and identical for every viewer."""
+
+    location_id: str
+    name: str
+    description: str
+
+
+@dataclass(frozen=True)
 class GraphNode:
     """One agent in the relationship graph (GET /worlds/{id}/graph)."""
 
@@ -225,8 +234,8 @@ class WorldTimeView:
 # A StepView is what happened in the world this step and the state it ended in, grouped by
 # where it happened. Four scopes hold everything a character could perceive:
 #
-#   locations  — one per place: the bodies and things there at the end of the step, and what
-#                happened there.
+#   locations  — one per place with anything in it: the bodies and things there at the end of
+#                the step, and what happened there.
 #   transit    — bodies between two waypoints (the engine's IN_TRANSIT), and what happened to them
 #                on the way. A body standing on a waypoint is in that location, not here.
 #   world      — what reached every place at once (a world-wide broadcast or proclamation).
@@ -618,10 +627,11 @@ class NpcView:
 
 @dataclass(frozen=True)
 class LocationScope:
-    """One place at the end of the step: who and what is there, and what happened there."""
+    """One place at the end of the step: who and what is there, and what happened there.
+
+    Referenced by id; its name comes from the world's ``PlaceIdentity`` table."""
 
     location_id: str
-    name: str
     agents: list[AgentView] = field(default_factory=list)
     npcs: list[NpcView] = field(default_factory=list)
     entities: dict[str, EntityView] = field(default_factory=dict)
@@ -726,8 +736,7 @@ class _StepAssembler:
             else:
                 transit_npcs.append(view)
 
-        places = {str(k): str(v or "") for k, v in self._state.places.items()}
-        place_ids = sorted({*places, *agents, *npcs, *located, *self._events})
+        place_ids = sorted({*agents, *npcs, *located, *self._events})
         return StepView(
             world_id=self._snapshot.world_id,
             step=self._snapshot.step,
@@ -735,9 +744,6 @@ class _StepAssembler:
             locations={
                 place_id: LocationScope(
                     location_id=place_id,
-                    # A place missing from the table reads as the descriptive "某地" (somewhere),
-                    # never its id.
-                    name=places.get(place_id) or "某地",
                     agents=agents.get(place_id, []),
                     npcs=npcs.get(place_id, []),
                     entities=located.get(place_id, {}),

@@ -856,7 +856,6 @@ class NarrativeRuntime:
             timestamp=datetime.now(),
             world_time=world_time.clock_payload(),
             state=WorldState(
-                places=environment_state["places"],
                 agents=agents,
                 npcs=environment_state["npcs"],
                 entities=environment_state["entities"],

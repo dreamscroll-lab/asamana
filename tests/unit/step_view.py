@@ -49,7 +49,6 @@ def snapshot_of(
     *,
     step: int = 1,
     world_time: dict[str, Any] | None = None,
-    places: dict[str, str] | None = None,
     agents: dict[str, dict[str, Any]] | None = None,
     npcs: dict[str, dict[str, Any]] | None = None,
     entities: dict[str, dict[str, Any]] | None = None,
@@ -80,7 +79,7 @@ def snapshot_of(
     return WorldSnapshot(
         world_id="w", step=step, timestamp=None, world_time=world_time or {},  # type: ignore[arg-type]
         state=WorldState(
-            places=places or {}, agents=agents or {}, npcs=npcs or {}, entities=entities or {},
+            agents=agents or {}, npcs=npcs or {}, entities=entities or {},
             relations=relations or {},
         ),
         events=[*events, *actions],

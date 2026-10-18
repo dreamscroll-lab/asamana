@@ -16,7 +16,7 @@ export default function ObservationRow({ o, cast }: { o: Placed<ObservationSumma
     <div className="flex items-start gap-1.5 rounded-lg border border-slate-800/50 bg-slate-900/30 px-2.5 py-1.5 text-[13px] text-slate-300">
       <span className="shrink-0 text-slate-500">👁</span>
       <span>
-        <span className="text-slate-500">📍 {o.location_name} · </span>
+        <span className="text-slate-500">📍 {cast.placeOf(o.location_id)} · </span>
         {who.map((p, i) => (
           <span key={p.id}>
             {i > 0 && " · "}

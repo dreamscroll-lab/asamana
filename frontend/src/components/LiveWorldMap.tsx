@@ -5,6 +5,7 @@ import type { TiledWorldScene } from "../phaser/TiledWorldScene";
 import { renderStepInto } from "../phaser/driveStep";
 import { loadMapSource, type MapSource } from "../phaser/mapSource";
 import { useCast, loadCast } from "../lib/cast";
+import { placeName, usePlaces } from "../lib/places";
 import { identityColor, toHex } from "../lib/color";
 import { indexStep } from "../lib/step";
 import type { Viewer } from "../lib/viewer";
@@ -53,6 +54,7 @@ export default function LiveWorldMap({
   children,
 }: Props) {
   const { cast, status: castStatus } = useCast(worldId);
+  const { places } = usePlaces(worldId);
   const [scene, setScene] = useState<TiledWorldScene | null>(null);
   const sceneRef = useRef<TiledWorldScene | null>(null);
   sceneRef.current = scene;
@@ -74,7 +76,7 @@ export default function LiveWorldMap({
     const npc = step ? indexStep(step).npcs.find((n) => n.npc_id === id) : undefined;
     return toHex(identityColor(cast[id]?.color ?? npc?.color, id));
   };
-  const placeName = focus.place ? sceneRef.current?.locationName(focus.place.id) ?? focus.place.id : null;
+  const focusPlace = focus.place ? placeName(places, focus.place.id) : null;
   const ready = scene !== null;
   const [animSpeed, setAnimSpeed] = useState(1); // animation-speed multiplier
   // null = loading, false = no map, MapSource = map + its art, ready to render.
@@ -104,6 +106,10 @@ export default function LiveWorldMap({
   useEffect(() => {
     if (scene && castStatus === "ready") scene.setCast(cast);
   }, [scene, castStatus, cast]);
+
+  useEffect(() => {
+    scene?.setPlaces(places);
+  }, [scene, places]);
 
   useEffect(() => {
     if (!ready || !sceneRef.current || !step || castStatus !== "ready") return;
@@ -197,13 +203,13 @@ export default function LiveWorldMap({
                 </button>
               );
             })}
-            {placeName && (
+            {focusPlace && (
               <button
                 onClick={() => onFocusChange({ ...focus, place: null })}
                 className="pointer-events-auto text-[11px] px-2 py-0.5 rounded-md border border-violet-500/60 bg-violet-950/70 text-violet-200 hover:border-violet-400 transition"
                 title="取消地点聚焦"
               >
-                📍 {placeName} ✕
+                📍 {focusPlace} ✕
               </button>
             )}
             <button

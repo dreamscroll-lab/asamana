@@ -11,9 +11,10 @@
  * reads (`type="location"` objects and the backend's standable grid).
  */
 
+import type { Places } from "../lib/places";
 import type { GroundGrids, MapSource } from "../phaser/mapSource";
 
-/** A place, as the fixtures refer to one: the wire carries both its id and its name. */
+/** A place, as the fixtures refer to one: steps carry its id, the bench's place table its name. */
 export interface LabRoom {
   id: string;
   name: string;
@@ -249,4 +250,11 @@ export function resolvePlaces(source: MapSource): LabPlaces | null {
     tight: room(tight),
     next: room(next),
   };
+}
+
+/** The bench's stand-in for a world's place table: the cast roles, named as the map names them. */
+export function placeTable(places: LabPlaces): Places {
+  return Object.fromEntries(
+    Object.values(places).map(({ id, name }) => [id, { location_id: id, name, description: "" }]),
+  );
 }

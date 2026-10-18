@@ -7,6 +7,7 @@
 import { useState } from "react";
 
 import type { Cast } from "../../lib/cast";
+import type { Places } from "../../lib/places";
 import type { StepCast } from "./cast";
 import { Phase } from "../../lib/contract";
 import type { AgentView, NpcView, StepView } from "../../types";
@@ -26,6 +27,7 @@ import { collapsedOf } from "./meta";
 export default function NarrativeStep({
   step,
   cast: publicCast,
+  places,
   focusAgents = [],
   isolated = false,
   onToggleIsolate,
@@ -33,6 +35,7 @@ export default function NarrativeStep({
 }: {
   step: StepView;
   cast: Cast;
+  places: Places;
   focusAgents?: string[];
   // Whether the feed is showing this step ALONE; owned by the feed, which sees the other steps.
   isolated?: boolean;
@@ -47,7 +50,7 @@ export default function NarrativeStep({
   const born = bornInStep(step);
   const focusSet = new Set(focusAgents);
   const focusActive = focusSet.size > 0;
-  const cast = stepCast(step, publicCast);
+  const cast = stepCast(step, publicCast, places);
   const feed = buildFeed(step, viewer);
   const index = indexStep(step);
   // A transcript prints once even if two beats carry it; the first card in feed order claims
@@ -119,7 +122,7 @@ export default function NarrativeStep({
           if (item.kind === "message") return <MessageRow key={key} m={item.data} cast={cast} />;
           if (item.kind === "observation") return <ObservationRow key={key} o={item.data} cast={cast} />;
           if (item.kind === "broadcast") {
-            return <BroadcastRow key={key} b={item.data} place={item.data.location_name} />;
+            return <BroadcastRow key={key} b={item.data} place={cast.placeOf(item.data.location_id)} />;
           }
 
           // A tick never replays the dialogue.
@@ -145,7 +148,7 @@ export default function NarrativeStep({
         })}
       </div>
 
-      <NpcStandingRow npcs={index.npcs} roll={step.step === 0} />
+      <NpcStandingRow npcs={index.npcs} roll={step.step === 0} cast={cast} />
     </div>
   );
 }
@@ -160,7 +163,7 @@ function AgentRollRow({ agents, cast }: { agents: Placed<AgentView>[]; cast: Ste
         <div key={a.agent_id}>
           <span style={{ color: cast.inkOf(a.agent_id) }} className="font-medium">{cast.nameOf(a.agent_id)}</span>
           {a.is_main_character && <span className="text-[10px] text-indigo-400"> ★</span>}
-          <span className="text-slate-600">（{a.location_name}）</span>
+          <span className="text-slate-600">（{cast.placeOf(a.location_id)}）</span>
         </div>
       ))}
     </div>
@@ -180,9 +183,9 @@ function AgentRollRow({ agents, cast }: { agents: Placed<AgentView>[]; cast: Ste
  * The present-tense phrasing comes from lib/npc, shared with the map's hover; see there on why
  * it must not read as an event.
  */
-function NpcStandingRow({ npcs, roll }: { npcs: Placed<NpcView>[]; roll: boolean }): JSX.Element | null {
+function NpcStandingRow({ npcs, roll, cast }: { npcs: Placed<NpcView>[]; roll: boolean; cast: StepCast }): JSX.Element | null {
   const rows = npcs
-    .map((npc) => [npc.npc_id, npcStandingLine(npc, npc.location_name, roll)] as const)
+    .map((npc) => [npc.npc_id, npcStandingLine(npc, cast.placeOf(npc.location_id), roll)] as const)
     .filter(([, line]) => line.length > 0);
   if (!rows.length) return null;
   return (

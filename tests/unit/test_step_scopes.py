@@ -13,8 +13,6 @@ from engine.environment import IN_TRANSIT
 from interaction.models import ActionSummary, ObservationSummary, StepView
 from tests.unit.step_view import TRANSIT, agent, events, snapshot_of, step_of_records, the_action
 
-PLACES = {"loc-gate": "玄武门", "loc-yard": "内院", "loc-hall": "大殿"}
-
 
 def _record(**fields: object) -> dict[str, object]:
     return {"seq": 5, "execution_id": "x1", "initiator_id": "a", "agent_id": "a",
@@ -29,7 +27,6 @@ def test_a_joint_act_is_one_event_told_by_its_initiator() -> None:
     talk = {"action_type": "talk", "location_id": "loc-hall", "participant_ids": ["a", "b"],
             "observations": [_seen("loc-hall", "甲与乙低声交谈")], "overheard_by": ["c"]}
     step = StepView.from_snapshot(snapshot_of(
-        places=PLACES,
         agents={i: {"agent_id": i, "location_id": "loc-hall"} for i in ("a", "b", "c")},
         records=[
             # The conscript's record arrives first; it only restates the intent back at him.
@@ -123,7 +120,6 @@ def test_what_an_injection_changed_is_seen_where_it_landed() -> None:
     """The record stays with the observer; what onlookers perceived of its change is told in each
     place, under the injection's seq, done by nobody in the world."""
     step = StepView.from_snapshot(snapshot_of(
-        places=PLACES,
         events=[{"kind": "injection", "id": "ev1", "authored_by": "system",
                  "narrative_desc": "诏书加印", "seq": 7,
                  "observations": [_seen("loc-hall", "封皮上多出一道朱印。")]}],

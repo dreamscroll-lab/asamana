@@ -4,7 +4,7 @@ Render-neutral: every payload is semantic world state (steps, the relationship
 graph). No coordinates/layout — a client lays it out. A 2D renderer turns the
 symbolic state into a map on the client; a text view ignores the geometry.
 
-Public cast identities are independent of viewpoint. While an actor performs a character,
+Public cast and place identities are independent of viewpoint. While an actor performs a character,
 steps, profiles, graphs and the feed answer as that character perceived the world
 (``interaction.actor_view``); once the actor exits, they answer in full again.
 
@@ -21,6 +21,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.logging import get_logger
+from world.stored_config import StoredWorldConfig
 
 # WebSocket must be importable at module scope: with `from __future__ import annotations`,
 # FastAPI resolves the `websocket: WebSocket` hint against module globals, so a function-local
@@ -35,6 +36,7 @@ from interaction.models import (
     AgentProfile,
     CharacterIdentity,
     GraphNode,
+    PlaceIdentity,
     StepView,
     WorldGraph,
     relations_from_snapshot,
@@ -138,6 +140,20 @@ def build_observe_router(services: ApiServices) -> Any:
                 color=entry.get("color", ""),
             ))
             for agent_id, entry in sorted(profiles.items())
+        ]
+
+    @router.get("/api/worlds/{world_id}/places")
+    async def list_places(world_id: str) -> list[dict[str, Any]]:
+        """The world's places, fixed at build and identical for every viewer."""
+        data = await manager.snapshot_provider.load_world_config(world_id)
+        if not data:
+            raise HTTPException(status_code=404, detail=f"No world config for: {world_id}")
+        places = StoredWorldConfig(data).get_places()
+        return [
+            to_jsonable(PlaceIdentity(
+                location_id=place_id, name=place.name, description=place.description,
+            ))
+            for place_id, place in sorted(places.items())
         ]
 
     @router.get("/api/worlds/{world_id}/agents/{agent_id}/profile")

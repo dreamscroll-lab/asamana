@@ -13,15 +13,14 @@ from core.interfaces.perception import Broadcast
 
 @dataclass
 class WorldState:
-    """The world at the end of a step, whole: every body, place, thing and relation.
+    """The world at the end of a step, whole: every body, thing and relation.
 
     Records are JSON-native dicts in the shapes their producers write (``snapshot_agent_state``,
     ``EnvironmentSystem`` and the relation snapshot). Nothing is left out for being private: who
-    may see what is decided by the views built from a snapshot, not here.
+    may see what is decided by the views built from a snapshot, not here. Places are not here:
+    they are fixed at build and live in the world's stored config.
     """
 
-    # Place id → its narrative name.
-    places: dict[str, str] = field(default_factory=dict)
     # Agent id → ``snapshot_agent_state`` plus where the body is (``location_id``: a place, or
     # ``IN_TRANSIT`` between two waypoints), its ``transit`` while mid-move and ``displaced``.
     agents: dict[str, dict[str, Any]] = field(default_factory=dict)

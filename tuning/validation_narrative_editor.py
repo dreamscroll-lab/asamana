@@ -224,7 +224,7 @@ async def validate_narrative_editor(
 
     world = await WorldInitializer(container).restore(world_id)
     agent_ids = set(world.agents.keys())
-    location_ids = set(world.environment.world_state()["places"].keys())
+    location_ids = {place.place_id for place in world.environment.space.all_places()}
     out_dir = Path(trace_dir) / world_id / "validation" / "narrative_editor"
 
     async def _one(meta: dict) -> dict:

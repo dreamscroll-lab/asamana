@@ -28,7 +28,6 @@ def _snapshot(world_id: str, step: int, relations: dict, *, profiles: dict | Non
         timestamp=datetime.now(),
         world_time=WorldTime.from_step(step, WorldTimeConfig()).clock_payload(),
         state=WorldState(
-            places={"palace": "宫"},
             agents={
                 "agent-1": {"agent_id": "agent-1", "agent_name": "甲", "is_main_character": True, "location_id": "palace"},
                 "agent-2": {"agent_id": "agent-2", "agent_name": "乙", "is_main_character": False, "location_id": "palace"},
@@ -262,6 +261,26 @@ async def test_agent_roster_carries_demographics(container, test_config) -> None
             "background": "久居宫中", "appearance": "瘦削", "color": "",
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_places_lists_the_worlds_place_identities(container, test_config) -> None:
+    """Places come from the world's stored config; steps reference them by id only."""
+    world_id = "world-api"
+    await container.snapshot.save_world_config(world_id, {"places": {
+        "yard": {"place_id": "yard", "name": "内院", "description": "", "is_public": False},
+        "palace": {"place_id": "palace", "name": "太极宫", "description": "宫城正殿"},
+    }})
+    await container.snapshot.save(world_id, 0, _snapshot(world_id, 0, {}))
+
+    client = _client(container, test_config)
+    assert client.get(f"/api/worlds/{world_id}/places").json() == [
+        {"location_id": "palace", "name": "太极宫", "description": "宫城正殿"},
+        {"location_id": "yard", "name": "内院", "description": ""},
+    ]
+    step = client.get(f"/api/worlds/{world_id}/steps/0").json()
+    assert "name" not in step["locations"]["palace"]
+    assert client.get("/api/worlds/no-such-world/places").status_code == 404
 
 
 @pytest.mark.asyncio

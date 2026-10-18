@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import ActorIcon from "./ActorIcon";
 import { api } from "../api/client";
 import { useCast, loadCast } from "../lib/cast";
+import { placeName, usePlaces } from "../lib/places";
 import { reportedDead, unfinishedGoals } from "../lib/agentState";
 import { avatarStyle, emotionColor } from "../lib/avatar";
 import type { Placed } from "../lib/step";
@@ -83,6 +84,7 @@ export default function CharacterCard({
   viewer?: Viewer;
 }) {
   const { cast, status: castStatus } = useCast(worldId);
+  const { places } = usePlaces(worldId);
   const scope = JSON.stringify([worldId, viewer]);
   const [loaded, setLoaded] = useState<{ scope: string; profiles: Record<string, AgentProfile>; failed: string[] }>({ scope, profiles: {}, failed: [] });
   const profiles = loaded.scope === scope ? loaded.profiles : {};
@@ -157,13 +159,13 @@ export default function CharacterCard({
                   </div>
                   {ls && (
                     <div
-                      title={[knowsPrivate(a.id) ? ls.private.emotion_label : "", ls.location_name, ls.public.condition].filter(Boolean).join(" · ")}
+                      title={[knowsPrivate(a.id) ? ls.private.emotion_label : "", placeName(places, ls.location_id), ls.public.condition].filter(Boolean).join(" · ")}
                       className="text-[10px] text-slate-500 truncate"
                     >
                       {knowsPrivate(a.id) && (
                         <span className={emotionColor(ls.private.emotion_valence)}>{ls.private.emotion_label} · </span>
                       )}
-                      <span>📍 {ls.location_name}</span>
+                      <span>📍 {placeName(places, ls.location_id)}</span>
                       {/* A standing condition is context, not an event: it rides the secondary
                           line. Amber, because rose is death's. */}
                       {ls.public.condition && <span className="text-amber-500/70"> · {ls.public.condition}</span>}
@@ -231,7 +233,7 @@ export default function CharacterCard({
         {observing && live && !privateKnown && (
           <div className="mt-3 border-t border-slate-800/70 pt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
             <span className="text-slate-500">
-              📍 {live.location_name}
+              📍 {placeName(places, live.location_id)}
               {live.public.activity_label && ` · ${live.public.activity_label}`}
             </span>
             {live.public.condition && <span className="text-amber-500/70">处境 {live.public.condition}</span>}
@@ -243,7 +245,7 @@ export default function CharacterCard({
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
               <span className={`font-medium ${emotionColor(live.private.emotion_valence)}`}>{live.private.emotion_label}</span>
               <span className="text-slate-500">
-                📍 {live.location_name} · {live.private.activity_label}
+                📍 {placeName(places, live.location_id)} · {live.private.activity_label}
               </span>
               {live.private.dominant_need && <span className="text-slate-500">需求 {live.private.dominant_need_label}</span>}
               {live.private.vitality != null && <span className="text-slate-500">生命值 {Math.round(live.private.vitality * 100)}</span>}

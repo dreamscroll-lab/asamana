@@ -1,10 +1,14 @@
-/** The hover card over a body with no mind, or over a thing. What it shows, and why hover, is on `show`. */
+/**
+ * The hover card over a body with no mind, over a thing, or over a place. What it shows, and why
+ * hover, is on `show`.
+ */
 
 import Phaser from "phaser";
 
 import type { EntityView, NpcView } from "../types";
 import { entityTipLines } from "../lib/entity";
 import { npcTipLines } from "../lib/npc";
+import { placeTipLines } from "../lib/places";
 import type { TipLine, TipTone } from "../lib/tip";
 import { type AgentToken, FONT, NOTE_WRAP_W, TEXT_RES, drawPlate } from "./types";
 
@@ -55,6 +59,17 @@ export class HoverTip {
   showEntity(x: number, y: number, entity: EntityView): void {
     this.hide();
     const card = this.build(entityTipLines(entity));
+    if (!card) return;
+    this.tip = card.setPosition(x, y).setDepth(FREE_TIP_DEPTH);
+  }
+
+  /**
+   * The card over a place's name on the map: what the place is called and what it is. On the
+   * name, not the whole region: regions tile the map, so the card would never come down.
+   */
+  showPlace(x: number, y: number, name: string, description: string): void {
+    this.hide();
+    const card = this.build(placeTipLines(name, description));
     if (!card) return;
     this.tip = card.setPosition(x, y).setDepth(FREE_TIP_DEPTH);
   }

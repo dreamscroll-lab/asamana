@@ -24,7 +24,7 @@ export default function MessageRow({ m, cast }: { m: Scoped<MessageSummary>; cas
           <>
             {sender}
             <span className="text-slate-600">
-              {m.scope === "world" ? " 世界广播" : ` 在${m.location_name}广播`}
+              {m.scope === "world" ? " 世界广播" : ` 在${cast.placeOf(m.location_id)}广播`}
               {heard > 0 ? `（${heard} 人听见）` : "（无人在侧）"} ·{" "}
             </span>
             {m.content}

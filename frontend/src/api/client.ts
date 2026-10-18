@@ -15,6 +15,7 @@ import type {
   ActorPace,
   AgentProfile,
   CharacterIdentity,
+  PlaceIdentity,
   BuildJob,
   Deployment,
   DirectiveResult,
@@ -121,6 +122,8 @@ export const api = {
   // The whole cast as persisted at step 0 — stable for the world's life, unlike a
   // StepView's agents, so stable things (character-skin dealing) key off this.
   agents: (id: string) => req<CharacterIdentity[]>(`/api/worlds/${id}/agents`),
+  // The world's places, fixed at build.
+  places: (id: string) => req<PlaceIdentity[]>(`/api/worlds/${id}/places`),
   agentProfile: (id: string, agentId: string) =>
     req<AgentProfile>(`/api/worlds/${id}/agents/${agentId}/profile`),
 

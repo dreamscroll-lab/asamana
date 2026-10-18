@@ -42,7 +42,7 @@ const step: StepView = {
   world_time: { label: "", hour: null, minute: null },
   locations: {
     hall: {
-      location_id: "hall", name: "大殿",
+      location_id: "hall",
       agents: [agent("a", { open: { sword: thing() } }), agent("b", { hidden: { note: thing(false) } })],
       npcs: [], entities: { chest: thing() }, events: [talk],
     },
@@ -55,9 +55,9 @@ const step: StepView = {
 describe("indexStep", () => {
   it("每个身体带上它所在的作用域", () => {
     const index = indexStep(step);
-    expect([index.agents.a.location_id, index.agents.a.location_name]).toEqual(["hall", "大殿"]);
-    // Between two waypoints: no place, and the narrative name says so.
-    expect([index.agents.c.location_id, index.agents.c.location_name]).toEqual(["", "途中"]);
+    expect(index.agents.a.location_id).toBe("hall");
+    // Between two waypoints: no place.
+    expect(index.agents.c.location_id).toBe("");
     expect(index.npcs[0].location_id).toBe("");
   });
 

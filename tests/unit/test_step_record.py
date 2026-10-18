@@ -99,7 +99,7 @@ async def test_a_snapshot_survives_the_file_round_trip(tmp_path) -> None:
     snapshot = WorldSnapshot(
         world_id="w", step=3, timestamp=datetime(2026, 1, 1),
         world_time={"label": "辰时", "hour": 8, "minute": 0},
-        state=WorldState(places={"hall": "大殿"}, agents={"a": {"agent_name": "甲", "location_id": "hall"}}),
+        state=WorldState(agents={"a": {"agent_name": "甲", "location_id": "hall"}}),
         events=[{"kind": "action", "seq": 7, "initiator_id": "a", "parts": []}],
         engine=EngineState(pending_messages=[in_flight], pending_broadcasts=[notice], event_seq=8,
                            environment={"transit_origins": {}}),

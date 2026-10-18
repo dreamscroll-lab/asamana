@@ -22,11 +22,10 @@ import type {
 
 /**
  * A body's or event's scope: a location id; "" for the way between two waypoints (transit);
- * null for the world scope (only events live there). `location_name` is the place's narrative
- * name, 「途中」 on the way, "" for the world.
+ * null for the world scope (only events live there). Its name is `placeName` (lib/places).
  */
-export type Placed<T> = T & { location_id: string; location_name: string };
-export type Scoped<T> = T & { location_id: string | null; location_name: string };
+export type Placed<T> = T & { location_id: string };
+export type Scoped<T> = T & { location_id: string | null };
 
 /**
  * Where a thing is, on one axis: on the ground of a location (`presence_ref` = location id) or
@@ -64,23 +63,21 @@ export function indexStep(step: StepView): StepIndex {
       entities[id] = { ...e, presence: "held", presence_ref: holder };
     }
   };
-  const nameOf = (id: string) => (id ? step.locations[id]?.name || "某地" : "途中");
   const scope = (
     location_id: string,
     s: { agents: AgentView[]; npcs: NpcView[]; events: ScopeEvent[] },
   ) => {
-    const location_name = nameOf(location_id);
     for (const a of s.agents) {
-      agents[a.agent_id] = { ...a, location_id, location_name };
+      agents[a.agent_id] = { ...a, location_id };
       held(a.agent_id, a.public.carrying);
       held(a.agent_id, a.private.carrying);
     }
     for (const n of s.npcs) {
-      npcs.push({ ...n, location_id, location_name });
+      npcs.push({ ...n, location_id });
       held(n.npc_id, n.public.carrying);
       held(n.npc_id, n.private.carrying);
     }
-    for (const e of s.events) events.push({ ...e, location_id, location_name });
+    for (const e of s.events) events.push({ ...e, location_id });
   };
 
   scope("", step.transit);
@@ -90,7 +87,7 @@ export function indexStep(step: StepView): StepIndex {
       entities[eid] = { ...e, presence: "at_location", presence_ref: id };
     }
   }
-  for (const e of step.world.events) events.push({ ...e, location_id: null, location_name: "" });
+  for (const e of step.world.events) events.push({ ...e, location_id: null });
   events.sort((a, b) => a.seq - b.seq);
 
   const index: StepIndex = {

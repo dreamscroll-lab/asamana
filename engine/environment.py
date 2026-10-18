@@ -959,11 +959,10 @@ class EnvironmentSystem:
         )
 
     def world_state(self) -> dict[str, dict[str, object]]:
-        """This environment's share of the world at the end of a step, whole: places, Npcs and
-        entities (``core.interfaces.snapshot.WorldState``). Agents' bodies are reported with
-        the agents, by the runtime."""
+        """This environment's share of the world at the end of a step, whole: Npcs and entities
+        (``core.interfaces.snapshot.WorldState``). Agents' bodies are reported with the agents,
+        by the runtime."""
         return {
-            "places": {place.place_id: place.name for place in self.space.all_places()},
             # The whole Npc: nothing else records its condition or errand.
             "npcs": {
                 nid: {

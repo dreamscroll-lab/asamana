@@ -4,6 +4,7 @@ import { stepCast } from "./cast";
 import { identityColor, toHex } from "../../lib/color";
 import { indexStep } from "../../lib/step";
 import type { Cast } from "../../lib/cast";
+import type { Places } from "../../lib/places";
 import { bornInStep, buildFeed } from "./feed";
 import type {
   ActionSummary, AgentView, EntityView, LocationScope, MessageSummary, ObservationSummary, StepView,
@@ -20,7 +21,7 @@ const thing = (createdStep: number): EntityView => ({
 });
 
 const place = (location_id: string, over: Partial<LocationScope> = {}): LocationScope => ({
-  location_id, name: location_id, agents: [], npcs: [], entities: {}, events: [], ...over,
+  location_id, agents: [], npcs: [], entities: {}, events: [], ...over,
 });
 
 const at = (step: number, locations: LocationScope[]): StepView => ({
@@ -136,10 +137,11 @@ describe("stepCast public identity", () => {
     absent: { agent_id: "absent", name: "Public name", gender: "", age: null, role: "", background: "", appearance: "", color: "#336699" },
     malformed: { agent_id: "malformed", name: "Other", gender: "", age: null, role: "", background: "", appearance: "", color: "invalid" },
   };
+  const places: Places = { here: { location_id: "here", name: "大殿", description: "" } };
 
   it("resolves identities in dialogue even when their bodies are absent from the step", () => {
     const current = at(1, [place("here", { agents: [agent("present")] })]);
-    const lookup = stepCast(current, cast);
+    const lookup = stepCast(current, cast, places);
     expect(lookup.nameOf("absent")).toBe("Public name");
     expect(lookup.inkOf("absent")).toBe("#336699");
     expect(Object.keys(indexStep(current).agents)).toEqual(["present"]);
@@ -147,8 +149,14 @@ describe("stepCast public identity", () => {
     expect(lookup.conditionOf("absent")).toBe("");
   });
 
+  it("names a scope from the world's place table, never by its id", () => {
+    const lookup = stepCast(at(1, []), cast, places);
+    expect([lookup.placeOf("here"), lookup.placeOf("gone"), lookup.placeOf(""), lookup.placeOf(null)])
+      .toEqual(["大殿", "某地", "途中", ""]);
+  });
+
   it("uses the shared identity fallback for missing or malformed colors", () => {
-    const lookup = stepCast(at(1, []), cast);
+    const lookup = stepCast(at(1, []), cast, places);
     for (const id of ["missing", "malformed"]) {
       expect(lookup.inkOf(id)).toBe(toHex(identityColor(cast[id]?.color, id)));
     }

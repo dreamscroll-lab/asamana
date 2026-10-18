@@ -434,15 +434,12 @@ export function step({
     Object.entries(entities).map(([id, e]) => [id, bornIds.includes(id) ? { ...e, created_step: n } : e]),
   );
 
-  // Every room a body stands in, by id, named as its records name it.
-  const names = new Map<string, string>();
-  for (const b of [...states, ...npcs]) if (b.location_id) names.set(b.location_id, b.location);
   const locations: Record<string, LocationScope> = {};
   const transit: StepView["transit"] = { agents: [], npcs: [], events: [] };
   const scopeOf = (id: string): { agents: AgentView[]; npcs: NpcView[]; events: ScopeEvent[] } => {
     if (!id) return transit;
     return (locations[id] ??= {
-      location_id: id, name: names.get(id) ?? "某地", agents: [], npcs: [], entities: {}, events: [],
+      location_id: id, agents: [], npcs: [], entities: {}, events: [],
     });
   };
   const worldScopeEvents: ScopeEvent[] = [];

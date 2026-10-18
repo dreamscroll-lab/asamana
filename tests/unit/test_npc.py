@@ -409,14 +409,14 @@ def test_the_observer_gets_the_sentence_the_runner_wrote_and_the_place_he_stands
 
     npc = {"name": "王二", "gender": "男", "age": 34, "location_id": "gate",
            "outcome": {"text": "把书信交给了阿石", "ongoing": False}}
-    snap = snapshot_of(places={"gate": "宫门"}, npcs={"npc_x": npc})
+    snap = snapshot_of(npcs={"npc_x": npc})
     where, summary = npcs(StepView.from_snapshot(snap))["npc_x"]
     # Private: no onlooker's perception carries an Npc's doings, and no one performs it.
     assert (where, summary.private.outcome, summary.private.ongoing) == (
         "gate", "把书信交给了阿石", False,
     )
     # Nothing happened this step: an empty sentence, while identity and location are still reported.
-    snap = snapshot_of(places={"gate": "宫门"}, npcs={"npc_x": {**npc, "outcome": None}})
+    snap = snapshot_of(npcs={"npc_x": {**npc, "outcome": None}})
     where, quiet = npcs(StepView.from_snapshot(snap))["npc_x"]
     assert (where, quiet.name, quiet.private.outcome, quiet.private.ongoing) == ("gate", "王二", "", False)
 

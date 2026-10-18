@@ -179,14 +179,14 @@ def test_the_read_model_does_not_call_one_an_agent() -> None:
     )
     npc_id = env.all_npcs()[0].npc_id
     world = env.world_state()
-    snapshot = snapshot_of(places=world["places"], npcs=world["npcs"], entities=world["entities"])
+    snapshot = snapshot_of(npcs=world["npcs"], entities=world["entities"])
     view = StepView.from_snapshot(snapshot)
 
     assert npc_id not in agents(view)
     assert list(npcs(view)) == [npc_id]
     where, seen = npcs(view)[npc_id]
     assert (seen.name, seen.gender, seen.age) == ("王二", "男", 34)
-    assert (where, view.locations[where].name) == ("hall", "大殿")  # narrative name, not an id
+    assert where == "hall"
     # This tier has no identity, so it gets the reserved value, not a slot from the character
     # palette.
     assert seen.color == MINDLESS_BODY_COLOR

@@ -747,7 +747,6 @@ class WorldInitializer:
             timestamp=datetime.now(),
             world_time=world_time.clock_payload(),
             state=WorldState(
-                places=environment_state["places"],
                 agents={agent_id: snapshot_agent_state(agent) for agent_id, agent in agents.items()},
                 npcs=environment_state["npcs"],
                 entities=environment_state["entities"],

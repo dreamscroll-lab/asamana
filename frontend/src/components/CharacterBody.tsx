@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 
 import { api, API_BASE } from "../api/client";
 import { useCast } from "../lib/cast";
+import { placeName, usePlaces } from "../lib/places";
 import { reportedDead, unfinishedGoals } from "../lib/agentState";
 import { avatarStyle, emotionColor } from "../lib/avatar";
 import { identityColor, parseHex, toHex } from "../lib/color";
@@ -221,6 +222,7 @@ export default function CharacterBody({
   viewer: Viewer;
 }) {
   const { cast, status: castStatus } = useCast(worldId);
+  const { places } = usePlaces(worldId);
   const identity = cast[agent.id];
   const scope = JSON.stringify([worldId, viewer, agent.id]);
   const [loaded, setLoaded] = useState<{ scope: string; profile: AgentProfile } | null>(null);
@@ -356,7 +358,7 @@ export default function CharacterBody({
     ),
     feet: (
       <>
-        <Section label="地点">{live?.location_name || "—"}</Section>
+        <Section label="地点">{live ? placeName(places, live.location_id) : "—"}</Section>
         {live?.public.condition && <Section label="处境"><span className="text-amber-300">{live.public.condition}</span></Section>}
       </>
     ),

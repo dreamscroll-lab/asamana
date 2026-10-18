@@ -139,7 +139,7 @@ export default function ActionRow({
           )}
         </strong>
         {parts.some((p) => cast.isMain(p.agent_id)) && <span className="text-[10px] text-indigo-400">★</span>}
-        <span className="text-xs text-slate-500">📍 {cast.placeOf(act)}</span>
+        <span className="text-xs text-slate-500">📍 {cast.placeOf(act.location_id)}</span>
         <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded-md border ${meta.chip}`}>
           {meta.icon} {meta.label}
         </span>

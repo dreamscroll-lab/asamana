@@ -1006,18 +1006,22 @@ data added to suit one component.
 
 ---
 
-Public character identities are served by `GET /api/worlds/{id}/agents` as `CharacterIdentity`:
-name, gender, age, role, background, appearance and color, keyed by agent id. They are identical
-for every viewer. The frontend shares this table per world in `lib/cast.ts`; filtered steps and
-graphs decide which characters a viewer sees, never the full identity table. Private profile
-fields remain viewpoint-filtered and must not enter the shared table. Identity color comes from
-the table, with `identityColor` as the sole missing-color fallback; step agents and graph nodes
-carry no color.
+## World identity tables
 
-**Reuse shared character identity:** frontend features should resolve stable character identity
-from the shared identity table. Outside the identity source itself, backend payloads reference
-characters by id instead of duplicating their identity fields. Identity lookup grants no
-visibility or actionability; viewpoint-dependent perception and runtime state remain separate.
+What is fixed at build and identical for every viewer is served once per world as an identity
+table keyed by id: characters (`CharacterIdentity`, `GET /api/worlds/{id}/agents`) and places
+(`PlaceIdentity`, `GET /api/worlds/{id}/places`). The frontend loads each once per world and
+shares it (`lib/cast`, `lib/places`).
+
+- **One source.** Outside its table an identity field is not duplicated: snapshots, steps, graphs
+  and other payloads reference characters and places by id, and clients resolve names and color
+  from the table. A missing entry has one fallback per table (`identityColor`; 「某人」/「某地」),
+  never a bare id.
+- **Only fixed, public facts.** Mutable state (location, emotion, belongings) and
+  viewpoint-filtered fields (private profile, narrative tier) stay out and come from their own
+  contracts.
+- **Lookup is not visibility.** Filtered steps and graphs decide what a viewer sees; resolving an
+  id grants no visibility or actionability.
 
 ## Frontend layout (`frontend/src`)
 

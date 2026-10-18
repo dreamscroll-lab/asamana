@@ -69,7 +69,7 @@ def test_in_the_place_it_ends_in_the_character_sees_bodies_and_things_as_they_sh
     hidden = EntityView(name="暗格", entity_type="item", state="", is_public=False)
     letter = EntityView(name="信", entity_type="item", state="", private=EntityPrivateView("内容"))
     view = step_view_for(_step(locations={"hall": LocationScope(
-        location_id="hall", name="大殿",
+        location_id="hall",
         agents=[_body(ME), _body("agent-b")],
         npcs=[NpcView(npc_id="n1", name="仆", private=NpcPrivateView(outcome="跑腿"))],
         entities={"hidden": hidden, "letter": letter},
@@ -89,7 +89,7 @@ def test_in_the_place_it_ends_in_the_character_sees_bodies_and_things_as_they_sh
 
 def test_own_belongings_keep_what_is_written_on_them() -> None:
     view = step_view_for(_step(locations={"hall": LocationScope(
-        location_id="hall", name="大殿", agents=[_body(ME)],
+        location_id="hall", agents=[_body(ME)],
     )}), ME)
 
     assert view.locations["hall"].agents[0].public.carrying["seal"].private.content == "密文"
@@ -97,7 +97,7 @@ def test_own_belongings_keep_what_is_written_on_them() -> None:
 
 def test_events_here_show_their_public_side_unless_the_character_is_inside() -> None:
     view = step_view_for(_step(locations={"hall": LocationScope(
-        location_id="hall", name="大殿", agents=[_body(ME)],
+        location_id="hall", agents=[_body(ME)],
         events=[
             _action(1, ["agent-b", ME]),
             _action(2, ["agent-b"]),
@@ -117,12 +117,12 @@ def test_events_here_show_their_public_side_unless_the_character_is_inside() -> 
 
 def test_elsewhere_only_its_own_events_and_nobody_in_them() -> None:
     view = step_view_for(_step(locations={
-        "hall": LocationScope(location_id="hall", name="大殿", agents=[_body(ME)]),
+        "hall": LocationScope(location_id="hall", agents=[_body(ME)]),
         "gate": LocationScope(
-            location_id="gate", name="宫门", agents=[_body("agent-b")],
+            location_id="gate", agents=[_body("agent-b")],
             events=[_letter(1, ["agent-x", ME]), _action(2, ["agent-b"]), _letter(3, None)],
         ),
-        "yard": LocationScope(location_id="yard", name="内院", agents=[_body("agent-c")]),
+        "yard": LocationScope(location_id="yard", agents=[_body("agent-c")]),
     }), ME)
 
     assert set(view.locations) == {"hall", "gate"}
@@ -200,11 +200,11 @@ def test_what_arrived_as_the_step_began_follows_who_received_it() -> None:
         ]
 
     left = step_view_for(_step(locations={
-        "gate": LocationScope(location_id="gate", name="宫门", events=at_gate([ME])),
-        "hall": LocationScope(location_id="hall", name="大殿", agents=[_body(ME)]),
+        "gate": LocationScope(location_id="gate", events=at_gate([ME])),
+        "hall": LocationScope(location_id="hall", agents=[_body(ME)]),
     }), ME)
     arrived = step_view_for(_step(locations={
-        "gate": LocationScope(location_id="gate", name="宫门", agents=[_body(ME)], events=at_gate(["agent-b"])),
+        "gate": LocationScope(location_id="gate", agents=[_body(ME)], events=at_gate(["agent-b"])),
     }), ME)
 
     assert [e.seq for e in left.locations["gate"].events] == [1, 2]

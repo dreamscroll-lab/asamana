@@ -7,7 +7,7 @@ import NarrativeStep from "../components/narrative/NarrativeStep";
 import Checklist from "./Checklist";
 import FrameReadout, { type Figure } from "./FrameReadout";
 import { loadMarks, markKey, saveMarks, type Mark, type Marks } from "./marks";
-import { resolvePlaces } from "./places";
+import { placeTable, resolvePlaces } from "./places";
 import { buildScenes, fixtureCast } from "./scenes";
 import { renderStepInto } from "../phaser/driveStep";
 import type { MapSource } from "../phaser/mapSource";
@@ -63,6 +63,7 @@ export default function SceneBench({
   // yields null, and the stage says so.
   const places = useMemo(() => resolvePlaces(source), [source]);
   const scenes = useMemo(() => (places ? buildScenes(places) : []), [places]);
+  const placeNames = useMemo(() => (places ? placeTable(places) : {}), [places]);
   // Keep the same scene selected across a template switch when it still exists.
   const pick = scenes.find((s) => s.id === pickId) ?? scenes[0];
 
@@ -447,7 +448,7 @@ export default function SceneBench({
           <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-2">
             Feed · beat {beat + 1}
           </div>
-          <NarrativeStep cast={fixtureCast()} step={pick.steps[beat] ?? pick.steps[0]} />
+          <NarrativeStep cast={fixtureCast()} places={placeNames} step={pick.steps[beat] ?? pick.steps[0]} />
         </aside>
       )}
     </>

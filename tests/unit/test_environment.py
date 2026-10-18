@@ -487,7 +487,6 @@ def test_world_state_entities_exclude_locations() -> None:
     state = env.world_state()
 
     assert "hall" not in state["entities"]
-    assert state["places"] == {"hall": "大殿"}
 
 
 # ---------------------------------------------------------------------------

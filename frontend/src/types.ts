@@ -111,8 +111,8 @@ export interface DialogueTurn {
 // A StepView is what happened in the world this step and the state it ended in, grouped by
 // where it happened (mirrors interaction/models.py):
 //
-//   locations  one per place: the bodies and things there at the end of the step, and what
-//              happened there.
+//   locations  one per place with anything in it: the bodies and things there at the end of
+//              the step, and what happened there.
 //   transit    bodies between two waypoints, and what happened to them on the way. A body
 //              standing on a waypoint is in that location, not here.
 //   world      what reached every place at once.
@@ -386,8 +386,7 @@ export interface NpcView {
 }
 
 export interface LocationScope {
-  location_id: string;
-  name: string;
+  location_id: string; // its name is in the world's place table (lib/places)
   agents: AgentView[];
   npcs: NpcView[];
   entities: Record<string, EntityView>;
@@ -523,6 +522,13 @@ export interface CharacterIdentity {
   background: string;
   appearance: string;
   color: string;
+}
+
+/** Public place identity, fixed at build and identical for every viewer (GET /worlds/{id}/places). */
+export interface PlaceIdentity {
+  location_id: string;
+  name: string;
+  description: string;
 }
 
 // Static agent identity (GET /api/worlds/{id}/agents/{agent_id}/profile).

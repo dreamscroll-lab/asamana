@@ -85,7 +85,7 @@ def _runtime(container):
         _build_agent(container, world_id=WORLD_ID, agent_id="a1", name="李世民", is_main_character=True),
         _build_agent(container, world_id=WORLD_ID, agent_id="a2", name="李建成", is_main_character=False),
     ]
-    location = next(iter(environment.world_state()["places"]))
+    location = next(iter(environment.space.all_places())).place_id
     for agent in agents:
         environment.place_agent(agent_id=agent.agent_id, location_id=location)
         agent.personality.update_location(step=0, location=location)

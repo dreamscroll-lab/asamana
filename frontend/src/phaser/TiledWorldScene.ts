@@ -1,6 +1,7 @@
 import Phaser from "phaser";
 
 import type { Cast } from "../lib/cast";
+import type { Places } from "../lib/places";
 import type { ActorTarget, BroadcastSummary, MapFocus, MapSelect, NpcView, StepView } from "../types";
 import { type Placed, type PlacedEntity, type Scoped, indexStep } from "../lib/step";
 import { type Beat, type Figure, beatsOf, figuresOf } from "./figures";
@@ -176,11 +177,17 @@ export class TiledWorldScene
 
 
   private castById: Cast = {};
+  private places: Places = {};
 
   identityColor(id: string): number {
     return identityColor(this.castById[id]?.color ?? this.npcById.get(id)?.color, id);
   }
 
+
+  /** Place identities, for the card over a place-name. The name itself is the map's own label. */
+  setPlaces(places: Places): void {
+    this.places = places;
+  }
 
   /** Public identities supply bodies and colors independently of the current step. */
   setCast(cast: Cast): void {
@@ -269,11 +276,6 @@ export class TiledWorldScene
 
   get worldH(): number {
     return this.map.worldH;
-  }
-
-  /** Display name for a location id (for the focus chips), or a description if unknown. */
-  locationName(id: string): string {
-    return this.map.locationName(id);
   }
 
   private skinFor(agentId: string): string {
@@ -590,6 +592,10 @@ export class TiledWorldScene
     // `pointerout` does not fire when the pointer leaves the canvas entirely, so the hover card
     // would stay up indefinitely; `gameout` covers that. (A press hides it too, via camera.mount.)
     this.input.on("gameout", () => this.hoverTip.hide());
+    this.input.on("gameobjectover", (p: Phaser.Input.Pointer, obj: Phaser.GameObjects.GameObject) => this.hoverPlace(p, obj));
+    this.input.on("gameobjectout", (_p: Phaser.Input.Pointer, obj: Phaser.GameObjects.GameObject) => {
+      if (obj.getData?.("locationId")) this.hoverTip.hide();
+    });
     this.ready = true;
     this.onReady?.();
   }
@@ -597,6 +603,16 @@ export class TiledWorldScene
   /** Day/night color wash from the world's hour — see AmbientLight.setHour. */
   setWorldTime(hour: number | null | undefined): void {
     this.ambient.setHour(hour);
+  }
+
+  /** The card over a place-name the pointer rests on, hung just above the name. */
+  private hoverPlace(p: Phaser.Input.Pointer, obj: Phaser.GameObjects.GameObject): void {
+    const id = obj.getData?.("locationId");
+    // A drag pans the map, and touch has no hover.
+    if (!id || p.isDown || p.wasTouch) return;
+    const label = obj as Phaser.GameObjects.Text;
+    const top = label.y - label.displayHeight / 2 - 4;
+    this.hoverTip.showPlace(label.x, top, label.text, this.places[String(id)]?.description ?? "");
   }
 
   private handleContext(p: Phaser.Input.Pointer): void {

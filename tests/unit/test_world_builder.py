@@ -495,8 +495,9 @@ async def test_initial_snapshot_manifest_persists_invariants(container) -> None:
 
     # Every agent stands in a real place the world names, so the observer shows real homes at
     # init, not the "某地" fallback.
+    places = world.world_config.get_places()
     for state in snapshot.state.agents.values():
-        assert snapshot.state.places.get(state["location_id"]), state.get("location_id")
+        assert places[state["location_id"]].name, state.get("location_id")
 
 
 @pytest.mark.asyncio

@@ -9,8 +9,6 @@ from core.interfaces.action import DialogueTurn
 from interaction.models import EntityPrivateView, EntityView, StepView
 from tests.unit.step_view import TRANSIT, agent, agents, events, npcs, snapshot_of
 
-PLACES = {"loc-gate": "玄武门", "loc-yard": "内院", "loc-hall": "大殿"}
-
 
 def test_an_agent_stands_in_the_scope_his_body_is_in() -> None:
     transit = {"from_location_id": "loc-gate", "to_location_id": "loc-hall",
@@ -18,7 +16,6 @@ def test_an_agent_stands_in_the_scope_his_body_is_in() -> None:
                "elapsed_steps": 1, "total_steps": 3}
     # The record says where the body is: on a waypoint, or between two (IN_TRANSIT).
     view = StepView.from_snapshot(snapshot_of(
-        places=PLACES,
         agents={
             "a": {"agent_id": "a", "agent_name": "甲", "location_id": "loc-gate"},
             "b": {"agent_id": "b", "agent_name": "乙", "location_id": "loc-yard", "transit": transit},
@@ -29,11 +26,10 @@ def test_an_agent_stands_in_the_scope_his_body_is_in() -> None:
     placed = {agent_id: where for agent_id, (where, _) in agents(view).items()}
     # On a waypoint he is in that room; between two rooms he is in none.
     assert placed == {"a": "loc-gate", "b": "loc-yard", "c": TRANSIT}
-    assert view.locations["loc-yard"].name == "内院"
     # A passer-by is seen; his route is his own.
     assert agent(view, "b").private.transit == transit
-    # Every place is listed, empty or not.
-    assert set(view.locations) == {"loc-gate", "loc-yard", "loc-hall"}
+    # A place with nothing in it is not listed; places are named by the world, not the step.
+    assert set(view.locations) == {"loc-gate", "loc-yard"}
 
 
 def test_an_arrival_stands_in_the_destination_and_its_move_carries_the_route() -> None:
@@ -41,7 +37,6 @@ def test_an_arrival_stands_in_the_destination_and_its_move_carries_the_route() -
                "path": ["loc-gate", "loc-yard", "loc-hall"], "arrivals": [0, 1, 1],
                "elapsed_steps": 1, "total_steps": 1}
     view = StepView.from_snapshot(snapshot_of(
-        places=PLACES,
         agents={"a": {"agent_id": "a", "agent_name": "甲", "location_id": "loc-hall"}},
         records=[{"agent_id": "a", "initiator_id": "a", "execution_id": "x",
                   "action_type": "move", "phase": "settled", "location_id": "loc-hall"}],
@@ -56,7 +51,6 @@ def test_an_arrival_stands_in_the_destination_and_its_move_carries_the_route() -
 
 def test_an_npc_stands_in_the_scope_its_body_is_in() -> None:
     view = StepView.from_snapshot(snapshot_of(
-        places=PLACES,
         npcs={
             "n1": {"name": "小宦官", "location_id": "loc-gate"},
             "n2": {"name": "信使", "location_id": IN_TRANSIT},
@@ -96,7 +90,6 @@ def test_an_entity_is_listed_where_it_is() -> None:
                 "presence_ref": ref, "is_public": True}
 
     view = StepView.from_snapshot(snapshot_of(
-        places={"loc-gate": "玄武门"},
         agents={"a": {"agent_id": "a", "agent_name": "甲", "location_id": "loc-gate"}},
         entities={
             "ground": thing("at_location", "loc-gate"),
