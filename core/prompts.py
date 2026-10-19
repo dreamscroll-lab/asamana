@@ -202,8 +202,8 @@ RELATION_SCALE_LEGEND: str = (
 # Producer-only constraints (age consistency / immutability / consistent wording / reverse flip)
 # are appended by each schema after referencing this constant, not put here.
 RELATION_LABEL_FORMAT: str = (
-    "「关系类型:角色」格式——关系类型是结构性绑定（血缘 / 配偶 / 师徒 / 同事 / 邻居 / 同乡 等），"
-    "角色是 A（发起方 from）在该关系中的位置；如「父子:儿子」表示 A 是 B（接收方 to）的儿子。"
+    "「关系类型:角色」格式，是关系的持有者对对方的认定——关系类型是结构性绑定（血缘 / 配偶 / 师徒 / 同事 / 邻居 / 同乡 等），"
+    "角色是**对方**在该关系中的位置，不是持有者自己的位置；如「父子:父亲」表示对方是持有者的父亲。"
     "无具体角色时只写关系类型（如「相识」「同事」「曾共事」），表示双方仅相识、在该关系中无具体角色。"
 )
 

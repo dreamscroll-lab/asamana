@@ -436,6 +436,22 @@ async def test_agent_generator_prompt_contains_all_three_invariants() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_generator_says_which_side_holds_each_relation_field() -> None:
+    """Relations reach the persona prompt as from/to JSON while the label legend speaks of holder
+    and other party; the prompt must map one onto the other, or a kinship label can be read
+    backwards."""
+    analysis = _analysis()
+    router, spy = _spy_router_capturing_scene(LLMScene.PERSONA_GENERATION, "{}")
+
+    await AgentGenerator(router).generate(analysis)
+
+    prompt = _prompt_text(spy, 0)
+    assert '"from": "A"' in prompt
+    assert "labels / trust / affection 的持有者是 from、对方是 to" in prompt
+    assert "reverse_labels / reverse_trust / reverse_affection 的持有者是 to" in prompt
+
+
+@pytest.mark.asyncio
 async def test_agent_generator_schema_does_not_ask_to_echo_identity() -> None:
     """name / role / agent_id are fixed by code: the schema doesn't ask for them back, and echoes
     are ignored."""
@@ -749,6 +765,16 @@ def test_a_missing_social_graph_or_prehistory_stays_empty_instead_of_being_inven
         r for r in caplog.records if r.message == "theme_analysis_fields_missing"
     )
     assert set(missing.fields) == {"initial_relations", "historical_events"}
+
+
+def test_the_relation_schema_carries_the_writer_s_direction_check() -> None:
+    """ThemeAnalyzer writes labels, so its schema carries the self-check that the shared legend,
+    which also reaches reader prompts, leaves out."""
+    from world.builders.theme_analyzer import ThemeAnalyzer
+
+    router = LLMRouter({scene: MockLLMProvider(fixed_response="{}") for scene in LLMScene})
+    system, _user = ThemeAnalyzer(router)._build_prompt("any theme", {})
+    assert "写完按「B 是 A 的<角色>」读一遍，读不通就是写反了" in system
 
 
 def test_the_analyzer_is_not_shown_the_map_s_own_name() -> None:

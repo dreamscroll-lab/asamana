@@ -259,7 +259,13 @@ class AgentGenerator:
             if cast_role.key_relationships:
                 input_lines.append(f"- 主要关系人物：{', '.join(cast_role.key_relationships)}")
         if related:
-            input_lines.append(f"- 相关关系字段说明：{relation_legend()}")
+            # The legend speaks of holder and other party; the JSON speaks of from/to. Without the
+            # mapping the model guesses which side a label belongs to.
+            input_lines.append(
+                "- 相关关系字段说明：每条关系里，labels / trust / affection 的持有者是 from、对方是 to"
+                "（labels 写 to 是 from 的谁）；reverse_labels / reverse_trust / reverse_affection 的持有者是 to、"
+                f"对方是 from。{relation_legend()}"
+            )
         input_lines.append(f"- 相关关系：{json.dumps(related, ensure_ascii=False)}")
 
         # 【输出】: schema at the end of user, next to the generation point (§3).

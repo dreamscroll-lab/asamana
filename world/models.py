@@ -376,8 +376,8 @@ class RelationSeed:
     Bilateral by construction: a single seed describes both directions of one
     relationship. The forward fields (trust/affection/labels) describe
     `source → target`; the `reverse_*` fields describe `target → source` and
-    may diverge — e.g. asymmetric kinship (``labels=["父子:儿子"]`` vs
-    ``reverse_labels=["父子:父亲"]``) or asymmetric sentiment (one side trusts
+    may diverge — e.g. asymmetric kinship (``labels=["父子:父亲"]``: the target is
+    the source's father, vs ``reverse_labels=["父子:儿子"]``) or asymmetric sentiment (one side trusts
     more than the other). When a `reverse_*` field is empty / unset, the
     corresponding forward value is used as the symmetric default.
     """

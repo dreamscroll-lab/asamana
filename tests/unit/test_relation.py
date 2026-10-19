@@ -358,3 +358,21 @@ async def test_perceive_existing_reads_without_bringing_a_relation_into_being(co
     await system.apply_interaction("friend", trust_delta=0.2, affection_delta=0.1, step=1)
     perceived = await system.perceive_existing("friend", emotion="neutral")
     assert perceived is not None and perceived.target_agent_id == "friend"
+
+
+def test_label_role_names_who_the_other_party_is_to_the_holder() -> None:
+    """The role in "kind:role" is the other party's position, the reading a "名字：[标签]" line
+    invites; the legend must not define it as the holder's own position. It speaks of holder and
+    other party only: it reaches first-person and third-person prompts alike, so a 「我」 would
+    have no referent in the latter."""
+    from core.prompts import relation_legend
+
+    legend = relation_legend()
+    assert "我" not in legend
+    # 「身份」 already names a person's identity (soul.role) beside the label; the role is a position.
+    assert "身份" not in legend
+    assert "「父子:父亲」表示对方是持有者的父亲" in legend
+    # The legend also reaches first-person prompts, where no A/B or from/to exists.
+    assert "发起方" not in legend and "from" not in legend
+    # Readers only read labels: a writer's self-check belongs to the producing schemas.
+    assert "写反" not in legend

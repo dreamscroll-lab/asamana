@@ -95,7 +95,7 @@ _SYSTEM_PROMPT = f"""\
 （注意：真有压力时仍须如实输出——这不是要你压制真实压力，而是不要无中生有。）
 
 【依据关系判断】
- - 每个同处者都附带"目标角色与其的关系"及其身份/性格/背景；收到的消息也会附上"目标角色与发送者的关系"。据此判断亲疏：
+ - 每个同处者都附带"该角色对其的关系"及其身份/性格/背景；收到的消息也会附上"该角色对发送者的关系"。据此判断亲疏：
  - **与该角色关系亲近、信任度高的人，通常不是其威胁来源**，不要生成针对这类亲近者的"控制 / 威慑 / 防范"目标。
 
 【信息边界】你只会看到该角色能感知的内容；绝不替它推断它无从得知的信息。
@@ -358,7 +358,7 @@ class WorldPressureEvaluator:
             line = f"- 收到来自{sender_name}的{MESSAGE_TAG}：{msg.content}"
             rel = sender_relations.get(getattr(msg, "sender_id", "") or "")
             if rel:
-                line += f"（该角色与{sender_name}的关系：{rel}）"
+                line += f"（该角色对{sender_name}的关系：{rel}）"
             lines.append(line)
             has_any = True
         for ev in ambient:
@@ -369,7 +369,7 @@ class WorldPressureEvaluator:
             lines.append(f"- {_ACTED_UPON_TAG}（他自己的记忆，「我」即该角色）：{fact}")
             has_any = True
         if co_located:
-            lines.append("- 同处一地（这些人就在该角色身边，构成在场压力；附其身份与该角色对其的关系，供识人参考）：")
+            lines.append("- 同处一地（这些人就在该角色身边，构成在场压力；附其身份，及该角色对其的关系，供识人参考）：")
             for i, c in enumerate(co_located, 1):
                 who = person_referent(
                     c["name"], c.get("gender", ""),

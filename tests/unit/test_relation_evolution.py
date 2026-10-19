@@ -387,7 +387,7 @@ async def test_insubstantial_ambient_third_party_excluded(container: object) -> 
     # Must survive the filter — the ic-only test would drop the protagonist's own brother.
     await _seed_event_about(memory, target_id="agent-brother", step=18, content="兄长的身影")
     await _seed_existing_relation(
-        relation, target_id="agent-brother", labels=["兄弟:弟弟", "政敌"], trust=0.1, to_name="李建成"
+        relation, target_id="agent-brother", labels=["兄弟:兄长", "政敌"], trust=0.1, to_name="李建成"
     )
 
     provider = MockLLMProvider(fixed_response='{"updates": []}')
@@ -567,3 +567,5 @@ async def test_closed_world_rule_reaches_the_judge(container: object) -> None:
 
     system = provider.call_history[0][0].content
     assert CLOSED_WORLD_FACT_RULE in system
+    # This prompt writes labels, so it carries the writer's direction check (the shared legend doesn't).
+    assert "读不通就是写反了" in system

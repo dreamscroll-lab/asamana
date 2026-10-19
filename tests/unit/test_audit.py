@@ -59,7 +59,7 @@ def trace_dir(tmp_path: Path) -> str:
             {"name": "乙", "role": "次", "age": 20, "gender": "男", "brief": "b"},
         ],
         "initial_relations": [
-            {"from": "甲", "to": "乙", "labels": ["同宗:兄长", "政敌"], "reverse_labels": ["同宗:幼弟"]},
+            {"from": "甲", "to": "乙", "labels": ["同宗:幼弟", "政敌"], "reverse_labels": ["同宗:兄长"]},
         ],
         "historical_events": [{"event": "结盟", "hours_before_start": 12, "related_figures": ["甲"]}],
         "world_entity_seeds": [
@@ -202,6 +202,15 @@ def test_init_shows_the_world_s_things_and_errand_hands(trace_dir: str) -> None:
     block = init_block(view)
     assert "[物] 虎符（item，初始状态 intact）　在 北营：调兵之信物" in block
     assert "[差役] 营门卒（男28岁）　在 北营：守营门，认符不认人" in block
+
+
+def test_init_reads_each_label_as_who_the_other_party_is(trace_dir: str) -> None:
+    """A label names the other party's role ("同宗:幼弟": the other is my younger kin), so the line
+    the judge reads must say so, or it scores correct seniority as reversed."""
+    block = init_block(reconstruct_world(WORLD, trace_dir=trace_dir))
+    assert "甲 视 乙 为「同宗:幼弟、政敌」" in block
+    assert "乙 视 甲 为「同宗:兄长」" in block
+    assert "自居为" not in block
 
 
 def test_reconstruct_steps_filter(trace_dir: str) -> None:
@@ -1087,6 +1096,8 @@ def test_every_scale_the_audit_renders_has_its_definition_in_the_same_block() ->
     sass = agent_step_block(view, "a1", sv)
     sams, mass = agent_trajectory_block(view, "a1"), cross_agent_block(view, 1)
     for block in (sams, mass):
+        assert "甲 视 乙 为「君臣:君主」" in block  # the label names who 乙 is to 甲
+    for block in (sams, mass):
         for token, definition in scales:
             assert token in block, f"用例没渲染出 {token}，这条守卫会漏掉它"
             assert definition in block, f"渲染了 {token} 却没给它的定义（{definition}）"
@@ -1565,13 +1576,13 @@ def test_maintenance_products_render_readably_without_bare_indices() -> None:
 
     lines = _step_level_lines({
         "relation_evolution": {"updates": [{"rationale": "他亲口允诺，默契加深", "target_index": 1,
-                                            "target": "李世民", "labels": ["姻亲:妻兄", "君臣:臣属"],
+                                            "target": "李世民", "labels": ["姻亲:妹夫", "君臣:君主"],
                                             "summary": "信任上升"}]},
         "reflection": {"insights": [{"source_indices": [1, 2, 3], "text": "我才明白他等的不是准信。",
                                      "importance": 0.95}]},
     })
     block = "\n".join(lines)
-    assert "⟳关系演化：对 李世民 「姻亲:妻兄、君臣:臣属」信任上升（他亲口允诺，默契加深）" in block
+    assert "⟳关系演化：对 李世民 「姻亲:妹夫、君臣:君主」信任上升（他亲口允诺，默契加深）" in block
     assert "⟳反思（重要度0.95）：我才明白他等的不是准信。" in block
     assert "target_index" not in block and "source_indices" not in block   # bare indices stay out of the context
     # When the list is missing (an older trace, or the annotation wasn't attached), fall back to a

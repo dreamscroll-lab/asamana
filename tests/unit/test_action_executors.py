@@ -6384,6 +6384,22 @@ def test_talk_column_carries_the_owners_recent_past_in_order() -> None:
     assert text.index("我出了东宫") < text.index("被拦下盘问")
 
 
+def test_talk_column_names_the_holder_of_the_relation() -> None:
+    """The neutral narrator sees both columns, so the relation line says whose label it is:
+    「与X」 has no direction and leaves the narrator to guess which side the role belongs to."""
+    from types import SimpleNamespace
+
+    from engine.executors.social import _format_context
+
+    rel = SimpleNamespace(trust=0.5, affection=0.6, labels=["父子:儿子"], history_summary="")
+    text = _format_context(
+        {"relation": rel, "about_other": [], "about_topic": [], "recent": []},
+        "李渊", "李世民", now_step=5, seconds_per_step=3600,
+    )
+    assert "- 李渊对李世民的关系：[父子:儿子]" in text
+    assert "与李世民的关系" not in text
+
+
 @pytest.mark.asyncio
 async def test_talk_recent_past_comes_first_and_the_other_blocks_give_way() -> None:
     """Recent events are selected first and take priority: factual memories only, at most 5. The

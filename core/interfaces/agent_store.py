@@ -56,8 +56,8 @@ class AgentRelation:
     (distorted by emotion and recent memory) is computed by `RelationSystem.perceive()` and
     never persisted.
 
-    `labels` say what kind of relationship this is, from `from_id`'s viewpoint: ``"kind:role"``
-    (e.g. ``"父子:儿子"``, role = `from_id`'s position) or a bare ``"kind"`` (e.g. ``"见过"``).
+    `labels` say who `to_id` is to `from_id`: ``"kind:role"`` (e.g. ``"父子:父亲"``, role =
+    `to_id`'s position relative to `from_id`) or a bare ``"kind"`` (e.g. ``"见过"``).
     Several may coexist. Updated only at narrative milestones; structural bonds (blood /
     marriage / etc.) are immutable once set.
     """

@@ -934,6 +934,10 @@ async def test_brief_carries_premise_and_dossier_no_step_or_id_leak(container) -
     # authors (core.prompts.PHENOMENON_DEFINITION). Both sides' broadcasts go through the same
     # parse_broadcast_spec, so separate wording would give fire to one side and not the other.
     assert PHENOMENON_DEFINITION in plan_prompt
+    # How to read the relation lines is a static definition: it sits in the cached system part.
+    for _, messages in router.calls[:2]:
+        assert messages[0].content.count("「父子:父亲」表示对方是持有者的父亲") == 1
+        assert "「父子:父亲」表示对方是持有者的父亲" not in messages[-1].content
     for prompt in (gate_prompt, plan_prompt):
         assert "【故事前提】" in prompt
         assert "秦王功高震主" in prompt

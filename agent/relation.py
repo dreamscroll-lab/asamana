@@ -62,8 +62,8 @@ from core.prompts import (  # noqa: E402
 class PerceivedRelation:
     """Relation as perceived by an agent in the current moment.
 
-    ``labels`` are from the holder's viewpoint, each ``"kind:role"`` (``"父子:儿子"``) or bare
-    ``"kind"`` (``"见过"``); several coexist.
+    ``labels`` say who the target is to the holder, each ``"kind:role"`` (``"父子:父亲"``: the
+    target is the holder's father) or bare ``"kind"`` (``"见过"``); several coexist.
     """
 
     trust: float

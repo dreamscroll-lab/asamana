@@ -36,6 +36,7 @@ from core.prompts import (
     CLOSED_WORLD_FACT_RULE,
     DECEASED_MARK,
     PHENOMENON_DEFINITION,
+    RELATION_LABEL_DESCRIPTION,
     SEVERITY_SCALE_DESCRIPTION,
     URGENCY_SCALE_DESCRIPTION,
     person_referent,
@@ -73,6 +74,9 @@ logger = get_logger(__name__)
 _BRIEF_LOOKBACK_STEPS = 6        # steps the dynamic "recent events" block looks back
 _BRIEF_MAX_RELATIONS = 8         # max relation pairs listed (main-character pairs first)
 _BRIEF_MAX_PRIOR_INJECTIONS = 5  # max most-recent injections listed
+
+# How to read the briefing's relation lines; a static definition, so it lives in both system prompts.
+_RELATIONS_LEGEND = f"简报【当前关系】每行「甲 对 乙:标签」,甲是持有者、乙是对方;{RELATION_LABEL_DESCRIPTION}"
 
 # Unoccupied places the plan menu may list on top of the occupied ones. A few elsewhere are
 # enough to pull the story out of one spot; more only dilutes the menu.
@@ -370,8 +374,10 @@ class NarrativeEditor:
         Any gate failure means "don't inject": better to miss a beat than force in an unfounded
         injection.
         """
-        system = """\
+        system = f"""\
 【角色】你是开放世界叙事的节奏编辑,从第三方视角观察故事走向,判断此刻世界该不该发生一件带来重大改变的事。
+
+【输入说明】{_RELATIONS_LEGEND}
 
 【任务】
 判断此刻是否需要给这个世界注入一件带来重大改变的事。它应当做到下面四件事之一:
@@ -383,7 +389,7 @@ class NarrativeEditor:
 对此刻的世界不痛不痒的事,就不要注入。
 
 【输出】严格输出 JSON,reason 在前、inject 在后,不要任何多余内容:
-{"reason": "当前节奏处于什么状态、为何需要/不需要,不超过 40 字", "inject": true 或 false}
+{{"reason": "当前节奏处于什么状态、为何需要/不需要,不超过 40 字", "inject": true 或 false}}
 """
         user = f"""\
 【输入】
@@ -659,6 +665,8 @@ class NarrativeEditor:
 - 令叙事的内容或方向重大转折:注入可能引起叙事的内容或方向发生重大转折、反转的事件。
 - 打破原地打转的僵局:打破当下叙事原地打转、反复循环，无实质进展的局面。比如某些角色一直在反复做一类事情并且没有有效推进的情况。
 优先从上面四个方向着手,但不限于此。
+
+【输入说明】{_RELATIONS_LEGEND}
 
 【硬约束】(必守)
 1. 你能直接改变的只有地上的东西:在某个地点放下一件新东西,或改变 / 毁掉「地上的东西」

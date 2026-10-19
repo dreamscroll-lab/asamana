@@ -216,7 +216,7 @@ async def test_social_interrupt_summary_knows_the_speaker_is_bound() -> None:
     llm = _Capture('{"fact":"f"}')
     ex = SocialExecutor(llm, _directory(), seconds_per_step=3600)
     await ex._interrupt_summary(  # noqa: SLF001
-        agent=_agent(), other_name="李世民", purpose="替自己分辩", thought="我说不下去了",
+        agent=_agent(), other_id="a3", other_name="李世民", purpose="替自己分辩", thought="我说不下去了",
         cause="", elapsed_label="约1小时", is_triggered=True, is_initiator=False, scene="",
         now_step=24,
     )

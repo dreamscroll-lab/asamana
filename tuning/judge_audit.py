@@ -513,10 +513,10 @@ def init_block(view: WorldAuditView) -> str:
 
     lines.append(_sub_sep("初始关系（就地带年龄 + 双向 label + 信任/好感；判 年龄↔称谓 与 正反向对应）"))
     # Inject the project's own relation_legend() at the start of the relation definitions (authoritative,
-    # single source of truth): it states the label's role is the initiator's position in the relation
-    # ("父子:儿子" = A is B's son), which keeps the seniority direction from being read backwards.
+    # single source of truth): it states the label's role is the other party's position relative to
+    # the holder ("父子:父亲" = B is A's father), which keeps the seniority direction from being read backwards.
     lines.append(f"  {relation_legend()}")
-    lines.append("  （据上对照年龄判长幼：『兄弟:弟弟』的发起方应比对方年幼，反之矛盾）")
+    lines.append("  （据上对照年龄判长幼：labels 为『兄弟:弟弟』时对方（to）应比发起方（from）年幼，反之矛盾）")
     for r in init.get("initial_relations", []):
         if not isinstance(r, dict):
             continue
@@ -525,8 +525,8 @@ def init_block(view: WorldAuditView) -> str:
         ab = (kf.get(b) or {}).get("age", "?")
         lines.append(
             f"- {a}({aa}岁) — {b}({ab}岁)：\n"
-            f"    {a} 自居为 {b} 的「{_join(r.get('labels'))}」（信任{r.get('trust')}／好感{r.get('affection')}）\n"
-            f"    {b} 自居为 {a} 的「{_join(r.get('reverse_labels'))}」（信任{r.get('reverse_trust')}／好感{r.get('reverse_affection')}）")
+            f"    {a} 视 {b} 为「{_join(r.get('labels'))}」（信任{r.get('trust')}／好感{r.get('affection')}）\n"
+            f"    {b} 视 {a} 为「{_join(r.get('reverse_labels'))}」（信任{r.get('reverse_trust')}／好感{r.get('reverse_affection')}）")
 
     lines.append(_sub_sep("历史事件（距开局小时数；判时间线是否倒错）"))
     for h in init.get("historical_events", []):
@@ -866,7 +866,7 @@ def _phase_lines(s: dict[str, Any], *, name: str, sps: Any) -> list[str]:
     if s.get("relations"):  # Relations (now): list + direction (who is what to whom); can change per step, so relation development is visible
         lines.append("  关系(此刻)：")
         lines.extend(
-            f"    - {name} 自居为 {r['name']} 的「{r['labels'] or '未明确'}」"
+            f"    - {name} 视 {r['name']} 为「{r['labels'] or '未明确'}」"
             f"（信任{_num(r['trust'])}/好感{_num(r['affection'])}）" for r in s["relations"])
     if s.get("perceived"):
         lines.append("  感知｜输入(此刻感知到)：")

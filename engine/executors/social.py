@@ -26,6 +26,7 @@ from core.prompts import (
     CLOSED_WORLD_FACT_RULE_FIRST_PERSON,
     MEMORY_ORDER_HINT,
     SituationVoice,
+    person_referent,
     render_memory_lines,
     render_situation_header,
 )
@@ -75,6 +76,13 @@ _EMPTY_CTX: dict[str, Any] = {"relation": None, "about_other": [], "about_topic"
 
 # Recent factual memories injected per side, picked as for the goal judge and interrupt evaluation.
 _TALK_RECENT_FACTUAL_K = 5
+
+# Static, so it lives in system ahead of the rows it explains; after them the model has already
+# read every label by its own prior.
+_PRESENT_RELATIONS_INPUT: str = f"""\
+【输入说明】
+下面【我对在场者的关系】每行是我对一位在场者的关系：我是持有者，那位在场者是对方。各字段含义：{relation_legend()}
+"""
 
 
 def _talk_target(other_id: str | None) -> ActionTarget:
@@ -147,7 +155,7 @@ def _format_context(
         labels = list(getattr(rel, "labels", []) or [])
         # The caller adds the legend once for both blocks.
         block = format_relation_block(labels=labels, trust=trust, affection=affection, include_legend=False)
-        lines.append(f"- 与{other_name}的关系：{block}")
+        lines.append(f"- {owner_name}对{other_name}的关系：{block}")
         history = getattr(rel, "history_summary", "") or ""
         if history:
             lines.append(f"- 与{other_name}的过往：{history}")
@@ -545,8 +553,8 @@ class SocialExecutor(ActionExecutor):
                 ),
                 *(
                     self._listener_memory(
-                        agent=agents.get(pid), initiator_name=initiator_name,
-                        target_name=target_name, transcript=transcript,
+                        agent=agents.get(pid), initiator_id=initiator_id,
+                        target_id=target_id, transcript=transcript,
                         now_step=step, environment=environment,
                     )
                     for pid in listener_ids
@@ -725,7 +733,7 @@ class SocialExecutor(ActionExecutor):
             )
             relation_block = await self._present_relations_block(agent, environment)
             factual = await self._interrupt_summary(
-                agent=agent, other_name=other_name, purpose=state.purpose,
+                agent=agent, other_id=other_id, other_name=other_name, purpose=state.purpose,
                 thought=thought, cause=cause, elapsed_label=elapsed_label,
                 is_triggered=is_triggered, is_initiator=is_initiator, scene=scene,
                 environment=environment, now_step=step, relation_block=relation_block,
@@ -771,15 +779,24 @@ class SocialExecutor(ActionExecutor):
                 continue
             block = _known_relation_block(rel, include_legend=False)
             if block:
-                lines.append(f"- 与在场的{self._directory.agent_name(pid)}：{block}")
+                lines.append(f"- 对在场的{self._seen_person(pid)}：{block}")
         if not lines:
             return ""
-        return "\n".join(lines) + f"\n（关系数值含义：{relation_legend()}）"
+        return "\n".join(lines)
+
+    def _seen_person(self, agent_id: str) -> str:
+        """A co-present person as a roster referent: face to face, gender shows at a glance, and a
+        first-person record written without it guesses the pronoun into memory."""
+        identity = self._directory.agent_identity_map([agent_id]).get(agent_id)
+        if identity is None:
+            return self._directory.agent_name(agent_id)
+        return person_referent(identity.name, identity.gender)
 
     async def _interrupt_summary(
         self,
         *,
         agent: "Agent",
+        other_id: str,
         other_name: str,
         purpose: str,
         thought: str,
@@ -794,9 +811,8 @@ class SocialExecutor(ActionExecutor):
     ) -> str:
         """First-person record of an interrupted conversation (one per participant)."""
         thought_part = format_interrupt_thought(thought)
-        initiator_line = (
-            f"是我主动找{other_name}谈的" if is_initiator else f"{other_name}来找我谈"
-        )
+        other = self._seen_person(other_id)
+        initiator_line = f"是我主动找{other}谈的" if is_initiator else f"{other}来找我谈"
         opening = f"我主动找{other_name}" if is_initiator else f"{other_name}找我"
         # The trigger signal stays out (see base.interrupt).
         if cause:
@@ -815,7 +831,7 @@ class SocialExecutor(ActionExecutor):
             return fallback
 
         scene_part = f"\n【现场】\n{scene}" if scene else ""
-        relation_part = f"\n【我与在场者的关系】\n{relation_block}" if relation_block else ""
+        relation_part = f"\n【我对在场者的关系】\n{relation_block}" if relation_block else ""
         system = """\
 我此刻代入这个角色,以第一人称「我」记下这场被打断的对话——这是我一贯的记事方式,与处境无关。
 
@@ -824,6 +840,7 @@ class SocialExecutor(ActionExecutor):
 提到我认识的人时,不妨带上其名字便于日后回想(惯以称谓相称的话,可附成「称谓（名字）」);这只是建议、不必生硬套用,陌生人用描述。
 """ + ABSOLUTE_TIME_RULE_FIRST_PERSON + """
 
+""" + _PRESENT_RELATIONS_INPUT + """
 【输出】
 严格输出以下 JSON,不要任何多余内容:
 {"fact": "一句话（不超过36字）"}
@@ -856,7 +873,7 @@ class SocialExecutor(ActionExecutor):
                 .add("我的处境", doer_condition)
                 .add("刚刚发生的事",
                      f"{initiator_line}，正就「{purpose}」交谈，已谈了{elapsed_label}，{situation}。")
-                .add("我与在场者的关系", relation_block)
+                .add("我对在场者的关系", relation_block)
                 .add("现场", scene),
                 talk_role="initiator" if is_initiator else "addressee",
                 action_owner=agent.personality.soul.name,
@@ -1271,7 +1288,7 @@ class SocialExecutor(ActionExecutor):
             return None
 
         rels = await self._present_relations_block(agent, environment)
-        relation_part = f"\n【我与在场者的关系】\n{rels}" if rels else ""
+        relation_part = f"\n【我对在场者的关系】\n{rels}" if rels else ""
 
         situation_header = (
             render_situation_header(situation_for(environment, agent.agent_id),
@@ -1279,9 +1296,8 @@ class SocialExecutor(ActionExecutor):
             if environment is not None else ""
         )
         header_part = f"{situation_header}\n\n" if situation_header else ""
-        initiator_line = (
-            f"是我主动找{other_name}谈的" if is_initiator else f"{other_name}来找我谈"
-        )
+        other = self._seen_person(other_id)
+        initiator_line = f"是我主动找{other}谈的" if is_initiator else f"{other}来找我谈"
         expected_part = f"\n原本期望：{expected_outcome}" if (is_initiator and expected_outcome) else ""
         # other_name stays out of system (prefix cache); the reminder at the end of user names him.
         system = """\
@@ -1290,6 +1306,7 @@ class SocialExecutor(ActionExecutor):
 【我要说的】
 从我的视角:这场对话达成我在意的目的了吗?发生了什么实质的事?谈完之后我对对方的整体观感有何变化。始终用我自己的口吻。
 
+""" + _PRESENT_RELATIONS_INPUT + """
 【约束】
  - fact 里提到我认识的人时,不妨带上其名字,便于日后回想;若我惯以称谓相称,可把名字附在称谓后(形如「称谓（名字）」)。这只是便于回想的建议,不必生硬套用、更不必每处都加括号;陌生人用描述,不臆造名字。
  - 要区分已经发生、正在发生、将要发生的事情：把“我现在要去超市”写成“我去了超市”、把“我命令他帮我收拾行李”写成“他已经帮我收拾行李”，都是禁止的。
@@ -1324,7 +1341,7 @@ class SocialExecutor(ActionExecutor):
                 .add("此刻何时何地", situation_header)
                 .add("我的处境", doer_condition)
                 .add("刚结束的对话", f"{initiator_line}，话题是「{purpose}」。")
-                .add("我与在场者的关系", rels)
+                .add("我对在场者的关系", rels)
                 # The addressee never saw the initiator's expectation; declaring it would blind
                 # the leak review.
                 .add("发起者的期望", expected_outcome if is_initiator else "")
@@ -1365,8 +1382,8 @@ class SocialExecutor(ActionExecutor):
         self,
         *,
         agent: "Agent | None",
-        initiator_name: str,
-        target_name: str,
+        initiator_id: str,
+        target_id: str,
         transcript: str,
         now_step: int = 0,
         environment: "EnvironmentSystem | None" = None,
@@ -1389,6 +1406,7 @@ class SocialExecutor(ActionExecutor):
             if environment is not None else ""
         )
         header_part = f"{situation_header}\n\n" if situation_header else ""
+        speakers = f"说话的是{self._seen_person(initiator_id)}与{self._seen_person(target_id)}"
         system = """\
 我此刻代入这个角色,以第一人称「我」记下我方才在旁边听到的一场对话——这是我一贯的记事方式,与处境无关。
 
@@ -1416,7 +1434,7 @@ class SocialExecutor(ActionExecutor):
 {agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{doer_condition}
 
 【我在旁边听到的对话】
-说话的是{initiator_name}与{target_name}，我在一旁听着。
+{speakers}，我在一旁听着。
 对话记录：
 {transcript}
 
@@ -1427,7 +1445,7 @@ class SocialExecutor(ActionExecutor):
                 given_facts=GivenFacts()  # same source as user above
                 .add("此刻何时何地", situation_header)
                 .add("我的处境", doer_condition)
-                .add("我在旁边听到的", f"说话的是{initiator_name}与{target_name}")
+                .add("我在旁边听到的", speakers)
                 .add("对话记录", transcript),
                 talk_role="listener", action_owner=agent.personality.soul.name,
             ):
