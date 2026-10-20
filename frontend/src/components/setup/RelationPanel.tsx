@@ -3,6 +3,7 @@
 // Revisable until the world is confirmed; a save replaces the list.
 import { useState } from "react";
 
+import { identityOf } from "../../lib/worldTable";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
 import type { Cast } from "../../lib/cast";
 import { joinList, splitList } from "../../lib/textList";
@@ -124,7 +125,7 @@ export default function RelationPanel({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const members = Object.values(cast);
-  const nameOf = (id: string) => cast[id]?.name ?? "某人";
+  const nameOf = (id: string) => identityOf(id, cast)?.name ?? "某人";
   const shown = drafts ?? relations.map(draftOf);
   const problem = drafts ? draftProblem(drafts) : null;
 

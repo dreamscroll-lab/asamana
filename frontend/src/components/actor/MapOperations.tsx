@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { identityOf } from "../../lib/worldTable";
 import { useCast } from "../../lib/cast";
 import { api } from "../../api/client";
 import type { ActorOperations, ActorOperationParameters, ActorTurn, MapOperationTarget } from "../../types";
@@ -19,7 +20,7 @@ export default function MapOperations({ worldId, turn, selection, onClose }: {
   const { busy, run } = useActorSubmission();
   const b = turn.briefing!;
   const { cast } = useCast(worldId);
-  const self = { agent_id: turn.agent_id, name: cast[turn.agent_id]?.name ?? "自己" };
+  const self = { agent_id: turn.agent_id, name: identityOf(turn.agent_id, cast)?.name ?? "自己" };
   const active = useRef(true);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   useEffect(() => {

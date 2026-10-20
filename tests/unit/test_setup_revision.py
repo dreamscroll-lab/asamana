@@ -345,6 +345,7 @@ async def test_setup_lists_events_and_relations_by_id(mock_build_container, test
     [relation] = setup["relations"]
     assert (relation["source_id"], relation["target_id"]) == (ids["Li Shimin"], ids["Li Jiancheng"])
     assert {c["agent_id"] for c in setup["characters"]} == set(ids.values())
+    assert setup["seconds_per_step"] == 7200
 
 
 @pytest.mark.asyncio
@@ -367,15 +368,40 @@ async def test_revised_character_reaches_profile_and_the_confirmed_world(mock_bu
     world_id, ids = await _built_world(mock_build_container, test_config, catalog)
     target = ids["Li Jiancheng"]
     with _client(mock_build_container, test_config, catalog) as client:
-        client.get(f"/api/worlds/{world_id}/agents/{target}/profile")  # warm the profile cache
+        before = client.get(f"/api/worlds/{world_id}/setup").json()
+        original = next(c for c in before["characters"] if c["agent_id"] == target)
         response = client.patch(
             f"/api/worlds/{world_id}/setup/characters/{target}",
-            json={"gender": "女", "secret": "暗藏兵符"},
+            json={
+                "gender": "女", "secret": "暗藏兵符", "role": "掌事",
+                "background": "久掌家事", "appearance": "身形瘦削", "age": 35,
+                "core_traits": ["谨慎"], "core_values": ["家族"],
+                "self_image": "一家之主", "life_goal": "护住家族",
+                "hard_constraints": ["不弃家人"], "long_term_goals": ["守住家业"],
+                "initial_emotion": {"emotion": "fear", "intensity": 0.7, "valence": -0.5},
+            },
         )
         assert response.status_code == 200
+        saved = next(c for c in response.json()["characters"] if c["agent_id"] == target)
         profile = client.get(f"/api/worlds/{world_id}/agents/{target}/profile").json()
         cast = {c["agent_id"]: c for c in client.get(f"/api/worlds/{world_id}/agents").json()}
         assert client.post(f"/api/worlds/{world_id}/confirm").status_code == 200
+    assert saved == {
+        **original,
+        "gender": "女", "secret": "暗藏兵符", "role": "掌事",
+        "background": "久掌家事", "appearance": "身形瘦削", "age": 35,
+        "core_traits": ["谨慎"], "core_values": ["家族"],
+        "self_image": "一家之主", "life_goal": "护住家族",
+        "hard_constraints": ["不弃家人"], "long_term_goals": ["守住家业"],
+        "initial_emotion": {"emotion": "fear", "intensity": 0.7, "valence": -0.5},
+    }
+    assert all(saved[key] == value for key, value in profile.items())
+    assert set(saved) == {
+        "agent_id", "name", "role", "age", "gender", "background", "appearance", "color",
+        "is_main_character", "core_traits", "core_values", "self_image", "life_goal", "secret",
+        "initial_location", "initial_emotion", "long_term_goals", "hard_constraints", "needs",
+    }
+    assert "secret" not in cast[target] and "core_traits" not in cast[target]
     assert profile["gender"] == "女" and profile["secret"] == "暗藏兵符"
     assert cast[target]["gender"] == "女"
     relation = await mock_build_container.agent_store.load_relation(world_id, ids["Li Shimin"], target)
@@ -415,7 +441,9 @@ async def test_revised_step_length_prices_the_backstory(mock_build_container, te
     world_id, ids = await _built_world(mock_build_container, test_config, catalog)
     with _client(mock_build_container, test_config, catalog) as client:
         url = f"/api/worlds/{world_id}/setup/seconds-per-step"
-        assert client.put(url, json={"seconds_per_step": 12 * 3600}).status_code == 200
+        saved = client.put(url, json={"seconds_per_step": 12 * 3600})
+        assert saved.status_code == 200
+        assert saved.json()["seconds_per_step"] == 12 * 3600
         assert client.put(url, json={"seconds_per_step": 30 * 3600}).status_code == 400
         meta = client.get(f"/api/worlds/{world_id}").json()
         assert client.post(f"/api/worlds/{world_id}/confirm").status_code == 200

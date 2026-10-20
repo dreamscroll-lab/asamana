@@ -15,9 +15,10 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
+import { identityOf } from "../lib/worldTable";
 import { api } from "../api/client";
 import ActorIcon from "../components/ActorIcon";
-import CharacterCard, { type CardAgent } from "../components/CharacterCard";
+import CharacterCard, { ObservedCharacterCard, type CardAgent } from "../components/CharacterCard";
 import EditableWorldName from "../components/EditableWorldName";
 import RelationshipGraph from "../components/RelationshipGraph";
 import HistoryPanel from "../components/setup/HistoryPanel";
@@ -26,9 +27,10 @@ import StepLengthEditor from "../components/setup/StepLengthEditor";
 import CharacterEditor, {
   blankDraft, draftOf, newCharacterOf, revisionOf, type Draft,
 } from "../components/setup/CharacterEditor";
-import { useCast, loadCast, reloadCast } from "../lib/cast";
+import { reloadNpcs } from "../lib/npcs";
+import { useCast, loadCast, reloadCast, type Cast } from "../lib/cast";
 import { MAX_CAST_SIZE } from "../lib/contract";
-import { usePlaces } from "../lib/places";
+import { usePlaces, loadPlaces, reloadPlaces, type Places } from "../lib/places";
 import { setupGraph } from "../lib/setupGraph";
 import { useVocabulary } from "../lib/vocabulary";
 import { avatarStyle } from "../lib/avatar";
@@ -43,27 +45,80 @@ import type { CharacterIdentity, SetupView, WorldGraph, WorldMeta } from "../typ
  */
 export default function ReviewView() {
   const { id = "" } = useParams();
-  return <WorldReview key={id} id={id} />;
+  return <ReviewEntry key={id} id={id} />;
 }
 
-function WorldReview({ id }: { id: string }) {
+function ReviewEntry({ id }: { id: string }) {
+  const navigate = useNavigate();
+  const [meta, setMeta] = useState<WorldMeta | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let current = true;
+    api.getWorld(id).then((world) => {
+      if (!current) return;
+      if (viewerOf(world)) navigate(`/worlds/${id}`, { replace: true });
+      else setMeta(world);
+    }).catch((failure) => { if (current) setError(String(failure)); });
+    return () => { current = false; };
+  }, [id, navigate]);
+  if (!meta || viewerOf(meta)) return <p className="p-6 text-sm text-slate-500">{error || "正在加载世界…"}</p>;
+  return meta.confirmed
+    ? <ConfirmedReview id={id} initialMeta={meta} />
+    : <DraftReview id={id} initialMeta={meta} />;
+}
+
+interface ReviewData {
+  id: string;
+  initialMeta: WorldMeta;
+  identities: Cast;
+  places: Places;
+  dataError: Error | null;
+  retryData: () => void;
+}
+
+function DraftReview({ id, initialMeta }: { id: string; initialMeta: WorldMeta }) {
+  const [data, setData] = useState<{ identities: Cast; places: Places; error: Error | null }>({
+    identities: {}, places: {}, error: null,
+  });
+  const load = useCallback(async () => {
+    try {
+      const [characters, locations] = await Promise.all([api.agents(id), api.places(id)]);
+      setData({
+        identities: Object.fromEntries(characters.map((row) => [row.agent_id, row])),
+        places: Object.fromEntries(locations.map((row) => [row.location_id, row])),
+        error: null,
+      });
+    } catch (failure) {
+      setData((current) => ({ ...current, error: failure instanceof Error ? failure : new Error(String(failure)) }));
+    }
+  }, [id]);
+  useEffect(() => { void load(); }, [load]);
+  return <WorldReview id={id} initialMeta={initialMeta} identities={data.identities} places={data.places}
+    dataError={data.error} retryData={() => { void load(); }} />;
+}
+
+function ConfirmedReview({ id, initialMeta }: { id: string; initialMeta: WorldMeta }) {
+  const { cast, error } = useCast(id);
+  const { places, error: placesError } = usePlaces(id);
+  return <WorldReview id={id} initialMeta={initialMeta} identities={cast} places={places}
+    dataError={error ?? placesError} retryData={() => { void Promise.allSettled([loadCast(id), loadPlaces(id)]); }} />;
+}
+
+function WorldReview({ id, initialMeta, identities, places, dataError, retryData }: ReviewData) {
   const navigate = useNavigate();
   // A rename here has to reach the sidebar list too — it is the same world, shown
   // twice. Reading the name back out of that shared list is also what keeps the two
   // in agreement whichever one was edited.
   const { worlds, refresh: refreshWorlds } = useWorlds();
 
-  const [meta, setMeta] = useState<WorldMeta | null>(null);
+  const [meta, setMeta] = useState<WorldMeta>(initialMeta);
   // A confirmed world's relations as its latest step holds them; before confirming there is no
   // step, and the graph is drawn from the setup instead.
   const [storedGraph, setStoredGraph] = useState<WorldGraph | null>(null);
   const [setup, setSetup] = useState<SetupView | null>(null);
   const vocabulary = useVocabulary();
-  const { places } = usePlaces(id);
   // The character being edited (`id` null: one being added), with the form it started from.
   const [editing, setEditing] = useState<{ id: string | null; draft: Draft } | null>(null);
-  // Remounts the card after a cast change, so it drops the dossiers it fetched before.
-  const [cardVersion, setCardVersion] = useState(0);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -71,16 +126,21 @@ function WorldReview({ id }: { id: string }) {
   const [graphExpanded, setGraphExpanded] = useState(false);
   // Picking whom to perform; chosen with the confirmation and locked by it.
   const [casting, setCasting] = useState(false);
-  const { cast, status: castStatus } = useCast(id);
+  const cast: Cast = useMemo(() => !meta.confirmed && setup
+    ? Object.fromEntries(setup.characters.map((c) => [c.agent_id, {
+      agent_id: c.agent_id, name: c.name, gender: c.gender, age: c.age, role: c.role,
+      background: c.background, appearance: c.appearance, color: c.color,
+    }]))
+    : identities, [meta.confirmed, setup, identities]);
   const candidates = Object.values(cast);
   const [castId, setCastId] = useState("");
 
   // The whole cast is the director's: once reviewed (or once the world is confirmed without an
   // actor) nobody can be cast, and only then is it shown.
-  const directing = !!meta && (meta.director_reviewed || meta.confirmed);
-  const stage = !meta ? "loading" : directing ? "director" : casting ? "casting" : "choose";
+  const directing = meta.director_reviewed || meta.confirmed;
+  const stage = directing ? "director" : casting ? "casting" : "choose";
   // Confirming locks the setup; an unconfirmed world can't have run.
-  const revisable = stage === "director" && !meta?.confirmed;
+  const revisable = stage === "director" && !meta.confirmed;
 
   useEffect(() => {
     if (!graphExpanded) return;
@@ -89,68 +149,44 @@ function WorldReview({ id }: { id: string }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [graphExpanded]);
 
-  const load = useCallback(async () => {
-    try {
-      setMeta(await api.getWorld(id));
-    } catch (e) {
-      setError(String(e));
-    }
-  }, [id]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  // While an actor performs, this world is theirs to live in, not to review.
-  useEffect(() => {
-    if (viewerOf(meta)) navigate(`/worlds/${id}`, { replace: true });
-  }, [meta, id, navigate]);
-
   // Private relations and the historical events are loaded only after the director enters review.
   useEffect(() => {
     if (stage !== "director") return;
     api.getSetup(id).then(setSetup).catch((e) => setError(String(e)));
-    if (meta?.confirmed) api.graph(id).then(setStoredGraph).catch((e) => setError(String(e)));
-  }, [id, stage, meta?.confirmed]);
+    if (meta.confirmed) api.graph(id).then(setStoredGraph).catch((e) => setError(String(e)));
+  }, [id, stage, meta.confirmed]);
 
   const graph = useMemo(
-    () => (meta?.confirmed ? storedGraph : setup ? setupGraph(setup, cast) : null),
-    [meta?.confirmed, storedGraph, setup, cast],
+    () => (meta.confirmed ? storedGraph : setup ? setupGraph(setup) : null),
+    [meta.confirmed, storedGraph, setup],
   );
 
-  async function castChanged(next: SetupView, activeAfter: string | null) {
+  function setupChanged(next: SetupView, activeAfter: string | null) {
     setSetup(next);
     setEditing(null);
     setActiveId(activeAfter);
-    setCardVersion((v) => v + 1);
-    await reloadCast(id);
   }
 
-  async function startEdit(agentId: string) {
+  function startEdit(agentId: string) {
     const entry = setup?.characters.find((c) => c.agent_id === agentId);
     if (!entry || !vocabulary) return;
-    try {
-      const profile = await api.agentProfile(id, agentId);
-      setEditing({ id: agentId, draft: draftOf(profile, entry, vocabulary) });
-    } catch (e) {
-      setError(String(e));
-    }
+    setEditing({ id: agentId, draft: draftOf(entry, vocabulary) });
   }
 
   async function saveCharacter(draft: Draft) {
     if (!editing || !vocabulary) return;
     if (editing.id === null) {
       const added = await api.addCharacter(id, newCharacterOf(draft, blankDraft(vocabulary)));
-      return castChanged(added.setup, added.agent_id);
+      return setupChanged(added.setup, added.agent_id);
     }
     const revision = revisionOf(editing.draft, draft);
     if (!Object.keys(revision).length) return setEditing(null);
-    await castChanged(await api.reviseCharacter(id, editing.id, revision), editing.id);
+    setupChanged(await api.reviseCharacter(id, editing.id, revision), editing.id);
   }
 
   async function removeCharacter(agentId: string) {
     if (!setup) return;
-    const name = cast[agentId]?.name ?? "某人";
+    const name = identityOf(agentId, cast)?.name ?? "某人";
     const relations = setup.relations.filter((r) => r.source_id === agentId || r.target_id === agentId).length;
     const involved = setup.historical_events.filter((e) => e.figure_ids.includes(agentId));
     const dropped = involved.filter((e) => e.figure_ids.length === 1).length;
@@ -166,7 +202,7 @@ function WorldReview({ id }: { id: string }) {
     ].filter(Boolean).join("\n");
     if (!window.confirm(message)) return;
     try {
-      await castChanged(await api.removeCharacter(id, agentId), null);
+      setupChanged(await api.removeCharacter(id, agentId), null);
     } catch (e) {
       setError(String(e));
     }
@@ -202,6 +238,7 @@ function WorldReview({ id }: { id: string }) {
     setError("");
     try {
       await api.confirmWorld(id, stage === "casting" ? castId : undefined);
+      await Promise.allSettled([reloadCast(id), reloadPlaces(id), reloadNpcs(id)]);
       void refreshWorlds();
       navigate(`/worlds/${id}`);
     } catch (e) {
@@ -211,7 +248,7 @@ function WorldReview({ id }: { id: string }) {
   }
 
   async function discard() {
-    if (!window.confirm(`丢弃世界「${meta?.world_name || id}」？此操作不可恢复。`)) return;
+    if (!window.confirm(`丢弃世界「${meta.world_name || id}」？此操作不可恢复。`)) return;
     setBusy(true);
     try {
       await api.deleteWorld(id);
@@ -233,7 +270,7 @@ function WorldReview({ id }: { id: string }) {
           ← 返回世界列表
         </button>
         <div className="flex items-center space-x-2">
-          {meta?.confirmed && (
+          {meta.confirmed && (
             <span className="text-[11px] text-emerald-400 bg-emerald-950/40 border border-emerald-800/60 px-2.5 py-1 rounded-full">
               已确认
             </span>
@@ -261,15 +298,17 @@ function WorldReview({ id }: { id: string }) {
               className="text-xs font-semibold px-5 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 border border-indigo-500 shadow-lg shadow-indigo-600/30 transition disabled:opacity-40"
             >
               {/* Confirming materializes the world (its backstory memories embedded), which takes a moment. */}
-              {busy && !meta?.confirmed
+              {busy && !meta.confirmed
                 ? "正在生成世界…"
                 : stage === "casting"
                   ? <><ActorIcon /> 我是{candidates.find((c) => c.agent_id === castId)?.name ?? "所选角色"} →</>
-                  : meta?.confirmed ? "进入叙事 →" : "确认并进入叙事 →"}
+                  : meta.confirmed ? "进入叙事 →" : "确认并进入叙事 →"}
             </button>
           )}
         </div>
       </div>
+
+      {dataError && <button className="text-sm text-rose-300" onClick={retryData}>世界资料加载失败，点击重试</button>}
 
       {error && (
         <div className="p-3 bg-rose-950/20 border border-rose-900/40 rounded-xl text-rose-400 text-xs">
@@ -311,21 +350,20 @@ function WorldReview({ id }: { id: string }) {
             {/* The story's own pace, chosen for it at build and frozen by confirming —
                 a story told a day at a time is a different story from one told hour by
                 hour, so it belongs here, next to the cast, before the user locks it. */}
-            {meta?.seconds_per_step ? (
+            {(setup?.seconds_per_step ?? meta.seconds_per_step) ? (
               <StepLengthEditor
-                secondsPerStep={meta.seconds_per_step}
+                secondsPerStep={setup?.seconds_per_step ?? meta.seconds_per_step}
                 editable={revisable}
                 onSave={async (seconds) => {
                   setSetup(await api.reviseSecondsPerStep(id, seconds));
-                  setMeta(await api.getWorld(id));
                 }}
               />
             ) : null}
           </div>
         </div>
-        {(meta?.description || meta?.theme) && (
+        {(meta.description || meta.theme) && (
           <p className="text-slate-300 text-sm leading-relaxed max-w-4xl italic">
-             {meta?.description || meta?.theme} 
+             {meta.description || meta.theme}
           </p>
         )}
       </div>
@@ -353,7 +391,6 @@ function WorldReview({ id }: { id: string }) {
         <div className="space-y-3">
           <p className="text-xs text-slate-500">选择一个想要扮演的角色</p>
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {castStatus === "error" && <button onClick={() => { void loadCast(id).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
             {candidates.map((c) => (
               <CandidateCard key={c.agent_id} c={c} picked={c.agent_id === castId} onPick={() => setCastId(c.agent_id)} />
             ))}
@@ -378,7 +415,7 @@ function WorldReview({ id }: { id: string }) {
               {editing && vocabulary ? (
                 <div className="bg-gradient-to-b from-slate-900/95 to-slate-950/95 border border-slate-800 rounded-2xl p-4 space-y-3 overflow-y-auto">
                   <p className="text-sm font-bold text-slate-100">
-                    {editing.id === null ? "添加角色" : `编辑 · ${cast[editing.id]?.name ?? "某人"}`}
+                    {editing.id === null ? "添加角色" : `编辑 · ${identityOf(editing.id, cast)?.name ?? "某人"}`}
                   </p>
                   <CharacterEditor
                     key={editing.id ?? "new"}
@@ -391,20 +428,24 @@ function WorldReview({ id }: { id: string }) {
                   />
                 </div>
               ) : (
-                <CharacterCard
-                  key={cardVersion}
-                  worldId={id}
-                  roster={roster}
-                  activeId={effectiveId}
-                  onActiveChange={setActiveId}
-                  {...(revisable && vocabulary && setup ? {
-                    onEdit: (agentId: string) => void startEdit(agentId),
-                    onRemove: (agentId: string) => void removeCharacter(agentId),
-                    ...(roster.length < MAX_CAST_SIZE && {
-                      onAdd: () => setEditing({ id: null, draft: blankDraft(vocabulary) }),
-                    }),
-                  } : {})}
-                />
+                meta.confirmed ? (
+                  <ObservedCharacterCard worldId={id}
+                    roster={roster} activeId={effectiveId} onActiveChange={setActiveId} />
+                ) : (
+                  <CharacterCard cast={cast} places={places}
+                    profile={setup?.characters.find((c) => c.agent_id === effectiveId)}
+                    roster={roster}
+                    activeId={effectiveId}
+                    onActiveChange={setActiveId}
+                    {...(revisable && vocabulary && setup ? {
+                      onEdit: (agentId: string) => startEdit(agentId),
+                      onRemove: (agentId: string) => void removeCharacter(agentId),
+                      ...(roster.length < MAX_CAST_SIZE && {
+                        onAdd: () => setEditing({ id: null, draft: blankDraft(vocabulary) }),
+                      }),
+                    } : {})}
+                  />
+                )
               )}
             </div>
           </div>

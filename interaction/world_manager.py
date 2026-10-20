@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from core.interfaces.snapshot import SnapshotProvider, WorldSnapshot
-from world import AgentDefinition, WorldCatalog
+from world import WorldCatalog
 from world.setup import WorldSetup
 
-from interaction.models import WorldMeta, build_world_meta
+from interaction.models import AgentProfile, NpcIdentity, WorldMeta, agent_profile, build_world_meta
 from interaction.replayer import Replayer
 
 
@@ -22,12 +20,9 @@ class WorldManager:
         catalog: WorldCatalog | None = None,
     ) -> None:
         self._snapshot_provider = snapshot_provider
-        # Character profiles read off the world's setup, keyed by world_id. Shared by the API
-        # routers so the static-identity read (name/role/color) happens once. The setup changes
-        # only by a revision before the world is confirmed, which calls ``forget_profiles``; a
-        # deleted world's entry is a few KB of dead weight, cheaper than a delete hook (same
-        # trade as maps._ground_cache).
-        self._profile_cache: dict[str, dict[str, Any]] = {}
+        # Only confirmed setups are immutable; drafts are read anew on each request.
+        self._profile_cache: dict[str, dict[str, AgentProfile]] = {}
+        self._npc_identity_cache: dict[str, dict[str, NpcIdentity]] = {}
         # Share the same WorldCatalog instance the build path writes to (so a world
         # registered during build_world is visible here without a reload). When none
         # is injected, an in-memory one (tests).
@@ -87,22 +82,44 @@ class WorldManager:
 
         return await self._snapshot_provider.load_latest(world_id)
 
-    async def character_profiles(self, world_id: str) -> dict[str, Any]:
-        """Static per-agent identity from the world's setup, keyed by agent_id.
+    async def character_profiles(self, world_id: str) -> dict[str, AgentProfile]:
+        """Per-agent profiles, cached only after the world's setup is confirmed.
 
         Returns an empty mapping for worlds with no setup.
         """
 
-        if world_id not in self._profile_cache:
-            setup = await self.world_setup(world_id)
-            self._profile_cache[world_id] = (
-                {d.agent_id: _profile(d) for d in setup.characters} if setup else {}
-            )
-        return self._profile_cache[world_id]
+        if world_id in self._profile_cache:
+            return self._profile_cache[world_id]
+        entry = self._catalog.get(world_id)
+        confirmed = bool(entry and entry.get("confirmed"))
+        setup = await self.world_setup(world_id)
+        profiles = {d.agent_id: agent_profile(d) for d in setup.characters} if setup else {}
+        if confirmed and setup is not None:
+            self._profile_cache[world_id] = profiles
+        return profiles
 
-    def forget_profiles(self, world_id: str) -> None:
-        """Drop the cached profiles after the world's setup was revised."""
-        self._profile_cache.pop(world_id, None)
+    async def npc_identities(self, world_id: str) -> dict[str, NpcIdentity] | None:
+        """Public NPC identities; only confirmed worlds have immutable identity caches."""
+        if world_id in self._npc_identity_cache:
+            return self._npc_identity_cache[world_id]
+        entry = self._catalog.get(world_id)
+        confirmed = bool(entry and entry.get("confirmed"))
+        setup = await self.world_setup(world_id)
+        if setup is None:
+            return None
+        identities = {
+            seed.npc_id: NpcIdentity(
+                npc_id=seed.npc_id,
+                name=seed.name,
+                gender=seed.gender,
+                age=seed.age,
+                description=seed.description,
+            )
+            for seed in setup.npc_seeds
+        }
+        if confirmed:
+            self._npc_identity_cache[world_id] = identities
+        return identities
 
     async def list_steps(self, world_id: str) -> list[int]:
         """Return persisted steps for a known world."""
@@ -113,23 +130,3 @@ class WorldManager:
         """Build a snapshot-backed replayer for one world."""
 
         return Replayer(world_id, self._snapshot_provider)
-
-
-
-def _profile(definition: AgentDefinition) -> dict[str, Any]:
-    soul = definition.soul
-    return {
-        "name": soul.name,
-        "role": soul.role,
-        "age": soul.age,
-        "gender": soul.gender,
-        "background": soul.background,
-        "appearance": soul.appearance,
-        "color": soul.color,
-        "core_traits": list(soul.core_traits),
-        "core_values": list(soul.core_values),
-        "self_image": soul.self_image,
-        "life_goal": soul.life_goal or "",
-        "secret": soul.secret,
-        "is_main_character": definition.is_main_character,
-    }

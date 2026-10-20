@@ -1,3 +1,4 @@
+import { identityOf } from "../lib/worldTable";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { indexStep } from "../lib/step";
@@ -8,7 +9,7 @@ import Checklist from "./Checklist";
 import FrameReadout, { type Figure } from "./FrameReadout";
 import { loadMarks, markKey, saveMarks, type Mark, type Marks } from "./marks";
 import { placeTable, resolvePlaces } from "./places";
-import { buildScenes, fixtureCast } from "./scenes";
+import { buildScenes, fixtureCast, fixtureNpcs } from "./scenes";
 import { renderStepInto } from "../phaser/driveStep";
 import type { MapSource } from "../phaser/mapSource";
 import type { TiledWorldScene } from "../phaser/TiledWorldScene";
@@ -40,6 +41,7 @@ export default function SceneBench({
   pickId: string | null;
   onPick: (sceneId: string) => void;
 }) {
+  const npcs = useMemo(fixtureNpcs, []);
   const [scene, setScene] = useState<TiledWorldScene | null>(null);
   const [take, setTake] = useState(0); // bumped to replay the beat on screen
   const [beat, setBeat] = useState(0); // which step of the scene is on screen
@@ -84,7 +86,8 @@ export default function SceneBench({
   // before the playback effect so a token is built with the right body, not re-skinned a frame later.
   useEffect(() => {
     scene?.setCast(fixtureCast());
-  }, [scene]);
+    scene?.setNpcs(npcs);
+  }, [scene, npcs]);
 
   // Every figure this scene puts on the map, read off its steps. Focus is always all of them,
   // NPCs included: a figure outside the focus is dimmed to 0.3 alpha and its action effects are
@@ -95,17 +98,17 @@ export default function SceneBench({
       const index = indexStep(st);
       for (const s of Object.values(index.agents)) {
         if (!seen.has(s.agent_id)) {
-          seen.set(s.agent_id, { id: s.agent_id, name: s.name, color: toHex(identityColor(fixtureCast()[s.agent_id]?.color, s.agent_id)) });
+          seen.set(s.agent_id, { id: s.agent_id, name: s.name, color: toHex(identityColor(identityOf(s.agent_id, fixtureCast())?.color, s.agent_id)) });
         }
       }
       for (const n of index.npcs) {
         if (!seen.has(n.npc_id)) {
-          seen.set(n.npc_id, { id: n.npc_id, name: n.name || "无名", color: n.color || "#64748b" });
+          seen.set(n.npc_id, { id: n.npc_id, name: identityOf(n.npc_id, npcs)?.name || "无名", color: toHex(identityColor(identityOf(n.npc_id, npcs)?.color, n.npc_id)) });
         }
       }
     }
     return [...seen.values()];
-  }, [pick]);
+  }, [pick, npcs]);
 
   useEffect(() => {
     const ids = figures.map((f) => f.id);
@@ -448,7 +451,7 @@ export default function SceneBench({
           <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-2">
             Feed · beat {beat + 1}
           </div>
-          <NarrativeStep cast={fixtureCast()} places={placeNames} step={pick.steps[beat] ?? pick.steps[0]} />
+          <NarrativeStep npcs={npcs} cast={fixtureCast()} places={placeNames} step={pick.steps[beat] ?? pick.steps[0]} />
         </aside>
       )}
     </>

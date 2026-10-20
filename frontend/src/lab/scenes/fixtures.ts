@@ -33,6 +33,7 @@ import { Phase, RefKind } from "../../lib/contract";
 import type { PlacedEntity } from "../../lib/step";
 import type { ActionTarget } from "../../types";
 import type { Cast } from "../../lib/cast";
+import type { Npcs } from "../../lib/npcs";
 import type { LabRoom } from "../places";
 import type {
   ActionSummary,
@@ -205,6 +206,30 @@ export interface LabRunner {
   gender: string;
   age: number;
   description: string;
+}
+
+export const WANG: LabRunner = {
+  npc_id: "npc_wang-er", name: "王二", color: MINDLESS_INK, gender: "男", age: 34,
+  description: "脚程快，认得城中大小道路，识字不多",
+};
+
+export const PORTER: LabRunner = {
+  npc_id: "npc_lu-liu", name: "陆六", color: MINDLESS_INK, gender: "男", age: 29,
+  description: "脚夫，替人扛货过市",
+};
+
+export const ZHANG: LabRunner = {
+  npc_id: "npc-zhang-san", name: "张三", color: MINDLESS_INK, gender: "男", age: 52,
+  description: "识字，能代写文书",
+};
+
+export const LI: LabRunner = {
+  npc_id: "npc-li-si", name: "李四", color: MINDLESS_INK, gender: "女", age: 28,
+  description: "在坊里卖果子",
+};
+
+export function fixtureNpcs(): Npcs {
+  return Object.fromEntries([WANG, PORTER, ZHANG, LI].map((npc) => [npc.npc_id, { ...npc }]));
 }
 
 export function mindless(
@@ -545,11 +570,6 @@ export function step({
   for (const r of npcs) {
     scopeOf(r.location_id).npcs.push({
       npc_id: r.npc_id,
-      name: r.name,
-      color: r.color,
-      gender: r.gender,
-      age: r.age,
-      description: r.description,
       public: {
         condition: r.condition,
         displaced: r.displaced ?? false,

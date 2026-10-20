@@ -18,6 +18,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { identityOf } from "../../lib/worldTable";
 import ActorIcon from "../ActorIcon";
 import { api } from "../../api/client";
 import { useCast } from "../../lib/cast";
@@ -120,7 +121,7 @@ export default function ActorConsole({
   }, [speaking, live, windowed, shownOver, selfId, conversations]);
 
   const { cast } = useCast(worldId);
-  const ink: Ink = (id) => toHex(identityColor(cast[id]?.color, id));
+  const ink: Ink = (id) => toHex(identityColor(identityOf(id, cast)?.color, id));
 
   useEffect(() => {
     // A conversation asks turn after turn in its own window; only other turns open the console.
@@ -185,9 +186,9 @@ export default function ActorConsole({
         <ConversationWindow
           worldId={worldId}
           selfId={selfId}
-          self={cast[selfId]}
+          self={identityOf(selfId, cast)}
           otherId={windowed.otherId}
-          other={cast[windowed.otherId]}
+          other={identityOf(windowed.otherId, cast)}
           ink={ink}
           dialogue={shown?.dialogue ?? []}
           conversation={speaking}
@@ -246,7 +247,7 @@ export default function ActorConsole({
               item={item}
               busy={busy}
               selfId={selfId}
-              self={{ agent_id: selfId, name: cast[selfId]?.name ?? "自己" }}
+              self={{ agent_id: selfId, name: identityOf(selfId, cast)?.name ?? "自己" }}
               ink={ink}
               onAnswer={answer}
               onBreakOff={breakOff}

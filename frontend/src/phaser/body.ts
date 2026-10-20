@@ -248,8 +248,7 @@ export class BodyRig {
     if (pipe) pipe.dye = hsvOf(color);
   }
 
-  // (Re)assign a token's body — used when the cast's gender/age arrives after tokens were
-  // created. Color is untouched: it came from the step state and was right from frame 1.
+  // Public demographics may arrive after a token is created; re-skin it without changing its dye.
   assignSkin(tok: AgentToken, skinId: string): void {
     if (skinId === tok.skinId) return;
     tok.skinId = skinId;

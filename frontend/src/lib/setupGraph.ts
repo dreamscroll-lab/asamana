@@ -1,4 +1,3 @@
-import type { Cast } from "./cast";
 import type { SetupView, WorldGraph } from "../types";
 
 /**
@@ -6,12 +5,12 @@ import type { SetupView, WorldGraph } from "../types";
  * materialized yet, so there is no step whose relations the backend could serve. Each relation
  * of the setup is a pair, and the graph shows it as its two directed edges.
  */
-export function setupGraph(setup: SetupView, cast: Cast): WorldGraph {
+export function setupGraph(setup: SetupView): WorldGraph {
   return {
     nodes: setup.characters.map((c) => ({
       id: c.agent_id,
-      name: cast[c.agent_id]?.name ?? "某人",
-      role: cast[c.agent_id]?.role ?? "",
+      name: c.name,
+      role: c.role,
       is_main_character: c.is_main_character,
     })),
     edges: setup.relations.flatMap((r) => [

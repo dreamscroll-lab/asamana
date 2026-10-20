@@ -17,17 +17,18 @@ const profile: AgentProfile = {
 };
 
 const setup: CharacterSetupView = {
+  ...profile,
   agent_id: "a", is_main_character: true, initial_location: "palace",
   initial_emotion: { emotion: "neutral", intensity: 0.2, valence: 0 },
   long_term_goals: ["守住家业"], hard_constraints: [],
   needs: [{ type: "safety", label: "求安稳", intensity: 0.5, weight: 1, is_hidden: false }],
 };
 
-const before = draftOf(profile, setup, vocabulary);
+const before = draftOf(setup, vocabulary);
 
 describe("revisionOf", () => {
   it("sends nothing for an untouched character", () => {
-    expect(revisionOf(before, draftOf(profile, setup, vocabulary))).toEqual({});
+    expect(revisionOf(before, draftOf(setup, vocabulary))).toEqual({});
   });
 
   it("sends only the fields that changed", () => {

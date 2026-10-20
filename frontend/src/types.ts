@@ -353,17 +353,9 @@ export interface AgentView {
 
 // A body that acts but does not think: it walks, carries, delivers and reports back. Kept apart
 // from agents, so the relation graph and character cards exclude it without any filtering.
-//
-// `color` comes from the backend, which reserves gray for mindless bodies where the palette
-// lives (world/identity_color.py); don't substitute a local constant. The body sheet is a
-// plain local lookup from (gender, age) — see skins.bodyFor.
+// Its fixed identity is the world's NpcIdentity table.
 export interface NpcView {
   npc_id: string;
-  name: string;
-  color: string;
-  gender: string;
-  age: number | null;
-  description: string;
   public: {
     // His situation right now as one sentence composed by the backend ("pinned to the ground").
     condition: string;
@@ -524,6 +516,21 @@ export interface CharacterIdentity {
   color: string;
 }
 
+/**
+ * Public NPC identity, identical for every viewer (GET /worlds/{id}/npcs).
+ *
+ * `color` comes from the backend, which reserves gray for mindless bodies where the palette
+ * lives (world/identity_color.py); don't substitute a local constant.
+ */
+export interface NpcIdentity {
+  npc_id: string;
+  name: string;
+  color: string;
+  gender: string;
+  age: number | null;
+  description: string;
+}
+
 /** Public place identity, fixed at build and identical for every viewer (GET /worlds/{id}/places). */
 export interface PlaceIdentity {
   location_id: string;
@@ -579,9 +586,8 @@ export interface InnateNeedView {
   is_hidden: boolean;
 }
 
-/** What a character starts with and what drives it: the setup its profile doesn't carry. */
-export interface CharacterSetupView {
-  agent_id: string;
+/** A complete character draft: public identity, private profile and initial state. */
+export interface CharacterSetupView extends AgentProfile {
   is_main_character: boolean;
   initial_location: string;
   initial_emotion: InitialEmotionView;
@@ -591,6 +597,7 @@ export interface CharacterSetupView {
 }
 
 export interface SetupView {
+  seconds_per_step: number;
   characters: CharacterSetupView[];
   historical_events: SetupHistoricalEventView[];
   relations: SetupRelationView[];

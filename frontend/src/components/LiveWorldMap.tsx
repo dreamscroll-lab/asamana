@@ -1,13 +1,14 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
+import { identityOf } from "../lib/worldTable";
 import { API_BASE } from "../api/client";
 import type { TiledWorldScene } from "../phaser/TiledWorldScene";
 import { renderStepInto } from "../phaser/driveStep";
 import { loadMapSource, type MapSource } from "../phaser/mapSource";
 import { useCast, loadCast } from "../lib/cast";
-import { placeName, usePlaces } from "../lib/places";
+import { placeName, usePlaces, loadPlaces } from "../lib/places";
 import { identityColor, toHex } from "../lib/color";
-import { indexStep } from "../lib/step";
+import { useNpcs, loadNpcs } from "../lib/npcs";
 import type { Viewer } from "../lib/viewer";
 import type { MapFocus, MapSelect, MapOperationTarget, StepView } from "../types";
 import MapStage from "./MapStage";
@@ -53,29 +54,16 @@ export default function LiveWorldMap({
   viewer = null,
   children,
 }: Props) {
-  const { cast, status: castStatus } = useCast(worldId);
-  const { places } = usePlaces(worldId);
+  const { cast, status: castStatus, error: castError } = useCast(worldId);
+  const { places, error: placeError } = usePlaces(worldId);
+  const { npcs, status: npcStatus, error: npcError } = useNpcs(worldId);
   const [scene, setScene] = useState<TiledWorldScene | null>(null);
   const sceneRef = useRef<TiledWorldScene | null>(null);
   sceneRef.current = scene;
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
-  // id → name / identity color for the focus chips, from the current step's figures.
-  // Both tiers: NPC bodies can be clicked into focus too, and reading only the agents would
-  // leave their chip showing a bare id.
-  const nameOf = useMemo(() => {
-    const m = new Map<string, string>();
-    if (step) {
-      const index = indexStep(step);
-      for (const s of Object.values(index.agents)) m.set(s.agent_id, cast[s.agent_id]?.name ?? "某人");
-      for (const n of index.npcs) if (n.name) m.set(n.npc_id, n.name);
-    }
-    return (id: string) => m.get(id) ?? "某人";
-  }, [step, cast]);
-  const colorOf = (id: string) => {
-    const npc = step ? indexStep(step).npcs.find((n) => n.npc_id === id) : undefined;
-    return toHex(identityColor(cast[id]?.color ?? npc?.color, id));
-  };
+  const nameOf = (id: string) => identityOf(id, cast, npcs)?.name ?? "某人";
+  const colorOf = (id: string) => toHex(identityColor(identityOf(id, cast, npcs)?.color, id));
   const focusPlace = focus.place ? placeName(places, focus.place.id) : null;
   const ready = scene !== null;
   const [animSpeed, setAnimSpeed] = useState(1); // animation-speed multiplier
@@ -108,11 +96,15 @@ export default function LiveWorldMap({
   }, [scene, castStatus, cast]);
 
   useEffect(() => {
+    if (scene && npcStatus === "ready") scene.setNpcs(npcs);
+  }, [scene, npcStatus, npcs]);
+
+  useEffect(() => {
     scene?.setPlaces(places);
   }, [scene, places]);
 
   useEffect(() => {
-    if (!ready || !sceneRef.current || !step || castStatus !== "ready") return;
+    if (!ready || !sceneRef.current || !step || castStatus !== "ready" || npcStatus !== "ready") return;
     // A new step supersedes any in-flight render (scrub); its onRendered is
     // suppressed via `cancelled` so only the current step's completion advances.
     let cancelled = false;
@@ -127,15 +119,15 @@ export default function LiveWorldMap({
     return () => {
       cancelled = true;
     };
-  }, [scene, ready, step, viewer, castStatus, cast]);
+  }, [scene, ready, step, viewer, castStatus, cast, npcStatus, npcs]);
 
   // With no map the scene never mounts and onRendered never fires, freezing the driver's
   // gate (clock, roster, cards, DirectorBar all stall). No render timeline to wait for, so
   // this step counts as already drawn.
   useEffect(() => {
-    if ((mapSource !== false && castStatus !== "error") || !step) return;
+    if ((mapSource !== false && castStatus !== "error" && npcStatus !== "error") || !step) return;
     onRenderedRef.current?.(step.step);
-  }, [mapSource, step, castStatus]);
+  }, [mapSource, step, castStatus, npcStatus]);
 
   if (mapSource === false) {
     return (
@@ -146,7 +138,9 @@ export default function LiveWorldMap({
         {/* The two fetches loadMapSource refuses to carry on without — a missing
             tileset or no derived ground still draws, so neither lands here. */}
         <p className="text-slate-500 text-sm">取不到这个世界的地图文件或人物资产。</p>
-        {castStatus === "error" && <button className="absolute bottom-2 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
+        {placeError && <button className="absolute bottom-20 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadPlaces(worldId).catch(() => {}); }}>地点身份加载失败，点击重试</button>}
+        {npcError && <button className="absolute bottom-10 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadNpcs(worldId).catch(() => {}); }}>NPC 身份加载失败，点击重试</button>}
+        {castError && <button className="absolute bottom-2 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
         {children}
       </div>
     );
@@ -230,7 +224,9 @@ export default function LiveWorldMap({
             </button>
           </div>
         )}
-        {castStatus === "error" && <button className="absolute bottom-2 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
+        {placeError && <button className="absolute bottom-20 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadPlaces(worldId).catch(() => {}); }}>地点身份加载失败，点击重试</button>}
+        {npcError && <button className="absolute bottom-10 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadNpcs(worldId).catch(() => {}); }}>NPC 身份加载失败，点击重试</button>}
+        {castError && <button className="absolute bottom-2 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
         {children}
       </div>
       <div className="shrink-0 flex items-center justify-end gap-1 px-3 py-2 border-t border-slate-800/70 bg-slate-950/50">

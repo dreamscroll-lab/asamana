@@ -3,6 +3,7 @@
 // over the map, as the relationship graph is.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { identityOf } from "../lib/worldTable";
 import { api, API_BASE } from "../api/client";
 import { useCast } from "../lib/cast";
 import { placeName, usePlaces } from "../lib/places";
@@ -223,7 +224,7 @@ export default function CharacterBody({
 }) {
   const { cast, status: castStatus } = useCast(worldId);
   const { places } = usePlaces(worldId);
-  const identity = cast[agent.id];
+  const identity = identityOf(agent.id, cast);
   const scope = JSON.stringify([worldId, viewer, agent.id]);
   const [loaded, setLoaded] = useState<{ scope: string; profile: AgentProfile } | null>(null);
   const profile = loaded?.scope === scope && (viewer === null || viewer === agent.id) ? loaded.profile : null;
@@ -323,9 +324,9 @@ export default function CharacterBody({
               <div className="flex items-center gap-1.5">
                 <span
                   className={`w-4 h-4 rounded shrink-0`}
-                  style={avatarStyle(cast[to.id]?.color, to.id)}
+                  style={avatarStyle(identityOf(to.id, cast)?.color, to.id)}
                 />
-                <span className="text-slate-100 font-medium truncate">{cast[to.id]?.name ?? "某人"}</span>
+                <span className="text-slate-100 font-medium truncate">{identityOf(to.id, cast)?.name ?? "某人"}</span>
                 <span className="text-slate-500 truncate">{edge.labels.join(" · ")}</span>
               </div>
               <div className="grid grid-cols-[3rem_1fr_2rem] items-center gap-x-2 gap-y-1 text-[10px] text-slate-500">

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { indexStep } from "../../lib/step";
 import { buildScenes } from "./index";
-import { fixtureCast } from "./fixtures";
+import { fixtureCast, fixtureNpcs } from "./fixtures";
 import { DEED_BODY } from "../../phaser/deedPose";
 import type { LabPlaces } from "../places";
 
@@ -63,6 +63,23 @@ describe("lab scenes", () => {
       for (const st of s.steps) {
         for (const id of Object.keys(indexStep(st).agents)) {
           expect(known[id], `${s.id} stages ${id}`).toBeDefined();
+        }
+      }
+    }
+  });
+
+  it("keeps NPC identity in a full roster and only dynamic state in step bodies", () => {
+    const npcs = fixtureNpcs();
+    expect(Object.keys(npcs)).toHaveLength(4);
+    expect(npcs["npc_wang-er"].name).toBe("王二");
+    expect(indexStep(scenes[0].steps[0]).npcs).toEqual([]);
+    for (const scene of scenes) {
+      for (const st of scene.steps) {
+        for (const npc of indexStep(st).npcs) {
+          expect(npcs[npc.npc_id], `${scene.id} stages ${npc.npc_id}`).toBeDefined();
+          for (const field of ["name", "color", "gender", "age", "description"]) {
+            expect(npc).not.toHaveProperty(field);
+          }
         }
       }
     }

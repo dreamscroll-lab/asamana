@@ -32,6 +32,8 @@ import { type PostHost, PostLayer } from "./post";
 import { FONT, INITIAL_DIR, PLATE_GAP, PLATE_RISE, SPRITE_FOOT_Y, TEXT_RES, type AgentToken, type CarriedItem } from "./types";
 import { reportedDead } from "../lib/agentState";
 import { type Viewer, isWholeWorld } from "../lib/viewer";
+import type { Npcs } from "../lib/npcs";
+import { identityOf } from "../lib/worldTable";
 import { identityColor, toHex } from "../lib/color";
 import {
   type FxHost,
@@ -178,9 +180,10 @@ export class TiledWorldScene
 
   private castById: Cast = {};
   private places: Places = {};
+  private npcIdentities: Npcs = {};
 
   identityColor(id: string): number {
-    return identityColor(this.castById[id]?.color ?? this.npcById.get(id)?.color, id);
+    return identityColor(identityOf(id, this.castById, this.npcIdentities)?.color, id);
   }
 
 
@@ -192,15 +195,46 @@ export class TiledWorldScene
   /** Public identities supply bodies and colors independently of the current step. */
   setCast(cast: Cast): void {
     this.castById = cast;
-    for (const [id, who] of Object.entries(cast)) this.learnBody(id, who);
+    for (const [id, who] of Object.entries(cast)) {
+      this.learnBody(id, who);
+      this.syncIdentity(id, who);
+    }
+  }
+
+  setNpcs(npcs: Npcs): void {
+    this.npcIdentities = npcs;
+    for (const [id, who] of Object.entries(npcs)) {
+      this.learnBody(id, who);
+      this.syncIdentity(id, who);
+    }
+  }
+
+  private syncIdentity(id: string, who: { name: string; color: string }): void {
+    const tok = this.tokens.get(id);
+    if (!tok) return;
+    const color = identityColor(who.color, id);
+    if (color !== tok.color) {
+      tok.color = color;
+      tok.label.setColor(toHex(color));
+      this.body.dyeGarment(tok.sprite, color);
+      for (const ring of tok.identityRings) ring.setStrokeStyle(ring.lineWidth, color, ring.strokeAlpha);
+    }
+    if (tok.label.text !== who.name) {
+      const pouchGap = tok.pouch.x - tok.label.width / 2;
+      tok.label.setText(who.name);
+      tok.pouch.setX(tok.label.width / 2 + pouchGap);
+      const width = Math.max(14, tok.label.width);
+      tok.vitTrack.setSize(width, tok.vitTrack.height);
+      tok.vitFill.setSize(width, tok.vitFill.height).setX(-width / 2);
+    }
   }
 
   /**
    * Register one figure's (gender, age) and re-skin it if it is already standing.
    *
-   * The only writer of `demographics`: the cast (once per world) and the NPCs (every step) are
-   * disjoint halves, so neither may replace the whole record — the late fetch would drop every
-   * NPC back to the default body.
+   * The only writer of `demographics`: the cast and the NPC tables are disjoint halves, so
+   * neither may replace the whole record, or whichever lands second would drop the other half
+   * back to the default body.
    */
   private learnBody(id: string, who: Demographics): void {
     const known = this.demographics[id];
@@ -280,16 +314,6 @@ export class TiledWorldScene
 
   private skinFor(agentId: string): string {
     return this.cast.bodyFor(this.demographics[agentId]);
-  }
-
-  /**
-   * Register the bodies that think for nobody. Their (gender, age) arrives on every step
-   * rather than once per world — they can appear mid-run — so this is idempotent and cheap,
-   * and it re-skins a token created before its demographics landed.
-   */
-  private noteNpcs(npcs: Placed<NpcView>[]): void {
-    this.npcById = new Map(npcs.map((npc) => [npc.npc_id, npc]));
-    for (const npc of npcs) this.learnBody(npc.npc_id, { gender: npc.gender, age: npc.age });
   }
 
   /**
@@ -612,7 +636,7 @@ export class TiledWorldScene
     if (!id || p.isDown || p.wasTouch) return;
     const label = obj as Phaser.GameObjects.Text;
     const top = label.y - label.displayHeight / 2 - 4;
-    this.hoverTip.showPlace(label.x, top, label.text, this.places[String(id)]?.description ?? "");
+    this.hoverTip.showPlace(label.x, top, label.text, identityOf(String(id), this.places)?.description ?? "");
   }
 
   private handleContext(p: Phaser.Input.Pointer): void {
@@ -738,12 +762,13 @@ export class TiledWorldScene
     // Narrative tier on one channel: double ring for a main character, plain for the cast,
     // thin and faint for an NPC.
     const mindless = this.npcById.has(state.agent_id);
-    parts.push(this.add
+    const identityRings = [this.add
       .ellipse(0, 6, 26, 12)
-      .setStrokeStyle(state.is_main_character ? 3 : mindless ? 1 : 2, color, mindless ? 0.55 : 1));
+      .setStrokeStyle(state.is_main_character ? 3 : mindless ? 1 : 2, color, mindless ? 0.55 : 1)];
     if (state.is_main_character) {
-      parts.push(this.add.ellipse(0, 6, 31, 14.5).setStrokeStyle(1.5, color, 0.7));
+      identityRings.push(this.add.ellipse(0, 6, 31, 14.5).setStrokeStyle(1.5, color, 0.7));
     }
+    parts.push(...identityRings);
     // The body its gender+age picks, feet at the container origin; the garment is dyed with
     // the identity color by RecolorFX. Skin is never touched (see recolorPipeline.ts).
     const skinId = this.skinFor(state.agent_id);
@@ -817,12 +842,12 @@ export class TiledWorldScene
     container.on("pointerover", () => {
       const npc = this.npcById.get(state.agent_id);
       const tok = this.tokens.get(state.agent_id);
-      if (npc && tok && this.canSelect(state.agent_id)) this.hoverTip.show(tok, npc);
+      if (npc && tok && this.canSelect(state.agent_id)) this.hoverTip.show(tok, npc, identityOf(state.agent_id, this.npcIdentities));
     });
     container.on("pointerout", () => this.hoverTip.hide());
     tok = {
       container, sprite, skinId, posed: false, headY: this.body.measureHeadY(skinId),
-      plate, focusRing, label, color, baseAlpha: 1, presenceAlpha: 1, floor: 0, vitTrack, vitFill,
+      plate, focusRing, identityRings, label, color, baseAlpha: 1, presenceAlpha: 1, floor: 0, vitTrack, vitFill,
       condPip: pip, pouch, condText: "",
       locationId: state.location_id, dead: false, hurt: false, vit: 1, phase: Math.random() * Math.PI * 2,
       dir: INITIAL_DIR,
@@ -866,11 +891,11 @@ export class TiledWorldScene
     const cut = this.drawnStep === null || step.step !== this.drawnStep + 1;
     this.drawnStep = step.step;
     const index = indexStep(step);
-    this.noteNpcs(index.npcs);
+    this.npcById = new Map(index.npcs.map((npc) => [npc.npc_id, npc]));
     this.staging.setRelations(index.relations);
     // A canceled step can stop before its pending entrances start walking.
     for (const tok of this.tokens.values()) tok.presenceAlpha = 1;
-    const states = figuresOf(index, this.castById);
+    const states = figuresOf(index, this.castById, this.npcIdentities);
     const location = states.find((s) => s.agent_id === this.viewer)?.location_id ?? "";
     const view = { viewer: this.viewer, location };
     const localContinuity = continuesPresence(this.presenceView, view, cut);

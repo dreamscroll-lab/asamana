@@ -7,6 +7,7 @@ revisable.
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 from agent.need import NeedState, NeedType
@@ -24,6 +25,7 @@ from interaction.models import (
     InnateNeedView,
     SetupRelationView,
     SetupView,
+    agent_profile,
 )
 
 _CHARACTER_TEXT_FIELDS = (
@@ -37,10 +39,10 @@ _CHARACTER_FIELDS = frozenset({
 
 def setup_view(setup: WorldSetup) -> SetupView:
     return SetupView(
+        seconds_per_step=setup.lore.seconds_per_step,
         characters=[
             CharacterSetupView(
-                agent_id=d.agent_id,
-                is_main_character=d.is_main_character,
+                **asdict(agent_profile(d)),
                 initial_location=d.initial_location,
                 initial_emotion=InitialEmotionView(
                     emotion=d.initial_emotion.primary.value,
@@ -180,7 +182,6 @@ def build_setup_router(services: ApiServices) -> Any:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        manager.forget_profiles(world_id)
         return setup
 
     def _parsed(parse: Any, payload: Any) -> Any:

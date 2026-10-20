@@ -416,10 +416,10 @@ def test_the_observer_gets_the_sentence_the_runner_wrote_and_the_place_he_stands
     assert (where, summary.private.outcome, summary.private.ongoing) == (
         "gate", "把书信交给了阿石", False,
     )
-    # Nothing happened this step: an empty sentence, while identity and location are still reported.
+    # Nothing happened this step: an empty sentence, while the body's id and location remain.
     snap = snapshot_of(npcs={"npc_x": {**npc, "outcome": None}})
     where, quiet = npcs(StepView.from_snapshot(snap))["npc_x"]
-    assert (where, quiet.name, quiet.private.outcome, quiet.private.ongoing) == ("gate", "王二", "", False)
+    assert (where, quiet.npc_id, quiet.private.outcome, quiet.private.ongoing) == ("gate", "npc_x", "", False)
 
 
 def test_the_observer_is_told_which_npcs_were_displaced_this_step() -> None:

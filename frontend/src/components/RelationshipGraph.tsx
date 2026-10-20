@@ -5,6 +5,7 @@
 //
 // Backend scales: trust ∈ [0,1], affection ∈ [-1,1]. Displayed as 0–100 / −100..100.
 import { useMemo, useState } from "react";
+import { identityOf } from "../lib/worldTable";
 import type { GraphEdge, WorldGraph } from "../types";
 import type { Cast } from "../lib/cast";
 import { identityColor, toHex } from "../lib/color";
@@ -43,7 +44,7 @@ export default function RelationshipGraph({
   }, [graph, nodes]);
 
   const nameOf = useMemo(() => {
-    const m = new Map(nodes.map((n) => [n.id, cast[n.id]?.name ?? "某人"]));
+    const m = new Map(nodes.map((n) => [n.id, identityOf(n.id, cast)?.name ?? "某人"]));
     return (id: string) => m.get(id) ?? id;
   }, [nodes, cast]);
 
@@ -264,7 +265,7 @@ export default function RelationshipGraph({
                 <circle
                   r="20"
                   fill={THEME.bg}
-                  stroke={isActive ? THEME.accent : touched ? THEME.brand400 : toHex(identityColor(cast[n.id]?.color, n.id))}
+                  stroke={isActive ? THEME.accent : touched ? THEME.brand400 : toHex(identityColor(identityOf(n.id, cast)?.color, n.id))}
                   strokeWidth={isActive ? 3.5 : 3}
                 />
                 <text
@@ -275,7 +276,7 @@ export default function RelationshipGraph({
                   fontWeight="bold"
                   className="pointer-events-none"
                 >
-                  {(cast[n.id]?.name ?? "某人")[0]}
+                  {(identityOf(n.id, cast)?.name ?? "某人")[0]}
                 </text>
                 <g transform="translate(0, 32)" className="pointer-events-none">
                   <rect
@@ -291,11 +292,11 @@ export default function RelationshipGraph({
                   <text
                     textAnchor="middle"
                     dominantBaseline="central"
-                    fill={toHex(identityColor(cast[n.id]?.color, n.id))}
+                    fill={toHex(identityColor(identityOf(n.id, cast)?.color, n.id))}
                     fontSize="10"
                     fontWeight="600"
                   >
-                    {cast[n.id]?.name ?? "某人"}
+                    {identityOf(n.id, cast)?.name ?? "某人"}
                     {n.is_main_character ? " ★" : ""}
                   </text>
                 </g>

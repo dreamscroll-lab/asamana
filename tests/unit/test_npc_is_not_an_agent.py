@@ -172,7 +172,7 @@ def test_the_read_model_does_not_call_one_an_agent() -> None:
     character cards never include it."""
     from interaction.models import StepView
     from tests.unit.step_view import agents, npcs, snapshot_of
-    from world.identity_color import _PALETTE, MINDLESS_BODY_COLOR
+    from dataclasses import asdict
 
     env = _env()
     env.spawn_npc(
@@ -186,12 +186,8 @@ def test_the_read_model_does_not_call_one_an_agent() -> None:
     assert npc_id not in agents(view)
     assert list(npcs(view)) == [npc_id]
     where, seen = npcs(view)[npc_id]
-    assert (seen.name, seen.gender, seen.age) == ("王二", "男", 34)
     assert where == "hall"
-    # This tier has no identity, so it gets the reserved value, not a slot from the character
-    # palette.
-    assert seen.color == MINDLESS_BODY_COLOR
-    assert seen.color not in _PALETTE
+    assert set(asdict(seen)) == {"npc_id", "public", "private"}
 
 
 def test_the_code_layer_tier_never_crosses_into_the_narrative_layer() -> None:

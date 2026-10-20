@@ -7,7 +7,7 @@ import { BTN, BTN_PRIMARY } from "../buttonStyles";
 import type { Places } from "../../lib/places";
 import { joinList, splitList } from "../../lib/textList";
 import type {
-  AgentProfile, CharacterRevision, CharacterSetupView, InnateNeedView, NewCharacter, Vocabulary,
+  CharacterRevision, CharacterSetupView, InnateNeedView, NewCharacter, Vocabulary,
 } from "../../types";
 
 const INPUT =
@@ -67,19 +67,19 @@ export function blankDraft(vocabulary: Vocabulary): Draft {
   };
 }
 
-export function draftOf(p: AgentProfile, s: CharacterSetupView, vocabulary: Vocabulary): Draft {
+export function draftOf(s: CharacterSetupView, vocabulary: Vocabulary): Draft {
   return {
-    name: p.name,
-    role: p.role,
-    appearance: p.appearance,
-    background: p.background,
-    self_image: p.self_image,
-    life_goal: p.life_goal ?? "",
-    secret: p.secret,
-    gender: p.gender,
-    age: p.age != null ? String(p.age) : "",
-    core_traits: joinList(p.core_traits),
-    core_values: joinList(p.core_values),
+    name: s.name,
+    role: s.role,
+    appearance: s.appearance,
+    background: s.background,
+    self_image: s.self_image,
+    life_goal: s.life_goal ?? "",
+    secret: s.secret,
+    gender: s.gender,
+    age: s.age != null ? String(s.age) : "",
+    core_traits: joinList(s.core_traits),
+    core_values: joinList(s.core_values),
     is_main_character: s.is_main_character,
     initial_location: s.initial_location,
     long_term_goals: s.long_term_goals.join("\n"),

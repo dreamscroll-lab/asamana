@@ -6,6 +6,8 @@
 // wire means belongs to feed.ts.
 import { useState } from "react";
 
+import { identityOf } from "../../lib/worldTable";
+import type { Npcs } from "../../lib/npcs";
 import type { Cast } from "../../lib/cast";
 import type { Places } from "../../lib/places";
 import type { StepCast } from "./cast";
@@ -28,6 +30,7 @@ export default function NarrativeStep({
   step,
   cast: publicCast,
   places,
+  npcs,
   focusAgents = [],
   isolated = false,
   onToggleIsolate,
@@ -36,6 +39,7 @@ export default function NarrativeStep({
   step: StepView;
   cast: Cast;
   places: Places;
+  npcs: Npcs;
   focusAgents?: string[];
   // Whether the feed is showing this step ALONE; owned by the feed, which sees the other steps.
   isolated?: boolean;
@@ -50,7 +54,7 @@ export default function NarrativeStep({
   const born = bornInStep(step);
   const focusSet = new Set(focusAgents);
   const focusActive = focusSet.size > 0;
-  const cast = stepCast(step, publicCast, places);
+  const cast = stepCast(step, publicCast, places, npcs);
   const feed = buildFeed(step, viewer);
   const index = indexStep(step);
   // A transcript prints once even if two beats carry it; the first card in feed order claims
@@ -148,7 +152,7 @@ export default function NarrativeStep({
         })}
       </div>
 
-      <NpcStandingRow npcs={index.npcs} roll={step.step === 0} cast={cast} />
+      <NpcStandingRow npcs={index.npcs} roll={step.step === 0} cast={cast} identities={npcs} />
     </div>
   );
 }
@@ -183,9 +187,9 @@ function AgentRollRow({ agents, cast }: { agents: Placed<AgentView>[]; cast: Ste
  * The present-tense phrasing comes from lib/npc, shared with the map's hover; see there on why
  * it must not read as an event.
  */
-function NpcStandingRow({ npcs, roll, cast }: { npcs: Placed<NpcView>[]; roll: boolean; cast: StepCast }): JSX.Element | null {
+function NpcStandingRow({ npcs, roll, cast, identities }: { npcs: Placed<NpcView>[]; roll: boolean; cast: StepCast; identities: Npcs }): JSX.Element | null {
   const rows = npcs
-    .map((npc) => [npc.npc_id, npcStandingLine(npc, cast.placeOf(npc.location_id), roll)] as const)
+    .map((npc) => [npc.npc_id, npcStandingLine(npc, identityOf(npc.npc_id, identities), cast.placeOf(npc.location_id), roll)] as const)
     .filter(([, line]) => line.length > 0);
   if (!rows.length) return null;
   return (
@@ -193,7 +197,7 @@ function NpcStandingRow({ npcs, roll, cast }: { npcs: Placed<NpcView>[]; roll: b
       <span className="shrink-0 text-slate-600">NPC</span>
       <div className="min-w-0 space-y-0.5">
         {rows.map(([id, line]) => (
-          <div key={id}>{line}</div>
+          <div key={id} style={{ color: cast.inkOf(id) }}>{line}</div>
         ))}
       </div>
     </div>

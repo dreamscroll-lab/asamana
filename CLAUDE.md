@@ -1008,16 +1008,22 @@ data added to suit one component.
 
 ## World identity tables
 
-What is fixed once the world is confirmed and identical for every viewer is served once per world
-as an identity table keyed by id: characters (`CharacterIdentity`, `GET /api/worlds/{id}/agents`)
-and places (`PlaceIdentity`, `GET /api/worlds/{id}/places`). The frontend loads each once per world
-and shares it (`lib/cast`, `lib/places`); before confirmation a setup revision can change the
-characters, and the client reloads that table.
+A confirmed world serves its fixed public identities as tables keyed by id: characters
+(`CharacterIdentity`, `GET /api/worlds/{id}/agents`), NPCs (`NpcIdentity`,
+`GET /api/worlds/{id}/npcs`) and places (`PlaceIdentity`, `GET /api/worlds/{id}/places`).
+The frontend shares them per world (`lib/cast`, `lib/npcs`, `lib/places`).
 
-- **One source.** Outside its table an identity field is not duplicated: snapshots, steps, graphs
-  and other payloads reference characters and places by id, and clients resolve names and color
-  from the table. A missing entry has one fallback per table (`identityColor`; 「某人」/「某地」),
-  never a bare id.
+- **Only after confirmation.** The global tables, and the backend's identity caches, are used only
+  once a world is confirmed; from then on they are final for the world's life. Before it, the
+  setup is still being revised: review works on page-local data read from the setup and the
+  identity endpoints, and never seeds a global table.
+- **One source.** Observation steps, graphs and other public payloads reference characters, NPCs
+  and places by id; clients resolve identity fields from their tables. Runtime snapshots retain
+  the data needed for restoration and are not a client identity source. A missing entry has one
+  fallback per table (`identityColor`; 「某人」/「某地」), never a bare id.
+- **A miss doesn't stay missing.** A lookup that misses (for example because the table's load
+  failed) recovers the table by itself, so a reader that shows only the fallback isn't stuck
+  with it.
 - **Only fixed, public facts.** Mutable state (location, emotion, belongings) and
   viewpoint-filtered fields (private profile, narrative tier) stay out and come from their own
   contracts.

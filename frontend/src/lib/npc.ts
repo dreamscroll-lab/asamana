@@ -1,4 +1,4 @@
-import type { NpcView } from "../types";
+import type { NpcIdentity, NpcView } from "../types";
 import type { TipLine } from "./tip";
 
 /**
@@ -25,11 +25,11 @@ import type { TipLine } from "./tip";
  * `roll` lifts that floor for the opening roll call, where being here is the news (otherwise these
  * would be the only figures the reader is never told about): an idle body prints as name and place.
  */
-export function npcStandingLine(npc: NpcView, place: string, roll = false): string {
+export function npcStandingLine(npc: NpcView, identity: NpcIdentity | undefined, place: string, roll = false): string {
   const outcome = npc.private.outcome.trim();
   const held = npc.public.condition.trim();
   if (!outcome && !held && !roll) return "";
-  const name = npc.name.trim() || "某人";
+  const name = identity?.name.trim() || "某人";
   const at = place.trim();
   // Being held comes first: it explains why he isn't moving.
   const what = [held, outcome].filter(Boolean).join("，");
@@ -42,12 +42,12 @@ export function npcStandingLine(npc: NpcView, place: string, roll = false): stri
  * The kinds must not look alike: who he always is and what he is doing now, in one color, read as
  * one paragraph.
  */
-export function npcTipLines(npc: NpcView): TipLine[] {
-  const bits = [npc.gender.trim(), npc.age === null ? "" : `${npc.age}岁`].filter(Boolean);
-  const head = bits.length ? `NPC · ${npc.name}（${bits.join("·")}）` : `NPC · ${npc.name}`;
+export function npcTipLines(npc: NpcView, identity: NpcIdentity | undefined): TipLine[] {
+  const bits = [identity?.gender.trim(), identity?.age == null ? "" : `${identity.age}岁`].filter(Boolean);
+  const head = bits.length ? `NPC · ${identity?.name || "某人"}（${bits.join("·")}）` : `NPC · ${identity?.name || "某人"}`;
   return ([
     { text: head, tone: "head" },
-    { text: npc.description.trim(), tone: "background" },
+    { text: identity?.description.trim() ?? "", tone: "background" },
     { text: npc.private.outcome.trim(), tone: "now" },
     { text: npc.public.condition.trim(), tone: "held" },
   ] as TipLine[]).filter((line) => line.text.length > 0);

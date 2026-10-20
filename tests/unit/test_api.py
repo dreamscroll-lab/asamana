@@ -12,6 +12,7 @@ from engine.application import NarrativeApplication
 from engine.clock import WorldTime, WorldTimeConfig
 from world import WorldCatalog
 from world.catalog import MAX_WORLD_NAME_LEN
+from world.identity_color import MINDLESS_BODY_COLOR
 from worlds.tiled import EXAMPLE_PREFIX, list_templates
 
 from interaction.api import create_app
@@ -263,6 +264,85 @@ async def test_agent_roster_carries_demographics(container, test_config) -> None
             "background": "久居宫中", "appearance": "瘦削", "color": "",
         },
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirmed", [False, True])
+async def test_npc_identities_come_from_setup_without_current_presence(container, test_config, confirmed) -> None:
+    world_id = "world-npc-identities"
+    setup = setup_dict({"agent-1": {"name": "甲"}})
+    setup["npc_seeds"] = [
+        {"npc_id": "npc-z", "name": "信使", "gender": "男", "age": 34,
+         "description": "善于跑腿", "location": "palace"},
+        {"npc_id": "npc-a", "name": "门房", "gender": "女", "age": 61,
+         "description": "熟识来客", "location": "palace"},
+    ]
+    snapshot = _snapshot(world_id, 0, {})
+    if confirmed:
+        snapshot.setup = setup
+    else:
+        await container.snapshot.save_world_setup(world_id, setup)
+    await container.snapshot.save(world_id, 0, snapshot)
+
+    client = _client(container, test_config)
+    response = client.get(f"/api/worlds/{world_id}/npcs")
+    assert response.status_code == 200
+    assert response.json() == [
+        {"npc_id": "npc-a", "name": "门房", "gender": "女", "age": 61,
+         "description": "熟识来客", "color": MINDLESS_BODY_COLOR},
+        {"npc_id": "npc-z", "name": "信使", "gender": "男", "age": 34,
+         "description": "善于跑腿", "color": MINDLESS_BODY_COLOR},
+    ]
+    assert snapshot.state.npcs == {}
+    assert client.get("/api/worlds/no-such-world/npcs").status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_npc_identities_load_after_confirmation_with_a_cold_cache(
+    mock_build_container, test_config, tmp_path,
+) -> None:
+    catalog = WorldCatalog(None)
+    application = NarrativeApplication(mock_build_container, test_config, catalog=catalog)
+    world_id = await application.build_world("宫廷", template="changan_iso")
+    snapshots = mock_build_container.snapshot
+    setup = await snapshots.load_world_setup(world_id)
+    assert setup is not None
+    setup["npc_seeds"] = [{
+        "npc_id": "npc-messenger", "name": "信使", "gender": "男", "age": 34,
+        "description": "善于跑腿", "location": setup["characters"][0]["initial_location"],
+    }]
+    await snapshots.save_world_setup(world_id, setup)
+
+    await application.confirm_world(world_id)
+    assert await snapshots.load_world_setup(world_id) is None
+    frozen = await snapshots.load(world_id, 0)
+    assert frozen is not None and frozen.setup["npc_seeds"] == setup["npc_seeds"]
+
+    from interaction.world_manager import WorldManager
+    from providers.snapshot.file import FileSnapshotProvider
+
+    persisted = FileSnapshotProvider(str(tmp_path))
+    await persisted.save(world_id, 0, frozen)
+    restarted = WorldManager(snapshot_provider=FileSnapshotProvider(str(tmp_path)))
+    identities = await restarted.npc_identities(world_id)
+    assert identities is not None and identities["npc-messenger"].name == "信使"
+
+    # A fresh API owns a fresh manager: no identity fetched before confirmation can mask a read failure.
+    client = _client(mock_build_container, test_config, catalog=catalog)
+    response = client.get(f"/api/worlds/{world_id}/npcs")
+    assert response.status_code == 200
+    assert response.json() == [{
+        "npc_id": "npc-messenger", "name": "信使", "gender": "男", "age": 34,
+        "description": "善于跑腿", "color": MINDLESS_BODY_COLOR,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_world_without_npc_seeds_has_an_empty_identity_table(container, test_config) -> None:
+    await container.snapshot.save_world_setup("world-no-npcs", setup_dict({}))
+    response = _client(container, test_config).get("/api/worlds/world-no-npcs/npcs")
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 @pytest.mark.asyncio

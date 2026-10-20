@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import type { NpcView } from "../types";
+import type { NpcIdentity, NpcView } from "../types";
 import { npcStandingLine as standingLine, npcTipLines } from "./npc";
 
 interface Spec {
@@ -15,9 +15,7 @@ interface Spec {
 
 function npc(over: Spec = {}): NpcView {
   return {
-    npc_id: "npc_x", name: "东宫典膳", color: "#8a93a6",
-    gender: over.gender ?? "男", age: over.age === undefined ? 45 : over.age,
-    description: over.description ?? "掌酒食采办",
+    npc_id: "npc_x",
     public: {
       condition: over.condition ?? "", displaced: false,
       carrying: {},
@@ -26,8 +24,13 @@ function npc(over: Spec = {}): NpcView {
   };
 }
 
-// He stands in the East Palace.
-const npcStandingLine = (n: NpcView, roll = false) => standingLine(n, "东宫", roll);
+const identity = (over: Spec = {}): NpcIdentity => ({
+  npc_id: "npc_x", name: "东宫典膳", color: "#8a93a6",
+  gender: over.gender ?? "男", age: over.age === undefined ? 45 : over.age,
+  description: over.description ?? "掌酒食采办",
+});
+
+const npcStandingLine = (n: NpcView, roll = false) => standingLine(n, identity(), "东宫", roll);
 
 describe("状态行", () => {
   it("什么也没发生就不出声 —— 一具闲着的身体每步一行会埋掉整条流", () => {
@@ -55,19 +58,24 @@ describe("状态行", () => {
 });
 
 describe("悬停卡", () => {
-  const text = (n = npc()) => npcTipLines(n).map((l) => l.text);
-  const tone = (n = npc()) => npcTipLines(n).map((l) => l.tone);
+  const text = (n = npc(), who = identity()) => npcTipLines(n, who).map((l) => l.text);
+  const tone = (n = npc()) => npcTipLines(n, identity()).map((l) => l.tone);
+
+  it("omits unavailable identity details without exposing the NPC id", () => {
+    expect(npcTipLines(npc(), undefined).map((line) => line.text)).toEqual(["NPC · 某人"]);
+    expect(standingLine(npc(), undefined, "东宫", true)).toBe("某人（东宫）");
+  });
 
   it("档次是第一件说的事 —— 卡上别的每一项角色也都有", () => {
     expect(text()[0]).toBe("NPC · 东宫典膳（男·45岁）");
   });
 
   it("性别年龄缺了就省掉括号,不渲染空壳", () => {
-    expect(text(npc({ gender: "", age: null }))[0]).toBe("NPC · 东宫典膳");
+    expect(text(npc(), identity({ gender: "", age: null }))[0]).toBe("NPC · 东宫典膳");
   });
 
   it("空项一律丢掉", () => {
-    expect(text(npc({ description: "", outcome: "", condition: "" })))
+    expect(text(npc(), identity({ description: "" })))
       .toEqual(["NPC · 东宫典膳（男·45岁）"]);
   });
 

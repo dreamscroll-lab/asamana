@@ -1,16 +1,6 @@
 import { ActionType, Deed, RefKind } from "../../lib/contract";
 import type { LabPlaces } from "../places";
-import { CRATE, Emotion, GATE, LIN, MINDLESS_INK, MO, SHI, aimAgents, aimThing, carried, crate, did, gate, mindless, step, type LabScene, who } from "./fixtures";
-
-/** The body with no mind an act can land on — the other end of `physical_npc_index`. */
-const PORTER = {
-  npc_id: "npc_lu-liu",
-  name: "陆六",
-  color: MINDLESS_INK,
-  gender: "男",
-  age: 29,
-  description: "脚夫，替人扛货过市",
-};
+import { CRATE, Emotion, GATE, LIN, PORTER, MO, SHI, aimAgents, aimThing, carried, crate, did, gate, mindless, step, type LabScene, who } from "./fixtures";
 
 /** PHYSICAL's seven verbs — the one action type whose deed says nothing about its intent. */
 export function buildPhysicalScenes({ open: OPEN }: LabPlaces): LabScene[] {

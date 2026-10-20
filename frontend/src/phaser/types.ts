@@ -67,6 +67,7 @@ export interface AgentToken {
   deadMark?: Phaser.GameObjects.Container;
   vitTrack: Phaser.GameObjects.Rectangle; // vitality bar backing (hidden at full health)
   vitFill: Phaser.GameObjects.Rectangle; // vitality bar fill, scaled by vitality
+  identityRings: Phaser.GameObjects.Ellipse[];
   focusRing: Phaser.GameObjects.Ellipse; // purple ground ring shown when this agent is focused
   actionChip?: Phaser.GameObjects.Container; // step-scoped "result" pill under the token, a
   // child of `container`. Shows this step's outcome + success/failure until clearEphemeral

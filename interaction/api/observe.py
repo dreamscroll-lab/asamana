@@ -4,7 +4,7 @@ Render-neutral: every payload is semantic world state (steps, the relationship
 graph). No coordinates/layout — a client lays it out. A 2D renderer turns the
 symbolic state into a map on the client; a text view ignores the geometry.
 
-Public cast and place identities are independent of viewpoint. While an actor performs a character,
+Public character, NPC and place identities are independent of viewpoint. While an actor performs a character,
 steps, profiles, graphs and the feed answer as that character perceived the world
 (``interaction.actor_view``); once the actor exits, they answer in full again.
 
@@ -95,7 +95,7 @@ def build_observe_router(services: ApiServices) -> Any:
             GraphNode(
                 id=aid,
                 name=s.get("agent_name") or "某人",
-                role=profiles.get(aid, {}).get("role", ""),
+                role=profile.role if (profile := profiles.get(aid)) else "",
                 is_main_character=bool(s.get("is_main_character", False)),
             )
             for aid, s in snapshot.state.agents.items()
@@ -103,24 +103,6 @@ def build_observe_router(services: ApiServices) -> Any:
         graph = WorldGraph(nodes=nodes, edges=relations_from_snapshot(snapshot))
         viewer = application.performing_character(world_id)
         return to_jsonable(graph_for(graph, viewer) if viewer is not None else graph)
-
-    def _make_profile(agent_id: str, entry: dict[str, Any]) -> AgentProfile:
-        return AgentProfile(
-            agent_id=agent_id,
-            name=entry.get("name", ""),
-            role=entry.get("role", ""),
-            age=entry.get("age"),
-            gender=entry.get("gender", ""),
-            background=entry.get("background", ""),
-            appearance=entry.get("appearance", ""),
-            color=entry.get("color", ""),
-            core_traits=list(entry.get("core_traits", [])),
-            core_values=list(entry.get("core_values", [])),
-            self_image=entry.get("self_image", ""),
-            life_goal=entry.get("life_goal", ""),
-            secret=entry.get("secret", ""),
-            is_main_character=bool(entry.get("is_main_character", False)),
-        )
 
     @router.get("/api/worlds/{world_id}/agents")
     async def list_cast(world_id: str) -> list[dict[str, Any]]:
@@ -131,16 +113,24 @@ def build_observe_router(services: ApiServices) -> Any:
         return [
             to_jsonable(CharacterIdentity(
                 agent_id=agent_id,
-                name=entry.get("name", ""),
-                gender=entry.get("gender", ""),
-                age=entry.get("age"),
-                role=entry.get("role", ""),
-                background=entry.get("background", ""),
-                appearance=entry.get("appearance", ""),
-                color=entry.get("color", ""),
+                name=profile.name,
+                gender=profile.gender,
+                age=profile.age,
+                role=profile.role,
+                background=profile.background,
+                appearance=profile.appearance,
+                color=profile.color,
             ))
-            for agent_id, entry in sorted(profiles.items())
+            for agent_id, profile in sorted(profiles.items())
         ]
+
+    @router.get("/api/worlds/{world_id}/npcs")
+    async def list_npcs(world_id: str) -> list[dict[str, Any]]:
+        """The world's NPC identities, independent of current presence and viewpoint."""
+        identities = await manager.npc_identities(world_id)
+        if identities is None:
+            raise HTTPException(status_code=404, detail=f"No world setup for: {world_id}")
+        return [to_jsonable(identity) for _, identity in sorted(identities.items())]
 
     @router.get("/api/worlds/{world_id}/places")
     async def list_places(world_id: str) -> list[dict[str, Any]]:
@@ -165,10 +155,10 @@ def build_observe_router(services: ApiServices) -> Any:
         per-step agent detail panel.
         """
         profiles = await manager.character_profiles(world_id)
-        entry = profiles.get(agent_id)
-        if entry is None:
+        profile = profiles.get(agent_id)
+        if profile is None:
             raise HTTPException(status_code=404, detail=f"Agent profile not found: {agent_id}")
-        return _profile(world_id, _make_profile(agent_id, entry))
+        return _profile(world_id, profile)
 
     # ----- live WebSocket feed (push) -------------------------------------
 

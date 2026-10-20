@@ -14,7 +14,7 @@ import type { AmbientLight } from "./ambient";
 import type { Announcer } from "./announce";
 import type { PostLayer } from "./post";
 import type { HoverTip } from "./hoverTip";
-import { MO, SHI, step, walking, who } from "../lab/scenes/fixtures";
+import { MO, SHI, WANG, fixtureNpcs, mindless, step, walking, who } from "../lab/scenes/fixtures";
 import { HIDDEN_ALPHA, HIDDEN_FADE_MS } from "./isoDepth";
 
 vi.mock("phaser", () => ({ default: {
@@ -49,6 +49,7 @@ interface Internals {
   hoverTip: HoverTip;
   applyFocus(): void;
   ensureToken(figure: Figure): AgentToken;
+  skinFor(id: string): string;
 }
 
 function token(locationId: string): AgentToken {
@@ -111,6 +112,83 @@ const near = { id: "near", name: "Near" };
 const far = { id: "far", name: "Far" };
 
 describe("director rendering isolation", () => {
+  it.each(["agent", "npc"] as const)("updates an existing %s token when its missing identity is recovered", async (kind) => {
+    const { scene, internal, enter, leave } = setup();
+    const id = kind === "agent" ? MO.id : WANG.npc_id;
+    await scene.renderStep(step({
+      at: 1,
+      states: kind === "agent" ? [who(MO, near)] : [],
+      npcs: kind === "npc" ? [mindless(WANG, near)] : [],
+    }));
+    const existing = scene.token(id)!;
+    const label = {
+      text: "某人", width: 20,
+      setColor: vi.fn(),
+      setText: vi.fn(function (this: { text: string; width: number }, text: string) {
+        this.text = text;
+        this.width = text.length * 10;
+        return this;
+      }),
+    };
+    const pouch = {
+      x: 16,
+      setX: vi.fn(function (this: { x: number }, x: number) { this.x = x; return this; }),
+    };
+    const vitTrack = { height: 2.5, setSize: vi.fn().mockReturnThis() };
+    const vitFill = { height: 2.5, scaleX: 0.4, setSize: vi.fn().mockReturnThis(), setX: vi.fn().mockReturnThis() };
+    const rings = (kind === "agent" ? [[3, 1], [1.5, 0.7]] : [[1, 0.55]])
+      .map(([lineWidth, strokeAlpha]) => ({ lineWidth, strokeAlpha, setStrokeStyle: vi.fn() }));
+    Object.assign(existing, { color: 0xabcdef, label, pouch, vitTrack, vitFill, identityRings: rings });
+    vi.spyOn(internal, "skinFor").mockReturnValue("recovered-skin");
+    const assignSkin = vi.spyOn(internal.body, "assignSkin").mockImplementation(() => {});
+    const dye = vi.spyOn(internal.body, "dyeGarment").mockImplementation(() => {});
+    const render = vi.spyOn(scene, "renderStep");
+    vi.mocked(internal.ensureToken).mockClear();
+    vi.mocked(internal.post.playDeliveries).mockClear();
+    vi.mocked(internal.announcer.pinBanner).mockClear();
+    const name = kind === "agent" ? "身份恢复后的角色" : "身份恢复后的门房";
+    const color = kind === "agent" ? "#123456" : "#8a93a6";
+    const numericColor = Number.parseInt(color.slice(1), 16);
+
+    if (kind === "agent") {
+      scene.setCast({ [id]: {
+        agent_id: id, name, color, gender: "女", age: 30, role: "旅人", background: "", appearance: "",
+      } });
+    } else {
+      scene.setNpcs({ [id]: { npc_id: id, name, color, gender: "男", age: 40, description: "门房" } });
+    }
+
+    expect(scene.token(id)).toBe(existing);
+    expect(existing.color).toBe(numericColor);
+    expect(label.text).toBe(name);
+    expect(label.setColor).toHaveBeenCalledWith(color);
+    expect(dye).toHaveBeenCalledWith(existing.sprite, numericColor);
+    expect(assignSkin).toHaveBeenCalledWith(existing, "recovered-skin");
+    for (const ring of rings) {
+      expect(ring.setStrokeStyle).toHaveBeenCalledWith(ring.lineWidth, numericColor, ring.strokeAlpha);
+    }
+    expect(pouch.x - label.width / 2).toBe(6);
+    expect(vitTrack.setSize).toHaveBeenCalledWith(label.width, 2.5);
+    expect(vitFill.setSize).toHaveBeenCalledWith(label.width, 2.5);
+    expect(vitFill.setX).toHaveBeenCalledWith(-label.width / 2);
+    expect(vitFill.scaleX).toBe(0.4);
+    expect(internal.ensureToken).not.toHaveBeenCalled();
+    expect(render).not.toHaveBeenCalled();
+    expect(enter).not.toHaveBeenCalled();
+    expect(leave).not.toHaveBeenCalled();
+    expect(internal.post.playDeliveries).not.toHaveBeenCalled();
+    expect(internal.announcer.pinBanner).not.toHaveBeenCalled();
+  });
+
+  it("renders NPC figures from the global identity roster", async () => {
+    const { scene, internal } = setup();
+    scene.setNpcs(fixtureNpcs());
+    await scene.renderStep(step({ at: 1, states: [], npcs: [mindless(WANG, near)] }));
+    expect(internal.ensureToken).toHaveBeenCalledWith(expect.objectContaining({
+      agent_id: WANG.npc_id, agent_name: WANG.name, color: WANG.color,
+    }));
+  });
+
   it.each(["continuous", "seek", "relocate", "viewpoint"] as const)("avoids corpse shrink cleanup for a living actor peer on %s", async (change) => {
     const { scene, internal, leave } = setup();
     scene.setViewer(MO.id);

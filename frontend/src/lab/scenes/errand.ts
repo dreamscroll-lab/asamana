@@ -1,27 +1,16 @@
 /**
  * A body that acts but does not think, sent on an errand.
  *
- * It arrives as an Npc body in its room with no card, relation or action record,
- * so everything that makes it legible (slate color, body from gender and age, hover card) is the
- * renderer's decision. The whole round trip is staged because the joints matter: setting out, the
+ * Its identity arrives through the NPC roster; each step supplies its body state without
+ * a relation or action record. The whole round trip is staged because the joints matter: setting out, the
  * handover at the far end, the answer coming back as an ordinary letter.
  */
 import { ActionType, Deed, RefKind } from "../../lib/contract";
 import type { LabPlaces } from "../places";
 import {
-  MINDLESS_INK, MO, SHI, carried, did, mindless, step, type LabScene, type Room, type RunnerRecord, who,
+  WANG, ZHANG, LI, MO, SHI, carried, did, mindless, step, type LabScene, type Room, type RunnerRecord, who,
 } from "./fixtures";
 import { nextSeq } from "./fixtures";
-
-/** The runner. Deliberately NOT in CAST: nothing about him may come from the agent channel. */
-const WANG = {
-  npc_id: "npc_wang-er",
-  name: "王二",
-  color: MINDLESS_INK,
-  gender: "男",
-  age: 34,
-  description: "脚程快，认得城中大小道路，识字不多",
-};
 
 function runner(
   at: Room, outcome = "", condition = "", ongoing = false,
@@ -159,13 +148,11 @@ export function buildErrandScenes(places: LabPlaces): LabScene[] {
           npcs: [
             mindless(WANG, HOME, { outcome: `正往${FAR.name}去把书信交给阿石`, ongoing: true }),
             mindless(
-              { npc_id: "npc-zhang-san", name: "张三", color: MINDLESS_INK, gender: "男", age: 52,
-                description: "识字，能代写文书" },
+              ZHANG,
               FAR, { outcome: "正往回走", ongoing: true },
             ),
             mindless(
-              { npc_id: "npc-li-si", name: "李四", color: MINDLESS_INK, gender: "女", age: 28,
-                description: "在坊里卖果子" },
+              LI,
               HOME,
             ),
           ],

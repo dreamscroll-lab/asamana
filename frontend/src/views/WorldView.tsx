@@ -11,12 +11,13 @@ import ActorConsole from "../components/actor/ActorConsole";
 import { mergeEntries } from "../components/actor/thread";
 import { BTN, BTN_PRIMARY } from "../components/buttonStyles";
 import CharacterBody from "../components/CharacterBody";
-import CharacterCard, { type CardAgent } from "../components/CharacterCard";
+import { ObservedCharacterCard, type CardAgent } from "../components/CharacterCard";
 import DirectorBar from "../components/DirectorBar";
 import EditableWorldName from "../components/EditableWorldName";
 import NarrativeStep from "../components/narrative/NarrativeStep";
 import RelationshipGraph from "../components/RelationshipGraph";
 import WorldClock from "../components/WorldClock";
+import { useNpcs, loadNpcs } from "../lib/npcs";
 import { useCast } from "../lib/cast";
 import { usePlaces } from "../lib/places";
 import { indexStep } from "../lib/step";
@@ -42,22 +43,37 @@ const LiveWorldMap = lazy(() => import("../components/LiveWorldMap"));
  */
 export default function WorldView() {
   const { id = "" } = useParams();
-  // A reset renumbers the run from step 1, so everything keyed by step number is stale too.
-  const [resets, setResets] = useState(0);
-  return (
-    <WorldObservation key={`${id}:${resets}`} id={id} onReset={() => setResets((n) => n + 1)} />
-  );
+  return <WorldEntry key={id} id={id} />;
 }
 
-function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) {
+function WorldEntry({ id }: { id: string }) {
+  const navigate = useNavigate();
+  const [meta, setMeta] = useState<WorldMeta | null>(null);
+  const [error, setError] = useState("");
+  const [resets, setResets] = useState(0);
+  useEffect(() => {
+    let current = true;
+    api.getWorld(id).then((world) => {
+      if (!current) return;
+      if (!world.confirmed) navigate(`/worlds/${id}/review`, { replace: true });
+      else setMeta(world);
+    }).catch((failure) => { if (current) setError(String(failure)); });
+    return () => { current = false; };
+  }, [id, navigate, resets]);
+  if (!meta?.confirmed) return <p className="p-6 text-sm text-slate-500">{error || "正在加载世界…"}</p>;
+  return <WorldObservation key={resets} id={id} initialMeta={meta} onReset={() => { setMeta(null); setResets((n) => n + 1); }} />;
+}
+
+function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMeta: WorldMeta; onReset: () => void }) {
   const navigate = useNavigate();
   const { cast } = useCast(id);
+  const { npcs, status: npcStatus } = useNpcs(id);
   const { places } = usePlaces(id);
   const { setImmersive: setShellImmersive } = useOutletContext<ShellContext>();
   const { worlds, refresh: refreshWorlds } = useWorlds();
   const modelKeys = useModelKeys();
 
-  const [meta, setMeta] = useState<WorldMeta | null>(null);
+  const [meta, setMeta] = useState<WorldMeta>(initialMeta);
   // The character an actor performs here, whose view every payload is filtered to; null for the
   // director. Every panel below reads the world through it (see lib/viewer).
   const viewer = viewerOf(meta);
@@ -66,7 +82,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
   // The actor's thread: its history read once the world's viewer is known, each new entry pushed
   // over the socket.
   const [thread, setThread] = useState<ActorEntry[]>([]);
-  const [runState, setRunState] = useState<RunState>(null);
+  const [runState, setRunState] = useState<RunState>(initialMeta.run_state);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState("");
   const [stepsInput, setStepsInput] = useState("50");
@@ -161,23 +177,6 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
 
   // --- WebSocket: connect on mount, stream live status/latest_step/step ------
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const m = await api.getWorld(id);
-        if (!mounted) return;
-        // Unconfirmed worlds belong in the review/confirm stage, not observation.
-        if (!m.confirmed) {
-          navigate(`/worlds/${id}/review`);
-          return;
-        }
-        setMeta(m);
-        setRunState(m.run_state);
-      } catch (e) {
-        if (mounted) setError(String(e));
-      }
-    })();
-
     const onFrame = (frame: WsFrame) => {
       if (frame.type === "status") setRunState(frame.data.status);
       else if (frame.type === "actor_turn") setTurn(frame.data);
@@ -192,7 +191,6 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
     );
     socket.connect();
     return () => {
-      mounted = false;
       socket.close();
     };
   }, [id]);
@@ -276,7 +274,11 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
   // reading). It closes, saying so, when the step leaves the window (FEED_CAP, or scrubbing
   // back before it).
   const isolatedFeed = isolatedStep === null ? feed : feed.filter((ev) => ev.step === isolatedStep);
-  const feedList = !feed.length ? (
+  const feedList = npcStatus === "error" ? (
+    <button className="text-sm text-rose-300" onClick={() => { void loadNpcs(id).catch(() => {}); }}>NPC 身份加载失败，点击重试</button>
+  ) : npcStatus === "loading" ? (
+    <p className="text-sm text-slate-500">正在加载 NPC 身份…</p>
+  ) : !feed.length ? (
     <p className="text-slate-500 text-sm">
       {mode === "live" ? "运行世界以生成叙事，每步实时追加。" : "该世界暂无历史步可回放。"}
     </p>
@@ -292,6 +294,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
       {isolatedFeed.map((ev) => (
         <NarrativeStep
           cast={cast}
+          npcs={npcs}
           places={places}
           key={ev.step}
           step={ev}
@@ -506,7 +509,7 @@ function WorldObservation({ id, onReset }: { id: string; onReset: () => void }) 
               </button>
             </div>
             <div className="min-h-0 overflow-y-auto pr-1">
-              <CharacterCard
+              <ObservedCharacterCard
                 worldId={id}
                 roster={roster}
                 activeId={activeAgentId}

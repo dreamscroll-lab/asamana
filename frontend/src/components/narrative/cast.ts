@@ -1,6 +1,8 @@
 /** Identity (people and places) is public; presence and private state stay scoped to the step. */
 
+import { identityOf } from "../../lib/worldTable";
 import { indexStep } from "../../lib/step";
+import type { Npcs } from "../../lib/npcs";
 import type { Cast } from "../../lib/cast";
 import { type Places, placeName } from "../../lib/places";
 import { identityColor, toHex } from "../../lib/color";
@@ -27,11 +29,11 @@ export function initiatorFirst(initiator_id: string, participant_ids: string[]):
   return [initiator_id, ...participant_ids.filter((id) => id !== initiator_id)].filter(Boolean);
 }
 
-export function stepCast(step: StepView, cast: Cast, places: Places): StepCast {
+export function stepCast(step: StepView, cast: Cast, places: Places, npcs: Npcs): StepCast {
   const index = indexStep(step);
   return {
-    inkOf: (id) => (id ? toHex(identityColor(cast[id]?.color, id)) : undefined),
-    nameOf: (id) => cast[id]?.name ?? "",
+    inkOf: (id) => (id ? toHex(identityColor(identityOf(id, cast, npcs)?.color, id)) : undefined),
+    nameOf: (id) => identityOf(id, cast, npcs)?.name ?? "",
     isMain: (id) => index.agents[id]?.is_main_character ?? false,
     placeOf: (locationId) => placeName(places, locationId),
     conditionOf: (id) => (id ? index.agents[id]?.public.condition ?? "" : ""),

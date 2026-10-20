@@ -19,7 +19,7 @@ import { buildStagingScenes } from "./staging";
 import { buildBodyScenes } from "./bodies";
 import { buildWeatherScenes } from "./weather";
 
-export { CAST, fixtureCast } from "./fixtures";
+export { CAST, fixtureCast, fixtureNpcs } from "./fixtures";
 export type { LabCharacter, LabScene } from "./fixtures";
 
 /**

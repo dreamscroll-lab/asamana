@@ -3,6 +3,7 @@
 // read-only after; a save replaces the whole list.
 import { useState } from "react";
 
+import { identityOf } from "../../lib/worldTable";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
 import { durationLabel } from "../../lib/duration";
 import type { Cast } from "../../lib/cast";
@@ -35,7 +36,7 @@ export default function HistoryPanel({
   const [error, setError] = useState("");
   const editing = drafts !== null;
   const members = Object.values(cast);
-  const nameOf = (id: string) => cast[id]?.name ?? "某人";
+  const nameOf = (id: string) => identityOf(id, cast)?.name ?? "某人";
   const when = (hours: number) => `故事开始${durationLabel(hours * 3600)}前`;
 
   const update = (i: number, patch: Partial<SetupHistoricalEventView>) =>

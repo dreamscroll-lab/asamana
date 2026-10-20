@@ -71,7 +71,7 @@ def test_in_the_place_it_ends_in_the_character_sees_bodies_and_things_as_they_sh
     view = step_view_for(_step(locations={"hall": LocationScope(
         location_id="hall",
         agents=[_body(ME), _body("agent-b")],
-        npcs=[NpcView(npc_id="n1", name="仆", private=NpcPrivateView(outcome="跑腿"))],
+        npcs=[NpcView(npc_id="n1", private=NpcPrivateView(outcome="跑腿"))],
         entities={"hidden": hidden, "letter": letter},
     )}), ME)
 
@@ -134,7 +134,7 @@ def test_elsewhere_only_its_own_events_and_nobody_in_them() -> None:
 def test_on_the_way_only_itself_and_its_own_events() -> None:
     view = step_view_for(_step(transit=TransitScope(
         agents=[_body(ME), _body("agent-b")],
-        npcs=[NpcView(npc_id="n1", name="仆")],
+        npcs=[NpcView(npc_id="n1")],
         events=[_action(1, [ME]), _action(2, ["agent-b"])],
     )), ME)
 

@@ -15,6 +15,7 @@ import type {
   ActorPace,
   AgentProfile,
   CharacterIdentity,
+  NpcIdentity,
   CharacterRevision,
   NewCharacter,
   Vocabulary,
@@ -160,7 +161,8 @@ export const api = {
   // The whole cast as persisted at step 0 — stable for the world's life, unlike a
   // StepView's agents, so stable things (character-skin dealing) key off this.
   agents: (id: string) => req<CharacterIdentity[]>(`/api/worlds/${id}/agents`),
-  // The world's places, fixed at build.
+  // The world's NPCs and places, fixed by setup.
+  npcs: (id: string) => req<NpcIdentity[]>(`/api/worlds/${id}/npcs`),
   places: (id: string) => req<PlaceIdentity[]>(`/api/worlds/${id}/places`),
   agentProfile: (id: string, agentId: string) =>
     req<AgentProfile>(`/api/worlds/${id}/agents/${agentId}/profile`),

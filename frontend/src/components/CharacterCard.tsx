@@ -3,10 +3,11 @@
 // creation review (no liveStates: dossier open, and the cast revisable until the world is
 // confirmed).
 import { useEffect, useMemo, useState } from "react";
+import { identityOf } from "../lib/worldTable";
 import ActorIcon from "./ActorIcon";
 import { api } from "../api/client";
-import { useCast, loadCast } from "../lib/cast";
-import { placeName, usePlaces } from "../lib/places";
+import { useCast, loadCast, type Cast } from "../lib/cast";
+import { placeName, usePlaces, type Places } from "../lib/places";
 import { reportedDead, unfinishedGoals } from "../lib/agentState";
 import { avatarStyle, emotionColor } from "../lib/avatar";
 import type { Placed } from "../lib/step";
@@ -65,19 +66,10 @@ function GoalList({ label, color, goals }: { label: string; color: string; goals
   );
 }
 
-export default function CharacterCard({
-  worldId,
-  roster,
-  activeId,
-  onActiveChange,
-  liveStates,
-  onExamine,
-  viewer = null,
-  onEdit,
-  onRemove,
-  onAdd,
-}: {
-  worldId: string;
+export interface CharacterCardProps {
+  cast: Cast;
+  places: Places;
+  profile?: AgentProfile;
   roster: CardAgent[];
   activeId: string | null;
   onActiveChange: (id: string) => void;
@@ -91,23 +83,18 @@ export default function CharacterCard({
   onEdit?: (id: string) => void;
   onRemove?: (id: string) => void;
   onAdd?: () => void;
-}) {
-  const { cast, status: castStatus } = useCast(worldId);
+}
+
+export function ObservedCharacterCard({ worldId, ...props }: Omit<CharacterCardProps, "cast" | "places" | "profile"> & { worldId: string }) {
+  const { roster, activeId, viewer = null } = props;
+  const { cast, error: castError } = useCast(worldId);
   const { places } = usePlaces(worldId);
   const scope = JSON.stringify([worldId, viewer]);
   const [loaded, setLoaded] = useState<{ scope: string; profiles: Record<string, AgentProfile>; failed: string[] }>({ scope, profiles: {}, failed: [] });
   const profiles = loaded.scope === scope ? loaded.profiles : {};
   const failed = loaded.scope === scope ? loaded.failed : [];
-  const [dossierOpen, setDossierOpen] = useState(false);
-
-  const observing = !!liveStates;
   const active = roster.find((r) => r.id === activeId) ?? roster[0];
-  const profile = active ? profiles[active.id] : undefined;
-  const live = active && liveStates ? liveStates[active.id] : undefined;
-  const knowsPrivate = (id: string) => viewer === null || id === viewer;
-  const privateKnown = active ? knowsPrivate(active.id) : false;
-
-  const shortTermGoals = useMemo(() => unfinishedGoals(live?.private), [live]);
+  const privateKnown = !!active && (viewer === null || active.id === viewer);
 
   useEffect(() => {
     const aid = active?.id;
@@ -125,6 +112,39 @@ export default function CharacterCard({
     return () => { alive = false; };
   }, [active?.id, worldId, scope, privateKnown, failed.includes(active?.id ?? "")]);
 
+  return (
+    <div className="space-y-3">
+      {castError && <button className="text-xs text-rose-300" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
+      {active && privateKnown && failed.includes(active.id) && <button className="text-xs text-rose-300" onClick={() => setLoaded((prev) => ({ ...prev, failed: prev.failed.filter((id) => id !== active.id) }))}>角色资料加载失败，点击重试</button>}
+      <CharacterCard {...props} cast={cast} places={places} profile={active && privateKnown ? profiles[active.id] : undefined} />
+    </div>
+  );
+}
+
+export default function CharacterCard({
+  cast,
+  places,
+  profile,
+  roster,
+  activeId,
+  onActiveChange,
+  liveStates,
+  onExamine,
+  viewer = null,
+  onEdit,
+  onRemove,
+  onAdd,
+}: CharacterCardProps) {
+  const [dossierOpen, setDossierOpen] = useState(false);
+
+  const observing = !!liveStates;
+  const active = roster.find((r) => r.id === activeId) ?? roster[0];
+  const live = active && liveStates ? liveStates[active.id] : undefined;
+  const knowsPrivate = (id: string) => viewer === null || id === viewer;
+  const privateKnown = active ? knowsPrivate(active.id) : false;
+
+  const shortTermGoals = useMemo(() => unfinishedGoals(live?.private), [live]);
+
   if (!active) {
     return (
       <div className="bg-slate-900 border border-slate-800/80 rounded-2xl p-6 text-slate-500 text-sm">
@@ -133,13 +153,11 @@ export default function CharacterCard({
     );
   }
 
-  const identity = cast[active.id];
+  const identity = identityOf(active.id, cast);
   const role = identity?.role;
 
   return (
     <div className="space-y-3">
-      {castStatus === "error" && <button className="text-xs text-rose-300" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
-      {active && privateKnown && failed.includes(active.id) && <button className="text-xs text-rose-300" onClick={() => setLoaded((prev) => ({ ...prev, failed: prev.failed.filter((id) => id !== active.id) }))}>角色资料加载失败，点击重试</button>}
       <div className="bg-slate-900/40 border border-slate-800/70 rounded-2xl p-2">
         {onAdd && (
           <button
@@ -164,13 +182,13 @@ export default function CharacterCard({
               >
                 <div
                   className={`w-7 h-7 rounded-lg grid place-items-center text-white text-xs font-bold shrink-0`}
-                  style={avatarStyle(cast[a.id]?.color, a.id)}
+                  style={avatarStyle(identityOf(a.id, cast)?.color, a.id)}
                 >
-                  {(cast[a.id]?.name ?? "某人")[0]}
+                  {(identityOf(a.id, cast)?.name ?? "某人")[0]}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div title={cast[a.id]?.name} className={`text-sm truncate ${on ? "text-slate-100" : "text-slate-300"}`}>
-                    {cast[a.id]?.name ?? "某人"}
+                  <div title={identityOf(a.id, cast)?.name} className={`text-sm truncate ${on ? "text-slate-100" : "text-slate-300"}`}>
+                    {identityOf(a.id, cast)?.name ?? "某人"}
                     {a.is_main_character && <span className="text-indigo-400"> ★</span>}
                     {a.id === viewer && <span className="ml-1 text-[10px] text-amber-300"><ActorIcon /> 我</span>}
                   </div>

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import { stepCast } from "../components/narrative/cast";
+import { identityColor, toHex } from "./color";
+import type { Npcs } from "./npcs";
 import { indexStep } from "./step";
 import { beatsOf, figuresOf } from "../phaser/figures";
 import type { ActionSummary, AgentView, CharacterIdentity, EntityView, NpcView, StepView } from "../types";
@@ -20,9 +23,13 @@ const agent = (agent_id: string, carrying: { open?: Record<string, EntityView>; 
 });
 
 const runner: NpcView = {
-  npc_id: "n1", name: "王二", color: "#8a93a6", gender: "男", age: 34, description: "",
+  npc_id: "n1",
   public: { condition: "", displaced: false, carrying: {} },
   private: { outcome: "", ongoing: false, carrying: { letter: thing(false) } },
+};
+
+const npcs: Npcs = {
+  n1: { npc_id: "n1", name: "王二", color: "#8a93a6", gender: "男", age: 34, description: "" },
 };
 
 const talk: ActionSummary = {
@@ -104,16 +111,19 @@ describe("beatsOf", () => {
 });
 
 describe("figuresOf", () => {
-  it("takes agent colors from public identities and keeps NPC colors on their own contract", () => {
+  it("uses the same NPC identity color for map figures and narrative", () => {
     const identity: CharacterIdentity = {
       agent_id: "a", name: "甲", gender: "女", age: 24, role: "旅人",
       background: "", appearance: "", color: "#123456",
     };
     const index = indexStep(step);
-    const figures = Object.fromEntries(figuresOf(index, { a: identity }).map((f) => [f.agent_id, f]));
+    const figures = Object.fromEntries(figuresOf(index, { a: identity }, npcs).map((f) => [f.agent_id, f]));
     expect(figures.a.color).toBe(identity.color);
     expect(figures.b.color).toBe("");
-    expect(figures.n1.color).toBe(runner.color);
+    expect(figures.n1.color).toBe(npcs.n1.color);
+    expect(figures.n1.agent_name).toBe(npcs.n1.name);
+    expect(stepCast(step, {}, {}, npcs).inkOf("n1"))
+      .toBe(toHex(identityColor(figures.n1.color, "n1")));
     expect(Object.keys(figures).sort()).toEqual([
       ...Object.keys(index.agents), ...index.npcs.map((npc) => npc.npc_id),
     ].sort());
@@ -128,7 +138,7 @@ describe("figuresOf", () => {
       ...step,
       locations: { hall: { ...step.locations.hall, events: [{ ...talk, action_type: "move", deed: "move", participant_ids: ["a"], private: { ...talk.private, route } }] } },
     };
-    const figures = Object.fromEntries(figuresOf(indexStep(arrived), {}).map((f) => [f.agent_id, f]));
+    const figures = Object.fromEntries(figuresOf(indexStep(arrived), {}, npcs).map((f) => [f.agent_id, f]));
     expect(figures.a.arrival).toEqual(route);
     expect(figures.b.arrival).toBeNull();
   });
@@ -142,7 +152,7 @@ describe("figuresOf", () => {
       ...step,
       locations: { hall: { ...step.locations.hall, events: [{ ...talk, action_type: "move", deed: "move", participant_ids: ["a", "b"], private: { ...talk.private, route } }] } },
     };
-    const figures = Object.fromEntries(figuresOf(indexStep(carried), {}).map((f) => [f.agent_id, f]));
+    const figures = Object.fromEntries(figuresOf(indexStep(carried), {}, npcs).map((f) => [f.agent_id, f]));
     expect(figures.a.arrival).toEqual(route);
     expect(figures.b.arrival).toEqual(route);
   });
@@ -156,7 +166,7 @@ describe("figuresOf", () => {
       ...step,
       locations: { hall: { ...step.locations.hall, events: [{ ...talk, action_type: "move", deed: "move", participant_ids: ["a", "b"], private: { ...talk.private, route } }] } },
     };
-    const figures = Object.fromEntries(figuresOf(indexStep(astray), {}).map((f) => [f.agent_id, f]));
+    const figures = Object.fromEntries(figuresOf(indexStep(astray), {}, npcs).map((f) => [f.agent_id, f]));
     expect(figures.a.arrival).toBeNull();
     expect(figures.b.arrival).toBeNull();
   });

@@ -1,7 +1,7 @@
 import { api } from "../api/client";
 import type { PlaceIdentity } from "../types";
 import type { TipLine } from "./tip";
-import { type Table, worldTable } from "./worldTable";
+import { identityOf, type Table, worldTable } from "./worldTable";
 
 export type Places = Table<PlaceIdentity>;
 
@@ -14,6 +14,7 @@ export interface PlacesState {
 const table = worldTable((worldId: string) => api.places(worldId), (place) => place.location_id);
 
 export const loadPlaces = table.load;
+export const reloadPlaces = table.reload;
 
 export function usePlaces(worldId: string): PlacesState {
   const { status, table: places, error } = table.useTable(worldId);
@@ -27,7 +28,7 @@ export function usePlaces(worldId: string): PlacesState {
 export function placeName(places: Places, locationId: string | null): string {
   if (locationId === null) return "";
   if (locationId === "") return "途中";
-  return places[locationId]?.name || "某地";
+  return identityOf(locationId, places)?.name || "某地";
 }
 
 /** A place's hover card: its name, then what it is. A place without a description is its name alone. */

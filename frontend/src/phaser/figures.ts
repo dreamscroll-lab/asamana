@@ -7,6 +7,8 @@
  * track plays them as one moment.
  */
 
+import type { Npcs } from "../lib/npcs";
+import { identityOf } from "../lib/worldTable";
 import type { Cast } from "../lib/cast";
 import { ActionType } from "../lib/contract";
 import type { ActionSummary, Transit } from "../types";
@@ -50,7 +52,7 @@ const SHOWN_BY_MOTION: ReadonlySet<string> = new Set([
   ActionType.physical, ActionType.talk, ActionType.covert, ActionType.send_message, ActionType.move,
 ]);
 
-export function figuresOf(index: StepIndex, cast: Cast): Figure[] {
+export function figuresOf(index: StepIndex, cast: Cast, identities: Npcs): Figure[] {
   // A mover's walk in rides the beat his MOVE ended (`route`); the figure needs it to walk. Whoever
   // he brought along walked the same way, so every participant standing at its end takes it;
   // otherwise the one carried finds his own way there.
@@ -66,7 +68,7 @@ export function figuresOf(index: StepIndex, cast: Cast): Figure[] {
     agent_id: a.agent_id,
     agent_name: a.name,
     location_id: a.location_id,
-    color: cast[a.agent_id]?.color ?? "",
+    color: identityOf(a.agent_id, cast)?.color ?? "",
     is_main_character: a.is_main_character ?? false,
     is_active: a.is_active,
     condition: a.public.condition,
@@ -79,9 +81,9 @@ export function figuresOf(index: StepIndex, cast: Cast): Figure[] {
   // Liveness is pinned: an Npc has no vitality axis, and the death visuals must never claim one.
   const npcs = index.npcs.map((n): Figure => ({
     agent_id: n.npc_id,
-    agent_name: n.name,
+    agent_name: identityOf(n.npc_id, identities)?.name ?? "某人",
     location_id: n.location_id,
-    color: n.color,
+    color: identityOf(n.npc_id, identities)?.color ?? "",
     is_main_character: false,
     is_active: true,
     condition: n.public.condition,

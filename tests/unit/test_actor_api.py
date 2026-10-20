@@ -112,6 +112,28 @@ async def test_public_cast_is_identical_before_during_and_after_performing(mock_
 
 
 @pytest.mark.asyncio
+async def test_public_npcs_are_identical_before_during_and_after_performing(mock_build_container, test_config) -> None:
+    catalog = WorldCatalog(None)
+    world_id, character_id = await _unconfirmed_world(mock_build_container, test_config, catalog)
+    setup = await mock_build_container.snapshot.load_world_setup(world_id)
+    setup["npc_seeds"] = [{
+        "npc_id": "npc-messenger", "name": "信使", "gender": "男", "age": 34,
+        "description": "善于跑腿", "location": setup["characters"][0]["initial_location"],
+    }]
+    await mock_build_container.snapshot.save_world_setup(world_id, setup)
+
+    with _client(mock_build_container, test_config, catalog) as client:
+        before = client.get(f"/api/worlds/{world_id}/npcs").json()
+        assert client.post(f"/api/worlds/{world_id}/confirm", json={"character_id": character_id}).status_code == 200
+        performing = client.get(f"/api/worlds/{world_id}/npcs").json()
+        assert client.post(f"/api/worlds/{world_id}/actor/exit").status_code == 200
+        released = client.get(f"/api/worlds/{world_id}/npcs").json()
+
+    assert before == performing == released
+    assert [npc["npc_id"] for npc in before] == ["npc-messenger"]
+
+
+@pytest.mark.asyncio
 async def test_after_the_directors_review_nobody_can_be_cast(mock_build_container, test_config) -> None:
     catalog = WorldCatalog(None)
     world_id, character_id = await _unconfirmed_world(mock_build_container, test_config, catalog)

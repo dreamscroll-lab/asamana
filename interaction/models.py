@@ -24,7 +24,7 @@ from core.interfaces.actor import ActorPace
 from core.interfaces.agent_store import relation_has_substance
 from core.interfaces.snapshot import WorldSnapshot
 from engine.environment import IN_TRANSIT
-from world.models import EntityPresence
+from world.models import AgentDefinition, EntityPresence
 from world.setup import WorldSetup
 from world.identity_color import MINDLESS_BODY_COLOR
 
@@ -88,6 +88,22 @@ class CharacterIdentity:
     background: str
     appearance: str
     color: str
+
+
+@dataclass(frozen=True)
+class NpcIdentity:
+    """An NPC's public identity, fixed by setup and identical for every viewer.
+
+    ``color`` is served, not picked by clients: gray marks "no mind" only because the character
+    palette never uses it, and ``world.identity_color`` owns that guarantee.
+    """
+
+    npc_id: str
+    name: str
+    color: str = MINDLESS_BODY_COLOR
+    gender: str = ""
+    age: int | None = None
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -187,35 +203,11 @@ class InnateNeedView:
 
 
 @dataclass(frozen=True)
-class CharacterSetupView:
-    """The part of a character's setup its profile (``AgentProfile``) doesn't carry: what it
-    starts the story with, and the motives that drive it."""
-
-    agent_id: str
-    is_main_character: bool
-    initial_location: str
-    initial_emotion: InitialEmotionView
-    long_term_goals: list[str] = field(default_factory=list)
-    hard_constraints: list[str] = field(default_factory=list)
-    needs: list[InnateNeedView] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class SetupView:
-    """A world's setup (GET …/setup): revisable until the world is confirmed, read-only after.
-    Characters' profiles are served by their own route."""
-
-    characters: list[CharacterSetupView] = field(default_factory=list)
-    historical_events: list[SetupHistoricalEventView] = field(default_factory=list)
-    relations: list[SetupRelationView] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
 class AgentProfile:
     """Static agent identity from the world's setup (GET …/agents/{id}/profile).
 
     Distinct from ``AgentView`` (the mutable per-step state) — this is the
-    unchanging identity used by the creation-review cards and the detail panel.
+    identity and inner life, revisable until confirmation and fixed afterward.
     """
 
     agent_id: str
@@ -233,6 +225,47 @@ class AgentProfile:
     self_image: str = ""
     life_goal: str = ""
     secret: str = ""
+
+
+def agent_profile(definition: AgentDefinition) -> AgentProfile:
+    soul = definition.soul
+    return AgentProfile(
+        agent_id=definition.agent_id,
+        name=soul.name,
+        role=soul.role,
+        age=soul.age,
+        gender=soul.gender,
+        background=soul.background,
+        appearance=soul.appearance,
+        color=soul.color,
+        is_main_character=definition.is_main_character,
+        core_traits=list(soul.core_traits),
+        core_values=list(soul.core_values),
+        self_image=soul.self_image,
+        life_goal=soul.life_goal or "",
+        secret=soul.secret,
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class CharacterSetupView(AgentProfile):
+    """A complete character draft: public identity, private profile and initial state."""
+
+    initial_location: str
+    initial_emotion: InitialEmotionView
+    long_term_goals: list[str] = field(default_factory=list)
+    hard_constraints: list[str] = field(default_factory=list)
+    needs: list[InnateNeedView] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SetupView:
+    """A world's complete revisable setup, read-only after confirmation."""
+
+    seconds_per_step: int
+    characters: list[CharacterSetupView] = field(default_factory=list)
+    historical_events: list[SetupHistoricalEventView] = field(default_factory=list)
+    relations: list[SetupRelationView] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -691,17 +724,11 @@ class NpcView:
     """A body with no mind, in the scope it is in.
 
     Kept apart from agents because it isn't one, so the relation graph, character cards and
-    agent profiles exclude it without any filtering. ``color`` comes from the backend because it
-    only marks "no mind" if the character palette never uses gray, and ``world.identity_color``
-    owns that guarantee.
+    agent profiles exclude it without any filtering. Its fixed public identity comes from the
+    world's ``NpcIdentity`` table.
     """
 
     npc_id: str
-    name: str
-    color: str = MINDLESS_BODY_COLOR
-    gender: str = ""
-    age: int | None = None
-    description: str = ""
     public: NpcPublicView = field(default_factory=NpcPublicView)
     private: NpcPrivateView = field(default_factory=NpcPrivateView)
 
@@ -1097,10 +1124,6 @@ class _StepAssembler:
         happened = coerce_dict(record.get("outcome"))
         return NpcView(
             npc_id=npc_id,
-            name=str(record.get("name", "") or ""),
-            gender=str(record.get("gender", "") or ""),
-            age=record.get("age") if isinstance(record.get("age"), int) else None,
-            description=str(record.get("description", "") or ""),
             public=NpcPublicView(
                 condition=str(coerce_dict(record.get("condition")).get("description", "") or ""),
                 displaced=bool(record.get("displaced", False)),
