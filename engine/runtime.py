@@ -1438,7 +1438,9 @@ class NarrativeRuntime:
             if plan.action is not None:
                 agent.defer_decided_intent(plan.action, plan.step)
             await agent.join_ongoing_action(
-                description=resolved.action_result.outcome,
+                # His own line (``participant_action_desc``), never the join record's outcome:
+                # that names him in the third person and quotes the initiator's purpose.
+                description=record_action.action_description,
                 target_id=exec_state.initiator_id if exec_state else "",
                 activity_status=activity_status_for(exec_state.action_type if exec_state else record_action.action_type),
                 estimated_steps=remaining,
@@ -1499,6 +1501,8 @@ class NarrativeRuntime:
             # Progress, for the same bar the middle beat draws — see execution_processor. On the
             # opening beat it is the first stroke of it.
             "elapsed_steps": (exec_state.estimated_steps - remaining) if exec_state else 0,
+            # TALK's stated topic: everyone in it knows it from the start (see AgentAction).
+            "talk_topic": exec_state.talk_topic if exec_state else "",
             "total_steps": exec_state.estimated_steps if exec_state else 0,
             # Lets the same-step sweep fold the completion into this record in place.
             "execution_id": resolved.ongoing_execution_id,

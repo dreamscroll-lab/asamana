@@ -374,13 +374,13 @@ def test_a_conscripted_step_drops_the_intent_and_keeps_what_actually_happened() 
               extra={"action_menu": {"0": "TALK"}, "verdict": "conscripted"}),
         _call("action", "agent_action_narration", {"fact": "乙拉着我谈了半天", "success": False},
               {"talk_role": "addressee", "action_owner": "甲",
-               "conscripted_input": "乙来找我谈，话题是「借一步说话」"}),
+               "conscripted_input": "乙来找我谈"}),
         _call("feedback", out={"emotion": "frustration", "intensity": 0.7, "valence": -0.6}),
     ]
     s = _sum(calls)
     assert "decision" not in s and "short_term_goals" not in s   # intents and goals that never happened aren't injected
     assert s["intent_dropped"] == "conscripted"
-    assert s["joined"] == ["乙来找我谈，话题是「借一步说话」"]
+    assert s["joined"] == ["乙来找我谈"]
     assert s["results"] == [{"fact": "乙拉着我谈了半天", "success": False}]
     assert s["appraisal"][0]["emotion"] == "frustration"
 
@@ -409,7 +409,7 @@ def test_the_conscripted_note_only_points_at_an_action_that_is_in_this_step() ->
     landed = _block([dec, _call("action", "agent_action_narration",
                                 {"fact": "乙拉着我谈了半天", "success": True},
                                 {"talk_role": "addressee", "action_owner": "甲",
-                                 "conscripted_input": "乙来找我谈，话题是「借一步说话」"})])
+                                 "conscripted_input": "乙来找我谈"})])
     assert "见下方「行动」" in landed
 
 
@@ -547,7 +547,7 @@ def test_a_settled_multi_step_action_stays_apart_from_a_conscription_that_follow
         _call("feedback", out={"emotion": "pride", "intensity": 0.6, "valence": 0.5}, extra=prior),
         _call("action", "agent_action_narration", {"fact": "乙拉着我谈了半天", "success": True},
               {"talk_role": "addressee", "action_owner": "甲",
-               "conscripted_input": "乙来找我谈，话题是「借一步说话」"}),
+               "conscripted_input": "乙来找我谈"}),
         _call("feedback", out={"emotion": "frustration", "intensity": 0.7, "valence": -0.6}),
     ])
     assert [a["emotion"] for a in s["carried"]["appraisal"]] == ["pride"]
@@ -607,7 +607,7 @@ def test_a_participant_block_never_claims_someone_elses_deed() -> None:
                     {"action_description": "我转向乙，问他对局势的看法",
                      "action_initiator": "甲", "action_participants": ["甲", "乙"],
                      "talk_role": "addressee", "action_owner": "乙",
-                     "conscripted_input": "甲来找我谈，话题是「局势」"})], name="乙")
+                     "conscripted_input": "甲来找我谈"})], name="乙")
     block = "\n".join(_step_lines(AgentStepView(step=6, world_time="t", summary=s),
                                   name="乙", sps=3600))
     assert "行动｜输入：这一动由 甲 发起：我转向乙" in block

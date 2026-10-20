@@ -429,6 +429,7 @@ class ExecutionArbiter:
                     if (pid, agent_id) not in accepted:
                         accepted[pid, agent_id] = await agents_dict[pid].accepts_invitation(
                             plans_by_id[pid], inviter_id=agent_id, action_type=plan.action.action_type,
+                            talk_topic=plan.action.talk_topic,
                         )
                     if not accepted[pid, agent_id]:
                         refusers.append(pid)
@@ -673,8 +674,7 @@ class ExecutionArbiter:
         authoritative.
         """
         initiator_name = self._directory.agent_name(exec_state.initiator_id) if exec_state else "对方"
-        # Joiner's viewpoint: the initiator's purpose ("与李世民交谈") would be self-referential here.
-        
+        # The joiner's own line; the initiator's purpose is the initiator's alone.
         action_description = (
             participant_action_desc(self._directory, plan.agent_id, exec_state) if exec_state
             else (plan.action.action_description if plan.action else "")

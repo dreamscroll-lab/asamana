@@ -203,7 +203,8 @@ class MovementExecutor(ActionExecutor):
         tail = f"到了{land_name}。" if arrived else f"到{land_name}便停下了。"
         stub = AgentAction(
             agent_id=agent_id, step=step, action_type=ActionType.MOVE,
-            action_description=f"被{doer_name}带着前往{land_name}",
+            # Where he landed, which he knows by now: not where the mover was headed.
+            action_description=f"被{doer_name}带到了{land_name}",
             target=_landing_target(landed_id, [agent_id]),
             estimated_steps=estimated_steps,
         )
@@ -356,7 +357,8 @@ class MovementExecutor(ActionExecutor):
             # The carried are participants, so one-body-one-action, teardown and self-filtering
             # come from the existing machinery.
             participant_ids=[action.agent_id, *carried],
-            purpose=f"从{origin_name}前往{dest_name}",
+            # The mover's own words, as for every other act; the route lives in ``extra``.
+            purpose=action.action_description,
             started_step=step,
             estimated_steps=duration,
             opening_outcome=opening,

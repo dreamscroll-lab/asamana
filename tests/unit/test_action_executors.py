@@ -105,12 +105,14 @@ def _make_action(
     target_location: str | None = None,
     estimated_steps: int = 1,
     expected_outcome: str = "",
+    content: str = "",
 ) -> AgentAction:
     return AgentAction(
         agent_id=agent_id,
         step=1,
         action_type=action_type,
         action_description=description,
+        content=content,
         target=_axis_target(action_type, agent_id=target_agent_id, location_id=target_location),
         estimated_steps=estimated_steps,
         expected_outcome=expected_outcome,
@@ -405,7 +407,7 @@ class TestSimpleExecutor:
         env = _make_environment()
         action = _make_action(
             agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="明天见面", target_agent_id="bob",
+            description="约他见面", content="明天见面", target_agent_id="bob",
         )
         state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
         assert isinstance(state, ActionExecutionState)
@@ -445,7 +447,7 @@ class TestSimpleExecutor:
         env = _make_environment()
         action = _make_action(
             agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="敌军来犯", target_agent_id=None,
+            description="向众人示警", content="敌军来犯", target_agent_id=None,
         )
         state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
         assert isinstance(state, ActionExecutionState)
@@ -474,7 +476,7 @@ class TestSimpleExecutor:
 
         action = _make_action(
             agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="敌军来犯", target_agent_id=None,
+            description="向众人示警", content="敌军来犯", target_agent_id=None,
         )
         state = await executor.start(action, 1, agents={}, environment=env, message_system=_Spy())
         results = await executor.complete(

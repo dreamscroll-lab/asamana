@@ -92,6 +92,7 @@ def action_events(
             "happening": str(lead.get("happening") or ""),
             "dialogue": list(next((r.get("dialogue") for r in group if r.get("dialogue")), [])),
             "duration_label": str(lead.get("duration_label") or ""),
+            "talk_topic": str(lead.get("talk_topic") or ""),
             "elapsed_steps": int(lead.get("elapsed_steps") or 0),
             "total_steps": int(lead.get("total_steps") or 0),
             "route": (

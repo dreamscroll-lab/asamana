@@ -67,15 +67,17 @@ export const DEED_BODY: Record<DeedValue, DeedBody> = {
  * The body language for one deed, or null when there is nothing to show.
  *
  * A FAILED deed keeps the doer's pose (a missed snatch is not a missed blow); a targeted
- * person ducks instead.
+ * person ducks instead. An UNKNOWN verdict (`null`, seen from outside) keeps only the doer's
+ * motion: how it landed is the onlookers' text, never a pose the map would have to guess.
  *
  * An empty deed means the adjudication never happened, so nothing is drawn. It does NOT mark
  * a non-event: a foiled TALK still reports deed "talk".
  */
-export function deedBody(deed: string, succeeded: boolean): DeedBody | null {
+export function deedBody(deed: string, succeeded: boolean | null): DeedBody | null {
   const body = DEED_BODY[deed as DeedValue];
   if (!body || body.doer === "idle") return null;
-  // Never the shroud on failure: the shroud IS the hiding succeeding.
+  // Never the shroud unless it worked: the shroud IS the hiding succeeding.
+  if (succeeded === null) return { ...body, target: null, shroud: undefined };
   if (!succeeded) return { ...body, target: body.target ? "duck" : null, shroud: undefined };
   return body;
 }

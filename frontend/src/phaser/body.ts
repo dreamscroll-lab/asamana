@@ -158,7 +158,7 @@ export class BodyRig {
 
   /** Act out one action: the doer's deed, and the reaction of anyone it was aimed at. */
   playDeed(tok: AgentToken, act: Beat, tokens: Map<string, AgentToken>): void {
-    const body = deedBody(act.deed, act.succeeded !== false);
+    const body = deedBody(act.deed, act.shared?.succeeded ?? null);
     if (!body) return; // nothing was adjudicated → nothing was done → draw nothing
     // The CLOSING beat of a long act: he is no longer at it, so a held pose is shown once and
     // let go. Re-entering it would leave him stuck in it (sustained poses have no timer) and

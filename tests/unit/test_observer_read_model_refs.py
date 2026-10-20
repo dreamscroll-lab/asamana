@@ -46,7 +46,7 @@ def test_an_arrival_stands_in_the_destination_and_its_move_carries_the_route() -
     assert agents(view)["a"][0] == "loc-hall"
     assert agent(view, "a").private.transit is None
     [(_, move)] = events(view, "action")
-    assert move.private.route == arrival
+    assert move.shared is not None and move.shared.route == arrival
 
 
 def test_an_npc_stands_in_the_scope_its_body_is_in() -> None:
@@ -117,7 +117,7 @@ def test_dialogue_turns_name_their_speaker_by_id() -> None:
     }]))
 
     [(_, act)] = events(view, "action")
-    assert act.private.dialogue == [DialogueTurn(speaker_id="b", speaker="乙", line="来了")]
+    assert act.shared is not None and act.shared.dialogue == [DialogueTurn(speaker_id="b", speaker="乙", line="来了")]
 
 
 def test_talk_transcript_is_tagged_with_speaker_ids() -> None:

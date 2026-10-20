@@ -31,14 +31,22 @@ def participant_action_desc(
 ) -> str:
     """Viewpoint-correct description of exec_state for one participant.
 
-    ``purpose`` is the initiator's framing (a TALK's "与李世民交谈" would be self-referential
-    read by 李世民), so a conscripted participant gets a joiner-POV line instead.
+    The initiator's is his own ``purpose``. Anyone drawn in gets only what he perceives: who
+    drew him in and into what. A TALK's ``purpose`` is the initiator's own
+    ``action_description``, which the other side never learns; he knows its ``talk_topic``, if
+    the initiator stated one. Someone carried off by a MOVE knows who takes him, not where to: he
+    learns that on arrival. Only TALK and MOVE draw others in (``Conscription``).
     """
     if agent_id == exec_state.initiator_id:
         return exec_state.purpose
     initiator_name = directory.agent_name(exec_state.initiator_id)
-    # No bracket around the purpose: callers quote this whole line in 「」, so one would nest.
-    return f"参与{initiator_name}发起的行动，行动意图：{exec_state.purpose}"
+    if exec_state.action_type == ActionType.MOVE:
+        return f"被{initiator_name}强行带着走"
+    if exec_state.talk_topic:
+        # The topic is named as his: read under "what I set out to do", a bare one is taken for
+        # the joiner's own aim. No bracket around it: callers quote this whole line in 「」.
+        return f"应{initiator_name}的邀请交谈，{initiator_name}的来意是{exec_state.talk_topic}"
+    return f"应{initiator_name}的邀请交谈"
 
 
 def participant_intent(agent_id: str, exec_state: "ActionExecutionState") -> str:
@@ -160,6 +168,9 @@ class ActionExecutionState:
     # Bodies that hear without being enrolled (TALK's listeners). Arbitration, conscription
     # and teardown must read participant_ids alone, so a listener never spends its turn.
     listener_ids: List[str] = field(default_factory=list)
+    # TALK only: ``AgentAction.talk_topic``, which everyone in the talk knows; ``purpose`` is the
+    # initiator's own.
+    talk_topic: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -177,6 +188,7 @@ class ActionExecutionState:
         expected_outcome: str = "",
         opening_observations: list[Observed] | None = None,
         listener_ids: List[str] | None = None,
+        talk_topic: str = "",
     ) -> "ActionExecutionState":
         # The start step is the first step, so N steps = 1 start + N-1 ticks. remaining == 0
         # ⟺ ready to complete, which unifies immediate and ongoing actions. Born-zero callers
@@ -197,6 +209,7 @@ class ActionExecutionState:
             opening_outcome=opening_outcome,
             opening_observations=list(opening_observations or []),
             listener_ids=list(listener_ids or []),
+            talk_topic=talk_topic,
         )
 
     @classmethod

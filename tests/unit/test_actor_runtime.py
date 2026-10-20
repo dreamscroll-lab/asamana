@@ -715,7 +715,7 @@ def test_the_step_loop_never_asks_who_drives_a_character() -> None:
         assert not re.search(r"\bactor", source, re.IGNORECASE)
 
 
-def _other_talks_to_hero(other) -> None:
+def _other_talks_to_hero(other, *, talk_topic: str = "") -> None:
     """OTHER, beside HERO, decides to talk with him (the only other person on his list)."""
     from core.interfaces.llm import LLMRouter
     from providers.llm.mock import SequentialMockLLM
@@ -723,6 +723,7 @@ def _other_talks_to_hero(other) -> None:
     talk = json.dumps({
         "selected_index": _TALK_INDEX, "person_indices": [1], "action_description": "找二郎说话。",
         "inner_monologue": "有事相商。", "estimated_steps": 1,
+        **({"talk_topic": talk_topic} if talk_topic else {}),
     })
     other.decision_engine._llm_router = LLMRouter(  # noqa: SLF001
         {scene: SequentialMockLLM([talk] * 20) for scene in LLMScene}
@@ -768,7 +769,9 @@ async def test_accepting_an_invitation_tells_the_actor_their_own_act_came_to_not
     own_began, own_ended, joined = acts[:3]
     assert own_began["description"] == "亲自誊抄奏章"
     assert own_ended["happened"] is False and "卷入他人的事" in own_ended["fact"]
-    assert joined["kind"] == "began" and "邀入" in joined["description"]
+    assert joined["kind"] == "began" and joined["description"].endswith("的邀请交谈")
+    # What the inviter set out to do is his own; the one invited only knows who asked.
+    assert "找二郎说话" not in joined["description"]
 
 
 @pytest.mark.asyncio
@@ -842,8 +845,24 @@ async def test_accepting_while_idle_sets_nothing_aside(container) -> None:
 
     assert turns[1].kind is TurnKind.INVITE and turns[1].decided == ""
     began = await _thread(container, runtime, world_id, "began")
-    assert len(began) == 1 and "邀入" in began[0]["description"]
+    assert len(began) == 1 and began[0]["description"].endswith("的邀请交谈")
     assert all(e["happened"] for e in await _thread(container, runtime, world_id, "ended"))
+
+
+@pytest.mark.asyncio
+async def test_an_invitation_carries_the_topic_its_inviter_stated(container) -> None:
+    """The topic is known from the start: the actor reads it when asked, and it is what the
+    character is then doing. The inviter's own description stays his."""
+    world_id = "world-actor-invite-topic"
+    runtime, _ms, agents = _setup(container, world_id, other_at="palace")
+    _other_talks_to_hero(agents[1], talk_topic="商议明日入宫")
+
+    _result, turns = await _step_answering(runtime, agents, _IDLE, ActorInvitationAnswer(accept=True))
+
+    assert turns[1].kind is TurnKind.INVITE and turns[1].invitation.talk_topic == "商议明日入宫"
+    [began] = await _thread(container, runtime, world_id, "began")
+    assert began["description"].endswith("来意是商议明日入宫")
+    assert "找二郎说话" not in began["description"]
 
 
 @pytest.mark.asyncio

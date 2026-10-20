@@ -15,7 +15,7 @@ const IDLE: ActorPublicAnswer = { idle: true };
 const turn = (turn_id: string, kind: ActorTurn["kind"] = "decide"): ActorTurn => ({
   agent_id: "me", step: 1, kind, briefing: kind === "decide" ? briefing : null, doing: kind === "interrupt" ? "抄奏章" : "",
   invitation: kind === "invite"
-    ? { inviter: { agent_id: "li", name: "李世民", gender: "男", present: true }, action_type: "talk" }
+    ? { inviter: { agent_id: "li", name: "李世民", gender: "男", present: true }, action_type: "talk", talk_topic: "" }
     : null,
   decided: "", conversation: null, reason: "", turn_id,
 });

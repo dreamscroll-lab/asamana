@@ -35,26 +35,27 @@ const at = (step: number, locations: LocationScope[]): StepView => ({
   observer: { injections: [] },
 });
 
-const agent = (agent_id: string, thoughts: AgentView["private"]["thoughts"] = []): AgentView => ({
+const agent = (agent_id: string): AgentView => ({
   agent_id, name: agent_id, gender: "", age: null, is_main_character: false, is_active: true,
   public: { activity_status: "", activity_label: "", condition: "", displaced: false, carrying: {} },
   private: {
     emotion: "", emotion_label: "", emotion_intensity: null, emotion_valence: null, dominant_need: null,
     dominant_need_label: "", vitality: 1, activity_status: "", activity_label: "", transit: null,
     long_term_goals: [], short_term_goals: [],
-    relations: [], thoughts, carrying: {},
+    relations: [], carrying: {},
   },
 });
 
 const act = (seq: number, over: Partial<ActionSummary> = {}): ActionSummary => ({
   kind: "action", seq, execution_id: `x${seq}`, initiator_id: "a", participant_ids: ["a"], action_type: "move",
   phase: "settled", deed: "move", target: { acts_on: [], claims: [], reaches: [] },
-  affected_entity_ids: [], overheard_by: [], interrupted_by: "", succeeded: true, failure_reason: "",
+  affected_entity_ids: [], overheard_by: [], interrupted_by: "",
   detected: false, not_executed: false, public: null,
-  private: {
-    audience: ["a"], outcome: "", gist: "", dialogue: [], action_description: "", duration_label: "",
-    elapsed_steps: 0, total_steps: 0, route: null,
+  shared: {
+    audience: ["a"], outcome: "", gist: "", succeeded: true, failure_reason: "", dialogue: [],
+    talk_topic: "", duration_label: "", elapsed_steps: 0, total_steps: 0, route: null,
   },
+  private: [],
   ...over,
 });
 
@@ -93,13 +94,27 @@ describe("buildFeed", () => {
     expect(feed.map((i) => i.kind)).toEqual(["action"]);
   });
 
-  it("心声跟着它促成的那件事", () => {
-    const feed = buildFeed(at(1, [place("loc-hall", {
-      agents: [agent("a", [{ seq: 5, execution_id: "x5", text: "我得走" }])],
-      events: [act(5)],
-    })]));
-    const [item] = feed;
-    expect(item.kind === "action" && item.thoughts).toEqual([{ agent_id: "a", text: "我得走" }]);
+  it("导演读得到每个参与者自己的那一份", () => {
+    const parts = [
+      { agent_id: "a", action_description: "甲的打算", inner_monologue: "我得走" },
+      { agent_id: "b", action_description: "", inner_monologue: "" },
+    ];
+    const [item] = buildFeed(at(1, [place("loc-hall", { events: [act(5, { private: parts })] })]));
+    expect(item.kind === "action" && [item.action_description, item.private_parts]).toEqual(["甲的打算", parts]);
+  });
+
+  it("角色视角:同一件事里只读得到自己的心声和打算", () => {
+    const joint = act(5, {
+      participant_ids: ["a", "me"],
+      shared: { ...act(5).shared!, audience: ["a", "me"] },
+      private: [
+        { agent_id: "a", action_description: "甲的打算", inner_monologue: "甲的念头" },
+        { agent_id: "me", action_description: "", inner_monologue: "我的念头" },
+      ],
+    });
+    const [item] = buildFeed(at(1, [place("loc-hall", { events: [joint] })]), "me");
+    expect(item.kind === "action" && [item.action_description, item.private_parts.map((t) => t.inner_monologue)])
+      .toEqual(["", ["我的念头"]]);
   });
 
   it("角色视角:事发在视野外时,所见的目击自成一行", () => {
@@ -111,15 +126,15 @@ describe("buildFeed", () => {
   });
 
   it("角色视角:不在其中的事只算旁观,身在其中的才算亲历", () => {
-    const outside = act(5, { public: { text: "甲在打点行装", strength: null }, private: { ...act(5).private, audience: [] } });
-    const mine = act(6, { private: { ...act(6).private, audience: ["a", "me"] } });
+    const outside = act(5, { public: { text: "甲在打点行装", strength: null }, shared: null });
+    const mine = act(6, { shared: { ...act(6).shared!, audience: ["a", "me"] } });
     const feed = buildFeed(at(1, [place("loc-hall", { events: [outside, mine] })]), "me");
-    expect(feed.map((i) => i.kind === "action" && i.inside)).toEqual([false, true]);
+    expect(feed.map((i) => i.kind === "action" && i.shared !== null)).toEqual([false, true]);
   });
 
   it("导演视角什么都算亲历", () => {
     const feed = buildFeed(at(1, [place("loc-hall", { events: [act(5)] })]));
-    expect(feed[0].kind === "action" && feed[0].inside).toBe(true);
+    expect(feed[0].kind === "action" && feed[0].shared !== null).toBe(true);
   });
 
   it("收信人分在两处的一封信仍是一行", () => {

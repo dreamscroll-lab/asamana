@@ -2826,6 +2826,10 @@ async def test_the_one_carried_rides_the_same_transit_as_the_one_carrying_him(co
     assert environment.get_body_location("agent-2") == environment.get_body_location("agent-1")
     assert agents["agent-1"].get("transit") is not None
     assert agents["agent-2"].get("transit") == agents["agent-1"]["transit"]
+    # The carrier's act is told in his own words; the one carried knows who takes him, not
+    # where: he learns that on arrival.
+    assert runtime._executor_registry.get_active_for_agent("agent-1").purpose == "带着尉迟恭前往远门"
+    assert carried.personality.state.current_action == "被某人强行带着走"  # the test directory knows no names
 
 
 @pytest.mark.asyncio

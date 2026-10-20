@@ -1,12 +1,14 @@
 """The actor's view is the observer's read models filtered to one character: its own body and
-mind, the public side of the place it ends the step in, and events whose audience includes it.
-Of others, only who they are and how they look; never their inner life or narrative tier."""
+mind, the public side of the place it ends the step in, and the shared side of events whose
+audience includes it, with only its own private part. Of others, only who they are and how they
+look; never their inner life or narrative tier."""
 
 from __future__ import annotations
 
 from interaction.actor_view import graph_for, profile_for, step_view_for
 from interaction.models import (
     ActionPrivateView,
+    ActionSharedView,
     ActionSummary,
     AgentPrivateView,
     AgentProfile,
@@ -50,7 +52,11 @@ def _action(seq: int, audience: list[str], *, public: str | None = "有人动手
     return ActionSummary(
         seq=seq, initiator_id=audience[0] if audience else "", action_type="physical",
         public=ObservedView(public) if public is not None else None,
-        private=ActionPrivateView(audience=audience, outcome="完整经过", gist="一句话"),
+        shared=ActionSharedView(
+            audience=audience, outcome="完整经过", gist="一句话", succeeded=False, failure_reason="没打着",
+        ),
+        private=[ActionPrivateView(agent_id=a, action_description=f"{a}的打算", inner_monologue=f"{a}的念头")
+                 for a in audience],
     )
 
 
@@ -102,7 +108,7 @@ def test_events_here_show_their_public_side_unless_the_character_is_inside() -> 
             _action(1, ["agent-b", ME]),
             _action(2, ["agent-b"]),
             _action(3, ["agent-b"], public=None),
-            _letter(4, ["agent-x", "agent-b"]),
+            _letter(4, ["agent-b"]),
             _letter(5, None),
             ObservationSummary(seq=6, initiator_id="agent-b", participant_ids=["agent-b"], text="他走了"),
         ],
@@ -110,9 +116,15 @@ def test_events_here_show_their_public_side_unless_the_character_is_inside() -> 
 
     shown = {e.seq: e for e in view.locations["hall"].events}
     assert set(shown) == {1, 2, 5, 6}
-    assert isinstance(shown[1], ActionSummary) and shown[1].private.outcome == "完整经过"
-    assert isinstance(shown[2], ActionSummary) and shown[2].private.outcome == ""
-    assert shown[2].public == ObservedView("有人动手")
+    inside, outside = shown[1], shown[2]
+    assert isinstance(inside, ActionSummary) and inside.shared is not None
+    assert (inside.shared.outcome, inside.shared.failure_reason) == ("完整经过", "没打着")
+    # Inside it, still only its own part: another's intent and thought stay theirs.
+    assert inside.private == [ActionPrivateView(agent_id=ME, action_description=f"{ME}的打算", inner_monologue=f"{ME}的念头")]
+    # Outside it, only what was seen: not the account, not the verdict, nobody's part.
+    assert isinstance(outside, ActionSummary)
+    assert (outside.shared, outside.private) == (None, [])
+    assert outside.public == ObservedView("有人动手")
 
 
 def test_elsewhere_only_its_own_events_and_nobody_in_them() -> None:
@@ -140,7 +152,9 @@ def test_on_the_way_only_itself_and_its_own_events() -> None:
 
     assert [a.agent_id for a in view.transit.agents] == [ME]
     assert view.transit.npcs == []
-    assert [e.seq for e in view.transit.events] == [1]
+    [own] = view.transit.events
+    assert own.seq == 1 and isinstance(own, ActionSummary)
+    assert [p.agent_id for p in own.private] == [ME]
 
 
 def test_the_world_scope_reaches_everyone_and_the_observer_nobody() -> None:

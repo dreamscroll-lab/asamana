@@ -4,7 +4,7 @@ import type { Cast } from "../lib/cast";
 import type { Places } from "../lib/places";
 import type { ActorTarget, BroadcastSummary, MapFocus, MapSelect, NpcView, StepView } from "../types";
 import { type Placed, type PlacedEntity, type Scoped, indexStep } from "../lib/step";
-import { type Beat, type Figure, beatsOf, figuresOf } from "./figures";
+import { type Beat, type Figure, beatsOf, drawsVeil, figuresOf } from "./figures";
 import { THEME } from "../lib/theme";
 import { ActionType, type ActionTypeValue, Phase, actedOnAgents } from "../lib/contract";
 import { ACTION_IDENTITY } from "../lib/actionIdentity";
@@ -37,7 +37,6 @@ import { identityOf } from "../lib/worldTable";
 import { identityColor, toHex } from "../lib/color";
 import {
   type FxHost,
-
   directedMessages,
   faceEntity,
   faceInteraction,
@@ -927,7 +926,7 @@ export class TiledWorldScene
       new Set(
         actions
           .filter((a) => !a.not_executed && a.phase !== Phase.interrupt)
-          .filter((a) => deedBody(a.deed, a.succeeded !== false) !== null)
+          .filter((a) => deedBody(a.deed, a.shared?.succeeded ?? null) !== null)
           .map((a) => a.agent_id),
       ),
     );
@@ -1097,7 +1096,7 @@ export class TiledWorldScene
       find(act.agent_id);
       const linked = [
         ...actedOnAgents(act.target),
-        ...act.private.dialogue.map((t) => t.speaker_id).filter(Boolean),
+        ...(act.shared?.dialogue ?? []).map((t) => t.speaker_id).filter(Boolean),
       ];
       for (const id of linked) if (ids.has(id)) union(act.agent_id, id);
     }
@@ -1213,9 +1212,9 @@ export class TiledWorldScene
       // An interrupt shows the cut, never the deed it cut (no effect, no intent caption). It is a
       // float note, not a result chip: he did nothing this step, and a note also stays out of the
       // end-of-step chip dwell. The gist only — the reason is in the feed as "心声" — and the
-      // fallback must not be act.private.action_description, which is the deed again.
+      // fallback must not be the doer's own description, which is the deed again.
       if (act.phase === Phase.interrupt) {
-        const said = act.private.gist || "行动被打断";
+        const said = act.shared?.gist || "行动被打断";
         const chars = [...said];
         this.hud.floatNote(
           tok.container.x,
@@ -1242,7 +1241,7 @@ export class TiledWorldScene
         this.body.playDeed(tok, act, this.tokens);
         // The veil is not a result: he is hidden from this beat on. Firing it only with results
         // would make him vanish steps after he crouched.
-        if (act.action_type === ActionType.covert) stealthVeil(this, tok, act.detected);
+        if (drawsVeil(act)) stealthVeil(this, tok, act.detected);
         // Its await also covers the veil above: without a wait, the next clearEphemeral would wipe
         // it mid-draw.
         // Seen from outside with nothing to say (its motion shows it), the pose holds the beat.
@@ -1252,7 +1251,7 @@ export class TiledWorldScene
         // the temporal state.
         this.hud.setActionChip(
           tok, chipOf(act.action_type) ?? "⏳",
-          act.private.duration_label ? `开始 · 预计${act.private.duration_label}` : "开始",
+          act.shared?.duration_label ? `开始 · 预计${act.shared.duration_label}` : "开始",
           "ok", undefined, act.caption,
         );
         continue;
@@ -1266,7 +1265,7 @@ export class TiledWorldScene
         // "进行中" + a progress bar; same identity glyph as the other beats, not ⏳.
         this.hud.setActionChip(
           tok, chipOf(act.action_type) ?? "⏳", "进行中", "ok",
-          act.private.total_steps > 0 ? act.private.elapsed_steps / act.private.total_steps : undefined,
+          act.shared && act.shared.total_steps > 0 ? act.shared.elapsed_steps / act.shared.total_steps : undefined,
           act.caption,
         );
         continue;
@@ -1281,7 +1280,7 @@ export class TiledWorldScene
           const ot = this.token(oid);
           if (ot && ot !== tok) faceOnlooker(this, ot, [act.agent_id]);
         }
-        const dialogue = act.private.dialogue;
+        const dialogue = act.shared?.dialogue ?? [];
         const sig = dialogue.map((t) => `${t.speaker}:${t.line}`).join("|");
         if (dialogue.length && !seenDialogue.has(sig)) {
           seenDialogue.add(sig);
@@ -1296,9 +1295,8 @@ export class TiledWorldScene
       // Non-talk: transient effect, then the intent caption, then the persistent result chip.
       if (act.action_type === ActionType.physical) physicalEffect(this, tok, act);
       // Covert: a shadow closes in around him (red if spotted) — about the doer, since COVERT has
-      // no structured target. Only where he enters concealment; the closing beat is him leaving it.
-      else if (act.action_type === ActionType.covert && act.phase !== Phase.ongoing_complete)
-        stealthVeil(this, tok, act.detected);
+      // no structured target. See drawsVeil for which beats.
+      else if (drawsVeil(act)) stealthVeil(this, tok, act.detected);
       // The closing beat gets no intent bubble (it was said when he set out; the chip carries it).
       // The wait stays: it covers the fire-and-forget effects above, which the next clearEphemeral
       // would otherwise wipe mid-swing.
@@ -1321,8 +1319,8 @@ export class TiledWorldScene
       this.hud.setActionChip(
         tok,
         chipOf(act.action_type) ?? "•",
-        act.failure_reason || (act.inside ? act.private.gist : "") || act.caption,
-        act.succeeded === false ? "fail" : "ok",
+        act.shared?.failure_reason || act.shared?.gist || act.caption,
+        act.shared?.succeeded === false ? "fail" : "ok",
         undefined,
         act.caption,
       );

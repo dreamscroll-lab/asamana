@@ -1,9 +1,8 @@
 import { ActionType, Phase, actedOnAgents, claimedAgents } from "../../lib/contract";
 import { avatarStyle } from "../../lib/avatar";
 import type { Placed, PlacedEntity } from "../../lib/step";
-import type { ActionSummary, DialogueTurn } from "../../types";
+import type { ActionPrivateView, ActionSharedView, ActionSummary, DialogueTurn } from "../../types";
 import { type StepCast, initiatorFirst } from "./cast";
-import type { DeedThought } from "./feed";
 import { metaOf } from "./meta";
 import Transcript from "./Transcript";
 import Who from "./Who";
@@ -11,27 +10,30 @@ import Who from "./Who";
 /**
  * ONE beat of an execution, however many people were in it.
  *
- * `thoughts` are the deliberations behind it, one per person who decided on this beat.
+ * `privateParts` are the participants' own parts the viewer may read; their `inner_monologue`
+ * is the deliberation behind the beat, one per person who decided on it.
  * `showConversation` is decided by the feed: a talk's transcript rides on its closing beat and
  * must not print twice.
  *
- * `inside` is whether the viewer knows the act from inside. Seen from outside, the row says only
- * what an onlooker saw (`public.text`): the private side reached the viewer empty, so its
- * description, progress, dialogue and outcome are not drawn as blanks.
+ * `shared` is what the viewer knows from inside (null from outside), `actionDescription` the
+ * doer's own words for it ("" to anyone but him and the director). Whoever lacks it reads what
+ * an onlooker saw (`public.text`); seen from outside, progress, dialogue, outcome and verdict
+ * are not drawn as blanks.
  */
 export default function ActionRow({
   act,
-  thoughts,
+  privateParts,
   cast,
   turns,
   showConversation,
   born,
   entities,
-  inside = true,
+  shared,
+  actionDescription,
   mine = false,
 }: {
   act: Placed<ActionSummary>;
-  thoughts: DeedThought[];
+  privateParts: ActionPrivateView[];
   cast: StepCast;
   turns: DialogueTurn[];
   showConversation: boolean;
@@ -39,7 +41,8 @@ export default function ActionRow({
   // with `affected_entity_ids` does it say what this deed made.
   born?: ReadonlySet<string>;
   entities?: Record<string, PlacedEntity>;
-  inside?: boolean;
+  shared: ActionSharedView | null;
+  actionDescription: string;
   // The performed character took part: marked so the actor finds their own deeds at a glance.
   mine?: boolean;
 }) {
@@ -65,8 +68,8 @@ export default function ActionRow({
   // stray tail of the card above and drift from the shared markup. It shows only a 进行中 badge
   // and a progress bar, never dialogue, 心声 or outcome (those play at the opening and close).
   const tick = act.phase === Phase.ongoing_tick;
-  const tickPct = tick && act.private.total_steps > 0
-    ? Math.min(100, Math.round((act.private.elapsed_steps / act.private.total_steps) * 100))
+  const tickPct = tick && shared && shared.total_steps > 0
+    ? Math.min(100, Math.round((shared.elapsed_steps / shared.total_steps) * 100))
     : 0;
   const meta = metaOf(act);
   const breaker = act.interrupted_by;
@@ -91,8 +94,7 @@ export default function ActionRow({
   // outcome (gist + verbatim transcript) must never become prose.
   const spokenFor = act.action_type === ActionType.talk && turns.length > 0;
   const showOutcome =
-    inside &&
-    !!act.private.outcome &&
+    !!shared?.outcome &&
     // An opening's or a tick's outcome only restates the body; the result comes on the close.
     !opening &&
     !tick &&
@@ -147,7 +149,7 @@ export default function ActionRow({
             something begun steps ago. */}
         {opening && (
           <span className="text-[10px] px-1.5 py-0.5 rounded-md text-sky-300/80 bg-sky-950/40 border border-sky-900/50">
-            ⏳ 开始{act.private.duration_label ? ` · 预计${act.private.duration_label}` : ""}
+            ⏳ 开始{shared?.duration_label ? ` · 预计${shared.duration_label}` : ""}
           </span>
         )}
         {done && (
@@ -208,7 +210,7 @@ export default function ActionRow({
             未成事
           </span>
         ) : (
-          act.succeeded === false && !isInterrupt && (
+          shared?.succeeded === false && !isInterrupt && (
             <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md text-rose-300 bg-rose-950/50 border border-rose-900/60">
               未果
             </span>
@@ -224,15 +226,24 @@ export default function ActionRow({
       </div>
 
       {/* Every beat says WHAT he is doing; the opening adds how long, the close how it went.
-          From outside, what an onlooker saw of it. */}
-      {(inside ? act.private.action_description : act.public?.text) && (
+          To anyone but the doer, what an onlooker saw of it. */}
+      {(actionDescription || act.public?.text) && (
         <p className={`mt-2 text-sm leading-relaxed ${nonEvent ? "text-slate-400" : "text-slate-200"}`}>
-          {inside ? act.private.action_description : act.public?.text}
+          {actionDescription || act.public?.text}
+        </p>
+      )}
+
+      {/* A talk's stated topic: known to everyone in it, unlike the doer's description, so the
+          one invited reads why he was asked. Once, where the talk starts. */}
+      {shared?.talk_topic && (opening || act.phase === Phase.settled) && (
+        <p className="mt-1 text-[13px] leading-relaxed text-slate-400">
+          <span className="text-slate-600">来意 · </span>
+          {shared.talk_topic}
         </p>
       )}
 
       {/* How far along: the middle beat's only payload beyond the description. */}
-      {tick && inside && (
+      {tick && shared && (
         <div className="mt-2 h-1 rounded-full bg-slate-800/80 overflow-hidden">
           <div className="h-full rounded-full bg-sky-500/60" style={{ width: `${tickPct}%` }} />
         </div>
@@ -246,14 +257,14 @@ export default function ActionRow({
           different things), named when there is more than one. Empty on every beat that
           did not decide: a tick, a later completion, a conscripted participant, an
           interrupt (its reason lives in its outcome). */}
-      {thoughts
-        .filter(() => !tick)
+      {privateParts
+        .filter((t) => t.inner_monologue && !tick)
         .map((t) => (
           <p key={t.agent_id} className="mt-1.5 text-[13px] italic leading-relaxed text-slate-400">
             <span className="not-italic text-slate-600">
               心声{parts.length > 1 ? ` · ${cast.nameOf(t.agent_id) || "某人"}` : ""} ·{" "}
             </span>
-            {t.text}
+            {t.inner_monologue}
           </p>
         ))}
 
@@ -265,12 +276,10 @@ export default function ActionRow({
           {/* The whole record, including privileged detail (an interrupt's quoted reason).
               A talk's transcript never lands here: showOutcome drops the outcome when the
               structured `dialogue` renders it. */}
-          {act.private.outcome}
+          {shared?.outcome}
         </p>
       )}
 
-      {/* WHY it failed, verbatim from its own field. Empty on success, on an interrupt
-          (the ✂ badge says it), and when adjudication never happened. */}
       {/* What the deed LEFT BEHIND, on its own line so it can be found without reading the
           prose. Where it went is half the fact: pocketed and set down are different futures. */}
       {made.length > 0 && (
@@ -289,10 +298,12 @@ export default function ActionRow({
           ))}
         </p>
       )}
-      {act.failure_reason && (
+      {/* WHY it failed, verbatim from its own field. Empty on success, on an interrupt
+          (the ✂ badge says it), and when adjudication never happened. */}
+      {shared?.failure_reason && (
         <p className="mt-1.5 text-[13px] leading-relaxed text-rose-400/80">
           <span className="text-rose-500/70">✗ </span>
-          {act.failure_reason}
+          {shared.failure_reason}
         </p>
       )}
     </div>

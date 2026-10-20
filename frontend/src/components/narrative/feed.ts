@@ -5,8 +5,10 @@
 
 import { actedOnAgents } from "../../lib/contract";
 import { type Placed, type Scoped, indexStep } from "../../lib/step";
-import { type Viewer, knowsInside } from "../../lib/viewer";
+import { type Viewer, actionDescriptionOf, partsOf, sharedOf } from "../../lib/viewer";
 import type {
+  ActionPrivateView,
+  ActionSharedView,
   ActionSummary,
   BroadcastSummary,
   MessageSummary,
@@ -15,17 +17,16 @@ import type {
   InjectionSummary,
 } from "../../types";
 
-/** One person's deliberation behind a deed (their `ThoughtView` for its seq). */
-export interface DeedThought {
-  agent_id: string;
-  text: string;
-}
-
 // Broadcasts (a death, an injected change) belong in the feed too, not only on the map.
 export type FeedItem =
   | { kind: "injection"; seq: number; data: InjectionSummary }
-  // `inside`: the viewer knows the act from inside (its private side), not only as seen.
-  | { kind: "action"; seq: number; data: Placed<ActionSummary>; thoughts: DeedThought[]; inside: boolean }
+  // What the viewer knows of an act beyond what it saw: its shared side (null from outside), the
+  // doer's `action_description` ("" unless the viewer is the doer or the director) and the
+  // participants' private parts it may read.
+  | {
+      kind: "action"; seq: number; data: Placed<ActionSummary>;
+      shared: ActionSharedView | null; action_description: string; private_parts: ActionPrivateView[];
+    }
   | { kind: "observation"; seq: number; data: Placed<ObservationSummary> }
   | { kind: "message"; seq: number; data: Scoped<MessageSummary> }
   | { kind: "broadcast"; seq: number; data: Scoped<BroadcastSummary> };
@@ -36,8 +37,8 @@ export type FeedItem =
  * Each event once: an action is told where it is recorded, so a place that only saw it (an
  * observation under the same seq) adds nothing while the action is in the step. It is not in a
  * viewer's step when it happened out of their sight; then what they saw of it is the observation.
- * A letter whose recipients stood in several places arrives as one entry per place under one
- * seq; it is one letter, so they merge back into one row.
+ * A letter to several recipients arrives as one delivery per receiver under one seq; it is one
+ * letter, so they merge back into one row (a viewer's step holds only its own delivery).
  *
  * seq is used ONLY for sorting and is never rendered — it is an engine-layer ordinal, not
  * something the story knows about itself.
@@ -45,12 +46,6 @@ export type FeedItem =
 export function buildFeed(step: StepView, viewer: Viewer = null): FeedItem[] {
   const index = indexStep(step);
   const acted = new Set(index.actions.map((a) => a.seq));
-  const thoughts = new Map<number, DeedThought[]>();
-  for (const agent of Object.values(index.agents)) {
-    for (const t of agent.private.thoughts) {
-      (thoughts.get(t.seq) ?? thoughts.set(t.seq, []).get(t.seq)!).push({ agent_id: agent.agent_id, text: t.text });
-    }
-  }
   const letters = new Map<number, Scoped<MessageSummary>>();
   for (const m of index.messages) {
     const seen = letters.get(m.seq);
@@ -59,8 +54,9 @@ export function buildFeed(step: StepView, viewer: Viewer = null): FeedItem[] {
   return [
     ...step.observer.injections.map((inj) => ({ kind: "injection" as const, seq: inj.seq, data: inj })),
     ...index.actions.map((act) => ({
-      kind: "action" as const, seq: act.seq, data: act, thoughts: thoughts.get(act.seq) ?? [],
-      inside: knowsInside(act, viewer),
+      kind: "action" as const, seq: act.seq, data: act,
+      shared: sharedOf(act, viewer), action_description: actionDescriptionOf(act, viewer),
+      private_parts: partsOf(act, viewer),
     })),
     ...index.observations
       .filter((o) => !acted.has(o.seq))

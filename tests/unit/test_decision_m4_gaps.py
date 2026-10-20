@@ -898,7 +898,8 @@ def test_parse_person_index_resolves_absent_recipient(container) -> None:
     candidates = [ActionCandidate(ActionType.SEND_MESSAGE, "传讯")]
     raw = json.dumps({
         "selected_index": 0, "person_indices": [1],
-        "action_description": "回信尉迟恭：按计划即刻行事", "estimated_steps": 1,
+        "action_description": "回信尉迟恭：按计划即刻行事", "message_content": "按计划即刻行事。",
+        "estimated_steps": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -913,7 +914,7 @@ def test_parse_send_message_stray_item_id_not_bound(container) -> None:
     candidates = [ActionCandidate(ActionType.SEND_MESSAGE, "传讯")]
     raw = json.dumps({
         "selected_index": 0, "item_id": "禁军统领", "message_announce": True,
-        "action_description": "通告全军戒备", "estimated_steps": 1,
+        "action_description": "通告全军戒备", "message_content": "全军戒备。", "estimated_steps": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None

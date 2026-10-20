@@ -481,7 +481,6 @@ export function step({
 
   // The read model's fold: one event per (execution, beat), told by the initiator's record.
   const where = new Map(states.map((s) => [s.agent_id, s.location_id]));
-  const thoughts = new Map<string, { seq: number; execution_id: string; text: string }[]>();
   const groups = new Map<string, ActRecord[]>();
   actions.forEach((r, i) => {
     const key = r.execution_id ? `${r.execution_id}|${r.phase}` : `#${i}`;
@@ -491,11 +490,6 @@ export function step({
     const initiator = records[0].initiator_id || records[0].agent_id;
     const lead = records.find((r) => r.agent_id === initiator) ?? records[0];
     const participants = [...new Set([initiator, ...records.map((r) => r.agent_id)])];
-    for (const r of records) {
-      if (!r.inner_monologue) continue;
-      (thoughts.get(r.agent_id) ?? thoughts.set(r.agent_id, []).get(r.agent_id)!)
-        .push({ seq: lead.seq, execution_id: lead.execution_id, text: r.inner_monologue });
-    }
     const overheard = [...new Set(records.flatMap((r) => r.overheard_by))];
     const event: ActionSummary = {
       kind: "action",
@@ -510,22 +504,28 @@ export function step({
       affected_entity_ids: [...new Set(records.flatMap((r) => r.affected_entity_ids))],
       overheard_by: overheard,
       interrupted_by: lead.interrupted_by,
-      succeeded: lead.succeeded,
-      failure_reason: lead.failure_reason,
       detected: lead.detected,
       not_executed: lead.not_executed,
       public: null,
-      private: {
+      shared: {
         audience: [...participants, ...overheard],
         outcome: lead.outcome,
         gist: lead.gist,
+        succeeded: lead.succeeded,
+        failure_reason: lead.failure_reason,
         dialogue: records.find((r) => r.dialogue.length)?.dialogue ?? [],
-        action_description: lead.action_description,
+        talk_topic: "",
         duration_label: lead.duration_label,
         elapsed_steps: lead.elapsed_steps,
         total_steps: lead.total_steps,
         route: lead.route ?? null,
       },
+      // Each participant's own part, initiator first.
+      private: [...records]
+        .sort((a, b) => Number(a.agent_id !== initiator) - Number(b.agent_id !== initiator))
+        .map((r) => ({
+          agent_id: r.agent_id, action_description: r.action_description, inner_monologue: r.inner_monologue,
+        })),
     };
     scopeOf(where.get(initiator) ?? "").events.push(event);
   }
@@ -562,7 +562,6 @@ export function step({
         long_term_goals: s.long_term_goals,
         short_term_goals: s.short_term_goals,
         relations: edges.get(s.agent_id) ?? [],
-        thoughts: thoughts.get(s.agent_id) ?? [],
         carrying: belongings(s.agent_id, false),
       },
     });

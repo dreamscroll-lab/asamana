@@ -101,6 +101,9 @@ def test_a_target_the_character_does_not_perceive_is_refused(engine) -> None:
      "talk_target_not_present"),
     (ActorAction(action_type=ActionType.MOVE, action_description="出门走走"), "move_without_destination"),
     (ActorAction(action_type=ActionType.SEND_MESSAGE, action_description="说点什么"), "send_without_channel"),
+    # No words to deliver: the description is never sent in their place.
+    (ActorAction(action_type=ActionType.SEND_MESSAGE, action_description="给四弟捎话", person_ids=(AWAY,)),
+     "message_required"),
 ])
 def test_the_types_own_rules_apply(engine, action, reason) -> None:
     with pytest.raises(ActorAnswerRejected) as refused:
@@ -188,7 +191,7 @@ async def test_free_text_and_autonomous_decisions_bind_only_relevant_fields(cont
     bound = engine.bind_actor_action(decision.action, personality=_make_personality(), packet=packet)
     assert bound.action_type is action_type and bound.target == selection.target
     assert bound.intent.errand == selection.errand
-    assert decision.action.inner_monologue == "" and decision.action.expected_outcome == ""
+    assert decision.action.expected_outcome == ""
     assert decision.action.estimated_steps == 3
     if action_type not in (ActionType.TALK, ActionType.SEND_MESSAGE):
         assert selection.message_content == ""

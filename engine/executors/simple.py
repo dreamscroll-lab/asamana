@@ -194,7 +194,7 @@ class SimpleExecutor(ActionExecutor):
             )
 
         # The description is intent; only content is spoken to the recipients.
-        message_text = action.content or "（无明确内容）"
+        message_text = action.content
         place = observe_location(environment, action.agent_id)
         doer_name = self._directory.agent_name(action.agent_id)
         if directed:
@@ -236,7 +236,7 @@ class SimpleExecutor(ActionExecutor):
     ) -> ActionResult:
         """A message nobody could receive: a failure, or the sender would wait forever for a
         reply. Not dispatched."""
-        message_text = action.content or "（无明确内容）"
+        message_text = action.content
         place = observe_location(environment, action.agent_id)
         doer_name = self._directory.agent_name(action.agent_id)
         if directed:

@@ -229,7 +229,7 @@ export class MapHud {
   // `caption`; see Beat).
   async playActionCaption(tok: AgentToken, act: Beat, icon: string, gen: number): Promise<void> {
     // Only a genuine in-world failure gets the mark (a non-event never reaches here).
-    const failed = act.succeeded === false;
+    const failed = act.shared?.succeeded === false;
     const b = this.titledBubble(tok, `${icon} ${act.agent_name}${failed ? "  ✗" : ""}`, failed ? 0xc05a5a : tok.color, "action");
     const desc = act.caption;
     b.body.setText([...desc].length > 48 ? [...desc].slice(0, 48).join("") + "…" : desc);

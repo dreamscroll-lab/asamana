@@ -72,7 +72,7 @@ export function buildMovementScenes({ pivot: HUB, ne: NE, se: SE, far: FAR, tigh
               emotion: "", emotion_label: "", emotion_intensity: null, emotion_valence: null,
               dominant_need: null, dominant_need_label: "", vitality: null, activity_status: "",
               activity_label: "", transit: null, long_term_goals: [], short_term_goals: [],
-              relations: [], thoughts: [], carrying: {},
+              relations: [], carrying: {},
             },
           }),
         }])),

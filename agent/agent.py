@@ -1613,7 +1613,7 @@ class Agent:
             self.actor.ended(step=step, fact="", succeeded=False, happened=False)
 
     async def accepts_invitation(
-        self, plan: AgentStepPlan, *, inviter_id: str, action_type: ActionType,
+        self, plan: AgentStepPlan, *, inviter_id: str, action_type: ActionType, talk_topic: str = "",
     ) -> bool:
         """Whether the free character joins the act ``inviter_id`` invites it into this step
         (``Conscription.INVITE``). An AI character always does: it has no stage of its own for
@@ -1631,6 +1631,7 @@ class Agent:
                     present=seen is not None,
                 ),
                 action_type=action_type,
+                talk_topic=talk_topic,
             ),
             decided=plan.action.action_description if plan.action is not None else "",
         )

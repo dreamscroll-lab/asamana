@@ -65,6 +65,40 @@ async def test_the_addressee_s_record_knows_who_came_to_talk() -> None:
         purpose="问分工", fallback_fact="谈了一场。", is_initiator=False,
     )
     assert "赵六（女）来找我谈" in llm.user()
+    # The purpose is the initiator's own; the addressee knows the talk by what was said.
+    assert "问分工" not in llm.user()
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_record_gives_the_topic_only_to_the_initiator() -> None:
+    sun, zhao = _agent("a1", "孙七", "女"), _agent("a2", "赵六", "女")
+    for is_initiator in (True, False):
+        llm = _Capture('{"fact":""}')
+        fallback = await _executor(llm, sun, zhao)._interrupt_summary(  # noqa: SLF001
+            agent=sun, other_id="a2", other_name="赵六", purpose="问分工", thought="",
+            cause="", elapsed_label="约1小时", is_triggered=False, is_initiator=is_initiator, scene="",
+        )
+        assert ("问分工" in llm.user()) is is_initiator
+        assert ("问分工" in fallback) is is_initiator
+
+
+@pytest.mark.asyncio
+async def test_the_addressee_knows_the_topic_stated_up_front_and_nothing_more() -> None:
+    sun, zhao = _agent("a1", "孙七", "女"), _agent("a2", "赵六", "女")
+    llm = _Capture('{"fact":"f","success":true,"relation":"neutral","why":""}')
+    await _executor(llm, sun, zhao)._memory_summary(  # noqa: SLF001
+        agent=sun, other_id="a2", other_name="赵六", transcript="赵六：孙姐。",
+        purpose="套她的话", talk_topic="问分工", fallback_fact="谈了一场。", is_initiator=False,
+    )
+    assert "来意是「问分工」" in llm.user() and "套她的话" not in llm.user()
+
+    llm = _Capture('{"fact":""}')
+    fallback = await _executor(llm, sun, zhao)._interrupt_summary(  # noqa: SLF001
+        agent=sun, other_id="a2", other_name="赵六", purpose="套她的话", talk_topic="问分工",
+        thought="", cause="", elapsed_label="约1小时", is_triggered=False, is_initiator=False, scene="",
+    )
+    assert "问分工" in llm.user() and "套她的话" not in llm.user()
+    assert "问分工" in fallback and "套她的话" not in fallback
 
 
 @pytest.mark.asyncio
@@ -86,6 +120,17 @@ async def test_a_listener_s_record_knows_both_speakers() -> None:
         agent=wang, initiator_id="a2", target_id="a1", transcript="赵六：孙姐。",
     )
     assert "说话的是赵六（女）与孙七（女）" in llm.user()
+    assert "来意" not in llm.user()
+
+
+@pytest.mark.asyncio
+async def test_a_listener_knows_the_topic_stated_up_front() -> None:
+    llm = _Capture('{"fact":"f"}')
+    wang, sun, zhao = _agent("a3", "王五", "男"), _agent("a1", "孙七", "女"), _agent("a2", "赵六", "女")
+    await _executor(llm, wang, sun, zhao)._listener_memory(  # noqa: SLF001
+        agent=wang, initiator_id="a2", target_id="a1", transcript="赵六：孙姐。", talk_topic="问分工",
+    )
+    assert "赵六（女）发起的对话，来意是「问分工」" in llm.user()
 
 
 @pytest.mark.asyncio

@@ -10,10 +10,10 @@
 import type { Npcs } from "../lib/npcs";
 import { identityOf } from "../lib/worldTable";
 import type { Cast } from "../lib/cast";
-import { ActionType } from "../lib/contract";
-import type { ActionSummary, Transit } from "../types";
+import { ActionType, Phase } from "../lib/contract";
+import type { ActionSharedView, ActionSummary, Transit } from "../types";
 import type { Placed, StepIndex } from "../lib/step";
-import { type Viewer, knowsInside } from "../lib/viewer";
+import { type Viewer, actionDescriptionOf, sharedOf } from "../lib/viewer";
 
 /** One body on the map, agent or Npc alike: the part of its state the map draws. */
 export interface Figure {
@@ -35,22 +35,34 @@ export interface Figure {
 /**
  * One figure's part in an action.
  *
- * `inside`: the viewer knows the act from inside. `caption` is the words the map may put to it:
- * from inside, the doer's own description; from outside, what an onlooker saw, and only when the
- * figure's motion can't show it (see SHOWN_BY_MOTION).
+ * `shared` is what the viewer knows from inside (null from outside: no account, no verdict).
+ * `caption` is the words the map may put to it: to the doer, his own description; to others
+ * inside it, the gist; from outside, what an onlooker saw, and only when the figure's motion
+ * can't show it (see SHOWN_BY_MOTION).
  */
 export type Beat = Placed<ActionSummary> & {
-  agent_id: string; agent_name: string; inside: boolean; caption: string;
+  agent_id: string; agent_name: string; shared: ActionSharedView | null; caption: string;
 };
 
 /**
- * Acts whose motion or effect already shows an onlooker what happened: a blow, a talk's facing
- * and pose, a veil closing, a letter's flight, a walk. Seen from outside these get no words;
- * the rest (a body bent over work, at rest, sending someone off) look alike and keep a caption.
+ * Acts whose motion or effect already shows an onlooker what happened: a talk's facing and pose,
+ * a veil closing, a letter's flight, a walk. Seen from outside these get no words; the rest keep
+ * a caption. PHYSICAL is not among them: from outside the verdict is unknown, so the map draws
+ * the swing but not how it landed (see physicalEffect), and the onlookers' text says that.
  */
 const SHOWN_BY_MOTION: ReadonlySet<string> = new Set([
-  ActionType.physical, ActionType.talk, ActionType.covert, ActionType.send_message, ActionType.move,
+  ActionType.talk, ActionType.covert, ActionType.send_message, ActionType.move,
 ]);
+
+/**
+ * Whether a beat draws the stealth veil: a covert act where he enters concealment, and its
+ * closing beat only if he was spotted. Detection is judged only on that closing beat, so the
+ * opening of a longer act is never red; without this a spotted multi-step act draws no red.
+ */
+export function drawsVeil(act: Pick<Beat, "action_type" | "phase" | "detected">): boolean {
+  if (act.action_type !== ActionType.covert) return false;
+  return act.phase !== Phase.ongoing_complete || act.detected;
+}
 
 export function figuresOf(index: StepIndex, cast: Cast, identities: Npcs): Figure[] {
   // A mover's walk in rides the beat his MOVE ended (`route`); the figure needs it to walk. Whoever
@@ -58,7 +70,7 @@ export function figuresOf(index: StepIndex, cast: Cast, identities: Npcs): Figur
   // otherwise the one carried finds his own way there.
   const routes = new Map<string, Transit>();
   for (const act of index.actions) {
-    const route = act.private.route;
+    const route = act.shared?.route;
     if (!route) continue;
     for (const id of act.participant_ids.length ? act.participant_ids : [act.initiator_id]) {
       if (index.agents[id]?.location_id === route.to_location_id) routes.set(id, route);
@@ -100,12 +112,12 @@ export function figuresOf(index: StepIndex, cast: Cast, identities: Npcs): Figur
 export function beatsOf(index: StepIndex, viewer: Viewer = null): Beat[] {
   const nameOf = (id: string) => index.agents[id]?.name ?? "某人";
   return index.actions.flatMap((act) => {
-    const inside = knowsInside(act, viewer);
-    const caption = inside
-      ? act.private.action_description || act.private.gist
+    const shared = sharedOf(act, viewer);
+    const caption = shared
+      ? actionDescriptionOf(act, viewer) || shared.gist
       : SHOWN_BY_MOTION.has(act.action_type) ? "" : act.public?.text ?? "";
     return (act.participant_ids.length ? act.participant_ids : [act.initiator_id]).map((id) => ({
-      ...act, agent_id: id, agent_name: nameOf(id), inside, caption,
+      ...act, agent_id: id, agent_name: nameOf(id), shared, caption,
     }));
   });
 }

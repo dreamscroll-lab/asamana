@@ -255,11 +255,13 @@ async def test_passive_participant_action_desc_is_joiner_pov(container) -> None:
 
     # Initiator sees their own framing verbatim.
     assert participant_action_desc(runtime._directory, "a", exec_state) == "与b当面交谈，探明局势"
-    # Passive participant b must NOT get the bare self-referential purpose as "my action";
-    # it's reframed as the initiator's action so b reads it as a's intent, not self-talk.
+    # The one invited knows who drew him in, never what the initiator set out to do.
     joiner_desc = participant_action_desc(runtime._directory, "b", exec_state)
-    assert joiner_desc != exec_state.purpose               # not the self-referential bare purpose
-    assert joiner_desc.startswith("参与a发起的行动")        # framed as "a's action", with b as participant
+    assert joiner_desc == "应a的邀请交谈"
+    assert "探明局势" not in joiner_desc
+    # A topic the initiator stated up front, he knows.
+    exec_state.talk_topic = "近来的局势"
+    assert participant_action_desc(runtime._directory, "b", exec_state) == "应a的邀请交谈，a的来意是近来的局势"
 
 
 @pytest.mark.asyncio
@@ -283,6 +285,27 @@ async def test_participant_intent_belongs_to_the_initiator_only(container) -> No
 
     assert participant_intent("a", exec_state) == "我打算「问出他昨夜的去处」。"
     assert participant_intent("b", exec_state) == ""
+
+
+def test_the_carried_know_who_takes_them_not_where() -> None:
+    """Someone carried off knows who takes him; where to, he learns on arrival."""
+    from engine.directory import LiveWorldDirectory
+    from engine.environment import EnvironmentSystem
+    from engine.executors.base import participant_action_desc
+
+    exec_state = ActionExecutionState.create(
+        target=ActionTarget(),
+        action_type=ActionType.MOVE,
+        initiator_id="a",
+        participant_ids=["a", "b"],
+        purpose="带他去皇城面圣",
+        started_step=1,
+        estimated_steps=2,
+        opening_outcome="开始",
+    )
+    directory = LiveWorldDirectory.from_agents({}, EnvironmentSystem())
+
+    assert participant_action_desc(directory, "b", exec_state) == "被某人强行带着走"
 
 
 @pytest.mark.asyncio
@@ -529,14 +552,14 @@ async def test_interrupt_emits_display_record(container) -> None:
     summary = the_action(rec)
     assert summary.phase == "interrupt"
     assert summary.initiator_id == "mc"
-    assert summary.succeeded is False
+    assert summary.shared is not None and summary.shared.succeeded is False
     assert summary.interrupted_by == "mc"
     # The thought is the participants' to know, not the onlookers'.
     assert summary.public is None
-    assert "我必须立刻动身" in summary.private.outcome
+    assert "我必须立刻动身" in summary.shared.outcome
     # The gist reaches the read model without the thought.
-    assert "打断" in summary.private.gist and "我必须立刻动身" not in summary.private.gist
-    assert "城门失守" not in summary.private.outcome  # trigger stays out of narrative
+    assert "打断" in summary.shared.gist and "我必须立刻动身" not in summary.shared.gist
+    assert "城门失守" not in summary.shared.outcome  # trigger stays out of narrative
 
 
 @pytest.mark.asyncio

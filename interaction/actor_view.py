@@ -1,9 +1,10 @@
 """What the actor sees: the observer's read models filtered to one character.
 
-Every split here is one the read model already records (an event's public side and audience,
-an entity's ``is_public``, a body's public and private views); nothing decides visibility a
-second time. Of a step the character sees its own body and mind, the public side of the place
-it ends the step in, and every event whose audience includes it.
+Every split here is one the read model already records (an event's public, shared and private
+tiers, an entity's ``is_public``, a body's public and private views); nothing decides visibility
+a second time. Of a step the character sees its own body and mind, the public side of the place
+it ends the step in, and the shared side of every event whose audience includes it; of an
+action's private parts, only its own.
 
 The two follow when the character perceives. What happened in the step reaches it as the next
 step begins, where it ended this one, hence the public side of that place. What arrived as this
@@ -21,7 +22,6 @@ from __future__ import annotations
 from dataclasses import replace
 
 from interaction.models import (
-    ActionPrivateView,
     ActionSummary,
     AgentPrivateView,
     AgentProfile,
@@ -109,11 +109,11 @@ def graph_for(graph: WorldGraph, viewer_id: str) -> WorldGraph:
 def _audience(event: ScopeEvent) -> list[str] | None:
     """Who the event reached or involved; None when it has no such list (public where it sits).
 
-    For an action it is who is inside its private side; for what arrived as the step began (a
+    For an action it is who knows its shared side; for what arrived as the step began (a
     letter, a place's announcement or broadcast) it is who received it, wherever they ended
     the step."""
     if isinstance(event, ActionSummary):
-        return event.private.audience
+        return event.shared.audience if event.shared is not None else None
     if isinstance(event, (MessageSummary, BroadcastSummary)):
         return event.audience
     return None
@@ -126,7 +126,14 @@ def _in_audience(event: ScopeEvent, viewer_id: str) -> bool:
 
 def _own(events: list[ScopeEvent], viewer_id: str) -> list[ScopeEvent]:
     """Events somewhere the viewer isn't: only those it is inside."""
-    return [e for e in events if _in_audience(e, viewer_id)]
+    return [_inside(e, viewer_id) for e in events if _in_audience(e, viewer_id)]
+
+
+def _inside(event: ScopeEvent, viewer_id: str) -> ScopeEvent:
+    """An event the viewer is inside: everything but the other participants' own parts."""
+    if isinstance(event, ActionSummary):
+        return replace(event, private=[p for p in event.private if p.agent_id == viewer_id])
+    return event
 
 
 def _seen_here(events: list[ScopeEvent], viewer_id: str) -> list[ScopeEvent]:
@@ -135,14 +142,14 @@ def _seen_here(events: list[ScopeEvent], viewer_id: str) -> list[ScopeEvent]:
 
 
 def _public_or_own(event: ScopeEvent, viewer_id: str) -> ScopeEvent | None:
-    """An event in the viewer's place: whole if it is inside, its public side if not."""
+    """An event in the viewer's place: as an insider if it is inside, its public side if not."""
     if _in_audience(event, viewer_id):
-        return event
+        return _inside(event, viewer_id)
     if isinstance(event, ActionSummary):
         # An act that showed nothing here (an unexposed covert act) has no public side.
         if event.public is None:
             return None
-        return replace(event, private=ActionPrivateView(audience=[], outcome="", gist=""))
+        return replace(event, shared=None, private=[])
     if isinstance(event, (MessageSummary, BroadcastSummary)):
         return event if event.audience is None else None
     return event

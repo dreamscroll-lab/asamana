@@ -32,6 +32,7 @@ export function describeActionSummary(actionSummary: Pick<ActorActionSummary, "o
   if (typeof p.recipient_id === "string" && p.recipient_id) details.push(`交给：${targetName({kind: "agent", id: p.recipient_id}, b, self)}`);
   if (p.announce) details.push("送给：在场所有人");
   if (typeof p.message === "string" && p.message) details.push(`内容：${p.message}`);
+  if (typeof p.talk_topic === "string" && p.talk_topic) details.push(`来意：${p.talk_topic}`);
   if (Array.isArray(p.person_ids) && p.person_ids.length) {
     const label = actionSummary.operation === "talk" ? "旁听" : "送给";
     const ids = actionSummary.operation === "talk" ? p.person_ids.filter((id) => id !== actionSummary.target?.id) : p.person_ids;

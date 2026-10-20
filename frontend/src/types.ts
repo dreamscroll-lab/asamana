@@ -120,6 +120,12 @@ export interface DialogueTurn {
 // `observer` sits outside them: what only the one watching from outside reads. Every event
 // carries `seq`, its place on the world's emission timeline: unique across steps, so one event
 // that several scopes saw keeps one id. Sort by it; never render it.
+//
+// What is known comes in up to three tiers (mirrors interaction/models.py):
+//   public  — what anyone present perceives.
+//   shared  — what everyone inside an event knows, with its `audience`.
+//   private — what only one character knows: their own mind, their own part of an action.
+// A viewer's payload already holds only what it knows (interaction/actor_view.py).
 
 // What onlookers at one place saw of an action.
 export interface ObservedView {
@@ -127,16 +133,22 @@ export interface ObservedView {
   strength: number | null;
 }
 
-// What only those inside an action know of it: its participants, whoever it landed on and the
+// What everyone inside an action knows of it: its participants, whoever it landed on and the
 // listeners it named (`audience`). `outcome` is the complete account (a TALK's transcript, an
 // interrupter's thought); `gist` the same in one sentence.
-export interface ActionPrivateView {
+export interface ActionSharedView {
   audience: string[];
   outcome: string;
   gist: string;
+  // The verdict, measured against the doer's purpose, which onlookers don't know.
+  succeeded: boolean;
+  // Why it did not succeed, as one short third-person phrase; non-empty only on a genuine
+  // failure. Read this rather than parsing prose.
+  failure_reason: string;
   dialogue: DialogueTurn[];
-  // The doer's own words for what he set out to do; onlookers see only `public.text`.
-  action_description: string;
+  // A talk's topic as its initiator stated it up front; "" when he didn't. Everyone in the talk
+  // knows it, unlike his action_description.
+  talk_topic: string;
   // How long he expects it to take, as a natural duration ("约2小时"). "" unless phase is `begin`.
   duration_label: string;
   // How far along, for a progress bar. Code-layer integers; never render 「第N步」 as text.
@@ -146,6 +158,14 @@ export interface ActionPrivateView {
   // him in along the waypoints the engine reported, which a trip crossed within one step has
   // no transit to carry. null otherwise.
   route: Transit | null;
+}
+
+// One participant's own part of a beat, which only they know: what they set out to do in their
+// own words, and the deliberation behind it (the feed's "心声"; the map never shows it).
+export interface ActionPrivateView {
+  agent_id: string;
+  action_description: string;
+  inner_monologue: string;
 }
 
 // One beat of one execution, every participant's part folded into one event, in the scope where
@@ -175,18 +195,17 @@ export interface ActionSummary {
   overheard_by: string[];
   // Who cut short an in-progress action (phase "interrupt"); "" otherwise.
   interrupted_by: string;
-  succeeded: boolean;
-  // Why it did not succeed, as one short third-person phrase; non-empty only on a genuine
-  // failure. Read this rather than parsing prose.
-  failure_reason: string;
-  // Whether a COVERT act was noticed. Independent of `succeeded`.
+  // Whether a COVERT act was noticed. Independent of `shared.succeeded`.
   detected: boolean;
   // The action never engaged the world (target absent or busy, no path): a non-event, not a
   // failure. The renderer mutes it (gray chip / "未成事" badge, no ✗).
   not_executed: boolean;
   // What onlookers here saw; null when the act showed nothing here.
   public: ObservedView | null;
-  private: ActionPrivateView;
+  // null for a viewer outside it.
+  shared: ActionSharedView | null;
+  // One per participant, initiator first; a viewer's own only.
+  private: ActionPrivateView[];
 }
 
 // Something seen at a place. Either an action seen from a place other than where it is
@@ -203,8 +222,8 @@ export interface ObservationSummary {
 }
 
 // A message reaching the people in one scope. `scope` says how it was addressed:
-//   direct — named recipients; private (`audience`: the receivers in this scope). A letter to
-//            people in several places appears in each of their scopes, under one seq.
+//   direct — named recipients, one delivery per receiver (`audience`: that receiver), in the
+//            scope they stood in, all under one seq: a receiver doesn't learn who else got it.
 //   place  — an announcement to the room whose scope holds it; `audience`: whoever heard it there.
 //   world  — a proclamation, in the world scope; public.
 // For place/world the sender is the subject; listing recipients would make one proclamation
@@ -216,7 +235,7 @@ export interface MessageSummary {
   message_id: string;
   sender_id: string;
   sender_name: string;
-  // Who received it in this scope.
+  // Who received it in this scope: one for a direct message, everyone there for a place's.
   receiver_ids: string[];
   scope: MessageScope;
   content: string;
@@ -307,14 +326,6 @@ export interface AgentPublicView {
   carrying: Record<string, EntityView>;
 }
 
-// The deliberation behind one of the agent's acts, set on the beat it was decided. The feed's
-// "心声"; the map never shows it (it renders the world, not minds).
-export interface ThoughtView {
-  seq: number;
-  execution_id: string;
-  text: string;
-}
-
 // What only the agent knows: their mind, where they are headed, and hidden belongings.
 export interface AgentPrivateView {
   emotion: string;
@@ -333,7 +344,6 @@ export interface AgentPrivateView {
   short_term_goals: GoalView[];
   // Their relations to others at the end of the step — the same edges GET /graph serves.
   relations: GraphEdge[];
-  thoughts: ThoughtView[];
   // Belongings nobody else can perceive.
   carrying: Record<string, EntityView>;
 }
@@ -904,6 +914,7 @@ export type ActorPace = "every_step" | "when_reached";
 export interface Invitation {
   inviter: BriefPerson;
   action_type: string; // the kind of act it is invited into
+  talk_topic: string; // a talk's stated topic; "" when the inviter didn't say
 }
 
 /**

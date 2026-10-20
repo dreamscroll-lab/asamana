@@ -358,10 +358,17 @@ class WorldTimeView:
 # the world reads. What the injection did inside the world reaches the scopes as broadcasts,
 # messages and observations of the changes it made.
 #
-# Every body, thing and action splits into what anyone present perceives (``public``, or the
-# top-level fields of an event) and what only some know (``private``, with its audience). The
-# split follows what the engine lets each character perceive; a view for one character is a
-# filter over it, never a second visibility rule.
+# What is known is split in up to three tiers, one name each everywhere:
+#   public  — what anyone present perceives (``public``, or the top-level fields of an event).
+#   shared  — what everyone inside an event knows, with its ``audience`` (an action's
+#             ``shared``; a message's or broadcast's ``audience``).
+#   private — what only one knows: a character's own body and mind (``AgentPrivateView``),
+#             what a thing says to whoever holds it (``EntityPrivateView``), a participant's own
+#             part of an action (``ActionPrivateView``, one each); an Npc's, nobody in the world
+#             (``NpcPrivateView``, the observer's alone).
+# A kind of record carries only the tiers it has. The split follows what the engine lets each
+# character perceive; a view for one character is a filter over it, never a second visibility
+# rule.
 #
 # Every event carries ``seq``, its place on the world's emission timeline (``EventSequencer``):
 # unique across steps, so an event that spans steps or scopes keeps one id. Its parts are tied
@@ -426,8 +433,8 @@ class ObservedView:
 
 
 @dataclass(frozen=True)
-class ActionPrivateView:
-    """What only those inside an action know of it.
+class ActionSharedView:
+    """What everyone inside an action knows of it.
 
     ``audience`` is everyone the act involved: its participants, whoever it landed on and the
     listeners it named. ``outcome`` is the complete account (a TALK's transcript, an
@@ -438,9 +445,16 @@ class ActionPrivateView:
     audience: list[str]
     outcome: str
     gist: str
+    # The verdict is measured against the doer's purpose, which onlookers don't know; what they
+    # saw of it is ``ActionSummary.public``.
+    succeeded: bool = True
+    # Why it failed, as a short third-person phrase; set only on failure. The judge's side,
+    # never an onlooker's (``ActionResult.failure_reason``).
+    failure_reason: str = ""
     dialogue: list[DialogueTurn] = field(default_factory=list)
-    # The doer's own words for what he set out to do; onlookers see only ``public.text``.
-    action_description: str = ""
+    # A TALK's topic as its initiator stated it up front; "" when he didn't. Unlike his
+    # action_description (his private part), everyone in the talk knows it.
+    talk_topic: str = ""
     # How long the doer expects it to take, as a natural phrase rendered by the producer. Empty
     # unless phase="begin".
     duration_label: str = ""
@@ -450,6 +464,17 @@ class ActionPrivateView:
     # The way walked on the beat a MOVE ended: transit's shape with elapsed_steps == total_steps,
     # so a renderer walks him in along the waypoints the engine reported. None otherwise.
     route: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class ActionPrivateView:
+    """One participant's own part of a beat, which only they know: what they set out to do, in
+    their own words, and the deliberation behind it. The thought is the decision engine's
+    actual one or absent: never synthesised."""
+
+    agent_id: str
+    action_description: str = ""
+    inner_monologue: str = ""
 
 
 @dataclass(frozen=True)
@@ -468,7 +493,7 @@ class ActionSummary:
     # Everyone who spent their turn on it, initiator included.
     participant_ids: list[str] = field(default_factory=list)
     action_type: str = ""  # talk/move/physical/covert/work/rest/send_message/errand
-    # WHICH BEAT of an execution this is — the only thing that says whether ``private.outcome``
+    # WHICH BEAT of an execution this is — the only thing that says whether ``shared.outcome``
     # is an opening or a result:
     #   begin            — the opening: under way, nothing has come of it yet. Carries
     #                      ``duration_label``.
@@ -487,19 +512,20 @@ class ActionSummary:
     overheard_by: list[str] = field(default_factory=list)
     # Who cut it short (phase="interrupt"); "" when nobody inside chose to stop.
     interrupted_by: str = ""
-    succeeded: bool = True
-    # Why it failed, as a short third-person phrase; set only on failure.
-    failure_reason: str = ""
-    # Whether a COVERT act was noticed. Independent of succeeded: a theft can succeed and be seen.
+    # Whether a COVERT act was noticed. Independent of shared.succeeded: a theft can succeed
+    # and be seen.
     detected: bool = False
     # The act never engaged the world (precondition unmet). A non-event, not a defeat.
     not_executed: bool = False
     # What onlookers here saw; None when the act showed nothing here (SEND_MESSAGE, an unexposed
     # COVERT act, a beat recorded on the way).
     public: ObservedView | None = None
-    private: ActionPrivateView = field(
-        default_factory=lambda: ActionPrivateView(audience=[], outcome="", gist="")
+    # None for a viewer outside it.
+    shared: ActionSharedView | None = field(
+        default_factory=lambda: ActionSharedView(audience=[], outcome="", gist="")
     )
+    # One per participant, initiator first; a viewer's own only.
+    private: list[ActionPrivateView] = field(default_factory=list)
     kind: str = "action"
 
 
@@ -528,11 +554,12 @@ class MessageSummary:
 
     ``scope`` is how it was addressed (MessageSystem resolves receivers from recipients ×
     location_scope):
-      direct — named recipients. A letter to people in several places appears in each of their
-               scopes, under one ``seq``. Private: ``audience`` is the receivers in this scope,
-               the only ones who lived this delivery. Don't add the sender or receivers
-               elsewhere: they would learn where the letter was received. The sender knows the
-               words from their own SEND_MESSAGE act.
+      direct — named recipients. Each receiver's delivery is its own summary, in the scope
+               they stood in when it reached them, all under one ``seq``. ``audience`` is that
+               receiver alone: a receiver perceives a letter from its sender, not who else it
+               was sent to, even standing beside them. Don't add the sender: they would learn
+               where the letter was received. The sender knows the words from their own
+               SEND_MESSAGE act.
       place  — no recipients, a location: an announcement to the room it sits in. ``audience``
                is whoever heard it there; someone who arrives by the step's end did not.
       world  — no recipients, no location: a proclamation, in the world scope. Public.
@@ -543,7 +570,7 @@ class MessageSummary:
     message_id: str
     sender_id: str
     sender_name: str
-    # Who received it in this scope.
+    # Who received it in this scope: one for a direct message, everyone there for a place's.
     receiver_ids: list[str]
     scope: str
     content: str
@@ -625,16 +652,6 @@ class AgentPublicView:
 
 
 @dataclass(frozen=True)
-class ThoughtView:
-    """The deliberation behind one of the agent's acts, set on the beat it was decided. It is
-    the decision engine's actual thought or absent: never synthesised."""
-
-    seq: int
-    execution_id: str
-    text: str
-
-
-@dataclass(frozen=True)
 class GoalView:
     """One short-term goal: its text, where it stands, and where it came from.
 
@@ -669,7 +686,6 @@ class AgentPrivateView:
     short_term_goals: list[GoalView] = field(default_factory=list)
     # Their relations to others, as they stand at the end of the step.
     relations: list[GraphEdge] = field(default_factory=list)
-    thoughts: list[ThoughtView] = field(default_factory=list)
     # Belongings nobody else can perceive (``EntityView.is_public`` false).
     carrying: dict[str, EntityView] = field(default_factory=dict)
 
@@ -809,7 +825,6 @@ class _StepAssembler:
         self._events: dict[str, list[ScopeEvent]] = {}
         self._transit_events: list[ScopeEvent] = []
         self._world_scope_events: list[ScopeEvent] = []
-        self._thoughts: dict[str, list[ThoughtView]] = {}
 
     def build(self) -> StepView:
         located, held = self._entities()
@@ -882,7 +897,7 @@ class _StepAssembler:
         """Each action event where it was recorded, and what each other place observed of it.
 
         The snapshot already tells each execution's beat once (``engine.step_record``); the
-        initiator's part speaks for it, every participant's thought goes to its owner.
+        initiator's part speaks for the shared account, and each participant's part stays theirs.
         """
         for record in self._snapshot.events_of("action"):
             seq = int(coerce_optional_int(record.get("seq")) or 0)
@@ -890,12 +905,6 @@ class _StepAssembler:
             execution_id = str(record.get("execution_id") or "")
             parts = [coerce_dict(p) for p in coerce_list(record.get("parts"))]
             lead = next((p for p in parts if str(p.get("agent_id") or "") == initiator_id), {})
-            for part in parts:
-                thought = str(part.get("inner_monologue") or "")
-                if thought:
-                    self._thoughts.setdefault(str(part.get("agent_id") or ""), []).append(
-                        ThoughtView(seq=seq, execution_id=execution_id, text=thought)
-                    )
             participant_ids = [str(i) for i in coerce_list(record.get("participant_ids"))]
             overheard_by = [str(i) for i in coerce_list(record.get("overheard_by"))]
             acted_upon = [str(i) for i in coerce_list(record.get("acted_upon"))]
@@ -923,17 +932,17 @@ class _StepAssembler:
                 affected_entity_ids=[str(e) for e in coerce_list(record.get("affected_entity_ids"))],
                 overheard_by=overheard_by,
                 interrupted_by=str(record.get("interrupted_by") or ""),
-                succeeded=bool(record.get("succeeded", True)),
-                failure_reason=str(record.get("failure_reason") or ""),
                 detected=bool(record.get("detected", False)),
                 not_executed=bool(record.get("not_executed", False)),
                 public=observed.get(home) if _is_place(home) else None,
-                private=ActionPrivateView(
+                shared=ActionSharedView(
                     audience=_unique([*participant_ids, *acted_upon, *overheard_by]),
                     # `or ""`, not `.get(k, "")`: a key present and null slips past a default,
                     # and `str(None)` silently yields "None", which prose prints.
                     outcome=str(lead.get("outcome") or ""),
                     gist=str(lead.get("gist") or lead.get("outcome") or ""),
+                    succeeded=bool(record.get("succeeded", True)),
+                    failure_reason=str(record.get("failure_reason") or ""),
                     dialogue=[
                         DialogueTurn(
                             speaker_id=str(d.get("speaker_id") or ""),
@@ -943,12 +952,20 @@ class _StepAssembler:
                         for d in coerce_list(record.get("dialogue"))
                         if isinstance(d, Mapping)
                     ],
-                    action_description=str(lead.get("action_description") or ""),
+                    talk_topic=str(record.get("talk_topic") or ""),
                     duration_label=str(record.get("duration_label") or ""),
                     elapsed_steps=int(coerce_optional_int(record.get("elapsed_steps")) or 0),
                     total_steps=int(coerce_optional_int(record.get("total_steps")) or 0),
                     route=dict(route) if isinstance(route, Mapping) else None,
                 ),
+                private=[
+                    ActionPrivateView(
+                        agent_id=str(p.get("agent_id") or ""),
+                        action_description=str(p.get("action_description") or ""),
+                        inner_monologue=str(p.get("inner_monologue") or ""),
+                    )
+                    for p in parts
+                ],
             ))
             for place, view in observed.items():
                 # The way between waypoints is no place to watch from (see
@@ -977,8 +994,8 @@ class _StepAssembler:
         """Each delivered message, in the scope(s) it reached.
 
         ``recipients``/``location_scope`` form MessageSystem's addressing matrix. A direct
-        message lands where each receiver stood when it reached them, as the engine recorded:
-        a letter reaches a man, not a room.
+        message is one delivery per receiver, where they stood when it reached them, as the
+        engine recorded: a letter reaches a man, not a room.
         """
         for record in self._snapshot.events_of("message"):
             receivers = [coerce_dict(r) for r in coerce_list(record.get("receivers"))]
@@ -1008,14 +1025,12 @@ class _StepAssembler:
                 else:
                     self._world_scope_events.append(summary(receiver_ids, "world", None))
                 continue
-            by_place: dict[str, list[str]] = {}
             for receiver in receivers:
-                where = str(receiver.get("location_id") or "")
-                by_place.setdefault(where if _is_place(where) else "", []).append(
-                    str(receiver.get("agent_id") or "")
+                receiver_id = str(receiver.get("agent_id") or "")
+                self._put(
+                    str(receiver.get("location_id") or ""),
+                    summary([receiver_id], "direct", [receiver_id]),
                 )
-            for place, ids in by_place.items():
-                self._put(place, summary(ids, "direct", _unique(ids)))
 
     def _broadcasts(self) -> None:
         for record in self._snapshot.events_of("broadcast"):
@@ -1115,7 +1130,6 @@ class _StepAssembler:
                     for g in (coerce_dict(item) for item in coerce_list(record.get("short_term_goal_entities")))
                 ],
                 relations=relations,
-                thoughts=self._thoughts.get(agent_id, []),
                 carrying={k: v for k, v in belongings.items() if not v.is_public},
             ),
         )

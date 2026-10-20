@@ -397,6 +397,7 @@ class SocialExecutor(ActionExecutor):
                 action.target.reached_agents, environment=environment, agents=agents,
                 anchor_id=action.agent_id, exclude={action.agent_id, target_ids[0]},
             ),
+            talk_topic=action.talk_topic,
         )
         state.extra["target_id"] = target_ids[0]
         state.extra["live"] = live
@@ -497,6 +498,7 @@ class SocialExecutor(ActionExecutor):
                         _LiveSide(target, target_name, target_ctx, is_initiator=False),
                     ),
                     purpose=state.purpose,
+                    talk_topic=state.talk_topic,
                     expected_outcome=state.expected_outcome,
                     environment=environment,
                     agents=agents,
@@ -513,6 +515,7 @@ class SocialExecutor(ActionExecutor):
                     initiator_name=initiator_name,
                     target_name=target_name,
                     purpose=state.purpose,
+                    talk_topic=state.talk_topic,
                     expected_outcome=state.expected_outcome,
                     # Don't use min(estimated_steps, MAX): a 1-step TALK would become a monologue.
                     turns=_MAX_DIALOGUE_TURNS,
@@ -539,7 +542,11 @@ class SocialExecutor(ActionExecutor):
                 anchor_id=initiator_id, exclude={initiator_id, target_id},
             )
             _fb_i = f"与{target_name}就「{state.purpose}」谈了一场。"
-            _fb_t = f"与{initiator_name}就「{state.purpose}」谈了一场。"
+            # The addressee never learns the purpose; at most the topic stated up front.
+            _fb_t = (
+                f"与{initiator_name}就「{state.talk_topic}」谈了一场。" if state.talk_topic
+                else f"与{initiator_name}谈了一场。"
+            )
             summary_i_r, summary_t_r, *listener_facts = await asyncio.gather(
                 self._memory_summary(
                     agent=initiator, other_id=target_id, other_name=target_name, transcript=transcript,
@@ -548,13 +555,13 @@ class SocialExecutor(ActionExecutor):
                 ),
                 self._memory_summary(
                     agent=target, other_id=initiator_id, other_name=initiator_name, transcript=transcript,
-                    purpose=state.purpose, fallback_fact=_fb_t, is_initiator=False,
+                    purpose=state.purpose, talk_topic=state.talk_topic, fallback_fact=_fb_t, is_initiator=False,
                     now_step=step, environment=environment, expected_outcome=state.expected_outcome,
                 ),
                 *(
                     self._listener_memory(
                         agent=agents.get(pid), initiator_id=initiator_id,
-                        target_id=target_id, transcript=transcript,
+                        target_id=target_id, transcript=transcript, talk_topic=state.talk_topic,
                         now_step=step, environment=environment,
                     )
                     for pid in listener_ids
@@ -587,7 +594,7 @@ class SocialExecutor(ActionExecutor):
 
         results: List[ActionResult] = []
         results.append(self._talk_result(
-            agent_id=initiator_id, step=step, purpose=state.purpose,
+            agent_id=initiator_id, step=step,
             action_description=state.purpose,     # initiator: the act he wrote himself
             estimated_steps=state.estimated_steps, rel_other_id=target_id,
             other_name=target_name, outcome=outcome, gist=gist, observations=observations,
@@ -599,7 +606,7 @@ class SocialExecutor(ActionExecutor):
         ))
         if target is not None:
             results.append(self._talk_result(
-                agent_id=target_id, step=step, purpose=state.purpose,
+                agent_id=target_id, step=step,
                 action_description=participant_action_desc(self._directory, target_id, state),
                 estimated_steps=state.estimated_steps, rel_other_id=initiator_id,
                 other_name=initiator_name, outcome=outcome, gist=gist,
@@ -615,7 +622,6 @@ class SocialExecutor(ActionExecutor):
         *,
         agent_id: str,
         step: int,
-        purpose: str,
         action_description: str,
         estimated_steps: int,
         rel_other_id: str,
@@ -630,8 +636,8 @@ class SocialExecutor(ActionExecutor):
     ) -> ActionResult:
         """Build one participant's TALK result.
 
-        ``purpose`` is the shared topic; ``action_description`` is this person's own act (they
-        differ for the conscripted party). ``summary=None`` is a null step: no memory, no
+        ``action_description`` is this person's own act (``participant_action_desc``).
+        ``summary=None`` is a null step: no memory, no
         relation delta. Listeners' ``target_effects`` still go out then: what they heard
         doesn't depend on this summary.
         """
@@ -734,16 +740,13 @@ class SocialExecutor(ActionExecutor):
             relation_block = await self._present_relations_block(agent, environment)
             factual = await self._interrupt_summary(
                 agent=agent, other_id=other_id, other_name=other_name, purpose=state.purpose,
-                thought=thought, cause=cause, elapsed_label=elapsed_label,
+                talk_topic=state.talk_topic, thought=thought, cause=cause, elapsed_label=elapsed_label,
                 is_triggered=is_triggered, is_initiator=is_initiator, scene=scene,
                 environment=environment, now_step=step, relation_block=relation_block,
             )
             stub = AgentAction(
                 agent_id=pid, step=step, action_type=ActionType.TALK,
-                action_description=(
-                    state.purpose if is_initiator
-                    else participant_action_desc(self._directory, pid, state)
-                ),
+                action_description=participant_action_desc(self._directory, pid, state),
                 target=_talk_target(other_id),
                 estimated_steps=state.estimated_steps,
             )
@@ -801,6 +804,7 @@ class SocialExecutor(ActionExecutor):
         purpose: str,
         thought: str,
         cause: str,
+        talk_topic: str = "",
         elapsed_label: str,
         is_triggered: bool,
         is_initiator: bool,
@@ -814,18 +818,22 @@ class SocialExecutor(ActionExecutor):
         other = self._seen_person(other_id)
         initiator_line = f"是我主动找{other}谈的" if is_initiator else f"{other}来找我谈"
         opening = f"我主动找{other_name}" if is_initiator else f"{other_name}找我"
+        # The initiator knows his own purpose; the addressee only the topic stated up front, since
+        # the dialogue is written when the talk completes.
+        known = purpose if is_initiator else talk_topic
+        topic = f"就「{known}」" if known else ""
         # The trigger signal stays out (see base.interrupt).
         if cause:
             # Nobody chose to stop, so both share this sentence; the cause must be stated or the
             # model invents one from purpose.
             situation = f"这场谈话因{cause}而中断"
-            fallback = f"{opening}就「{purpose}」谈到一半（{elapsed_label}），{situation}"
+            fallback = f"{opening}{topic}谈到一半（{elapsed_label}），{situation}"
         elif is_triggered:
             situation = f"我中途撂下了这场谈话{thought_part}"
-            fallback = f"{opening}就「{purpose}」谈到一半（{elapsed_label}），我中途撂下了这场谈话{thought_part}"
+            fallback = f"{opening}{topic}谈到一半（{elapsed_label}），我中途撂下了这场谈话{thought_part}"
         else:
             situation = "对方突然中止了交谈"
-            fallback = f"{opening}就「{purpose}」谈到一半，{situation}"
+            fallback = f"{opening}{topic}谈到一半，{situation}"
 
         if agent is None:
             return fallback
@@ -839,6 +847,9 @@ class SocialExecutor(ActionExecutor):
 从我的视角,这场被打断的对话让我记住了什么、留下什么感受。始终用我自己的口吻。
 提到我认识的人时,不妨带上其名字便于日后回想(惯以称谓相称的话,可附成「称谓（名字）」);这只是建议、不必生硬套用,陌生人用描述。
 """ + ABSOLUTE_TIME_RULE_FIRST_PERSON + """
+
+【约束】
+ - 只记下面给出的经过。没说谈的是什么,就不写谈了什么,也不替对方揣测来意。
 
 """ + _PRESENT_RELATIONS_INPUT + """
 【输出】
@@ -856,12 +867,13 @@ class SocialExecutor(ActionExecutor):
             if environment is not None else ""
         )
         header_part = f"{situation_header}\n\n" if situation_header else ""
+        happened = f"{initiator_line}，正{topic}交谈，已谈了{elapsed_label}，{situation}。"
         user = f"""\
 {header_part}【我是谁】
 {agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{doer_condition}
 
 【刚刚发生的事】
-{initiator_line}，正就「{purpose}」交谈，已谈了{elapsed_label}，{situation}。{relation_part}{scene_part}
+{happened}{relation_part}{scene_part}
 
 依上面说定的 JSON 格式记下这一场，只输出 JSON、不写任何多余内容。"""
         try:
@@ -871,8 +883,7 @@ class SocialExecutor(ActionExecutor):
                 given_facts=GivenFacts()  # same source as user above
                 .add("此刻何时何地", situation_header)
                 .add("我的处境", doer_condition)
-                .add("刚刚发生的事",
-                     f"{initiator_line}，正就「{purpose}」交谈，已谈了{elapsed_label}，{situation}。")
+                .add("刚刚发生的事", happened)
                 .add("我对在场者的关系", relation_block)
                 .add("现场", scene),
                 talk_role="initiator" if is_initiator else "addressee",
@@ -977,6 +988,7 @@ class SocialExecutor(ActionExecutor):
         purpose: str,
         expected_outcome: str,
         turns: int,
+        talk_topic: str = "",
         initiator_ctx: dict,
         target_ctx: dict,
         scene: str,
@@ -1020,6 +1032,11 @@ class SocialExecutor(ActionExecutor):
             f"{target.personality.to_prompt_context(include_emotion=True, include_goals=False)}"
             f"{target_condition}\n{target_ctx_text}"
         )
+        # What B knows of why A came: only the topic A states up front, never the purpose.
+        stated = (
+            f"{initiator_name}一开口就向{target_name}点明了来意：「{talk_topic}」；其余事情{target_name}并不知道。"
+            if talk_topic else f"{initiator_name}没有事先点明来意，{target_name}起初并不知道{initiator_name}为何而来。"
+        )
         system = _DIALOGUE_SYSTEM
         user = f"""\
 {legend_block}【A：{initiator_name}】
@@ -1028,8 +1045,9 @@ class SocialExecutor(ActionExecutor):
 【B：{target_name}】
 {lane_b}
 
-【对话目的】（以下是{initiator_name}单方面的说法与盘算，既非已定的事实，也非这场交谈该有的结局）
-{initiator_name}想就「{purpose}」与{target_name}交谈。{expected_part}{scene_part}
+【对话目的】（以下是{initiator_name}单方面的说法与意图，既非已定的事实，也非这场交谈该有的结局）
+{initiator_name}想就「{purpose}」与{target_name}交谈。{expected_part}
+{stated}{scene_part}
 
 【轮数上限】
 至多 {turns} 轮，可更少；谈完即止。
@@ -1043,6 +1061,7 @@ class SocialExecutor(ActionExecutor):
             .add(f"{target_name} 的处境", target_condition)
             .add(f"{target_name} 手上的", target_ctx_text)
             .add("对话目的", f"{initiator_name}想就「{purpose}」与{target_name}交谈。")
+            .add("开口点明的来意", talk_topic)
             .add("发起者的期望", expected_outcome)
             .add("现场", scene)
             .add("轮数上限", turns)
@@ -1097,6 +1116,7 @@ class SocialExecutor(ActionExecutor):
         *,
         sides: "tuple[_LiveSide, _LiveSide]",
         purpose: str,
+        talk_topic: str,
         expected_outcome: str,
         environment: "EnvironmentSystem",
         agents: dict[str, "Agent"],
@@ -1127,7 +1147,7 @@ class SocialExecutor(ActionExecutor):
                 line, end = answer.line, answer.end
             else:
                 reply = await self._ai_turn(
-                    me=me, conversation=conversation, purpose=purpose,
+                    me=me, conversation=conversation, purpose=purpose, talk_topic=talk_topic,
                     expected_outcome=expected_outcome, environment=environment, agents=agents,
                     step=step,
                 )
@@ -1149,6 +1169,7 @@ class SocialExecutor(ActionExecutor):
         me: "_LiveSide",
         conversation: Conversation,
         purpose: str,
+        talk_topic: str,
         expected_outcome: str,
         environment: "EnvironmentSystem",
         agents: dict[str, "Agent"],
@@ -1180,6 +1201,8 @@ class SocialExecutor(ActionExecutor):
         if me.is_initiator:
             expected_part = f"我原本期望：{expected_outcome}" if expected_outcome else ""
             opening = f"是我主动找{other_name}谈的，我想谈的是「{purpose}」。{expected_part}"
+        elif talk_topic:
+            opening = f"{other_name}来找我说话，来意是「{talk_topic}」。"
         else:
             opening = f"{other_name}来找我说话。"
         said = "\n".join(
@@ -1275,6 +1298,7 @@ class SocialExecutor(ActionExecutor):
         purpose: str,
         fallback_fact: str,
         is_initiator: bool,
+        talk_topic: str = "",
         now_step: int = 0,
         environment: "EnvironmentSystem | None" = None,
         expected_outcome: str = "",
@@ -1299,6 +1323,14 @@ class SocialExecutor(ActionExecutor):
         other = self._seen_person(other_id)
         initiator_line = f"是我主动找{other}谈的" if is_initiator else f"{other}来找我谈"
         expected_part = f"\n原本期望：{expected_outcome}" if (is_initiator and expected_outcome) else ""
+        # The initiator knows his own purpose; the addressee the topic stated up front, if any, and
+        # what was said.
+        if is_initiator:
+            opening = f"{initiator_line}，意图是「{purpose}」。"
+        elif talk_topic:
+            opening = f"{initiator_line}，来意是「{talk_topic}」。"
+        else:
+            opening = f"{initiator_line}。"
         # other_name stays out of system (prefix cache); the reminder at the end of user names him.
         system = """\
 我此刻代入这个角色,以第一人称「我」记下这场刚结束的对话——这是我一贯的记事方式,与处境无关。
@@ -1329,7 +1361,7 @@ class SocialExecutor(ActionExecutor):
 {agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{doer_condition}
 
 【刚结束的对话】
-{initiator_line}，话题是「{purpose}」。{relation_part}{expected_part}
+{opening}{relation_part}{expected_part}
 对话记录：
 {transcript}
 
@@ -1340,7 +1372,7 @@ class SocialExecutor(ActionExecutor):
                 "given_facts": GivenFacts()  # same source as user above
                 .add("此刻何时何地", situation_header)
                 .add("我的处境", doer_condition)
-                .add("刚结束的对话", f"{initiator_line}，话题是「{purpose}」。")
+                .add("刚结束的对话", opening)
                 .add("我对在场者的关系", rels)
                 # The addressee never saw the initiator's expectation; declaring it would blind
                 # the leak review.
@@ -1350,7 +1382,7 @@ class SocialExecutor(ActionExecutor):
                 "action_owner": agent.personality.soul.name,
             }
             if not is_initiator:
-                call_annotations["conscripted_input"] = f"{initiator_line}，话题是「{purpose}」"
+                call_annotations["conscripted_input"] = opening
             with observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
                 **call_annotations
             ):
@@ -1385,6 +1417,7 @@ class SocialExecutor(ActionExecutor):
         initiator_id: str,
         target_id: str,
         transcript: str,
+        talk_topic: str = "",
         now_step: int = 0,
         environment: "EnvironmentSystem | None" = None,
     ) -> str | None:
@@ -1407,6 +1440,8 @@ class SocialExecutor(ActionExecutor):
         )
         header_part = f"{situation_header}\n\n" if situation_header else ""
         speakers = f"说话的是{self._seen_person(initiator_id)}与{self._seen_person(target_id)}"
+        # A listener knows the topic its initiator stated up front, as the addressee does.
+        stated = f"{self._seen_person(initiator_id)}发起的对话，来意是「{talk_topic}」。" if talk_topic else ""
         system = """\
 我此刻代入这个角色,以第一人称「我」记下我方才在旁边听到的一场对话——这是我一贯的记事方式,与处境无关。
 
@@ -1434,7 +1469,7 @@ class SocialExecutor(ActionExecutor):
 {agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{doer_condition}
 
 【我在旁边听到的对话】
-{speakers}，我在一旁听着。
+{speakers}，我在一旁听着。{stated}
 对话记录：
 {transcript}
 
@@ -1446,6 +1481,7 @@ class SocialExecutor(ActionExecutor):
                 .add("此刻何时何地", situation_header)
                 .add("我的处境", doer_condition)
                 .add("我在旁边听到的", speakers)
+                .add("说话人点明的来意", talk_topic)
                 .add("对话记录", transcript),
                 talk_role="listener", action_owner=agent.personality.soul.name,
             ):

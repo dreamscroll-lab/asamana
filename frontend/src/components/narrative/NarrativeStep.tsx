@@ -130,7 +130,7 @@ export default function NarrativeStep({
           }
 
           // A tick never replays the dialogue.
-          const turns = item.data.private.dialogue.filter((t) => t.line);
+          const turns = (item.shared?.dialogue ?? []).filter((t) => t.line);
           const sig = turns.map((t) => `${t.speaker}:${t.line}`).join("|");
           const showConversation =
             turns.length > 0 && !spoken.has(sig) && item.data.phase !== Phase.ongoing_tick;
@@ -139,13 +139,14 @@ export default function NarrativeStep({
             <ActionRow
               key={key}
               act={item.data}
-              thoughts={item.thoughts}
+              privateParts={item.private_parts}
               cast={cast}
               turns={turns}
               showConversation={showConversation}
               born={born}
               entities={index.entities}
-              inside={item.inside}
+              shared={item.shared}
+              actionDescription={item.action_description}
               mine={viewer !== null && item.data.participant_ids.includes(viewer)}
             />
           );

@@ -376,18 +376,21 @@ export function localAnnounce(host: FxHost, tok: AgentToken): Promise<void> {
 // in the arm. One table would draw taking a letter as smashing it.
 //
 // Failure is a modifier: whatever the deed, the world shows "nothing landed" (missEffect),
-// while the body still performs the deed (deedBody).
+// while the body still performs the deed (deedBody). Seen from outside the verdict is unknown
+// (`shared` null): only what the things themselves show is drawn (`affected_entity_ids`, empty
+// when nothing gave), never a blow landing or missing.
 export function physicalEffect(host: FxHost, tok: AgentToken, act: Beat): void {
-  if (act.succeeded === false) {
+  const verdict = act.shared?.succeeded ?? null;
+  if (verdict === false) {
     missEffect(host, tok, actedOnAgents(act.target));
     return;
   }
   switch (act.deed) {
     case Deed.strike:
-      combatStrike(host, tok, actedOnAgents(act.target));
+      if (verdict) combatStrike(host, tok, actedOnAgents(act.target));
       break;
     case Deed.restrain:
-      subdueEffect(host, tok, actedOnAgents(act.target));
+      if (verdict) subdueEffect(host, tok, actedOnAgents(act.target));
       break;
     case Deed.destroy:
       smashEffect(host, tok, act);
@@ -400,6 +403,7 @@ export function physicalEffect(host: FxHost, tok: AgentToken, act: Beat): void {
       break;
     case Deed.exert:
       // Force spent on nothing in particular: no victim, no debris.
+      if (!verdict) break;
       emanateRings(host, tok.container.x, tok.container.y + 4, 0x9a8a6a, { count: 2, maxR: 46, duration: 560, width: 3 });
       burstParticles(host, tok.container.x, tok.container.y, 0xb0a080, { count: 12, speed: 62, size: 4 });
       break;

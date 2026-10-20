@@ -413,6 +413,7 @@ function Asked({
         <p>
           <span style={inviter ? { color: ink(inviter.agent_id) } : undefined}>{who}</span>
           {turn.invitation?.action_type === ActionType.talk ? "想与你交谈。" : "邀你一起行动。"}
+          {turn.invitation?.talk_topic && <span>来意：{turn.invitation.talk_topic}。</span>}
           {turn.decided && <span className="text-slate-400">接受邀请就要放下：{turn.decided}。</span>}
         </p>
         {open && (

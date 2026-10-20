@@ -51,7 +51,7 @@ export function collapsedOf(item: FeedItem, cast: StepCast): { icon: string; tex
   if (item.kind === "broadcast") return { icon: "📣", text: item.data.content };
   if (item.kind === "observation") return { icon: "👁", text: item.data.text };
   const act = item.data;
-  const what = item.inside ? act.private.action_description : act.public?.text ?? "";
+  const what = item.action_description || act.public?.text || "";
   return {
     icon: metaOf(act).icon,
     text: `${act.participant_ids.map((id) => cast.nameOf(id) || "某人").join(" · ")} · ${what}`,

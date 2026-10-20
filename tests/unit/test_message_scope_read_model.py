@@ -56,6 +56,19 @@ def test_named_recipients_are_a_private_letter_where_each_of_them_stands() -> No
     assert [msg.audience for _, msg in delivered] == [["agent-b"], ["agent-c"]]
 
 
+def test_co_recipients_standing_together_each_receive_their_own_letter() -> None:
+    """Standing side by side is not reading over a shoulder: a receiver perceives the letter
+    from its sender, never who else it went to."""
+    delivered = events(_step(_message(seq=4, receivers=[
+        {"agent_id": "agent-b", "location_id": "loc-gate"},
+        {"agent_id": "agent-c", "location_id": "loc-gate"},
+    ])), "message")
+
+    assert [(where, msg.receiver_ids, msg.audience) for where, msg in delivered] == [
+        ("loc-gate", ["agent-b"], ["agent-b"]), ("loc-gate", ["agent-c"], ["agent-c"]),
+    ]
+
+
 def test_a_letter_reaching_a_traveler_lands_on_the_way() -> None:
     [(where, _)] = events(_step(_message(
         recipients=["agent-b"], receivers=[{"agent_id": "agent-b", "location_id": IN_TRANSIT}],

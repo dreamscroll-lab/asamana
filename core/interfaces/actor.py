@@ -140,6 +140,8 @@ class Invitation:
     inviter: BriefPerson
     # The kind of act it is invited into.
     action_type: ActionType
+    # A TALK's topic, if the inviter stated one (``AgentAction.talk_topic``).
+    talk_topic: str = ""
 
 
 @dataclass(frozen=True)
@@ -194,7 +196,6 @@ class ActorAction:
     action_type: ActionType
     # First person: what I do.
     action_description: str
-    inner_monologue: str = ""
     expected_outcome: str = ""
     estimated_steps: int = 1
     # SEND_MESSAGE recipients, or TALK: the first is whom I talk with, the rest listen. (people)
@@ -203,6 +204,8 @@ class ActorAction:
     message_announce: bool = False
     # SEND_MESSAGE: the words delivered. A TALK's words the actor speaks turn by turn.
     message_content: str = ""
+    # TALK: what it is about, known to everyone in it from the start; "" keeps it to myself.
+    talk_topic: str = ""
     # SEND_MESSAGE: how pressing the words are to whoever receives them.
     urgency: Urgency = Urgency.NORMAL
     destination_id: str | None = None                # MOVE (places)

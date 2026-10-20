@@ -214,6 +214,8 @@ def build_actor_action_summary(
         params["item_name"] = action.item_name
     if action.physical_recipient_id:
         params["recipient_id"] = action.physical_recipient_id
+    if action.talk_topic:
+        params["talk_topic"] = action.talk_topic
     if action.action_type is ActionType.SEND_MESSAGE:
         params["message"] = action.message_content
         params["announce"] = action.message_announce

@@ -41,13 +41,11 @@ def test_a_joint_act_is_one_event_told_by_its_initiator() -> None:
     assert where == "loc-hall"
     assert act.participant_ids == ["a", "b"]
     assert act.public is not None and act.public.text == "甲与乙低声交谈"
-    assert act.private.outcome == "甲对乙说了实话"
+    assert act.shared is not None and act.shared.outcome == "甲对乙说了实话"
     # Inside it: who spent a turn, who it landed on, who overheard. Nobody else.
-    assert act.private.audience == ["a", "b", "d", "c"]
-    # The thought is its owner's, filed under the act it led to.
-    [thought] = agent(step, "a").private.thoughts
-    assert (thought.seq, thought.text) == (5, "我得说出来")
-    assert agent(step, "b").private.thoughts == []
+    assert act.shared.audience == ["a", "b", "d", "c"]
+    # Each participant's own part stays theirs, initiator first.
+    assert [(p.agent_id, p.inner_monologue) for p in act.private] == [("a", "我得说出来"), ("b", "")]
 
 
 def test_a_move_through_a_waypoint_in_one_step_is_told_at_each_place() -> None:
@@ -86,14 +84,15 @@ def test_a_journey_over_steps_opens_at_its_origin_and_runs_on_the_way() -> None:
     ))
     [(where, act)] = events(tick, "action")
     assert where == "loc-yard"
-    assert (act.private.elapsed_steps, act.private.total_steps) == (1, 3)
+    assert act.shared is not None
+    assert (act.shared.elapsed_steps, act.shared.total_steps) == (1, 3)
 
 
 def test_an_act_nobody_saw_has_no_public_side() -> None:
     act = step_of_records(_record(action_type="covert", location_id="loc-hall", outcome="甲翻看了密信"))
     [(_, covert)] = events(act, "action")
     assert covert.public is None
-    assert covert.private.outcome == "甲翻看了密信"
+    assert covert.shared is not None and covert.shared.outcome == "甲翻看了密信"
 
 
 def test_beats_of_one_execution_stay_apart_from_a_new_one() -> None:
@@ -158,12 +157,36 @@ def test_what_shows_of_an_agent_is_not_what_he_is_doing() -> None:
     assert seen.private.activity_status == "covert"
 
 
-def test_an_act_tells_onlookers_what_they_saw_and_keeps_the_intent() -> None:
+def test_an_act_tells_onlookers_what_they_saw_and_keeps_the_intent_its_doers() -> None:
     act = the_action(_record(
         action_type="covert", phase="begin", location_id="loc-hall", outcome="甲开始盯梢",
         action_description="假装路过，暗中盯着乙", duration_label="约2小时", elapsed_steps=0,
         total_steps=2, observations=[_seen("loc-hall", "甲在院中闲逛")],
     ))
     assert act.public is not None and act.public.text == "甲在院中闲逛"
-    assert act.private.action_description == "假装路过，暗中盯着乙"
-    assert (act.private.duration_label, act.private.total_steps) == ("约2小时", 2)
+    [own] = act.private
+    assert (own.agent_id, own.action_description) == ("a", "假装路过，暗中盯着乙")
+    assert act.shared is not None
+    assert (act.shared.duration_label, act.shared.total_steps) == ("约2小时", 2)
+
+
+def test_the_verdict_is_known_inside_it_not_seen_from_outside() -> None:
+    """Success is measured against the doer's purpose, which onlookers don't know: they have
+    only what they saw."""
+    act = the_action(_record(
+        action_type="talk", location_id="loc-hall", outcome="甲劝乙未果",
+        succeeded=False, failure_reason="乙不肯松口", observations=[_seen("loc-hall", "甲与乙说了几句")],
+    ))
+    assert act.shared is not None
+    assert (act.shared.succeeded, act.shared.failure_reason) == (False, "乙不肯松口")
+    assert act.public is not None and act.public.text == "甲与乙说了几句"
+
+
+def test_a_talk_s_stated_topic_is_shared_its_description_is_not() -> None:
+    """Everyone in a talk knows the topic its initiator stated; what he set out to do is his."""
+    act = the_action(_record(
+        action_type="talk", location_id="loc-hall", talk_topic="借一步说话",
+        action_description="探他口风",
+    ))
+    assert act.shared is not None and act.shared.talk_topic == "借一步说话"
+    assert [p.action_description for p in act.private] == ["探他口风"]

@@ -163,10 +163,11 @@ def _decision_prompt(engine: DecisionEngine, *args, **kwargs) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_agent_action_post_init_populates_content_from_description() -> None:
-    action = AgentAction(action_type=ActionType.REST, action_description="Take a rest.")
+def test_agent_action_content_is_never_filled_from_its_description() -> None:
+    """``content`` is what a message delivers; the description is the doer's own."""
+    action = AgentAction(action_type=ActionType.SEND_MESSAGE, action_description="写信探他口风")
 
-    assert action.content == "Take a rest."
+    assert action.content == ""
 
 
 def test_agent_action_post_init_populates_description_from_content() -> None:
@@ -631,10 +632,9 @@ def test_talk_folds_message_content_into_action_description(container: object) -
     soul = SoulLayer(name="林语晴", role="学生", agent_id="agent-1")
     personality = PersonalityLayer(soul=soul, state=StateLayer(agent_id="agent-1", step=0))
     action = engine._build_action(selection, personality, packet)  # noqa: SLF001
-    # TALK has no delivery channel: content still mirrors action_description (with the content
-    # merged in) and carries no separate message
+    # TALK has no delivery channel: it carries no message content.
     assert action.action_description == selection.action_description
-    assert action.content == selection.action_description
+    assert action.content == ""
 
 
 def test_talk_without_message_content_keeps_description_unchanged(container: object) -> None:
@@ -655,6 +655,32 @@ def test_talk_without_message_content_keeps_description_unchanged(container: obj
     selection = engine._parse_llm_selection(payload, candidates, packet)  # noqa: SLF001
     assert selection is not None
     assert selection.action_description == "我去和他说话。"
+
+
+def test_a_talk_s_stated_topic_stays_apart_from_its_description(container: object) -> None:
+    """The topic is what the other side knows from the start; the description stays the doer's
+    own. Only a TALK keeps one."""
+    engine = _make_engine(container)
+    packet = _make_packet(visible_agent_ids=["agent-2"])
+
+    def parse(action_type: ActionType, **extra: str) -> object:
+        payload = json.dumps(
+            {
+                "selected_index": 0, "person_indices": [1],
+                "action_description": "我去探他口风，问他最担忧何事。",
+                "talk_topic": "借一步说话，核对谋划", "estimated_steps": 1, **extra,
+            },
+            ensure_ascii=False,
+        )
+        candidates = [ActionCandidate(action_type=action_type, description="")]
+        return engine._parse_llm_selection(payload, candidates, packet)  # noqa: SLF001
+
+    talk = parse(ActionType.TALK)
+    assert talk is not None
+    assert talk.talk_topic == "借一步说话，核对谋划"
+    assert talk.action_description == "我去探他口风，问他最担忧何事。"
+    send = parse(ActionType.SEND_MESSAGE, message_content="明日午时见。")
+    assert send is not None and send.talk_topic == ""
 
 
 def test_covert_does_not_bind_agent_target(container: object) -> None:
@@ -1279,7 +1305,18 @@ def test_a_directed_message_to_nobody_resolvable_is_rejected(container: object) 
     packet = _make_packet(visible_agent_ids=["agent-2"])
     assert _sel(engine, {"person_indices": [99]}, ActionType.SEND_MESSAGE, packet) is None
     # An explicitly declared announcement needs no recipient index and is structurally valid.
-    assert _sel(engine, {"message_announce": True}, ActionType.SEND_MESSAGE, packet) is not None
+    assert _sel(
+        engine, {"message_announce": True, "message_content": "众人听令"}, ActionType.SEND_MESSAGE, packet,
+    ) is not None
+
+
+def test_a_message_without_words_is_rejected(container: object) -> None:
+    """No words, no message: the description is the sender's own and is never sent in their place."""
+    engine = _make_engine(container)
+    packet = _make_packet(visible_agent_ids=["agent-2"])
+    assert _sel(engine, {"person_indices": [1]}, ActionType.SEND_MESSAGE, packet) is None
+    sel = _sel(engine, {"person_indices": [1], "message_content": "明日午时见。"}, ActionType.SEND_MESSAGE, packet)
+    assert sel is not None and sel.message_content == "明日午时见。"
 
 
 def test_naming_someone_outranks_the_announce_flag(container: object) -> None:
@@ -1290,7 +1327,7 @@ def test_naming_someone_outranks_the_announce_flag(container: object) -> None:
     packet = _make_packet(visible_agent_ids=["agent-2"])
     sel = _sel(
         engine,
-        {"person_indices": [1], "message_announce": True},
+        {"person_indices": [1], "message_announce": True, "message_content": "明日午时见。"},
         ActionType.SEND_MESSAGE,
         packet,
     )

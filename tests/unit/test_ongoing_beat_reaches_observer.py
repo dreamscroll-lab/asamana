@@ -114,7 +114,7 @@ async def test_the_progress_beat_survives_the_read_model_without_leaking_an_id(c
     assert summary.phase == "ongoing_tick"
     assert summary.initiator_id == "agent-a"
     assert summary.execution_id
-    assert summary.private.action_description
+    assert summary.private[0].agent_id == "agent-a" and summary.private[0].action_description
 
 
 @pytest.mark.asyncio

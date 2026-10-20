@@ -169,6 +169,8 @@ class LLMSelection:
     # layer, delivered and read by recipients). A different voice from action_description (my own
     # memory of the act). Empty for other actions.
     message_content: str = ""
+    # TALK only: see AgentAction.talk_topic.
+    talk_topic: str = ""
     # ERRAND only: who runs it, where to, and what to do there. None for other actions.
     errand: "ErrandOrder | None" = None
 
@@ -276,12 +278,17 @@ def _bind_send(slots: _Slots) -> "_Bound | None":
     on the list" both look empty, and the lenient reading treats a beat that never touched the
     world as carried out. So reject when neither channel is used, or when no index resolves.
     If both are given, directed wins (declaration order is priority, as in ``_bind_physical``).
+
+    No words, no message: ``action_description`` is the sender's own and is never delivered in
+    their place.
     """
     recipients = slots.many("person_indices", slots.roster_ids)
     if slots.grounded and slots.indices("person_indices") and not recipients:
         return slots.reject("send_recipients_unresolvable")
     if slots.grounded and not recipients and not slots.flag("message_announce"):
         return slots.reject("send_without_channel")
+    if not _text(slots.payload, "message_content"):
+        return slots.reject("message_required")
     return _Bound(ActionTarget(acts_on=[Ref.agent(aid) for aid in recipients]))
 
 
@@ -472,7 +479,7 @@ _TARGET_BINDERS: dict[ActionType, Callable[[_Slots], "_Bound | None"]] = {
 _ACTION_COMMON_FIELDS = frozenset({"action_description", "estimated_steps"})
 _DECISION_FIELDS = frozenset({"inner_monologue", "expected_outcome", "urgency"})
 _ACTION_FIELDS: dict[ActionType, frozenset[str]] = {
-    ActionType.TALK: frozenset({"person_indices", "message_content"}),
+    ActionType.TALK: frozenset({"person_indices", "message_content", "talk_topic"}),
     ActionType.SEND_MESSAGE: frozenset({"person_indices", "message_content", "message_announce"}),
     ActionType.MOVE: frozenset({"destination_index", "move_carry_indices"}),
     ActionType.PHYSICAL: frozenset({
@@ -581,6 +588,7 @@ def _select(payload: dict, action_type: ActionType, slots: _Slots) -> LLMSelecti
         urgency=parse_urgency(payload.get("urgency"), default=Urgency.NORMAL),
         expected_outcome=_text(payload, "expected_outcome"),
         message_content=_text(payload, "message_content"),
+        talk_topic=_text(payload, "talk_topic") if action_type is ActionType.TALK else "",
     )
 
 
@@ -688,17 +696,12 @@ class DecisionEngine:
             expected_outcome=expected_outcome,
             estimated_steps=selection.estimated_steps,
             urgency=selection.urgency,
+            talk_topic=selection.talk_topic,
             remaining_steps=selection.estimated_steps,
             status=ActionStatus.IN_PROGRESS,
             # This can become a message's intent, so it stays narrative.
             reason=selection.inner_monologue,
-            # SEND_MESSAGE: the verbatim words to deliver; otherwise mirrors action_description
-            # (unread downstream).
-            content=(
-                selection.message_content
-                if selection.action_type == ActionType.SEND_MESSAGE and selection.message_content
-                else selection.action_description
-            ),
+            content=selection.message_content if selection.action_type == ActionType.SEND_MESSAGE else "",
             intent=intent,
         )
 
@@ -817,8 +820,9 @@ class DecisionEngine:
                     # may each carry a bracketed date (ABSOLUTE_TIME_RULE, ≈8 chars×3 ≈36 tok) → ~416.
                     # Per-type extras are mutually exclusive: PHYSICAL recipient index ≈11 or
                     # item_id≤10 chars ≈20 → ≤~436; MOVE move_carry_indices ≈12 → ~439; SEND
-                    # message_announce ≈8 → ~447. ERRAND is costliest: ~416 + errand_message≤60
-                    # chars ≈90 + four index fields ≈44 + errand_announce ≈8 → ~558.
+                    # message_announce ≈8 → ~447; TALK talk_topic≤30 chars ≈50 → ~466. ERRAND is
+                    # costliest: ~416 + errand_message≤60 chars ≈90 + four index fields ≈44 +
+                    # errand_announce ≈8 → ~558.
                     max_tokens=output_budget(558),
                     json_mode=True,
                 )
@@ -931,7 +935,8 @@ class DecisionEngine:
                 temperature=0.2,
                 # reason/action_description ≤40 chars each ≈120 + decision/steps ≈6 + keys ≈20.
                 # ERRAND adds ≤4 indices ≈32 + message ≤60 chars ≈95 + announce ≈8;
-                # operation/consistency ≈16 → <320. Free text retains its full-schema estimate.
+                # operation/consistency ≈16 → <320; TALK's talk_topic ≤30 chars ≈50 stays under
+                # ERRAND's. Free text retains its full-schema estimate.
                 max_tokens=output_budget(320 if has_selected_operation else 420),
                 json_mode=True,
             )
@@ -1015,7 +1020,7 @@ class DecisionEngine:
             "selected_index": '<act 时：【行动类型】里的序号，0 起>',
             "person_indices": '<最多10个整数，"我能触及的人"的序号；TALK 第一个是交谈对象，SEND_MESSAGE 是收件人>',
             "message_announce": '<SEND_MESSAGE 不指名、当众宣告时填 true>',
-            "message_content": '"<SEND_MESSAGE 要送出的原话，第一人称对收件人说，≤60字；TALK 不填：交谈的话由角色当面一句句说>"',
+            "message_content": '"<SEND_MESSAGE 要送出的原话，第一人称对收件人说，≤60字；SEND_MESSAGE 必填，指令里没有可照录的话就不要硬编；TALK 不填：交谈的话由角色当面一句句说>"',
             "destination_index": '<MOVE 的去处，"我可前往"的序号>',
             "move_carry_indices": '<最多10个整数，MOVE 时强行带走的在场者，"我能触及的人"的序号>',
             "physical_person_index": '<PHYSICAL 对人，"我能触及的人"里标(在场)者的序号>',
@@ -1030,6 +1035,7 @@ class DecisionEngine:
             "errand_announce": '<ERRAND 到了那处当众说出 errand_message 时填 true>',
             "errand_message": '"<ERRAND 他到那头要原样说出口的话，≤60字>"',
             "action_description": '"<act 时：角色第一人称，写这一拍做什么，≤40字>"',
+            "talk_topic": '"<TALK 时，指令里说明的、要让对方一开始就知道的来意，≤30字；指令没说明就不填>"',
             "estimated_steps": f'<act 时：整数，>=1；每步{step_duration}，这件事要做多久；没说就填 1>',
         }
 
@@ -1332,7 +1338,7 @@ class DecisionEngine:
 - 在行动前，需要先判断该事之前是不是做过，如果做过现在又重复做，需要先清楚为什么要重复做。宁可什么都不做也不要做一些无意义的重复的事情。
 - 行动前需要分析清楚此刻的自身处境，做出的行动选择需要符合常理，比如我正在被别人攻击，行动选择却是我现在要偷偷观察别人怎么打我，这是明显的不符合常理的。
 - 如果近期经历连续的行动失败，可以考虑换一种行动方式，不要过于一直执着于一种行动方式。比如如果交谈持续失败，可以采用物理方式等等。改变策略的建议：换行动方式，换地点，换目标等等。
-- SEND_MESSAGE/TALK选person_indices的时候要注意，如果你的action_description，message_content不想让person_indices知道，那你就不要选，否则会造成信息泄漏，比如我现在想与A讨论关于B的坏事，那person_indices应该选择是A，而不是B。
+- 选person_indices的时候要注意谁会知道什么：SEND_MESSAGE的收件人会读到message_content；TALK的对象和旁听的人会知道talk_topic。不想让谁知道的，就别选他、也别写进去，否则会造成信息泄漏，比如我现在想与A讨论关于B的坏事，那person_indices应该选择是A，而不是B。
 - 只传一句话就用 SEND_MESSAGE：一拍即达、不占人手、对方在哪儿都收得到。派人跑一趟值得占用一个人，是因为它能做 SEND_MESSAGE 做不到的事——把东西送到某人手上、把那边的情形看回来。只为传一句话就派人跑腿，是白费一个人和一个来回；而要打听消息、要人回答我、要说服或引开谁，派人跑腿办不到，他只会走到、说出、看见。
 - 行动前我先认准此刻是什么时候（下面会说明此刻是何年何月何日、几时）：眼下的时辰决定这一行动合不合时宜。如果出现时间错乱，需要先思考为什么会出现时间错乱，同时也会有可能付出必要的行动。
 - 对于人的生死我要特别关注，如果出现死者复现的情况，我需要分析是什么原因，比如某人之前已经死亡了，但是现在又感知到他在场，这个我需要特别关注，如果有必要可以做出相应的行动。
@@ -1366,7 +1372,8 @@ class DecisionEngine:
   "errand_announce": <仅当我要他到了那处把 errand_message *当众*广播宣告给在场的所有听时：填 true。我看不见那处有谁，所以公开是我主动选的，不是默认；只说给某个人听、或那只是我对他的交代，就省略此字段>,
   "errand_message": "<他到了那头**说出口**的原话。**先定听众**：填了 errand_recipient_index 就只说给那一个人听；填了 errand_announce=true 就是当众宣告。两个都没有，那这句话就不会被他说出口——它会被当成我打发他时的交代收起来。写成能照着说出口的话：第一人称，对听的人说，20-60字。这趟差事是干什么的已经写在 action_description 里，不必在这儿重复。不带话就省略>",
   "action_description": "<**act=true 时必填，任何行动都不可省**。第一人称，写我打算做什么，内容要具体完整：若上面指认了对象，就落到那个人 / 地点 / 物上；若这一动只关乎我自己(无对象可指认)，就直接写我此刻要做的事。描述具体清晰，简洁明了，15-40字>",
-  "message_content": "<仅当 SEND_MESSAGE：我此刻要对**上面 person_indices 指认的那些收件人**(或在场众人)当面说出的**原话**，第一人称直接对其说，像真的在传话/宣告——不是对我自己动作的描述，也不要以第三人称提到对方；20-60字。其他行动一律省略此字段>",
+  "talk_topic": "<仅当 TALK：我找对方谈的来意，谈话一开始对方和旁听的人就都知道；不想让他们事先知道我的来意，就省略此字段。≤30字>",
+  "message_content": "<仅当 SEND_MESSAGE：我此刻要对**上面 person_indices 指认的那些收件人**(或在场众人)当面说出的**原话**，第一人称直接对其说，像真的在传话/宣告——不是对我自己动作的描述，也不要以第三人称提到对方；20-60字。SEND_MESSAGE 必填：没有原话，这一动就作废。其他行动一律省略此字段>",
   "expected_outcome": "<我期望这一步带来什么，10-30字>",
   "estimated_steps": <整数，>=1；每步{step_hint}，完成某件事情或者持续做某件事的时长，MOVE 由距离自动决定，填 1 即可；若选 REST，休息时长看两头——身体亏空越深(越接近垮掉)越要久，手头待办越多/越急则越短(只够缓口气)，在两者间权衡取值。>,
   "urgency": <"low"|"normal"|"high"|"critical"，仅 SEND_MESSAGE 有效；照我上面写下的原话有多急来定，对方据此判断是否中断手头事>
@@ -1620,9 +1627,9 @@ _ACTOR_ID_SLOTS: tuple[tuple[str, str, Callable[[CandidateLists], List[str]]], .
 # Slots with no list: same meaning in both shapes, and only ``item_name`` is named differently.
 _ACTOR_TEXT_SLOTS: tuple[tuple[str, str], ...] = (
     ("action_description", "action_description"),
-    ("inner_monologue", "inner_monologue"),
     ("expected_outcome", "expected_outcome"),
     ("message_content", "message_content"),
+    ("talk_topic", "talk_topic"),
     ("item_name", "item_id"),
     ("errand_message", "errand_message"),
 )

@@ -1094,8 +1094,10 @@ What follows from the principle:
   (`Agent.actor`); no `if actor` in the step loop or its stages.
 - **Not a rule path.** No cognition gate switches to rules (Design Principle 5).
 - **The actor shares the character's information boundary, not the AI's input.** It knows only
-  what the character perceived. Visibility is decided once, in each event's public side and
-  audience; the actor's view of a step (`StepView`) is a filter over that, never a second
+  what the character perceived. Visibility is decided once, in the read model's three tiers:
+  **public** (anyone present perceives it), **shared** (everyone inside an event knows it, with
+  its `audience`) and **private** (only one knows it: their own mind, their own part of an act).
+  The actor's view of a step (`StepView`) is a filter over those tiers, never a second
   visibility rule. What reached the character in a step (the actor thread's `PerceivedEntry`) is
   its perception stage's own input, not a view built anew.
 

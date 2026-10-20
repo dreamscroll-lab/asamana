@@ -162,6 +162,7 @@ class ExecutionProcessor:
                     # 「第N步」 in narrative text.
                     "elapsed_steps": exec_state.estimated_steps - exec_state.remaining_steps,
                     "total_steps": exec_state.estimated_steps,
+                    "talk_topic": exec_state.talk_topic,
                 })
 
         if completing:
@@ -633,6 +634,7 @@ class ExecutionProcessor:
             "participant_ids": list(exec_state.participant_ids),  # every member self-filters
             # Lets an observer folding the execution's records pick the initiator's outcome.
             "initiator_id": exec_state.initiator_id,
+            "talk_topic": exec_state.talk_topic,
             **action_semantics(result.action, result),
         }
 

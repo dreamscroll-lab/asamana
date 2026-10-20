@@ -18,7 +18,7 @@ const agent = (agent_id: string, carrying: { open?: Record<string, EntityView>; 
     emotion: "", emotion_label: "", emotion_intensity: null, emotion_valence: null, dominant_need: null,
     dominant_need_label: "", vitality: 1, activity_status: "", activity_label: "", transit: null,
     long_term_goals: [], short_term_goals: [],
-    relations: [], thoughts: [], carrying: carrying.hidden ?? {},
+    relations: [], carrying: carrying.hidden ?? {},
   },
 });
 
@@ -35,12 +35,13 @@ const npcs: Npcs = {
 const talk: ActionSummary = {
   kind: "action", seq: 7, execution_id: "x", initiator_id: "a", participant_ids: ["a", "b"], action_type: "talk",
   phase: "settled", deed: "talk", target: { acts_on: [], claims: [], reaches: [] },
-  affected_entity_ids: [], overheard_by: [], interrupted_by: "", succeeded: true, failure_reason: "",
+  affected_entity_ids: [], overheard_by: [], interrupted_by: "",
   detected: false, not_executed: false, public: null,
-  private: {
-    audience: ["a", "b"], outcome: "", gist: "", dialogue: [], action_description: "", duration_label: "",
-    elapsed_steps: 0, total_steps: 0, route: null,
+  shared: {
+    audience: ["a", "b"], outcome: "", gist: "", succeeded: true, failure_reason: "", dialogue: [],
+    talk_topic: "", duration_label: "", elapsed_steps: 0, total_steps: 0, route: null,
   },
+  private: [],
 };
 
 const step: StepView = {
@@ -84,29 +85,39 @@ describe("beatsOf", () => {
     expect(beats[1].agent_name).toBe("名-b");
   });
 
-  // One act of one type, seen by "me" from inside or out.
-  const seen = (action_type: string, audience: string[]): StepView => ({
+  // One act of one type, done by `doer`, seen by "me" from inside or out.
+  const seen = (action_type: string, audience: string[], doer = "a"): StepView => ({
     ...step,
     locations: { hall: { ...step.locations.hall, events: [{
-      ...talk, action_type, deed: action_type, participant_ids: ["a"],
+      ...talk, action_type, deed: action_type, initiator_id: doer, participant_ids: [doer],
       public: { text: "旁人所见", strength: null },
-      private: { ...talk.private, audience, action_description: "我自己的说法", gist: "要旨" },
+      shared: { ...talk.shared!, audience, gist: "要旨" },
+      private: [{ agent_id: doer, action_description: "我自己的说法", inner_monologue: "" }],
     }] } },
   });
 
-  it("亲历的事用行动者自己的说法", () => {
-    const [beat] = beatsOf(indexStep(seen("work", ["me"])), "me");
-    expect([beat.inside, beat.caption]).toEqual([true, "我自己的说法"]);
+  it("自己做的事用自己的说法", () => {
+    const [beat] = beatsOf(indexStep(seen("work", ["me"], "me")), "me");
+    expect([beat.shared !== null, beat.caption]).toEqual([true, "我自己的说法"]);
+  });
+
+  it("亲历别人做的事只知要旨,不知他的打算", () => {
+    const [beat] = beatsOf(indexStep(seen("work", ["a", "me"])), "me");
+    expect([beat.shared !== null, beat.caption]).toEqual([true, "要旨"]);
   });
 
   it("旁观时动作能说明的事不配字", () => {
-    expect(beatsOf(indexStep(seen("physical", [])), "me")[0].caption).toBe("");
     expect(beatsOf(indexStep(seen("talk", [])), "me")[0].caption).toBe("");
   });
 
   it("旁观时动作说不清的事用旁人所见兜底", () => {
     const [beat] = beatsOf(indexStep(seen("work", [])), "me");
-    expect([beat.inside, beat.caption]).toEqual([false, "旁人所见"]);
+    expect([beat.shared, beat.caption]).toEqual([null, "旁人所见"]);
+  });
+
+  it("旁观动手不知成败,配上旁人所见", () => {
+    const [beat] = beatsOf(indexStep(seen("physical", [])), "me");
+    expect([beat.shared, beat.caption]).toEqual([null, "旁人所见"]);
   });
 });
 
@@ -136,7 +147,7 @@ describe("figuresOf", () => {
     };
     const arrived: StepView = {
       ...step,
-      locations: { hall: { ...step.locations.hall, events: [{ ...talk, action_type: "move", deed: "move", participant_ids: ["a"], private: { ...talk.private, route } }] } },
+      locations: { hall: { ...step.locations.hall, events: [{ ...talk, action_type: "move", deed: "move", participant_ids: ["a"], shared: { ...talk.shared!, route } }] } },
     };
     const figures = Object.fromEntries(figuresOf(indexStep(arrived), {}, npcs).map((f) => [f.agent_id, f]));
     expect(figures.a.arrival).toEqual(route);
@@ -150,7 +161,7 @@ describe("figuresOf", () => {
     };
     const carried: StepView = {
       ...step,
-      locations: { hall: { ...step.locations.hall, events: [{ ...talk, action_type: "move", deed: "move", participant_ids: ["a", "b"], private: { ...talk.private, route } }] } },
+      locations: { hall: { ...step.locations.hall, events: [{ ...talk, action_type: "move", deed: "move", participant_ids: ["a", "b"], shared: { ...talk.shared!, route } }] } },
     };
     const figures = Object.fromEntries(figuresOf(indexStep(carried), {}, npcs).map((f) => [f.agent_id, f]));
     expect(figures.a.arrival).toEqual(route);
@@ -164,7 +175,7 @@ describe("figuresOf", () => {
     };
     const astray: StepView = {
       ...step,
-      locations: { hall: { ...step.locations.hall, events: [{ ...talk, action_type: "move", deed: "move", participant_ids: ["a", "b"], private: { ...talk.private, route } }] } },
+      locations: { hall: { ...step.locations.hall, events: [{ ...talk, action_type: "move", deed: "move", participant_ids: ["a", "b"], shared: { ...talk.shared!, route } }] } },
     };
     const figures = Object.fromEntries(figuresOf(indexStep(astray), {}, npcs).map((f) => [f.agent_id, f]));
     expect(figures.a.arrival).toBeNull();

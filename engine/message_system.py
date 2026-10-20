@@ -170,9 +170,9 @@ class MessageSystem:
             world_id=self._world_id,
             sender_id=action.agent_id,
             sender_name=sender_name,
-            # Deliver the exact words addressed to the recipient; action_description is the
-            # sender's own narration of the act, used only when content is missing.
-            content=action.content or action.action_description,
+            # The exact words addressed to the recipient; never action_description, the sender's
+            # own account of the act.
+            content=action.content,
             intent=(action.inner_monologue or action.reason or ""),
             recipients=recipients,
             location_scope=location_scope,

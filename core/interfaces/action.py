@@ -251,17 +251,20 @@ class AgentAction:
     expected_outcome: str = ""
     estimated_steps: int = 1
     urgency: Urgency = Urgency.NORMAL   # SEND_MESSAGE only; see URGENCY_SCALE_DESCRIPTION
+    # TALK only: what the talk is about, as the doer states it up front. Everyone in the talk
+    # knows it from the start; ``action_description`` stays the doer's own. "" = he doesn't say.
+    talk_topic: str = ""
     remaining_steps: int = 1
     status: Any = None
     reason: str = ""
+    # SEND_MESSAGE only: the words delivered. Never filled from ``action_description``, which
+    # is the sender's own.
     content: str = ""
     intent: Any = None
 
     def __post_init__(self) -> None:
         if not self.action_description:
             self.action_description = self.content
-        if not self.content:
-            self.content = self.action_description
         if isinstance(self.action_type, str) and not isinstance(self.action_type, ActionType):
             self.action_type = ActionType(self.action_type)
 
