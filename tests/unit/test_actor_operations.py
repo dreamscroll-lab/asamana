@@ -25,6 +25,7 @@ from interaction.api.actor import _decode_answer, _decode_intent
 from tests.unit.test_actor_action import AWAY, HERE, _index_of, _packet
 from tests.unit.test_actor_runtime import _next_turn, _setup, _work
 from tests.unit.test_decision_m4_gaps import _make_personality
+from tests.unit.world_setups import npc_seed
 
 
 def _intent(operation: str, target: Ref, *, description: str = "", **parameters) -> ActorIntent:
@@ -89,7 +90,6 @@ async def test_description_only_errand_binds_parsed_destination(container, desti
 @pytest.mark.asyncio
 @pytest.mark.parametrize("destination_index", [1, None])
 async def test_description_only_errand_reaches_confirmation_after_full_binding(container, destination_index: int | None) -> None:
-    from world.models import NpcSeed
 
     world_id = "operations-errand-description"
     runtime, _messages, agents = _setup(container, world_id)
@@ -97,7 +97,7 @@ async def test_description_only_errand_reaches_confirmation_after_full_binding(c
     location_id = environment.space.all_place_ids()[0]
     for agent in agents:
         environment.place_agent(agent_id=agent.agent_id, location_id=location_id)
-    assert environment.spawn_npc(NpcSeed(name="Runner", gender="male", age=30, description="Runs errands"), location_id=location_id)
+    assert environment.spawn_npc(npc_seed("Runner", gender="male", age=30, description="Runs errands"), location_id=location_id)
     npc_id = environment.all_npcs()[0].npc_id
     task = asyncio.create_task(runtime.run_step(agents))
     turn = await _next_turn(runtime, task)

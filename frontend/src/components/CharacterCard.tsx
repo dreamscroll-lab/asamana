@@ -1,6 +1,7 @@
 // Character panel: a roster of every agent above the selected agent's detail. Shared by
 // observation (liveStates present: evolving state first, static dossier collapsed) and
-// creation review (no liveStates: dossier open).
+// creation review (no liveStates: dossier open, and the cast revisable until the world is
+// confirmed).
 import { useEffect, useMemo, useState } from "react";
 import ActorIcon from "./ActorIcon";
 import { api } from "../api/client";
@@ -72,6 +73,9 @@ export default function CharacterCard({
   liveStates,
   onExamine,
   viewer = null,
+  onEdit,
+  onRemove,
+  onAdd,
 }: {
   worldId: string;
   roster: CardAgent[];
@@ -82,6 +86,11 @@ export default function CharacterCard({
   onExamine?: (id: string) => void;
   // Public identity is shared; private dossiers belong to the director or the character.
   viewer?: Viewer;
+  // Revising the cast in the world's setup (creation review, before confirming); the editing
+  // itself is the caller's. `onAdd` is left out once the cast is full.
+  onEdit?: (id: string) => void;
+  onRemove?: (id: string) => void;
+  onAdd?: () => void;
 }) {
   const { cast, status: castStatus } = useCast(worldId);
   const { places } = usePlaces(worldId);
@@ -132,6 +141,14 @@ export default function CharacterCard({
       {castStatus === "error" && <button className="text-xs text-rose-300" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
       {active && privateKnown && failed.includes(active.id) && <button className="text-xs text-rose-300" onClick={() => setLoaded((prev) => ({ ...prev, failed: prev.failed.filter((id) => id !== active.id) }))}>角色资料加载失败，点击重试</button>}
       <div className="bg-slate-900/40 border border-slate-800/70 rounded-2xl p-2">
+        {onAdd && (
+          <button
+            onClick={onAdd}
+            className="w-full mb-1 px-2 py-1.5 rounded-lg border border-dashed border-slate-600 text-xs text-slate-300 hover:border-indigo-400 hover:text-white transition"
+          >
+            ＋ 添加角色
+          </button>
+        )}
         <div className="space-y-0.5 max-h-[38vh] overflow-y-auto">
           {roster.map((a) => {
             const ls = liveStates?.[a.id];
@@ -215,6 +232,26 @@ export default function CharacterCard({
               {identity?.age != null && <Badge>{identity.age} 岁</Badge>}
             </div>
           </div>
+          {(onEdit || onRemove) && (
+            <div className="ml-auto shrink-0 self-start flex gap-1.5">
+              {onEdit && (
+                <button
+                  onClick={() => onEdit(active.id)}
+                  className="text-[11px] px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-700 text-slate-300 hover:text-white hover:border-slate-600 transition"
+                >
+                  ✎ 编辑
+                </button>
+              )}
+              {onRemove && (
+                <button
+                  onClick={() => onRemove(active.id)}
+                  className="text-[11px] px-2.5 py-1 rounded-lg bg-slate-950 border border-rose-900/60 text-rose-400 hover:bg-rose-950/30 transition"
+                >
+                  删除
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {identity?.appearance && (

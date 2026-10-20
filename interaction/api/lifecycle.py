@@ -19,6 +19,7 @@ from core.logging import get_logger
 from engine.run_control import RunState
 from world.catalog import MAX_WORLD_NAME_LEN
 
+from world.stored_config import StoredWorldConfig
 from worlds.tiled import TiledWorldConfig, list_templates
 
 from interaction.api.app import ApiServices
@@ -106,17 +107,19 @@ def build_lifecycle_router(services: ApiServices) -> Any:
             # No template named → the build reads the theme and picks one from
             # what is installed. WHICH maps exist is this layer's answer to give
             # (same list GET /api/templates serves), not the engine's to discover.
-            world = await application.build_world(
+            world_id = await application.build_world(
                 job.theme, template=job.template, available_templates=list_templates()
             )
-            job.world_id = world.world_id
-            job.world_name = world.analysis.world_name
+            setup = await application.world_setup(world_id)
+            config = await manager.snapshot_provider.load_world_config(world_id) or {}
+            job.world_id = world_id
+            job.world_name = setup.lore.world_name
             # Report the map actually built on, whether it was named or chosen.
             job.template = str(
-                world.world_config.to_runtime_context().get("template") or job.template or ""
+                StoredWorldConfig(config).to_runtime_context().get("template") or job.template or ""
             ) or None
             job.status = "ready"
-            logger.info("build_job_ready", extra={"job_id": job.job_id, "world_id": world.world_id})
+            logger.info("build_job_ready", extra={"job_id": job.job_id, "world_id": world_id})
         except Exception as exc:  # noqa: BLE001 — build failures are reported, not fatal to the server
             job.status = "failed"
             job.error = str(exc)
@@ -165,7 +168,7 @@ def build_lifecycle_router(services: ApiServices) -> Any:
 
     @router.patch("/{world_id}")
     async def rename_world(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
-        """Rename a world's display name in the catalog. The step-0 snapshot and anything the
+        """Rename a world's display name in the catalog. The setup and anything the
         simulation reads are untouched, and a confirmed world stays confirmed, so a rename
         never reopens the run gate."""
         name = str(payload.get("world_name", "")).strip()
@@ -196,27 +199,23 @@ def build_lifecycle_router(services: ApiServices) -> Any:
 
     @router.post("/{world_id}/confirm")
     async def confirm_world(world_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
-        """Lock the world's setup. ``character_id`` casts the actor in the same act: the cast is
-        part of the setup, so this is the only place it is chosen. Without it the world is
-        confirmed for the director."""
+        """Lock the world's setup and materialize the world from it. ``character_id`` casts the
+        actor in the same act: the cast is part of the setup, so this is the only place it is
+        chosen. Without it the world is confirmed for the director."""
         character_id = payload.get("character_id")
-        if character_id is not None:
-            if not isinstance(character_id, str) or not character_id.strip():
-                raise HTTPException(status_code=400, detail="character_id must be a character's id")
-            # Casting rebuilds the session, which runs on the models.
-            services.require_model_keys()
-            if await manager.get_world(world_id) is None:
-                raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
-            if character_id not in await manager.character_profiles(world_id):
-                raise HTTPException(status_code=400, detail=f"No character {character_id!r} in this world")
-            try:
-                await application.cast_actor(world_id, character_id)
-            except ValueError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if character_id is not None and (not isinstance(character_id, str) or not character_id.strip()):
+            raise HTTPException(status_code=400, detail="character_id must be a character's id")
+        if await manager.get_world(world_id) is None:
+            raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
+        if character_id is not None and character_id not in await manager.character_profiles(world_id):
+            raise HTTPException(status_code=400, detail=f"No character {character_id!r} in this world")
+        # Materializing embeds the backstory and the session runs on the models.
+        services.require_model_keys()
         try:
-            meta = await manager.confirm_world(world_id)
+            await application.confirm_world(world_id, character_id=character_id)
         except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        meta = await manager.get_world(world_id)
         return _with_run_state(meta)
 
     @router.delete("/{world_id}")

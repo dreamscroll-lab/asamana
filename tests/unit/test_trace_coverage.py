@@ -27,6 +27,7 @@ from tests.unit.test_relation_evolution import (
 )
 from world.builder import WorldBuilder
 from worlds.tiled import TiledWorldConfig
+from tests.unit.confirmed_world import confirmed_world
 
 
 @pytest.fixture
@@ -72,7 +73,7 @@ async def test_successful_build_consumes_each_builders_answer(mock_build_contain
     mock_build_container.trace_sink = sink
     mock_build_container.llm_router._trace_sink = sink  # noqa: SLF001
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("a world", template="changan_iso")
+    world = await confirmed_world(app, "a world", template="changan_iso")
     calls = sink.read_calls(world.world_id)
     assert {c.scene for c in calls} >= {
         LLMScene.WORLD_BUILDING.value, LLMScene.CAST_DESIGN.value, LLMScene.PERSONA_GENERATION.value,
@@ -86,7 +87,7 @@ async def test_flush_failure_preserves_the_build_error(mock_build_container) -> 
     builder = WorldBuilder(mock_build_container)
     builder.theme_analyzer.analyze = AsyncMock(side_effect=ValueError("invalid theme output"))
     with pytest.raises(ValueError, match="invalid theme output"):
-        await builder.build("a world", world_configs=[TiledWorldConfig(template="changan_iso")])
+        await builder.build("a world", world_id="w", world_configs=[TiledWorldConfig(template="changan_iso")])
     mock_build_container.trace_sink.flush.assert_awaited_once()
 
 

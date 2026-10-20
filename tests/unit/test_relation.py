@@ -16,6 +16,7 @@ from agent.relation import (
     render_relation_context,
 )
 from core.interfaces.agent_store import AgentRelation
+from core.prompts import canonical_relation_label, relation_labels
 
 
 def _rel(**kw) -> AgentRelation:
@@ -376,3 +377,30 @@ def test_label_role_names_who_the_other_party_is_to_the_holder() -> None:
     assert "发起方" not in legend and "from" not in legend
     # Readers only read labels: a writer's self-check belongs to the producing schemas.
     assert "写反" not in legend
+
+
+@pytest.mark.parametrize(("text", "canonical"), [
+    ("相识", "相识"),
+    (" 父子:父亲 ", "父子:父亲"),
+    ("父子：父亲", "父子:父亲"),
+    ("父子 : 父亲", "父子:父亲"),
+])
+def test_a_relation_label_has_one_canonical_form(text: str, canonical: str) -> None:
+    assert canonical_relation_label(text) == canonical
+
+
+@pytest.mark.parametrize("text", ["", " ", "父子:", ":父亲", "父子:父亲:长子"])
+def test_a_relation_label_needs_a_kind_and_at_most_one_role(text: str) -> None:
+    with pytest.raises(ValueError):
+        canonical_relation_label(text)
+
+
+def test_the_lenient_read_keeps_each_label_once_and_drops_the_rest() -> None:
+    assert relation_labels(["父子：父亲", "父子:父亲", "", "父子:", "政敌"]) == ["父子:父亲", "政敌"]
+
+
+@pytest.mark.asyncio
+async def test_replaced_labels_are_stored_in_canonical_form(container: object) -> None:
+    system = _make_relation_system(container)
+    await system.replace_labels("agent-2", ["父子：儿子", "父子:", "政敌"], step=1)
+    assert (await system.get_or_create("agent-2")).labels == ["父子:儿子", "政敌"]

@@ -166,9 +166,13 @@ def create_app(
     from interaction.api.lifecycle import build_lifecycle_router
     from interaction.api.maps import build_maps_router
     from interaction.api.observe import build_observe_router
+    from interaction.api.setup import build_setup_router
+    from interaction.api.vocabulary import build_vocabulary_router
 
     app.include_router(build_lifecycle_router(services))
     app.include_router(build_observe_router(services))
+    app.include_router(build_setup_router(services))
+    app.include_router(build_vocabulary_router())
     app.include_router(build_maps_router(services))
     # Director routes are a product feature, not a developer instrument — they ship in
     # every deployment, unlike the dev_tools block below.

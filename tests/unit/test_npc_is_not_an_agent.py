@@ -21,9 +21,10 @@ from core.interfaces.perception import (
     LocationView, NpcIdentity, PerceivedIdentity, PerceivedNpc, SpatialPerception,
 )
 from engine.environment import EnvironmentSystem
-from world.models import Npc, NpcSeed
+from world.models import Npc
 from core.interfaces.place import Place
 from tests.unit.env_state import restore, saved
+from tests.unit.world_setups import npc_seed
 
 
 def _action_space():
@@ -60,7 +61,7 @@ def test_it_never_enters_the_roster_the_whole_cognition_loop_runs_on() -> None:
     never see them and need no filtering code at all.
     """
     env = _env()
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
+    env.spawn_npc(npc_seed("王二"), location_id="hall")
     npc_id = env.all_npcs()[0].npc_id
 
     agents: dict[str, object] = {"a1": object()}
@@ -78,7 +79,7 @@ def test_the_present_roster_keeps_the_two_kinds_apart() -> None:
     adjudication, where it becomes a silent null step.
     """
     env = _env()
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
+    env.spawn_npc(npc_seed("王二"), location_id="hall")
     env.place_agent(agent_id="a1", location_id="hall")
     env.place_agent(agent_id="a2", location_id="hall")
 
@@ -175,7 +176,7 @@ def test_the_read_model_does_not_call_one_an_agent() -> None:
 
     env = _env()
     env.spawn_npc(
-        NpcSeed(name="王二", gender="男", age=34, description="跑得快"), location_id="hall",
+        npc_seed("王二", gender="男", age=34, description="跑得快"), location_id="hall",
     )
     npc_id = env.all_npcs()[0].npc_id
     world = env.world_state()
@@ -204,11 +205,10 @@ def test_the_code_layer_tier_never_crosses_into_the_narrative_layer() -> None:
     from engine.directory import LiveWorldDirectory
     from engine.scene import SceneVisibility, assemble_scene_context
     from agent.decision import DecisionEngine
-    from world.models import NpcSeed
 
     env = _env()
     env.spawn_npc(
-        NpcSeed(name="王二", gender="男", age=34, description="跑得快"), location_id="hall",
+        npc_seed("王二", gender="男", age=34, description="跑得快"), location_id="hall",
     )
     env.place_agent(agent_id="a1", location_id="hall")
     banned = ("NPC", "npc", "工具人")
@@ -297,7 +297,7 @@ def test_the_place_tells_bodies_from_people() -> None:
     else is a second copy, and a stale copy doesn't error.
     """
     env = _env()
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
+    env.spawn_npc(npc_seed("王二"), location_id="hall")
     npc_id = env.all_npcs()[0].npc_id
     env.place_agent(agent_id="a1", location_id="hall")
 
@@ -320,7 +320,7 @@ async def test_speaking_to_a_room_of_tool_bodies_is_speaking_to_nobody() -> None
     from core.interfaces.urgency import Urgency
 
     env = _env()
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
+    env.spawn_npc(npc_seed("王二"), location_id="hall")
     npc_id = env.all_npcs()[0].npc_id
     env.place_agent(agent_id="a1", location_id="hall")
 
@@ -364,7 +364,7 @@ def test_a_trace_it_leaves_never_enters_the_identity_index() -> None:
     may only contain beings with cognition.
     """
     env = _env()
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
+    env.spawn_npc(npc_seed("王二"), location_id="hall")
     npc_id = env.all_npcs()[0].npc_id
     env.place_agent(agent_id="a1", location_id="hall")
 
@@ -452,7 +452,7 @@ def test_a_third_kind_of_body_is_neither_an_agent_nor_an_npc() -> None:
     """
     env = _env()
     env.place_agent(agent_id="a1", location_id="hall")
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
+    env.spawn_npc(npc_seed("王二"), location_id="hall")
     npc_id = env.all_npcs()[0].npc_id
 
     env._place_body("beast1", "hall", "beast")   # a kind outside BodyKind
@@ -477,8 +477,8 @@ def test_the_npc_roster_holds_exactly_the_bodies_registered_as_npcs() -> None:
     """
     env = _env()
     env.place_agent(agent_id="a1", location_id="hall")
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
-    env.spawn_npc(NpcSeed(name="张三"), location_id="hall")
+    env.spawn_npc(npc_seed("王二"), location_id="hall")
+    env.spawn_npc(npc_seed("张三"), location_id="hall")
 
     def _invariant() -> None:
         from world.models import BodyKind
@@ -521,7 +521,7 @@ def test_a_body_leaving_the_map_is_not_the_same_as_leaving_the_world() -> None:
     agents refute daily (the dead are removed from the environment but stay in ``agents_dict``).
     """
     env = _env()
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
+    env.spawn_npc(npc_seed("王二"), location_id="hall")
     npc_id = env.all_npcs()[0].npc_id
 
     env.remove_body(npc_id)

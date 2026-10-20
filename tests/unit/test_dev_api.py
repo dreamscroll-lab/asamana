@@ -19,6 +19,8 @@ from core.interfaces.trace import LLMCallTrace
 from world import WorldCatalog
 
 from interaction.api import create_app
+from tests.unit.world_setups import setup_dict
+from tests.unit.confirmed_world import confirmed_world
 
 
 def _client(container, test_config) -> TestClient:
@@ -95,20 +97,12 @@ async def test_trace_build_names_the_figure_a_persona_call_built(container, test
     """Persona-generation traces carry agent_id, which the build view uses to show names. If the
     world fails to build at this step and there's no snapshot, the name is still in the call's own
     extra."""
-    from core.interfaces.snapshot import WorldSnapshot, WorldState
-    from engine.clock import WorldTime, WorldTimeConfig
-
     persona = dataclasses.replace(
         _call("p-1", step=None), stage="world_init", scene="persona_generation",
         agent_id="agent-1", extra={"agent_name": "李世民"},
     )
     container.trace_sink.read_calls = lambda world_id, **k: [persona]  # type: ignore[method-assign]
-    await container.snapshot.save("w1", 0, WorldSnapshot(
-        world_id="w1", step=0, timestamp=datetime.now(),
-        world_time=WorldTime.from_step(0, WorldTimeConfig()).clock_payload(),
-        state=WorldState(agents={"agent-1": {"agent_id": "agent-1", "agent_name": "李世民"}}),
-        build={"character_profiles": {"agent-1": {"name": "李世民"}}},
-    ))
+    await container.snapshot.save_world_setup("w1", setup_dict({"agent-1": {"name": "李世民"}}))
     client = _client(container, test_config)
 
     [item] = [c for g in client.get("/api/worlds/w1/trace/build").json()["groups"] for c in g["items"]]
@@ -541,7 +535,7 @@ async def _built_world(container, test_config, catalog: WorldCatalog) -> str:
     from engine.application import NarrativeApplication
 
     app = NarrativeApplication(container, test_config, catalog=catalog)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     catalog.set_confirmed(world.world_id)
     return world.world_id
 

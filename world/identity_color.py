@@ -122,6 +122,17 @@ def _reference_for(name: str) -> str | None:
     return _NAME_REF.get(best_word) if best_word else None
 
 
+def free_identity_color(taken: Iterable[str]) -> str:
+    """The swatch for one character joining a cast that already has its colors: the unused
+    swatch farthest from every taken one, so nobody else's color changes. Once the palette is
+    used up, the swatch farthest from its nearest taken one."""
+    used = {c.lower() for c in taken if c}
+    free = [c for c in _PALETTE if c.lower() not in used] or list(_PALETTE)
+    if not used:
+        return free[0]
+    return max(free, key=lambda c: min(_dist(c, t) for t in used))
+
+
 def resolve_identity_colors(definitions: Iterable["object"]) -> list["object"]:
     """Assign each AgentDefinition a distinct identity hex on ``soul.color``.
 

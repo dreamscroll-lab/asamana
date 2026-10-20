@@ -22,6 +22,7 @@ from engine.clock import WorldTime, WorldTimeConfig
 from engine.environment import EnvironmentSystem
 from world.models import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
+from core.text import slugify
 from tests.unit.env_state import restore, saved
 
 
@@ -449,3 +450,16 @@ def test_entities_are_written_only_inside_environment_system() -> None:
         if (path, hit) not in _NOT_ENTITIES
     ]
     assert not found, f"EnvironmentSystem 之外直接写了物件字段: {found}"
+
+
+def test_a_runtime_made_thing_takes_a_made_entity_id_distinct_from_its_namesake() -> None:
+    env = _env_with_hall()
+    env.place_agent(agent_id="a1", location_id="hall")
+    for _ in range(2):
+        env.spawn_entity(
+            EntitySpawn(name="换防部署令", description="圈定亲信的名单", holder_id="a1"),
+            ground=env.get_body_location("a1"), doer_id="a1",
+        )
+    first, second = sorted(e.entity_id for e in env.all_live_entities())
+    assert first == f"made_entity_{slugify('换防部署令', fallback_prefix=None)}"
+    assert second == f"{first}-2"

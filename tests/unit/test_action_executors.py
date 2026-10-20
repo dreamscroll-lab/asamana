@@ -30,6 +30,7 @@ from engine.executors.work import WorkExecutor
 from engine.message_system import MessageSystem
 from world.models import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
+from tests.unit.world_setups import npc_seed
 
 
 # ---------------------------------------------------------------------------
@@ -2955,11 +2956,10 @@ class TestPhysicalExecutor:
     def test_npc_held_item_names_the_holder_in_target_and_scene(self, container, visibility: SceneVisibility) -> None:
         from engine.executors.physical import PhysicalExecutor
         from engine.scene import assemble_scene_context
-        from world.models import NpcSeed
 
         env = _make_environment()
         env.place_agent(agent_id="observer", location_id="hall")
-        assert env.spawn_npc(NpcSeed(name="信使", gender="男"), location_id="hall")
+        assert env.spawn_npc(npc_seed("信使", gender="男"), location_id="hall")
         npc_id = env.all_npcs()[0].npc_id
         item = WorldEntity(
             entity_id="parcel", name="包裹", entity_type=WorldEntityType.ITEM,

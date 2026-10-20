@@ -195,11 +195,12 @@ async def test_malformed_labels_skipped(container: object) -> None:
     await _seed_existing_relation(relation, target_id="agent-a", labels=["原状"], to_name="甲")
     await _seed_existing_relation(relation, target_id="agent-b", labels=["原状"], to_name="乙")
 
-    # Non-array labels with no summary → skipped; all-empty labels with no summary → skipped.
+    # Non-array labels with no summary → skipped; labels none of which has the label form, with
+    # no summary → skipped.
     provider = SequentialMockLLM([
         '{"updates": ['
         '{"target_index": 1, "rationale": "non-list", "labels": "字符串非数组"},'
-        '{"target_index": 2, "rationale": "all empty", "labels": ["   ", ""]}'
+        '{"target_index": 2, "rationale": "no label form", "labels": ["   ", "", "父子:"]}'
         ']}'
     ])
     evolver = RelationEvolution(

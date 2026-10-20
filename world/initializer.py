@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +22,7 @@ from core.interfaces.condition import condition_from_dict, condition_to_dict
 from core.interfaces.snapshot import EngineState, WorldSnapshot, WorldState
 from core.logging import get_logger
 from engine.clock import (
+    SECONDS_PER_HOUR,
     WorldTime,
     WorldTimeConfig,
     parse_calendar_style,
@@ -35,7 +35,8 @@ from worlds.tiled import CAST_ART_FIELDS, CHARACTERS_FILENAME
 
 from core.coerce import coerce_int
 from world.catalog import ActorCasting
-from world.models import AgentDefinition, AgentTier, HistoricalEventSeed, ThemeAnalysis, World, WorldEntity, WorldEntityType
+from world.models import AgentDefinition, AgentTier, NpcSeed, World, WorldEntity, WorldEntitySeed, WorldEntityType
+from world.setup import SetupHistoricalEvent, WorldLore, WorldSetup
 from world.stored_config import StoredWorldConfig, serialize_world_config
 
 logger = get_logger(__name__)
@@ -51,48 +52,67 @@ class WorldInitializer:
         # injects the real value from config. How busy a world should be is tuned per world, not a universal law.
         self._max_npcs = max_npcs
 
-    async def initialize(
-        self,
-        *,
-        theme: str,
-        analysis: ThemeAnalysis,
-        agent_definitions: Sequence[AgentDefinition],
-        world_id: str,
-        world_config: WorldConfig,
-    ) -> World:
-        """Create runtime agents, persist initialization state, and write step 0.
+    async def prepare(self, world_id: str, setup: WorldSetup, world_config: WorldConfig) -> WorldSetup:
+        """Freeze what a built world stands on and persist its setup; nothing is materialized.
 
-        ``world_config`` is the map this particular world was built on — an argument,
-        not initializer state, because it is chosen per world: two worlds built by the
-        same process sit on different maps. ``restore`` takes none, and that asymmetry
-        is the contract: a restored world reads the copy persisted under its own id.
+        ``world_config`` is the map this world was built on, chosen per world. Its data, render
+        map and cast art are frozen under the world's id, so later template edits never touch
+        the world: ``initialize`` and ``restore`` read only those copies and the setup. Initial
+        Every location in the setup is already a location id (the build resolved them), and the setup
+        must pass ``WorldSetup.validate`` (else ``ValueError``: a build that can't start a world
+        fails, Rule 2). Returns the setup as persisted.
         """
+        setup.validate(frozenset(world_config.get_places()))
+        await self._container.snapshot.save_world_config(
+            world_id, serialize_world_config(world_config)
+        )
+        # The render map (.tmj) is frozen too, so the 2D renderer keeps serving the map this world
+        # was built on after the template file is edited. Configs with no map art have none.
+        render_map = world_config.render_map()
+        if render_map is not None:
+            await self._container.snapshot.save_world_map(world_id, render_map)
+            await self._freeze_map_assets(world_id, world_config, render_map)
+        # The cast is frozen on the same terms as the ground it walks on: a body is
+        # dressed for the map's period, so restyling that art later would restyle
+        # every past world's REPLAY along with it.
+        await self._freeze_character_assets(world_id, world_config)
+        await self._container.snapshot.save_world_setup(world_id, setup.as_dict())
+        return setup
 
-        # This world's private copy of the template: environment placement mutates
-        # entity state by reference, and that must never reach the shared template.
-        world_config = copy.deepcopy(world_config)
-        clock_config = self._clock_config_for(analysis, world_config)
+    async def initialize(self, world_id: str, *, casting: ActorCasting | None = None) -> World:
+        """Materialize a world from its persisted setup and write step 0.
+
+        Creates the agents and writes what the setup derives: relations, backstory memories and
+        initial agent states, then step 0 with the setup frozen into it. Runs once, when the world
+        is confirmed, from the setup file; the caller clears whatever an earlier, failed attempt
+        left behind and deletes the file afterwards. Raises on any failure, like the build (Rule 2/6).
+        ``casting`` as in ``restore``.
+        """
+        config_data = await self._container.snapshot.load_world_config(world_id)
+        stored = await self._container.snapshot.load_world_setup(world_id)
+        if config_data is None or stored is None:
+            raise ValueError(f"World {world_id!r} has no setup to confirm")
+        world_config = StoredWorldConfig(config_data)
+        setup = WorldSetup.from_dict(stored)
+        # It passed every revision's check; this is the last line before anything is written.
+        setup.validate(frozenset(world_config.get_places()))
+        clock_config = self._clock_config_for(setup.lore, world_config)
         environment = EnvironmentSystem(world_config, max_npcs=self._max_npcs)
-        await self._instantiate_entity_seeds(analysis, environment, world_config)
-        self._instantiate_npc_seeds(analysis, environment, world_config)
+        await self._instantiate_entity_seeds(setup.entity_seeds, environment)
+        self._instantiate_npc_seeds(setup.npc_seeds, environment)
         agents: dict[str, Agent] = {}
-
-        for definition in agent_definitions:
-            definition.initial_location = self._resolve_initial_location(definition, world_config)
+        for definition in setup.characters:
             agent = self._instantiate_agent(
                 world_id=world_id,
                 definition=definition,
                 clock_config=clock_config,
+                casting=casting,
             )
             agents[agent.agent_id] = agent
-            # Vector collections are created per agent → run concurrently after the loop.
-            environment.place_agent(agent_id=agent.agent_id,
-                location_id=definition.initial_location,
-            )
-        # Concurrent but fail-fast: collection creation is build-time infrastructure, and any failure
-        # makes the world unusable, so raise and let the user retry instead of degrading silently (Rule
-        # 2/3). return_exceptions=True only keeps siblings from being cancelled (Rule 4); after
-        # collecting, handle per slot and raise on any exception.
+            environment.place_agent(agent_id=agent.agent_id, location_id=definition.initial_location)
+        # Concurrent but fail-fast: any failure makes the world unusable, so raise and let the
+        # user retry instead of degrading silently (Rule 2/3). return_exceptions=True only keeps
+        # siblings from being cancelled (Rule 4).
         for result in await asyncio.gather(
             *(agent.memory_system.ensure_collections() for agent in agents.values()),
             return_exceptions=True,
@@ -101,8 +121,12 @@ class WorldInitializer:
                 raise result
 
         directory = LiveWorldDirectory.from_agents(agents, environment)
-        await self._initialize_relations(world_id=world_id, agents=agents, analysis=analysis)
-        await self._write_historical_memories(agents=agents, historical_events=analysis.historical_events)
+        await self._initialize_relations(world_id=world_id, agents=agents, setup=setup)
+        await self._write_historical_memories(
+            agents=agents,
+            historical_events=setup.historical_events,
+            seconds_per_step=clock_config.seconds_per_step,
+        )
         # Warming recent is a read/cache warm-up: failure isn't fatal (the memories are still on disk), so log a warning and continue (Rule 6 read).
         for result in await asyncio.gather(
             *(agent.memory_system.warm_recent_memories(current_step=0) for agent in agents.values()),
@@ -110,7 +134,7 @@ class WorldInitializer:
         ):
             if isinstance(result, BaseException):
                 logger.warning("warm_recent_memories_failed", extra={"error": str(result)})
-        # Short-term goals aren't generated at build time; NeedEngine.run is their sole owner. Each agent's
+        # Short-term goals aren't generated here; NeedEngine.run is their sole owner. Each agent's
         # first cognition step finds an empty queue (_should_update_goals) and generates them from real
         # perception, warmed history and perceived relations. One generation path keeps quality uniform.
         # A failed initial state write must raise (Rule 6 write): swallowing it would quietly corrupt restore/reset.
@@ -120,28 +144,9 @@ class WorldInitializer:
         ):
             if isinstance(result, BaseException):
                 raise result
-        # Persist the world's private config asset: restore rebuilds the map from
-        # this data alone, so later template-code edits never touch built worlds.
-        await self._container.snapshot.save_world_config(
-            world_id, serialize_world_config(world_config)
-        )
-        # Freeze the render map (.tmj) per world too, so the 2D renderer keeps
-        # serving the map this world was built on even after the template file is
-        # edited — the same decoupling the config freeze gives the engine. Configs
-        # with no map art (render_map None) simply have nothing to freeze.
-        render_map = world_config.render_map()
-        if render_map is not None:
-            await self._container.snapshot.save_world_map(world_id, render_map)
-            await self._freeze_map_assets(world_id, world_config, render_map)
-        # The cast is frozen on the same terms as the ground it walks on: a body is
-        # dressed for the map's period, so restyling that art later would restyle
-        # every past world's REPLAY along with it.
-        await self._freeze_character_assets(world_id, world_config)
         step_zero_snapshot = await self._save_initial_snapshot(
             world_id=world_id,
-            theme=theme,
-            analysis=analysis,
-            agent_definitions=list(agent_definitions),
+            setup=setup,
             agents=agents,
             environment=environment,
             clock_config=clock_config,
@@ -151,16 +156,14 @@ class WorldInitializer:
             "world_initialized",
             extra={
                 "world_id": world_id,
-                "world_name": analysis.world_name,
+                "world_name": setup.lore.world_name,
                 "agent_count": len(agents),
             },
         )
 
         return World(
             world_id=world_id,
-            theme=theme,
-            analysis=analysis,
-            agent_definitions=list(agent_definitions),
+            setup=setup,
             agents=agents,
             world_config=world_config,
             clock_config=clock_config,
@@ -319,42 +322,19 @@ class WorldInitializer:
         *,
         world_id: str,
         agents: dict[str, Agent],
-        analysis: ThemeAnalysis,
+        setup: WorldSetup,
     ) -> None:
-        name_to_id = {
-            agent.personality.soul.name: agent_id
-            for agent_id, agent in agents.items()
-        }
-        # Each RelationSeed is bilateral by design — emit both directions.
-        # Forward uses (trust/affection/labels); reverse uses (reverse_trust/
-        # reverse_affection/reverse_labels), each defaulting to the forward
-        # value when not explicitly set (handled by RelationSeed accessors).
+        # Each setup relation holds both directions of one pair (``WorldSetup.validate`` admits one
+        # per pair), so each becomes two records.
         tasks = []
-        emitted: set[tuple[str, str]] = set()
-        for relation in analysis.initial_relations:
-            source_agent_id = name_to_id.get(relation.source_name)
-            target_agent_id = name_to_id.get(relation.target_name)
-            if not source_agent_id or not target_agent_id:
-                logger.warning(
-                    "relation_seed_name_unresolved",
-                    extra={
-                        "world_id": world_id,
-                        "source_name": relation.source_name,
-                        "target_name": relation.target_name,
-                    },
-                )
-                continue
-            for from_id, to_id, trust, affection, labels, to_name in (
-                (source_agent_id, target_agent_id,
-                 relation.trust, relation.affection, list(relation.labels), relation.target_name),
-                (target_agent_id, source_agent_id,
-                 relation.effective_reverse_trust(),
-                 relation.effective_reverse_affection(),
-                 relation.effective_reverse_labels(), relation.source_name),
+        for relation in setup.relations:
+            for from_id, to_id, trust, affection, labels in (
+                (relation.source_id, relation.target_id,
+                 relation.trust, relation.affection, list(relation.labels)),
+                (relation.target_id, relation.source_id,
+                 relation.reverse_trust, relation.reverse_affection, list(relation.reverse_labels)),
             ):
-                if (from_id, to_id) in emitted:
-                    continue
-                emitted.add((from_id, to_id))
+                target_soul = agents[to_id].personality.soul
                 initial_relation = AgentRelation(
                     world_id=world_id,
                     from_id=from_id,
@@ -363,11 +343,11 @@ class WorldInitializer:
                     affection_objective=affection,
                     updated_step=0,
                     labels=labels,
-                    to_name=to_name,
+                    to_name=target_soul.name,
                     # to_gender shares to_name's source and lifetime: people in seed relations are usually not
                     # present, so this record is their only reference in the prompt, and a name alone still leaves the
-                    # LLM guessing gender. to_id always comes from name_to_id.values(), i.e. the agents' keys, so it's read directly without a fallback.
-                    to_gender=agents[to_id].personality.soul.gender,
+                    # LLM guessing gender.
+                    to_gender=target_soul.gender,
                 )
                 tasks.append(self._container.agent_store.save_relation(initial_relation))
                 tasks.append(self._container.agent_store.save_initial_relation(initial_relation))
@@ -389,32 +369,15 @@ class WorldInitializer:
         self,
         *,
         agents: dict[str, Agent],
-        historical_events: Sequence[HistoricalEventSeed],
+        historical_events: Sequence[SetupHistoricalEvent],
+        seconds_per_step: int,
     ) -> None:
-        name_to_id = {
-            agent.personality.soul.name: agent_id
-            for agent_id, agent in agents.items()
-        }
         tasks = []
         for event in historical_events:
-            resolved: dict[str, str] = {}
-            for name in event.related_figures:
-                agent_id = name_to_id.get(name)
-                if agent_id is None:
-                    logger.warning(
-                        "historical_event_figure_unresolved",
-                        extra={"event": event.event[:100], "figure_name": name},
-                    )
-                else:
-                    resolved[name] = agent_id
-            related_ids = list(resolved.values())
-            if not related_ids:
-                logger.warning(
-                    "historical_event_dropped",
-                    extra={"event": event.event[:100], "related_figures": event.related_figures},
-                )
-                continue
-            created_step = -abs(event.step_offset) if event.step_offset != 0 else -1
+            related_ids = list(event.figure_ids)
+            # Quantized to the world's step length here, where the step is first needed; an event
+            # within one step of the start still lands before it.
+            created_step = -max(1, round(event.hours_before_start * SECONDS_PER_HOUR / seconds_per_step))
             importance = importance_level(event.importance)
             decay_score = max(0.3, 1.0 - min(abs(created_step), 70) * 0.01)
             for agent_id in related_ids:
@@ -453,10 +416,9 @@ class WorldInitializer:
     async def restore(self, world_id: str, *, casting: ActorCasting | None = None) -> World:
         """Restore a previously built world from persisted storage.
 
-        Loads the world's persisted config asset and the step-0 manifest,
-        reconstructs agents from their definitions, applies the latest
-        AgentState from agent_store, and returns a runtime-ready World.
-        The code template in the container is never consulted here.
+        Loads the world's persisted setup and config asset, reconstructs agents
+        from their definitions, applies the latest AgentState from agent_store,
+        and returns a runtime-ready World.
 
         ``casting`` is kept outside the world's stores (in the catalog), so the caller passes it;
         the cast character is built main tier. Who performs it is the runtime's to wire
@@ -464,39 +426,25 @@ class WorldInitializer:
         """
         config_data = await self._container.snapshot.load_world_config(world_id)
         if config_data is None:
-            raise ValueError(
-                f"No persisted world config found for world {world_id!r}; "
-                "it must be rebuilt with the current build pipeline."
-            )
+            raise ValueError(f"No persisted world config found for world {world_id!r}")
         active_world_config = StoredWorldConfig(config_data)
         step_zero = await self._container.snapshot.load(world_id, 0)
-        if step_zero is None:
-            raise ValueError(f"No step-0 snapshot found for world {world_id!r}")
-
-        manifest = step_zero.build.get("manifest")
-        if manifest is None:
-            raise ValueError(
-                f"Step-0 snapshot for world {world_id!r} has no manifest; "
-                "it was built before build/run separation was supported."
-            )
-
-        theme = str(manifest.get("theme", ""))
-        analysis = ThemeAnalysis.from_dict(manifest["analysis"])
-        agent_definitions = [
-            AgentDefinition.from_dict(d) for d in manifest["agent_definitions"]
-        ]
+        if step_zero is None or not step_zero.setup:
+            raise ValueError(f"No step-0 snapshot with a setup found for world {world_id!r}")
+        setup = WorldSetup.from_dict(step_zero.setup)
+        agent_definitions = list(setup.characters)
         if casting is not None and casting.character_id not in {d.agent_id for d in agent_definitions}:
             raise ValueError(
                 f"World {world_id!r} has no character {casting.character_id!r} to cast the actor as"
             )
 
         environment = EnvironmentSystem(active_world_config, max_npcs=self._max_npcs)
-        await self._instantiate_entity_seeds(analysis, environment, active_world_config)
+        await self._instantiate_entity_seeds(setup.entity_seeds, environment)
         # Npcs aren't rebuilt here, deliberately unlike entity seeds: the npc_states payload is
         # self-contained (identity + position + condition + current errand) and _restore_environment_state
         # loads it in one go. Building them on both paths would collide on ids, and since ids are slugs of
         # names, a collision splits one person into two in the world.
-        clock_config = self._clock_config_for(analysis, active_world_config)
+        clock_config = self._clock_config_for(setup.lore, active_world_config)
         agents: dict[str, Agent] = {}
 
         # The step the world resumes at = the latest persisted snapshot. This is the
@@ -543,15 +491,13 @@ class WorldInitializer:
             "world_restored",
             extra={
                 "world_id": world_id,
-                "world_name": analysis.world_name,
+                "world_name": setup.lore.world_name,
                 "agent_count": len(agents),
             },
         )
         return World(
             world_id=world_id,
-            theme=theme,
-            analysis=analysis,
-            agent_definitions=agent_definitions,
+            setup=setup,
             agents=agents,
             world_config=active_world_config,
             clock_config=clock_config,
@@ -730,9 +676,7 @@ class WorldInitializer:
         self,
         *,
         world_id: str,
-        theme: str,
-        analysis: ThemeAnalysis,
-        agent_definitions: list[AgentDefinition],
+        setup: WorldSetup,
         agents: dict[str, Agent],
         environment: EnvironmentSystem,
         clock_config: WorldTimeConfig,
@@ -756,107 +700,23 @@ class WorldInitializer:
                 pending_messages=await self._container.message_provider.peek_pending(world_id),
                 environment=environment.engine_state(),
             ),
-            build={
-                "theme": theme,
-                "manifest": {
-                    "theme": theme,
-                    "analysis": analysis.as_dict(),
-                    "agent_definitions": [defn.as_dict() for defn in agent_definitions],
-                },
-                "world": {
-                    "world_name": analysis.world_name,
-                    # Step duration: the review card shows it to the user before confirmation locks it in (once
-                    # locked it holds for the whole story). It's in this narrative block rather than the manifest
-                    # because the presentation layer reads it; the authoritative value stays in analysis. It's sent in
-                    # seconds and the presentation layer renders it as words, so changing precision doesn't touch this chain.
-                    "seconds_per_step": clock_config.seconds_per_step,
-                    "era_description": analysis.era_description,
-                    "core_tension": analysis.core_tension,
-                    "narrative_theme": analysis.narrative_theme,
-                    "narrative_pitch": analysis.narrative_pitch,
-                    "figure_names": [figure.name for figure in analysis.key_figures],
-                    "location_names": [location.name for location in analysis.key_locations],
-                },
-                "character_profiles": {
-                    agent_id: {
-                        "name": agent.personality.soul.name,
-                        "role": agent.personality.soul.role,
-                        "age": agent.personality.soul.age,
-                        "gender": agent.personality.soul.gender,
-                        "background": agent.personality.soul.background,
-                        "appearance": agent.personality.soul.appearance,
-                        "color": agent.personality.soul.color,
-                        "core_traits": list(agent.personality.soul.core_traits),
-                        "core_values": list(agent.personality.soul.core_values),
-                        "self_image": agent.personality.soul.self_image,
-                        "life_goal": agent.personality.soul.life_goal,
-                        "secret": agent.personality.soul.secret,
-                        "is_main_character": agent.is_main_character,
-                    }
-                    for agent_id, agent in agents.items()
-                },
-            },
+            setup=setup.as_dict(),
         )
         await self._container.snapshot.save(world_id, 0, snapshot)
         return snapshot
 
-    def _resolve_initial_location(
-        self, definition: AgentDefinition, world_config: WorldConfig
-    ) -> str:
-        resolved = world_config.resolve_location_id(definition.initial_location)
-        if resolved is None:
-            available = sorted(world_config.get_places())
-            raise ValueError(
-                "Unknown initial location "
-                f"{definition.initial_location!r} for agent "
-                f"{definition.agent_id!r} ({definition.name!r}). "
-                f"Available locations: {available}"
-            )
-        return resolved
-
-    def _instantiate_npc_seeds(
-        self, analysis: ThemeAnalysis, environment: EnvironmentSystem, world_config: WorldConfig
-    ) -> None:
-        """Put the theme's mindless bodies into the world. Sibling of the entity seeds.
-
-        If placement can't be resolved, fall back to the first location with a warning, the same fallback
-        as entity seeds: someone standing in the wrong place is still usable, someone absent from the
-        world isn't. Slots and quotas belong to ``spawn_npc`` (the single point where they come into being).
-        """
-        location_ids = sorted(world_config.get_places())
-        default_location = location_ids[0] if location_ids else None
-
-        for seed in analysis.npc_seeds:
-            location_id = world_config.resolve_location_id(seed.location_name) or default_location
-            if location_id is None:
-                logger.warning("npc_seed_no_location", extra={"npc_name": seed.name})
-                continue
-            environment.spawn_npc(seed, location_id=location_id)
+    def _instantiate_npc_seeds(self, seeds: Sequence[NpcSeed], environment: EnvironmentSystem) -> None:
+        """Put the theme's mindless bodies into the world, each where the setup places it. Sibling
+        of the entity seeds. Slots and quotas belong to ``spawn_npc`` (the single point where they
+        come into being)."""
+        for seed in seeds:
+            environment.spawn_npc(seed, location_id=seed.location)
 
     async def _instantiate_entity_seeds(
-        self, analysis: ThemeAnalysis, environment: EnvironmentSystem, world_config: WorldConfig
+        self, seeds: Sequence[WorldEntitySeed], environment: EnvironmentSystem,
     ) -> None:
-        location_ids = sorted(world_config.get_places())
-        default_location = location_ids[0] if location_ids else None
-
-        for seed in analysis.world_entity_seeds:
-            location_id = world_config.resolve_location_id(seed.location_name)
-            if location_id is None:
-                location_id = default_location
-                logger.warning(
-                    "entity_seed_location_unresolvable",
-                    extra={
-                        "seed_name": seed.name,
-                        "requested": seed.location_name,
-                        "fallback": location_id,
-                    },
-                )
-            if location_id is None:
-                logger.warning(
-                    "entity_seed_skipped_no_location",
-                    extra={"seed_name": seed.name},
-                )
-                continue
+        for seed in seeds:
+            location_id = seed.location
             entity_id = seed.entity_id
             entity = WorldEntity(
                 entity_id=entity_id,
@@ -882,11 +742,11 @@ class WorldInitializer:
 
     def _clock_config_for(
         self,
-        analysis: ThemeAnalysis,
+        lore: WorldLore,
         world_config: WorldConfig,
     ) -> WorldTimeConfig:
         runtime_context = world_config.to_runtime_context()
-        time_config = dict(analysis.world_time_config)
+        time_config = dict(lore.world_time_config)
         return WorldTimeConfig(
             # The era name falls back to the map's era label (e.g. a dynasty name) and never to the world name: the
             # world name is the story's title, not an era, and using it as one would render dates like
@@ -921,7 +781,7 @@ class WorldInitializer:
             # Step duration and the calendar anchor share a source: both are fixed by the world-building theme
             # analysis and both are read from this world_time_config (already quantized from hours to seconds
             # at the LLM boundary in _analysis_from_payload; this only reads it back). So it's naturally
-            # frozen: analysis is persisted with the step-0 manifest and restore reads the same copy back, so
+            # frozen: the lore is persisted with the world's setup and restore reads the same copy back, so
             # a world's time pricing never drifts with deployment config, and no second frozen copy is needed.
             seconds_per_step=resolve_step_seconds(time_config.get("seconds_per_step")),
         )

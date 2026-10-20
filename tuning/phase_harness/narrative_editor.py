@@ -4,7 +4,7 @@ kind=gate → _passes_llm_check (pacing gate: should an event be injected now; r
 kind=plan → _generate_injection_plan (event generation: entity spawn/alter/destroy + broadcast/message channels + content)
 Each is one NARRATIVE_EDITOR LLM call, captured by the traced router. The briefing
 (_build_narrative_summary) is driven by seeded InMemory snapshots that follow the narrative;
-the premise (core_tension/narrative_theme) comes from the restored world.analysis. Zero
+the premise (core_tension/narrative_theme) comes from the restored world's setup. Zero
 production intrusion: a standalone NarrativeEditor + InMemory snapshot; baseline ./data is never written."""
 
 from __future__ import annotations
@@ -240,8 +240,8 @@ async def run_narrative_editor(
         ),
         directory=world.directory,
         settings=NarrativeEditorSettings(
-            core_tension=world.analysis.core_tension,
-            narrative_theme=world.analysis.narrative_theme,
+            core_tension=world.setup.lore.core_tension,
+            narrative_theme=world.setup.lore.narrative_theme,
         ),
     )
     for prior in _editor_prior_injections(scenario, world.directory, id_by_name, valid_ids):
@@ -291,8 +291,8 @@ async def run_narrative_editor(
     inputs = {
         "kind": kind, "step": current_step,
         "world_time": world_time.time_label,
-        "core_tension": world.analysis.core_tension,
-        "narrative_theme": world.analysis.narrative_theme,
+        "core_tension": world.setup.lore.core_tension,
+        "narrative_theme": world.setup.lore.narrative_theme,
         "locations": scenario.get("locations", {}),
         "relations": scenario.get("relations", []),
         "recent": scenario.get("recent", []),

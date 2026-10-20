@@ -158,7 +158,7 @@ def build_observe_router(services: ApiServices) -> Any:
 
     @router.get("/api/worlds/{world_id}/agents/{agent_id}/profile")
     async def get_profile(world_id: str, agent_id: str) -> dict[str, Any]:
-        """Static identity persisted at step 0 (name/role/background/traits…).
+        """Static identity from the world's setup (name/role/background/traits…).
 
         Distinct from the per-step ``AgentView``s on a StepView, which carry
         the mutable current state. Used for the creation-review cards and the

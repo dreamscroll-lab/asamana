@@ -15,6 +15,7 @@ class InMemorySnapshotProvider(SnapshotProvider):
     def __init__(self) -> None:
         self._snapshots: Dict[Tuple[str, int], WorldSnapshot] = {}
         self._world_configs: Dict[str, dict[str, Any]] = {}
+        self._world_setups: Dict[str, dict[str, Any]] = {}
         self._world_maps: Dict[str, dict[str, Any]] = {}
         self._world_assets: Dict[Tuple[str, str], bytes] = {}
 
@@ -47,6 +48,7 @@ class InMemorySnapshotProvider(SnapshotProvider):
         for k in keys:
             del self._snapshots[k]
         self._world_configs.pop(world_id, None)
+        self._world_setups.pop(world_id, None)
         self._world_maps.pop(world_id, None)
         for key in [k for k in self._world_assets if k[0] == world_id]:
             del self._world_assets[key]
@@ -56,6 +58,15 @@ class InMemorySnapshotProvider(SnapshotProvider):
 
     async def load_world_config(self, world_id: str) -> Optional[dict[str, Any]]:
         return self._world_configs.get(world_id)
+
+    async def save_world_setup(self, world_id: str, data: dict[str, Any]) -> None:
+        self._world_setups[world_id] = data
+
+    async def load_world_setup(self, world_id: str) -> Optional[dict[str, Any]]:
+        return self._world_setups.get(world_id)
+
+    async def delete_world_setup(self, world_id: str) -> None:
+        self._world_setups.pop(world_id, None)
 
     async def save_world_map(self, world_id: str, data: dict[str, Any]) -> None:
         self._world_maps[world_id] = data

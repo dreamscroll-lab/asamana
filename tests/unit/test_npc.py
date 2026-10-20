@@ -21,6 +21,7 @@ from engine.presence import attach_presence
 from world.models import ActiveErrand, EntityPresence, NpcSeed, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
 from tests.unit.env_state import restore, saved
+from tests.unit.world_setups import npc_seed
 
 
 def _location(entity_id: str, name: str, **connections: int) -> Place:
@@ -37,7 +38,7 @@ def _world(*, max_npcs: int = 6) -> EnvironmentSystem:
 
 
 def _seed(name: str, **kw) -> NpcSeed:
-    return NpcSeed(name=name, gender=kw.get("gender", "男"), age=kw.get("age", 34),
+    return npc_seed(name, gender=kw.get("gender", "男"), age=kw.get("age", 34),
                    description=kw.get("description", "跑得快"))
 
 

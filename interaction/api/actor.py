@@ -2,8 +2,7 @@
 
 - Casting happens at confirmation (``POST /confirm`` with ``character_id``); identities come
   from the shared ``GET /agents`` endpoint.
-- ``GET /actor/emotions``: the vocabulary a character's feeling is named in, which an emotion
-  amendment picks from.
+- An emotion amendment picks from the shared ``GET /api/vocabulary``.
 - ``GET /actor/thread``: the actor's thread over the latest steps (``ActorEntry``s as JSON, in
   order). Each new entry is pushed over the WebSocket as an ``actor_entry`` frame.
 - The waiting turn is pushed over the WebSocket as an ``actor_turn`` frame on connection
@@ -32,7 +31,6 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any, TypeVar
 
-from agent.personality import EmotionType
 from agent.actor_operations import requires_actor_interpretation
 from core.interfaces.action import Ref
 from core.interfaces.actor import (
@@ -75,10 +73,6 @@ def build_actor_router(services: ApiServices) -> Any:
     router = APIRouter(prefix="/api/worlds/{world_id}/actor", tags=["actor"])
     application = services.application
     manager = services.manager
-
-    @router.get("/emotions")
-    async def list_emotions(world_id: str) -> list[dict[str, str]]:
-        return [{"value": e.value, "label": e.label} for e in EmotionType]
 
     @router.get("/thread")
     async def get_thread(world_id: str, steps: int = _THREAD_STEPS) -> dict[str, Any]:

@@ -467,10 +467,10 @@ class TestSpawnAttribution:
                              action_description="拟定换防部署")
         result = ActionResult(
             action=action, expected_outcome="", outcome="常何写完了换防部署令。",
-            entity_spawns=[EntitySpawn(name="换防部署令", entity_id="made_x")],
+            entity_spawns=[EntitySpawn(name="换防部署令", entity_id="made_entity_x")],
         )
 
-        assert action_semantics(action, result)["affected_entity_ids"] == ["made_x"]
+        assert action_semantics(action, result)["affected_entity_ids"] == ["made_entity_x"]
 
     def test_a_refused_spawn_touched_nothing(self) -> None:
         """World is full → spawn_entity returns no id → it really touched nothing, so don't report."""
@@ -539,13 +539,13 @@ class TestWhatTheJudgeIsToldAboutATarget:
         """On the menu branch, ``Ref.id`` is a real id; it can only miss because the thing was
         destroyed this beat. Ids don't cross the LLM boundary, so fall back to a descriptive
         referent."""
-        block = self._executor()._unresolved_target_block("made_blade-1", KIND_ITEM)
-        assert "made_blade-1" not in block and block == "某物"
+        block = self._executor()._unresolved_target_block("made_entity_blade-1", KIND_ITEM)
+        assert "made_entity_blade-1" not in block and block == "某物"
 
     def test_a_routing_key_is_never_shown_to_the_judge(self) -> None:
         """``object`` / ``item`` are code-layer coordinates; printing them for the judge is
         useless and a layer leak."""
         executor = self._executor()
-        for target_id, kind in (("地上的血迹", KIND_OBJECT), ("made_blade-1", KIND_ITEM)):
+        for target_id, kind in (("地上的血迹", KIND_OBJECT), ("made_entity_blade-1", KIND_ITEM)):
             block = executor._unresolved_target_block(target_id, kind)
             assert kind not in block, (target_id, kind)

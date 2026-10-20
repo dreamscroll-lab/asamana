@@ -17,6 +17,7 @@ from agent.personality import EmotionType
 IMPORTANCE_CRITICAL_CUTOFF = 0.9
 IMPORTANCE_HIGH_CUTOFF = 0.65
 IMPORTANCE_MEDIUM_CUTOFF = 0.4
+IMPORTANCE_RANGE: tuple[float, float] = (0.0, 1.0)
 
 
 class MemoryStream(str, Enum):

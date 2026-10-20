@@ -13,6 +13,7 @@ export interface CastState {
 const table = worldTable((worldId: string) => api.agents(worldId), (identity) => identity.agent_id);
 
 export const loadCast = table.load;
+export const reloadCast = table.reload;
 
 export function useCast(worldId: string): CastState {
   const { status, table: cast, error } = table.useTable(worldId);

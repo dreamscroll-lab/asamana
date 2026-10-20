@@ -71,7 +71,7 @@ def bootstrap_application(config_path: str | None = None) -> tuple[Config, Conta
 async def _cmd_build(theme: str) -> int:
     config, container = bootstrap_application()
     world_id, world = await run_build(container, config, theme, trace_dir=_TRACE_DIR)
-    print(f"Build complete: {world.analysis.world_name!r}")
+    print(f"Build complete: {world.setup.lore.world_name!r}")
     print(f"  world_id: {world_id}")
     print(f"  trace:    {_TRACE_DIR}/{world_id}/build.jsonl")
     return 0

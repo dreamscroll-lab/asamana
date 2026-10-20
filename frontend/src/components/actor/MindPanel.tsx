@@ -16,7 +16,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "../../api/client";
 import { AFFECTION_RANGE, EMOTION_INTENSITY_RANGE, EMOTION_VALENCE_RANGE, TRUST_RANGE } from "../../lib/contract";
-import type { ActorAmendments, ActorMind, BriefRelation, EmotionAmendment, GoalAmendment } from "../../types";
+import { useVocabulary } from "../../lib/vocabulary";
+import type { ActorAmendments, ActorMind, BriefRelation, EmotionAmendment, GoalAmendment, VocabularyEntry } from "../../types";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
 import { reasonText } from "./actionSummary";
 import GoalPanel from "./GoalPanel";
@@ -146,7 +147,7 @@ export default function MindPanel({
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
-  const [emotions, setEmotions] = useState<{ value: string; label: string }[]>([]);
+  const emotions = useVocabulary()?.emotions ?? [];
   const last = useRef<ActorMind | null>(null);
   const loadSequence = useRef(0);
 
@@ -174,10 +175,6 @@ export default function MindPanel({
     void load();
     return () => { loadSequence.current++; };
   }, [load, refreshKey]);
-
-  useEffect(() => {
-    api.actorEmotions(worldId).then(setEmotions).catch(() => setEmotions([]));
-  }, [worldId]);
 
   // A new turn puts the moment first: the mind folds down to its tab bar.
   useEffect(() => {
@@ -343,7 +340,7 @@ function EmotionTab({
   value: EmotionAmendment;
   pending: boolean;
   edited: boolean;
-  emotions: { value: string; label: string }[];
+  emotions: VocabularyEntry[];
   onChange: (e: EmotionAmendment | null) => void;
 }) {
   const set = (e: Partial<EmotionAmendment>) => onChange({ ...value, ...e });

@@ -5,8 +5,10 @@
 // The choice comes first because the director's review shows everything: every character's
 // dossier, secrets and relations. Someone who will live in the world as one character must not
 // see that, so the page shows only the world's premise until the user picks:
-//   - as the director: the whole cast and their relationship web, then confirm. One way: the
-//     world takes no actor afterwards (the backend records it).
+//   - as the director: the whole cast, their relationship web and the world's historical events, then
+//     confirm. The setup shown here (dossiers, historical events, the relations the world starts
+//     with, the story's pace) is revisable until confirming. One way: the world takes no actor afterwards (the
+//     backend records it).
 //   - as a character: the cast as anyone could know them, one picked, then confirm. Their own
 //     full dossier waits until they are in the world, or browsing candidates would reveal
 //     everyone's.
@@ -18,12 +20,21 @@ import ActorIcon from "../components/ActorIcon";
 import CharacterCard, { type CardAgent } from "../components/CharacterCard";
 import EditableWorldName from "../components/EditableWorldName";
 import RelationshipGraph from "../components/RelationshipGraph";
-import { useCast, loadCast } from "../lib/cast";
+import HistoryPanel from "../components/setup/HistoryPanel";
+import RelationPanel from "../components/setup/RelationPanel";
+import StepLengthEditor from "../components/setup/StepLengthEditor";
+import CharacterEditor, {
+  blankDraft, draftOf, newCharacterOf, revisionOf, type Draft,
+} from "../components/setup/CharacterEditor";
+import { useCast, loadCast, reloadCast } from "../lib/cast";
+import { MAX_CAST_SIZE } from "../lib/contract";
+import { usePlaces } from "../lib/places";
+import { setupGraph } from "../lib/setupGraph";
+import { useVocabulary } from "../lib/vocabulary";
 import { avatarStyle } from "../lib/avatar";
-import { durationLabel } from "../lib/duration";
 import { viewerOf } from "../lib/viewer";
 import { useWorlds } from "../lib/worldsContext";
-import type { CharacterIdentity, WorldGraph, WorldMeta } from "../types";
+import type { CharacterIdentity, SetupView, WorldGraph, WorldMeta } from "../types";
 
 /**
  * Keyed on the world for the same reason WorldView is (see its header): this screen holds
@@ -43,7 +54,16 @@ function WorldReview({ id }: { id: string }) {
   const { worlds, refresh: refreshWorlds } = useWorlds();
 
   const [meta, setMeta] = useState<WorldMeta | null>(null);
-  const [graph, setGraph] = useState<WorldGraph | null>(null);
+  // A confirmed world's relations as its latest step holds them; before confirming there is no
+  // step, and the graph is drawn from the setup instead.
+  const [storedGraph, setStoredGraph] = useState<WorldGraph | null>(null);
+  const [setup, setSetup] = useState<SetupView | null>(null);
+  const vocabulary = useVocabulary();
+  const { places } = usePlaces(id);
+  // The character being edited (`id` null: one being added), with the form it started from.
+  const [editing, setEditing] = useState<{ id: string | null; draft: Draft } | null>(null);
+  // Remounts the card after a cast change, so it drops the dossiers it fetched before.
+  const [cardVersion, setCardVersion] = useState(0);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -59,6 +79,8 @@ function WorldReview({ id }: { id: string }) {
   // actor) nobody can be cast, and only then is it shown.
   const directing = !!meta && (meta.director_reviewed || meta.confirmed);
   const stage = !meta ? "loading" : directing ? "director" : casting ? "casting" : "choose";
+  // Confirming locks the setup; an unconfirmed world can't have run.
+  const revisable = stage === "director" && !meta?.confirmed;
 
   useEffect(() => {
     if (!graphExpanded) return;
@@ -84,11 +106,71 @@ function WorldReview({ id }: { id: string }) {
     if (viewerOf(meta)) navigate(`/worlds/${id}`, { replace: true });
   }, [meta, id, navigate]);
 
-  // Private relations are loaded only after the director enters review.
+  // Private relations and the historical events are loaded only after the director enters review.
   useEffect(() => {
     if (stage !== "director") return;
-    api.graph(id).then(setGraph).catch((e) => setError(String(e)));
-  }, [id, stage]);
+    api.getSetup(id).then(setSetup).catch((e) => setError(String(e)));
+    if (meta?.confirmed) api.graph(id).then(setStoredGraph).catch((e) => setError(String(e)));
+  }, [id, stage, meta?.confirmed]);
+
+  const graph = useMemo(
+    () => (meta?.confirmed ? storedGraph : setup ? setupGraph(setup, cast) : null),
+    [meta?.confirmed, storedGraph, setup, cast],
+  );
+
+  async function castChanged(next: SetupView, activeAfter: string | null) {
+    setSetup(next);
+    setEditing(null);
+    setActiveId(activeAfter);
+    setCardVersion((v) => v + 1);
+    await reloadCast(id);
+  }
+
+  async function startEdit(agentId: string) {
+    const entry = setup?.characters.find((c) => c.agent_id === agentId);
+    if (!entry || !vocabulary) return;
+    try {
+      const profile = await api.agentProfile(id, agentId);
+      setEditing({ id: agentId, draft: draftOf(profile, entry, vocabulary) });
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function saveCharacter(draft: Draft) {
+    if (!editing || !vocabulary) return;
+    if (editing.id === null) {
+      const added = await api.addCharacter(id, newCharacterOf(draft, blankDraft(vocabulary)));
+      return castChanged(added.setup, added.agent_id);
+    }
+    const revision = revisionOf(editing.draft, draft);
+    if (!Object.keys(revision).length) return setEditing(null);
+    await castChanged(await api.reviseCharacter(id, editing.id, revision), editing.id);
+  }
+
+  async function removeCharacter(agentId: string) {
+    if (!setup) return;
+    const name = cast[agentId]?.name ?? "某人";
+    const relations = setup.relations.filter((r) => r.source_id === agentId || r.target_id === agentId).length;
+    const involved = setup.historical_events.filter((e) => e.figure_ids.includes(agentId));
+    const dropped = involved.filter((e) => e.figure_ids.length === 1).length;
+    const notes = [
+      relations && `${relations} 条关系`,
+      dropped && `${dropped} 条只有${name}参与的过往事件`,
+    ].filter(Boolean);
+    const kept = involved.length - dropped;
+    const message = [
+      `删除角色「${name}」？`,
+      notes.length ? `会一起删除：${notes.join("、")}。` : "",
+      kept ? `另有 ${kept} 条过往事件会保留，只是不再把${name}列为相关角色。` : "",
+    ].filter(Boolean).join("\n");
+    if (!window.confirm(message)) return;
+    try {
+      await castChanged(await api.removeCharacter(id, agentId), null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
 
   async function openDirectorReview() {
     setBusy(true);
@@ -178,9 +260,12 @@ function WorldReview({ id }: { id: string }) {
               disabled={busy || (stage === "casting" && !castId)}
               className="text-xs font-semibold px-5 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 border border-indigo-500 shadow-lg shadow-indigo-600/30 transition disabled:opacity-40"
             >
-              {stage === "casting"
-                ? <><ActorIcon /> 我是{candidates.find((c) => c.agent_id === castId)?.name ?? "所选角色"} →</>
-                : meta?.confirmed ? "进入叙事 →" : "确认并进入叙事 →"}
+              {/* Confirming materializes the world (its backstory memories embedded), which takes a moment. */}
+              {busy && !meta?.confirmed
+                ? "正在生成世界…"
+                : stage === "casting"
+                  ? <><ActorIcon /> 我是{candidates.find((c) => c.agent_id === castId)?.name ?? "所选角色"} →</>
+                  : meta?.confirmed ? "进入叙事 →" : "确认并进入叙事 →"}
             </button>
           )}
         </div>
@@ -227,10 +312,14 @@ function WorldReview({ id }: { id: string }) {
                 a story told a day at a time is a different story from one told hour by
                 hour, so it belongs here, next to the cast, before the user locks it. */}
             {meta?.seconds_per_step ? (
-              <div className="flex items-center space-x-2 text-xs bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 text-slate-400">
-                <span>⏳</span>
-                <span>叙事节奏 · 每步 {durationLabel(meta.seconds_per_step)}</span>
-              </div>
+              <StepLengthEditor
+                secondsPerStep={meta.seconds_per_step}
+                editable={revisable}
+                onSave={async (seconds) => {
+                  setSetup(await api.reviseSecondsPerStep(id, seconds));
+                  setMeta(await api.getWorld(id));
+                }}
+              />
             ) : null}
           </div>
         </div>
@@ -286,12 +375,37 @@ function WorldReview({ id }: { id: string }) {
                   {roster.length ? roster.findIndex((r) => r.id === effectiveId) + 1 : 0} / {roster.length}
                 </span>
               </div>
-              <CharacterCard
-                worldId={id}
-                roster={roster}
-                activeId={effectiveId}
-                onActiveChange={setActiveId}
-              />
+              {editing && vocabulary ? (
+                <div className="bg-gradient-to-b from-slate-900/95 to-slate-950/95 border border-slate-800 rounded-2xl p-4 space-y-3 overflow-y-auto">
+                  <p className="text-sm font-bold text-slate-100">
+                    {editing.id === null ? "添加角色" : `编辑 · ${cast[editing.id]?.name ?? "某人"}`}
+                  </p>
+                  <CharacterEditor
+                    key={editing.id ?? "new"}
+                    initial={editing.draft}
+                    isNew={editing.id === null}
+                    places={places}
+                    vocabulary={vocabulary}
+                    onSave={saveCharacter}
+                    onCancel={() => setEditing(null)}
+                  />
+                </div>
+              ) : (
+                <CharacterCard
+                  key={cardVersion}
+                  worldId={id}
+                  roster={roster}
+                  activeId={effectiveId}
+                  onActiveChange={setActiveId}
+                  {...(revisable && vocabulary && setup ? {
+                    onEdit: (agentId: string) => void startEdit(agentId),
+                    onRemove: (agentId: string) => void removeCharacter(agentId),
+                    ...(roster.length < MAX_CAST_SIZE && {
+                      onAdd: () => setEditing({ id: null, draft: blankDraft(vocabulary) }),
+                    }),
+                  } : {})}
+                />
+              )}
             </div>
           </div>
 
@@ -322,6 +436,27 @@ function WorldReview({ id }: { id: string }) {
                 <RelationshipGraph cast={cast} graph={graph} activeId={effectiveId} onNodeClick={setActiveId} />
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {stage === "director" && setup && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          <div className="lg:col-span-5">
+            <HistoryPanel
+              events={setup.historical_events}
+              cast={cast}
+              editable={revisable}
+              onSave={async (events) => setSetup(await api.replaceHistory(id, events))}
+            />
+          </div>
+          <div className="lg:col-span-7">
+            <RelationPanel
+              relations={setup.relations}
+              cast={cast}
+              editable={revisable}
+              onSave={async (relations) => setSetup(await api.replaceRelations(id, relations))}
+            />
           </div>
         </div>
       )}

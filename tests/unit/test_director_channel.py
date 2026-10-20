@@ -46,8 +46,9 @@ from engine.world_mutation import (
     ConditionMutation, EntityMutation, RelocateMutation, SpawnMutation, WorldMutationChannel,
 )
 from providers.llm.mock import MockLLMProvider
-from world.models import EntityPresence, NpcSeed, WorldEntity, WorldEntityType
+from world.models import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
+from tests.unit.world_setups import npc_seed
 
 WORLD_ID = "world-1"
 
@@ -720,7 +721,7 @@ async def test_menu_says_who_is_holding_a_thing(container) -> None:
 
 def _add_npc(environment: EnvironmentSystem, at: str = "market") -> str:
     environment.spawn_npc(
-        NpcSeed(name="王二", gender="男", age=34, description="东宫的跑腿小厮"), location_id=at,
+        npc_seed("王二", gender="男", age=34, description="东宫的跑腿小厮"), location_id=at,
     )
     return environment.all_npcs()[-1].npc_id
 

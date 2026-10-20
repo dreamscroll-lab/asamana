@@ -9,9 +9,9 @@ import { MO, SHI, did, step, type LabScene, who } from "./fixtures";
  * past the making to check it then behaves as an ordinary thing.
  */
 
-// Engine-shaped ids: runtime-made things wear a `made_` prefix, seeded ones `seed_`.
-const KEPT = "made_item-6b1f90c4aa";
-const SET_DOWN = "made_item-2d47ae1130";
+// Engine-shaped ids: runtime-made things wear a `made_entity_` prefix, seeded ones `seed_`.
+const KEPT = "made_entity_6b1f90c4aa";
+const SET_DOWN = "made_entity_2d47ae1130";
 
 /** A thing just written and pocketed — nobody standing there can perceive it. */
 const kept = (holder: string): Record<string, PlacedEntity> => ({

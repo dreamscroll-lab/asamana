@@ -192,9 +192,9 @@ class WorldCatalog:
     def set_name(self, world_id: str, world_name: str) -> None:
         """Rename a world's display name.
 
-        Only the catalog's display hint changes: ``analysis.world_name`` is a
-        build-time artifact frozen in the step-0 snapshot and reaches no runtime
-        prompt, so renaming here is a labeling act, not a change to the world.
+        Only the catalog's display hint changes: the setup's ``lore.world_name`` is a
+        build-time artifact and reaches no runtime prompt, so renaming here is a
+        labeling act, not a change to the world.
 
         Same re-read-before-write guard as ``register``. A no-op if the world is not cataloged.
         """

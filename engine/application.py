@@ -7,7 +7,8 @@ import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
+from uuid import uuid4
 
 from config.models import Config
 from core.container import Container
@@ -42,6 +43,8 @@ from engine.scheduler import AgentScheduler
 from engine.world_pressure import WorldPressureEvaluator
 from world import ActorCasting, World, WorldBuilder, WorldCatalog
 from world.initializer import WorldInitializer
+from world.setup import SetupRejected, WorldSetup
+from world.stored_config import StoredWorldConfig
 
 logger = get_logger(__name__)
 
@@ -129,42 +132,95 @@ class NarrativeApplication:
         *,
         template: str | None = None,
         available_templates: Sequence[str] = (),
-    ) -> World:
-        """Build a world and register its runtime session.
+    ) -> str:
+        """Build a world's setup and catalog the world; returns its id.
 
-        The map is chosen per world: a named ``template``, else picked from
-        ``available_templates`` by the theme. With neither the build fails; a deployment-wide
-        default map would hide that. The chosen map is persisted with the world (see
-        ``TiledWorldConfig.to_runtime_context``).
+        Nothing runs yet: the world is materialized when it is confirmed (``confirm_world``),
+        and until then its setup may be revised. The map is chosen per world: a named
+        ``template``, else picked from ``available_templates`` by the theme. With neither the
+        build fails; a deployment-wide default map would hide that.
         """
 
-        world = await self._builder.build(
+        world_id = str(uuid4())
+        setup = await self._builder.build(
             theme=theme,
+            world_id=world_id,
             world_configs=self._candidates(template, available_templates),
             min_agents=self._config.world.min_agents,
             max_agents=self._config.world.max_agents,
             max_npcs=self._config.engine.max_npcs,
         )
-        self._sessions[world.world_id] = RuntimeSession(
-            world=world,
-            runtime=self._build_runtime(world),
-        )
         if self._catalog is not None:
             self._catalog.register(
-                world.world_id,
+                world_id,
                 theme=theme,
-                world_name=world.analysis.world_name,
+                world_name=setup.lore.world_name,
                 created_at=datetime.now(),
             )
         logger.info(
             "application_world_registered",
             extra={
-                "world_id": world.world_id,
-                "world_name": world.analysis.world_name,
-                "agent_count": len(world.agents),
+                "world_id": world_id,
+                "world_name": setup.lore.world_name,
+                "agent_count": len(setup.characters),
             },
         )
-        return world
+        return world_id
+
+    async def confirm_world(self, world_id: str, *, character_id: str | None = None) -> World:
+        """Lock a world's setup and materialize the world from it: step 0 (with the setup frozen
+        into it), the agents and their stores, and a session to run them. The setup file goes once
+        all of that stands.
+
+        ``character_id`` casts the actor in the same act: the cast is part of the setup, so this
+        is the only place it is chosen, and never after the director has seen every secret.
+        Confirming a confirmed world again just returns it. A materialization that fails leaves
+        the world unconfirmed, and the next attempt clears what it wrote.
+        """
+        async with self._lifecycle_lock(world_id):
+            entry = self._catalog.get(world_id) if self._catalog is not None else None
+            if entry is not None and entry.get("confirmed"):
+                if character_id is not None:
+                    raise ValueError(f"World {world_id!r} is confirmed; its cast is locked.")
+                if (session := self._sessions.get(world_id)) is not None:
+                    return session.world
+                return await self._restore_session_locked(world_id, casting=self._casting(world_id))
+            casting = None
+            if character_id is not None:
+                if self._catalog is None or entry is None:
+                    raise ValueError(f"World {world_id!r} is not cataloged.")
+                if self._catalog.director_reviewed(world_id):
+                    raise ValueError(f"World {world_id!r} was reviewed by the director; nobody can be cast.")
+                setup = await self.world_setup(world_id)
+                if character_id not in {d.agent_id for d in setup.characters}:
+                    raise ValueError(f"World {world_id!r} has no character {character_id!r} to cast the actor as")
+                casting = ActorCasting(character_id=character_id)
+            await self._clear_materialized(world_id)
+            initializer = WorldInitializer(self._container, max_npcs=self._config.engine.max_npcs)
+            world = await initializer.initialize(world_id, casting=casting)
+            self._sessions[world_id] = RuntimeSession(
+                world=world, runtime=self._build_runtime(world, casting=casting),
+            )
+            if self._catalog is not None:
+                if casting is not None:
+                    self._catalog.set_actor_casting(world_id, casting)
+                self._catalog.set_confirmed(world_id, True)
+            # Last: the setup now lives frozen in step 0. Left behind by a failure here, the file
+            # still holds what step 0 froze, and a confirmed world takes no revision.
+            await self._container.snapshot.delete_world_setup(world_id)
+            logger.info(
+                "world_confirmed",
+                extra={"world_id": world_id, "agent_count": len(world.agents), "cast": character_id},
+            )
+            return world
+
+    async def _clear_materialized(self, world_id: str) -> None:
+        """Drop what an earlier, failed confirmation wrote; the setup file and the frozen map stay."""
+        container = self._container
+        await container.snapshot.delete_steps_after(world_id, -1)
+        await container.agent_store.delete_world(world_id)
+        await container.vector_store.delete_world(world_id)
+        await container.message_provider.clear(world_id)
 
     def _lifecycle_lock(self, world_id: str) -> "asyncio.Lock":
         """This world's lifecycle lock (see ``_lifecycle_locks``)."""
@@ -237,7 +293,7 @@ class NarrativeApplication:
             "application_world_session_restored",
             extra={
                 "world_id": world_id,
-                "world_name": world.analysis.world_name,
+                "world_name": world.setup.lore.world_name,
                 "agent_count": len(world.agents),
             },
         )
@@ -298,7 +354,7 @@ class NarrativeApplication:
         )
         logger.info(
             "world_session_reset",
-            extra={"world_id": world_id, "world_name": world.analysis.world_name},
+            extra={"world_id": world_id, "world_name": world.setup.lore.world_name},
         )
         return world
 
@@ -309,27 +365,6 @@ class NarrativeApplication:
 
     def _casting(self, world_id: str) -> ActorCasting | None:
         return self._catalog.actor_casting(world_id) if self._catalog is not None else None
-
-    async def cast_actor(self, world_id: str, character_id: str) -> World:
-        """Have the actor perform ``character_id``; every other character stays with AI cognition.
-
-        Only before the world is confirmed: confirming locks its setup, the cast included, so a
-        confirmed world (every bundled example among them) can't take an actor. Until then the
-        choice may be changed.
-        """
-        async with self._lifecycle_lock(world_id):
-            if self._catalog is None or (entry := self._catalog.get(world_id)) is None:
-                raise ValueError(f"World {world_id!r} is not cataloged.")
-            if entry.get("confirmed"):
-                raise ValueError(f"World {world_id!r} is confirmed; its cast is locked.")
-            if (casting := self._casting(world_id)) is not None and casting.exited:
-                raise ValueError(f"The actor has left world {world_id!r} and can't return.")
-            if self._catalog.director_reviewed(world_id):
-                raise ValueError(f"World {world_id!r} was reviewed by the director; nobody can be cast.")
-            # The API can't run an unconfirmed world, but run_world isn't gated.
-            if any(step > 0 for step in await self._container.snapshot.list_steps(world_id)):
-                raise ValueError(f"World {world_id!r} has already run; its cast is locked.")
-            return await self._recast_locked(world_id, ActorCasting(character_id=character_id))
 
     async def open_director_review(self, world_id: str) -> None:
         """Show the user the whole cast, as the director. One way: whoever has read every
@@ -355,6 +390,42 @@ class NarrativeApplication:
             return await self._recast_locked(
                 world_id, ActorCasting(character_id=casting.character_id, exited=True),
             )
+
+    async def world_setup(self, world_id: str) -> WorldSetup:
+        """The world's setup: its file until the world is confirmed, step 0's after."""
+        setup = await WorldSetup.load(self._container.snapshot, world_id)
+        if setup is None:
+            raise ValueError(f"World {world_id!r} has no setup.")
+        return setup
+
+    async def revise_setup(
+        self, world_id: str, revise: Callable[[WorldSetup, frozenset[str]], WorldSetup],
+    ) -> WorldSetup:
+        """Apply a revision to a world's setup.
+
+        Open until the world is confirmed: confirming locks the setup, and nothing is
+        materialized before it, so a revision rewrites the setup file alone.
+        ``revise`` gets the setup and the location ids of the world's map. Raises ``ValueError``
+        when the setup is closed, and ``SetupRejected`` when ``revise`` refuses the revision;
+        either way nothing changes.
+        """
+        async with self._lifecycle_lock(world_id):
+            if self._catalog is None or (entry := self._catalog.get(world_id)) is None:
+                raise ValueError(f"World {world_id!r} is not cataloged.")
+            if entry.get("confirmed"):
+                raise ValueError(f"World {world_id!r} is confirmed; its setup is locked.")
+            snapshots = self._container.snapshot
+            stored = await snapshots.load_world_setup(world_id)
+            config = await snapshots.load_world_config(world_id)
+            if stored is None or config is None:
+                raise ValueError(f"World {world_id!r} has no setup to revise.")
+            places = frozenset(StoredWorldConfig(config).get_places())
+            try:
+                setup = revise(WorldSetup.from_dict(stored), places)
+            except ValueError as exc:
+                raise SetupRejected(str(exc)) from exc
+            await snapshots.save_world_setup(world_id, setup.as_dict())
+            return setup
 
     def performing_character(self, world_id: str) -> str | None:
         """The character an actor performs in this world now; None once nobody does."""
@@ -886,8 +957,8 @@ class NarrativeApplication:
             environment=world.environment,
             message_system=message_system,
             narrative_editor_settings=NarrativeEditorSettings(
-                core_tension=world.analysis.core_tension,
-                narrative_theme=world.analysis.narrative_theme,
+                core_tension=world.setup.lore.core_tension,
+                narrative_theme=world.setup.lore.narrative_theme,
                 enabled=self._config.engine.narrative_editor_enabled,
                 check_interval=self._config.engine.injection_check_interval,
                 max_injections_per_window=self._config.engine.max_injections_per_window,

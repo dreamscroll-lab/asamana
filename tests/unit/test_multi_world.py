@@ -21,6 +21,7 @@ from core.interfaces.place import Place
 from world.stored_config import StoredWorldConfig, serialize_world_config
 from worlds.tiled import TiledWorldConfig
 from tests.unit.bus_tap import tap
+from tests.unit.confirmed_world import confirmed_world
 
 
 @pytest.fixture()
@@ -101,7 +102,7 @@ async def test_build_copies_template_and_leaves_it_pristine(container, test_conf
     template = TiledWorldConfig(template="changan_iso")
     entity_id = next(iter(template.get_places()))
 
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     assert (
         world.world_config.get_places()[entity_id]
@@ -117,20 +118,16 @@ def test_stored_world_config_round_trips_template_data(container) -> None:
     stored = StoredWorldConfig(data)
 
     assert stored.get_places() == template.get_places()
-    assert stored.get_location_aliases() == template.get_location_aliases()
+    # Aliases only turn location text into ids, and a built world's setup holds ids alone.
+    assert stored.get_location_aliases() == {}
     assert stored.get_world_description() == template.get_world_description()
     assert stored.to_runtime_context() == template.to_runtime_context()
-
-    aliases = template.get_location_aliases()
-    probes = list(template.get_places())[:2] + list(aliases)[:2] + ["不存在的地方"]
-    for probe in probes:
-        assert stored.resolve_location_id(probe) == template.resolve_location_id(probe)
 
 
 @pytest.mark.asyncio
 async def test_restore_uses_persisted_config_not_current_template(container, test_config) -> None:
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     # Edit the template. ``Place`` is frozen (space is fixed at world build), so the only way to
     # edit it is to replace the entry.
@@ -155,7 +152,7 @@ async def test_restore_does_not_resurrect_baked_in_occupancy(container, test_con
     persisted with the world config assets, so this checks the environment's final state.
     """
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=1)
 
     # Simulate the agent having ended the run in a different location.
@@ -212,7 +209,7 @@ async def test_snapshot_providers_world_config_asset(tmp_path, container) -> Non
 @pytest.mark.asyncio
 async def test_run_world_rejects_concurrent_runs_of_same_world(container, test_config) -> None:
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     results = await asyncio.gather(
         application.run_world(world.world_id, steps=1),
@@ -272,8 +269,8 @@ async def test_message_provider_isolates_worlds() -> None:
 @pytest.mark.asyncio
 async def test_two_worlds_run_concurrently_without_crosstalk(container, test_config) -> None:
     application = NarrativeApplication(container, test_config)
-    world_a = await application.build_world("玄武门之变", template="changan_iso")
-    world_b = await application.build_world("贞观之治", template="changan_iso")
+    world_a = await confirmed_world(application, "玄武门之变", template="changan_iso")
+    world_b = await confirmed_world(application, "贞观之治", template="changan_iso")
     assert world_a.world_id != world_b.world_id
 
     # Private config copies: same template entity, distinct objects per world.
@@ -311,7 +308,7 @@ async def test_restore_does_not_place_dead_agent(container, test_config) -> None
     unconditional place on restore would put it back in the room, visible to everyone there for
     good, since death handling only processes this step's new deaths and would never clear it."""
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=1)
 
     agent_id = next(iter(world.agents))
@@ -338,7 +335,7 @@ async def test_restore_brings_the_mindless_bodies_back(container, test_config) -
     Skip this and the world has no NPCs from step one, so ERRAND silently can never reach one.
     """
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     seeded = {npc.npc_id: npc.name for npc in world.environment.all_npcs()}
     assert seeded, "这个世界本来就没有工具人,测不到东西"
 
@@ -367,7 +364,7 @@ async def test_restoring_at_step_zero_leaves_the_entities_exactly_as_seeded(
     as if created at runtime.
     """
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     built = {
         e.entity_id: (e.state, e.presence, e.presence_ref)
         for e in world.environment.all_live_entities()

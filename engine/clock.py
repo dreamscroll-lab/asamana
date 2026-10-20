@@ -117,6 +117,9 @@ MAX_HOURS_PER_STEP = 24
 DEFAULT_HOURS_PER_STEP = 2
 SECONDS_PER_HOUR = 3600
 DEFAULT_STEP_SECONDS = DEFAULT_HOURS_PER_STEP * SECONDS_PER_HOUR
+STEP_SECONDS_RANGE: tuple[int, int] = (
+    MIN_HOURS_PER_STEP * SECONDS_PER_HOUR, MAX_HOURS_PER_STEP * SECONDS_PER_HOUR,
+)
 
 
 def resolve_step_seconds(raw: object) -> int:
@@ -128,7 +131,7 @@ def resolve_step_seconds(raw: object) -> int:
         seconds = int(raw)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return DEFAULT_STEP_SECONDS
-    if not MIN_HOURS_PER_STEP * SECONDS_PER_HOUR <= seconds <= MAX_HOURS_PER_STEP * SECONDS_PER_HOUR:
+    if not STEP_SECONDS_RANGE[0] <= seconds <= STEP_SECONDS_RANGE[1]:
         return DEFAULT_STEP_SECONDS
     return seconds
 

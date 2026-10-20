@@ -27,3 +27,9 @@ def test_slugify_fallback_prefix_is_parameterized() -> None:
 
 def test_slugify_default_prefix() -> None:
     assert slugify("。。。").startswith("item-")
+
+
+def test_slugify_without_fallback_prefix_falls_back_to_the_bare_hash() -> None:
+    out = slugify("张三", fallback_prefix=None)
+    assert out == slugify("张三", fallback_prefix="seed").removeprefix("seed-")
+    assert slugify("Zhang San", fallback_prefix=None) == "zhang-san"

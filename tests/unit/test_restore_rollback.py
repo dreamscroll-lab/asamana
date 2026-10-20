@@ -11,6 +11,7 @@ from agent.memory_types import MemoryStream
 from core.container import Container
 from engine.application import NarrativeApplication
 from world.initializer import WorldInitializer
+from tests.unit.confirmed_world import confirmed_world
 
 
 @pytest.fixture()
@@ -29,7 +30,7 @@ async def _memory_steps(container: Container, agent) -> list[int]:
 @pytest.mark.asyncio
 async def test_restore_drops_what_an_uncommitted_step_wrote(container, test_config) -> None:
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=2)
     agent = next(iter(world.agents.values()))
     committed = await container.snapshot.load(world.world_id, 2)
@@ -58,7 +59,7 @@ async def test_restore_drops_what_an_uncommitted_step_wrote(container, test_conf
 @pytest.mark.asyncio
 async def test_reset_still_keeps_backstory_memories(container, test_config) -> None:
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     agent_id = next(iter(world.agents))
     seeds = await _memory_steps(container, world.agents[agent_id])
     await application.run_world(world.world_id, steps=2)

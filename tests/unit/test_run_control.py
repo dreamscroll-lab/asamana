@@ -9,6 +9,7 @@ import pytest
 
 from engine.application import NarrativeApplication
 from engine.run_control import RunController, RunState
+from tests.unit.confirmed_world import confirmed_world
 
 
 # --- RunController (deterministic, no runtime) ---------------------------------
@@ -108,7 +109,7 @@ async def test_step_once_is_a_noop_once_stopping() -> None:
 @pytest.mark.asyncio
 async def test_background_run_completes_and_persists(mock_build_container, test_config) -> None:
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
 
     statuses: list[str] = []
@@ -138,7 +139,7 @@ async def test_step_world_advances_one_step_from_idle(mock_build_container, test
     """With no live loop, a single step is a run of exactly one step: it finishes on its own and the
     world goes idle."""
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
     assert app.run_status(wid) == RunState.IDLE
 
@@ -157,7 +158,7 @@ async def test_step_world_on_a_paused_run_advances_one_and_stays_parked(
     """A paused world advanced one step must still be paused; otherwise "advance one step" becomes
     "resume"."""
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
 
     app.start_run(wid, steps=20)   # long enough for the controller to steer it midway
@@ -186,7 +187,7 @@ async def test_step_world_on_a_paused_run_advances_one_and_stays_parked(
 @pytest.mark.asyncio
 async def test_control_methods_reject_when_not_running(mock_build_container, test_config) -> None:
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
     assert app.run_status(wid) == RunState.IDLE
     for method in (app.pause_run, app.resume_run, app.stop_run):
@@ -199,7 +200,7 @@ async def test_a_run_of_no_steps_is_refused(mock_build_container, test_config) -
     """Steps must be a positive integer: a 0-step run reports "running" while doing nothing, looking
     like it ran."""
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     with pytest.raises(ValueError):
         await app.run_world(world.world_id, steps=0)
 
@@ -207,7 +208,7 @@ async def test_a_run_of_no_steps_is_refused(mock_build_container, test_config) -
 @pytest.mark.asyncio
 async def test_a_long_run_stops_on_request(mock_build_container, test_config) -> None:
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
 
     app.start_run(wid, steps=10_000)  # can't finish, so only stop_run can stop it
@@ -223,7 +224,7 @@ async def test_a_long_run_stops_on_request(mock_build_container, test_config) ->
 @pytest.mark.asyncio
 async def test_delete_world_purges_and_stops(mock_build_container, test_config) -> None:
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
     app.start_run(wid, steps=3)
     await app.delete_world(wid)  # stops the run, then purges
@@ -261,7 +262,7 @@ async def test_run_refused_while_a_reset_is_in_flight(mock_build_container, test
     out of stop's reach.
     """
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
     _make_store_yield(mock_build_container)
 
@@ -285,7 +286,7 @@ async def test_reset_refused_while_a_run_is_live(mock_build_container, test_conf
     """No reset while running; the check is redone inside the lock, not based on the run state the
     caller read before entering."""
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
 
     app.start_run(wid, steps=10_000)   # reset while running, so it mustn't finish on its own first
@@ -311,7 +312,7 @@ async def test_run_refused_while_a_delete_is_in_flight(mock_build_container, tes
     the catalog.
     """
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
 
     app.start_run(wid, steps=1)
@@ -354,7 +355,7 @@ async def test_a_directive_accepted_during_the_last_step_still_lands(
     from core.interfaces.llm import LLMScene
 
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
     mock_build_container.llm_router.get(LLMScene.DIRECTIVE).fixed_response = json.dumps({
         "reason": "r", "feasible": True, "refusal": "",
@@ -389,7 +390,7 @@ async def test_restore_sees_changes_no_act_of_the_agent_made(mock_build_containe
     survive a restore even if the agent itself did nothing since: agent state is saved at every
     step's end, not only when the agent's own action lands."""
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(app, "玄武门之变", template="changan_iso")
     wid = world.world_id
     await app.run_world(wid, steps=1)
     env = world.environment
@@ -416,7 +417,7 @@ async def test_shutdown_stops_runs_at_a_step_boundary_and_starts_no_more(
     """A step writes memories as it goes and its snapshot at the end; shutting down mid-step
     would replay it on restore. Shutdown waits for the boundary, and refuses new runs."""
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
     app.start_run(wid, steps=50)
     task = app.get_session(wid).task
@@ -435,7 +436,7 @@ async def test_a_stopping_world_refuses_pause_resume_and_step(mock_build_contain
     """After stop the controller ignores them, so accepting them would report a state the loop
     never enters and hide STOPPING."""
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
     app.start_run(wid, steps=20)
     app.stop_run(wid)

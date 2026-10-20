@@ -280,10 +280,11 @@ class EnvironmentSystem:
 
     def spawn_npc(self, seed: NpcSeed, *, location_id: str) -> bool:
         """The one way to put a body-without-a-mind into the world. Returns False when nothing
-        was created (no name, not a real place, or at quota); that's not a build failure.
+        was created (no name or id, an id already taken, not a real place, or at quota); that's
+        not a build failure.
 
         The quota is enforced here, not on restore, or a world that grew to the cap would lose
-        people on restore. ids are a deterministic name slug, not a uuid, so replay reproduces
+        people on restore. The id is the seed's, fixed in the world's setup, so replay reproduces
         the same world.
         """
         name = seed.name.strip()
@@ -302,12 +303,11 @@ class EnvironmentSystem:
             )
             return False
 
-        base = f"npc_{slugify(name, fallback_prefix='npc')}"
-        npc_id = base
-        suffix = 2
-        while npc_id in self._npcs:
-            npc_id = f"{base}-{suffix}"
-            suffix += 1
+        # The id is the setup's (``WorldSetup.from_build`` gives one, unique in the world).
+        npc_id = seed.npc_id
+        if not npc_id or npc_id in self._npcs:
+            logger.warning("npc_spawn_without_id", extra={"npc_name": name, "npc_id": npc_id})
+            return False
         self._npcs[npc_id] = Npc(
             npc_id=npc_id, name=name, gender=seed.gender, age=seed.age,
             description=seed.description,
@@ -505,7 +505,7 @@ class EnvironmentSystem:
             )
             return False
 
-        base = f"made_{slugify(name)}"
+        base = f"made_entity_{slugify(name, fallback_prefix=None)}"
         entity_id = base
         suffix = 2
         while entity_id in self._entities:

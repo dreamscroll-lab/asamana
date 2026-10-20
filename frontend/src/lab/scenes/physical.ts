@@ -253,8 +253,8 @@ export function buildPhysicalScenes({ open: OPEN }: LabPlaces): LabScene[] {
               // acts_on is the item, since it changes hands. The recipient goes in reaches, not
               // claims, because receiving something doesn't use up his turn. See the PHYSICAL
               // binding in agent/decision.py.
-              target: aimThing(`seed_seed-${MO.id.slice(-8)}0`, RefKind.item, [SHI.id]),
-              affected_entity_ids: [`seed_seed-${MO.id.slice(-8)}0`],
+              target: aimThing(`seed_${MO.id.slice(-8)}0`, RefKind.item, [SHI.id]),
+              affected_entity_ids: [`seed_${MO.id.slice(-8)}0`],
               action_description: `把货箱交到${SHI.name}手上。`,
               outcome: `在${OPEN.name}，${MO.name}把货箱交到了${SHI.name}手上。`,
             }),

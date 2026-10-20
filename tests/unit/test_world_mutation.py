@@ -54,8 +54,9 @@ from engine.world_mutation import (
     WorldMutationChannel,
 )
 from providers.llm.mock import MockLLMProvider
-from world.models import EntityPresence, NpcSeed, WorldEntity, WorldEntityType
+from world.models import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
+from tests.unit.world_setups import npc_seed
 
 WORLD_ID = "world-1"
 
@@ -937,7 +938,7 @@ async def test_clearing_a_condition_nobody_has_is_nothing_happening(container) -
 
 def _npc(environment: EnvironmentSystem, at: str = "palace") -> str:
     environment.spawn_npc(
-        NpcSeed(name="王二", gender="男", age=34, description="跑得快、认得路"), location_id=at,
+        npc_seed("王二", gender="男", age=34, description="跑得快、认得路"), location_id=at,
     )
     return environment.all_npcs()[-1].npc_id
 

@@ -24,9 +24,10 @@ from engine.message_system import MessageSystem
 from agent.personality import SoulLayer
 from engine.npc_runner import NpcRunner
 from providers.message.in_memory import InMemoryMessageProvider
-from world.models import EntityPresence, NpcSeed, WorldEntity, WorldEntityType
+from world.models import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
 from tests.unit.env_state import npc_outcomes, restore, saved
+from tests.unit.world_setups import npc_seed
 
 
 class _FixedLLM:
@@ -76,7 +77,7 @@ def _runner(
 
 def _bearer(env: EnvironmentSystem, at: str = "hall") -> str:
     env.spawn_npc(
-        NpcSeed(name="王二", gender="男", age=34, description="跑得快、认得路"),
+        npc_seed("王二", gender="男", age=34, description="跑得快、认得路"),
         location_id=at,
     )
     return env.all_npcs()[-1].npc_id

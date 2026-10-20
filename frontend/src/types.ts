@@ -24,9 +24,9 @@ export interface WorldMeta {
   current_step: number;
   main_agent_names: string[];
   /**
-   * World time per step, in seconds; authored by the theme analysis and frozen at build.
-   * Shown on the creation-review card since it decides whether the story runs in hours or
-   * days. 0 when unknown.
+   * World time per step, in seconds; authored by the theme analysis, revisable in the setup and
+   * frozen by confirming. Shown on the creation-review card since it decides whether the
+   * story runs in hours or days. 0 when unknown.
    */
   seconds_per_step: number;
   run_state: RunState;
@@ -529,6 +529,111 @@ export interface PlaceIdentity {
   location_id: string;
   name: string;
   description: string;
+}
+
+/**
+ * One historical event of a world's setup (GET /worlds/{id}/setup).
+ * `hours_before_start`: how long before the story starts it happened. `figure_ids` are the
+ * characters who took part, and so the ones who remember it.
+ */
+export interface SetupHistoricalEventView {
+  event: string;
+  hours_before_start: number;
+  figure_ids: string[];
+  importance: number;
+}
+
+/**
+ * One relation of a world's setup: both directions of one pair. `trust`/`affection`/`labels` are
+ * `source_id`'s view of `target_id`, the `reverse_*` fields the other way round. A label says who
+ * the other is to the holder ("父子:父亲": the other is the holder's father).
+ */
+export interface SetupRelationView {
+  source_id: string;
+  target_id: string;
+  trust: number;
+  affection: number;
+  labels: string[];
+  reverse_trust: number;
+  reverse_affection: number;
+  reverse_labels: string[];
+}
+
+/** The emotion a character starts the story in; `emotion` is an emotion value from the vocabulary. */
+export interface InitialEmotionView {
+  emotion: string;
+  intensity: number;
+  valence: number;
+}
+
+/**
+ * One innate need: `type` is a need value from the vocabulary, `label` what it means to the
+ * character, `weight` how much it matters (0.1–2), `intensity` how urgent it is at the start (0–1),
+ * `is_hidden` a drive the character isn't aware of.
+ */
+export interface InnateNeedView {
+  type: string;
+  label: string;
+  intensity: number;
+  weight: number;
+  is_hidden: boolean;
+}
+
+/** What a character starts with and what drives it: the setup its profile doesn't carry. */
+export interface CharacterSetupView {
+  agent_id: string;
+  is_main_character: boolean;
+  initial_location: string;
+  initial_emotion: InitialEmotionView;
+  long_term_goals: string[];
+  hard_constraints: string[];
+  needs: InnateNeedView[];
+}
+
+export interface SetupView {
+  characters: CharacterSetupView[];
+  historical_events: SetupHistoricalEventView[];
+  relations: SetupRelationView[];
+}
+
+/** A value of one of the backend's closed vocabularies and its label. */
+export interface VocabularyEntry {
+  value: string;
+  label: string;
+}
+
+/** Every emotion and need a client may name (GET /api/vocabulary), the same for every world. */
+export interface Vocabulary {
+  emotions: VocabularyEntry[];
+  needs: VocabularyEntry[];
+}
+
+/**
+ * The fields of a character the setup lets be revised before confirming; the name is not among
+ * them. `needs` replaces them whole: a need type left out gets a generic one.
+ */
+export interface CharacterRevision {
+  role?: string;
+  age?: number;
+  gender?: string;
+  appearance?: string;
+  background?: string;
+  self_image?: string;
+  life_goal?: string;
+  secret?: string;
+  core_traits?: string[];
+  core_values?: string[];
+  hard_constraints?: string[];
+  needs?: InnateNeedView[];
+  is_main_character?: boolean;
+  initial_location?: string;
+  initial_emotion?: InitialEmotionView;
+  long_term_goals?: string[];
+}
+
+/** A character added to the setup: name, role, age, gender, tier and initial location are required. */
+export interface NewCharacter extends CharacterRevision {
+  name: string;
 }
 
 // Static agent identity (GET /api/worlds/{id}/agents/{agent_id}/profile).

@@ -32,6 +32,7 @@ from core.interfaces.place import Place
 from worlds.tiled import TiledWorldConfig
 from tests.unit.bus_tap import tap
 from tests.unit.step_view import beats
+from tests.unit.world_setups import npc_seed
 
 
 def _build_agent(container, *, world_id: str, agent_id: str, name: str, is_main_character: bool) -> Agent:
@@ -157,7 +158,6 @@ async def test_a_step_hands_agents_a_named_body_not_a_bare_id(container) -> None
     just prints "#1 某人", losing the blurb the judge rules the errand on. Only a full step shows it.
     """
     from core.interfaces.llm import LLMScene
-    from world.models import NpcSeed
 
     world_id = "world-npc"
     runtime, environment, _ = _build_runtime(container, world_id=world_id)
@@ -168,7 +168,7 @@ async def test_a_step_hands_agents_a_named_body_not_a_bare_id(container) -> None
     where = environment.space.all_place_ids()[0]
     environment.place_agent(agent_id="agent-1", location_id=where)
     assert environment.spawn_npc(
-        NpcSeed(name="Wang Er", gender="male", age=34, description="fast on foot; cannot read"),
+        npc_seed("Wang Er", gender="male", age=34, description="fast on foot; cannot read"),
         location_id=where,
     )
     npc_id = environment.all_npcs()[0].npc_id

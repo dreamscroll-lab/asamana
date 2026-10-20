@@ -49,18 +49,17 @@ async def test_explicit_move_executes_without_parsing_and_persists_public_thread
 ) -> None:
     container = mock_build_container
     catalog = WorldCatalog(None)
-    world = await NarrativeApplication(container, test_config, catalog=catalog).build_world(
-        "玄武门之变", template="changan_iso",
-    )
-    character_id = next(iter(world.agents))
+    application = NarrativeApplication(container, test_config, catalog=catalog)
+    world_id = await application.build_world("玄武门之变", template="changan_iso")
+    character_id = (await application.world_setup(world_id)).characters[0].agent_id
     parser = AsyncMock(side_effect=AssertionError("Explicit operations must not parse intent"))
     monkeypatch.setattr(container.llm_router.get(LLMScene.ACTOR_INTENT), "complete", parser)
-    base = f"/api/worlds/{world.world_id}"
+    base = f"/api/worlds/{world_id}"
 
     with TestClient(create_app(container, test_config, catalog=catalog)) as client:
         assert client.post(f"{base}/confirm", json={"character_id": character_id}).status_code == 200
         assert client.post(f"{base}/run", json={"steps": 1}).status_code == 200
-        with client.websocket_connect(f"/ws/{world.world_id}") as ws:
+        with client.websocket_connect(f"/ws/{world_id}") as ws:
             while True:
                 frame = ws.receive_json()
                 if frame["type"] == "actor_turn" and frame["data"] is not None:
@@ -99,7 +98,7 @@ async def test_explicit_move_executes_without_parsing_and_persists_public_thread
         assert stale.status_code == 409
 
     parser.assert_not_awaited()
-    snapshot = await container.snapshot.load(world.world_id, 1)
+    snapshot = await container.snapshot.load(world_id, 1)
     assert snapshot is not None
     assert snapshot.actor_thread == thread
     _assert_public(snapshot.actor_thread)

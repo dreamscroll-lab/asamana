@@ -84,8 +84,8 @@ def test_world_meta_status_reports_progress_from_snapshots() -> None:
     from interaction.models import build_world_meta
 
     def meta(step: int | None) -> WorldStatus:
-        snaps = [] if step is None else [WorldSnapshot(world_id="w", step=step, timestamp=_dt.now())]
-        return build_world_meta(world_id="w", snapshots=snaps, catalog_entry={}).status
+        latest = None if step is None else WorldSnapshot(world_id="w", step=step, timestamp=_dt.now())
+        return build_world_meta(world_id="w", latest_snapshot=latest, setup=None, catalog_entry={}).status
 
     assert meta(None) is WorldStatus.UNKNOWN
     assert meta(3) is WorldStatus.IN_PROGRESS   # worlds run open-ended: no step count ends the story

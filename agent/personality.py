@@ -162,6 +162,9 @@ class EmotionState:
 # The one label for SoulLayer.secret in every prompt.
 SECRET_LABEL = "秘密"
 
+# The values SoulLayer.gender may hold besides "" (unknown); consumers compare against exactly these.
+GENDERS: tuple[str, ...] = ("男", "女")
+
 
 @dataclass(frozen=True)
 class SoulLayer:

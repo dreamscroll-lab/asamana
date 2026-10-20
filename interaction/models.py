@@ -25,6 +25,7 @@ from core.interfaces.agent_store import relation_has_substance
 from core.interfaces.snapshot import WorldSnapshot
 from engine.environment import IN_TRANSIT
 from world.models import EntityPresence
+from world.setup import WorldSetup
 from world.identity_color import MINDLESS_BODY_COLOR
 
 
@@ -54,8 +55,9 @@ class WorldMeta:
     created_at: datetime | None = None
     current_step: int = 0
     main_agent_names: list[str] = field(default_factory=list)
-    # World time per step, in seconds; authored by the theme analysis and frozen at build. On
-    # the creation-review card because it decides whether the story runs in hours or days.
+    # World time per step, in seconds; authored by the theme analysis, revisable by the director
+    # and frozen by confirming. On the creation-review card because it decides whether the story
+    # runs in hours or days.
     # Seconds so only the display layer assumes a granularity. 0 when unknown.
     seconds_per_step: int = 0
     # Whether the user has reviewed and locked initialization. Unconfirmed worlds
@@ -130,8 +132,87 @@ class WorldGraph:
 
 
 @dataclass(frozen=True)
+class SetupHistoricalEventView:
+    """One historical event of a world's setup (``SetupHistoricalEvent``).
+
+    ``hours_before_start`` is how long before the story starts it happened. ``figure_ids`` are
+    the characters who took part, and so the ones who remember it.
+    """
+
+    event: str
+    hours_before_start: int
+    figure_ids: list[str]
+    importance: float
+
+
+@dataclass(frozen=True)
+class SetupRelationView:
+    """One relation of the setup: both directions of one pair of characters.
+
+    ``trust``/``affection``/``labels`` are ``source_id``'s view of ``target_id``; the
+    ``reverse_*`` fields are ``target_id``'s view of ``source_id``. Labels say who the other
+    is to the holder, as ``AgentRelation.labels`` do.
+    """
+
+    source_id: str
+    target_id: str
+    trust: float
+    affection: float
+    labels: list[str]
+    reverse_trust: float
+    reverse_affection: float
+    reverse_labels: list[str]
+
+
+@dataclass(frozen=True)
+class InitialEmotionView:
+    """The emotion a character starts the story in. ``emotion`` is an ``EmotionType`` value."""
+
+    emotion: str
+    intensity: float
+    valence: float
+
+
+@dataclass(frozen=True)
+class InnateNeedView:
+    """One innate need: ``type`` is a ``NeedType`` value; ``label`` what it means to this
+    character; ``weight`` how much it matters in the character's makeup; ``intensity`` how urgent
+    it is at the start; ``is_hidden`` a drive the character isn't aware of."""
+
+    type: str
+    label: str
+    intensity: float
+    weight: float
+    is_hidden: bool
+
+
+@dataclass(frozen=True)
+class CharacterSetupView:
+    """The part of a character's setup its profile (``AgentProfile``) doesn't carry: what it
+    starts the story with, and the motives that drive it."""
+
+    agent_id: str
+    is_main_character: bool
+    initial_location: str
+    initial_emotion: InitialEmotionView
+    long_term_goals: list[str] = field(default_factory=list)
+    hard_constraints: list[str] = field(default_factory=list)
+    needs: list[InnateNeedView] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SetupView:
+    """A world's setup (GET …/setup): revisable until the world is confirmed, read-only after.
+    Characters' profiles are served by their own route."""
+
+    characters: list[CharacterSetupView] = field(default_factory=list)
+    historical_events: list[SetupHistoricalEventView] = field(default_factory=list)
+    relations: list[SetupRelationView] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class AgentProfile:
-    """Static agent identity persisted at step 0 (GET …/agents/{id}/profile).
+    """Static agent identity from the world's setup (GET …/agents/{id}/profile).
 
     Distinct from ``AgentView`` (the mutable per-step state) — this is the
     unchanging identity used by the creation-review cards and the detail panel.
@@ -1081,37 +1162,29 @@ def _injection_from_record(record: Mapping[str, Any]) -> InjectionSummary:
 def build_world_meta(
     *,
     world_id: str,
-    snapshots: list[WorldSnapshot],
+    latest_snapshot: WorldSnapshot | None,
+    setup: WorldSetup | None,
     catalog_entry: Mapping[str, Any] | None = None,
 ) -> WorldMeta:
-    """Derive world metadata from persisted snapshots and optional catalog hints.
+    """Derive world metadata: identity from the world's setup, progress from its latest snapshot,
+    and the rest from the catalog."""
 
-    ``snapshots`` is in ascending step order and need only hold step 0 (identity, frozen at
-    build) and the last step (progress); callers pass just those two.
-    """
-
-    latest_snapshot = snapshots[-1] if snapshots else None
+    # The cast's main characters, plus a performed character, who is main tier from casting on.
     main_agent_names = sorted(
-        {
+        {d.soul.name for d in (setup.characters if setup else ()) if d.is_main_character}
+        | {
             str(record.get("agent_name") or "")
-            for snapshot in snapshots
-            for record in snapshot.state.agents.values()
+            for record in (latest_snapshot.state.agents.values() if latest_snapshot else ())
             if record.get("is_main_character")
         }
         - {""}
     )
-    # World lore for the creation-review card: pulled from the step-0 snapshot's
-    # world block (narrative pitch preferred, era description as fallback).
+    # World lore for the creation-review card: the narrative pitch, the era description as fallback.
     description = ""
     seconds_per_step = 0
-    step0 = next((s for s in snapshots if s.step == 0), snapshots[0] if snapshots else None)
-    if step0 is not None:
-        world_block = step0.build.get("world")
-        if isinstance(world_block, dict):
-            description = str(
-                world_block.get("narrative_pitch") or world_block.get("era_description") or ""
-            )
-            seconds_per_step = coerce_optional_int(world_block.get("seconds_per_step")) or 0
+    if setup is not None:
+        description = setup.lore.narrative_pitch or setup.lore.era_description
+        seconds_per_step = setup.lore.seconds_per_step
 
     current_step = latest_snapshot.step if latest_snapshot else 0
     status = WorldStatus.IN_PROGRESS if latest_snapshot is not None else WorldStatus.UNKNOWN

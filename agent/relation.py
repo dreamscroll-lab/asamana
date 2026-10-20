@@ -54,6 +54,7 @@ from core.prompts import (  # noqa: E402
     DECEASED_MARK,
     TRUST_RANGE,
     person_referent,
+    relation_labels,
     relation_legend,
 )
 
@@ -394,10 +395,10 @@ class RelationSystem:
         *,
         step: int,
     ) -> AgentRelation:
-        """Overwrite ``labels`` with a new full set (RelationEvolution). No code-side guardrails:
-        structural bonds (blood / spouse / master-disciple / liege) are preserved only by the
-        RelationEvolution prompt."""
-        cleaned = [str(label).strip() for label in labels if str(label).strip()]
+        """Overwrite ``labels`` with a new full set (RelationEvolution), in canonical form; an item
+        with no label form is dropped. Structural bonds (blood / spouse / master-disciple / liege)
+        are preserved only by the RelationEvolution prompt."""
+        cleaned = relation_labels(labels)
         relation = await self.get_or_create(target_agent_id)
         relation.labels = cleaned
         relation.updated_step = step

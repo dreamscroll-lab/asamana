@@ -15,7 +15,13 @@ import type {
   ActorPace,
   AgentProfile,
   CharacterIdentity,
+  CharacterRevision,
+  NewCharacter,
+  Vocabulary,
+  SetupHistoricalEventView,
   PlaceIdentity,
+  SetupRelationView,
+  SetupView,
   BuildJob,
   Deployment,
   DirectiveResult,
@@ -54,6 +60,8 @@ export async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   getDeployment: () => req<Deployment>("/api/deployment"),
+  // Every emotion and need a client may name, the same for every world.
+  vocabulary: () => req<Vocabulary>("/api/vocabulary"),
   listWorlds: () => req<WorldMeta[]>("/api/worlds"),
   getWorld: (id: string) => req<WorldMeta>(`/api/worlds/${id}`),
   // Editable interface text (sample themes), re-read by the backend per request.
@@ -82,6 +90,36 @@ export const api = {
     req<WorldMeta>(`/api/worlds/${id}/confirm`, {
       method: "POST",
       body: JSON.stringify(characterId ? { character_id: characterId } : {}),
+    }),
+  // The world's setup, revisable until the world is confirmed and read-only after.
+  getSetup: (id: string) => req<SetupView>(`/api/worlds/${id}/setup`),
+  addCharacter: (id: string, character: NewCharacter) =>
+    req<{ agent_id: string; setup: SetupView }>(`/api/worlds/${id}/setup/characters`, {
+      method: "POST",
+      body: JSON.stringify(character),
+    }),
+  removeCharacter: (id: string, agentId: string) =>
+    req<SetupView>(`/api/worlds/${id}/setup/characters/${agentId}`, { method: "DELETE" }),
+  reviseCharacter: (id: string, agentId: string, revision: CharacterRevision) =>
+    req<SetupView>(`/api/worlds/${id}/setup/characters/${agentId}`, {
+      method: "PATCH",
+      body: JSON.stringify(revision),
+    }),
+  reviseSecondsPerStep: (id: string, secondsPerStep: number) =>
+    req<SetupView>(`/api/worlds/${id}/setup/seconds-per-step`, {
+      method: "PUT",
+      body: JSON.stringify({ seconds_per_step: secondsPerStep }),
+    }),
+  // Both replace the whole list: an event or a relation left out is removed.
+  replaceHistory: (id: string, events: SetupHistoricalEventView[]) =>
+    req<SetupView>(`/api/worlds/${id}/setup/history`, {
+      method: "PUT",
+      body: JSON.stringify({ historical_events: events }),
+    }),
+  replaceRelations: (id: string, relations: SetupRelationView[]) =>
+    req<SetupView>(`/api/worlds/${id}/setup/relations`, {
+      method: "PUT",
+      body: JSON.stringify({ relations }),
     }),
   deleteWorld: (id: string) =>
     req<{ deleted: boolean }>(`/api/worlds/${id}`, { method: "DELETE" }),
@@ -128,9 +166,6 @@ export const api = {
     req<AgentProfile>(`/api/worlds/${id}/agents/${agentId}/profile`),
 
   // --- Actor: the person performing one character -------------------------------
-  // The vocabulary a character's feeling is named in: value and its name.
-  actorEmotions: (id: string) =>
-    req<{ value: string; label: string }[]>(`/api/worlds/${id}/actor/emotions`),
   // The actor's thread over the latest steps, in order.
   actorThread: (id: string) => req<{ entries: ActorEntry[] }>(`/api/worlds/${id}/actor/thread`),
   actorIntent: (id: string, intent: ActorIntent) =>

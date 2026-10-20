@@ -20,6 +20,7 @@ from engine.run_control import RunState
 from world import WorldCatalog
 
 from interaction.api import create_app
+from tests.unit.confirmed_world import confirmed_world
 
 
 def _client(container, test_config, catalog: WorldCatalog) -> TestClient:
@@ -29,7 +30,7 @@ def _client(container, test_config, catalog: WorldCatalog) -> TestClient:
 async def _built_world(container, test_config, catalog: WorldCatalog) -> str:
     """A confirmed world with a live session, the state the director acts on."""
     app = NarrativeApplication(container, test_config, catalog=catalog)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     catalog.set_confirmed(world.world_id)
     return world.world_id
 
@@ -163,7 +164,7 @@ async def test_an_accepted_directive_advances_a_world_that_would_not_move(
     waiting at a map that never moves."""
     catalog = WorldCatalog(None)
     app = NarrativeApplication(mock_build_container, test_config, catalog=catalog)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     mock_build_container.llm_router.get(LLMScene.DIRECTIVE).fixed_response = _directive_json()
     stepped: list[str] = []
     monkeypatch.setattr(app, "step_world", stepped.append)
@@ -181,7 +182,7 @@ async def test_a_refused_directive_does_not_move_the_world(
     """Nothing was injected, so there's no reason to touch the world."""
     catalog = WorldCatalog(None)
     app = NarrativeApplication(mock_build_container, test_config, catalog=catalog)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     mock_build_container.llm_router.get(LLMScene.DIRECTIVE).fixed_response = _directive_json(
         feasible=False, refusal="没说清是谁。", broadcast=None,
     )
@@ -202,7 +203,7 @@ async def test_directing_a_running_world_does_not_cut_its_run_short(
     already on its way."""
     catalog = WorldCatalog(None)
     app = NarrativeApplication(mock_build_container, test_config, catalog=catalog)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     mock_build_container.llm_router.get(LLMScene.DIRECTIVE).fixed_response = _directive_json()
     app.get_session(world.world_id).status = RunState.RUNNING
     stepped: list[str] = []
@@ -224,7 +225,7 @@ async def test_directing_a_paused_world_advances_it_by_exactly_one_step(
     """
     catalog = WorldCatalog(None)
     app = NarrativeApplication(mock_build_container, test_config, catalog=catalog)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     mock_build_container.llm_router.get(LLMScene.DIRECTIVE).fixed_response = _directive_json()
     app.get_session(world.world_id).status = RunState.PAUSED
     stepped: list[str] = []
@@ -308,14 +309,14 @@ async def test_a_world_under_review_cannot_be_stepped_or_directed(
     """Step and directive advance the world just as run does, so they share run's confirm gate."""
     catalog = WorldCatalog(None)
     app = NarrativeApplication(mock_build_container, test_config, catalog=catalog)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world_id = await app.build_world("宫廷权谋", template="changan_iso")
 
     with _client(mock_build_container, test_config, catalog) as client:
-        step = client.post(f"/api/worlds/{world.world_id}/step")
-        direct = client.post(f"/api/worlds/{world.world_id}/direct", json={"text": "敲响全城的钟"})
+        step = client.post(f"/api/worlds/{world_id}/step")
+        direct = client.post(f"/api/worlds/{world_id}/direct", json={"text": "敲响全城的钟"})
 
     assert (step.status_code, direct.status_code) == (409, 409)
-    assert await mock_build_container.snapshot.list_steps(world.world_id) == [0]
+    assert await mock_build_container.snapshot.list_steps(world_id) == []
 
 
 @pytest.mark.asyncio

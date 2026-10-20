@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from engine.application import NarrativeApplication
+from tests.unit.confirmed_world import confirmed_world
 
 
 @pytest.mark.asyncio
@@ -25,5 +26,5 @@ async def test_initial_snapshot_write_failure_raises_without_retry(
     app = NarrativeApplication(mock_build_container, test_config)
 
     with pytest.raises(OSError, match="disk full"):
-        await app.build_world("宫廷权谋", template="changan_iso")
+        await confirmed_world(app, "宫廷权谋", template="changan_iso")
     assert calls == [0]

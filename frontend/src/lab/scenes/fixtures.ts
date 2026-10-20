@@ -620,7 +620,7 @@ export interface LabScene {
 // seize/destroy scenes show: a destroyed thing is simply absent from its step. `presence_ref` is a
 // location id or a holder's agent id.
 export const crate = (where: string, over: Partial<PlacedEntity> = {}): Record<string, PlacedEntity> => ({
-  "seed_seed-91ac33be40": {
+  "seed_91ac33be40": {
     name: "货箱",
     entity_type: "item",
     state: "intact",
@@ -633,7 +633,7 @@ export const crate = (where: string, over: Partial<PlacedEntity> = {}): Record<s
     ...over,
   },
 });
-export const CRATE = "seed_seed-91ac33be40";
+export const CRATE = "seed_91ac33be40";
 
 /**
  * Things in somebody's hands, the pocket's input, built directly since a real world rarely reaches
@@ -645,7 +645,7 @@ export const carried = (holder: string, items: [string, string][]): Record<strin
       // Ids are stable across a scene's steps (a changed id reads as one thing vanishing and another
       // appearing) and derived from the holder (arming two people merges two of these into one
       // record; shared ids would overwrite the first man's things).
-      `seed_seed-${holder.slice(-8)}${i}`,
+      `seed_${holder.slice(-8)}${i}`,
       {
         name,
         entity_type: "item",
@@ -661,7 +661,7 @@ export const carried = (holder: string, items: [string, string][]): Record<strin
   );
 
 export const gate = (where: string, over: Partial<PlacedEntity> = {}): Record<string, PlacedEntity> => ({
-  "seed_seed-2b70df1c85": {
+  "seed_2b70df1c85": {
     name: "坊门",
     entity_type: "landmark",
     state: "sealed",
@@ -674,7 +674,7 @@ export const gate = (where: string, over: Partial<PlacedEntity> = {}): Record<st
     ...over,
   },
 });
-export const GATE = "seed_seed-2b70df1c85";
+export const GATE = "seed_2b70df1c85";
 
 /**
  * Wind the counters back to zero.

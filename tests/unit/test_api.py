@@ -8,12 +8,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from core.interfaces.snapshot import WorldSnapshot, WorldState
+from engine.application import NarrativeApplication
 from engine.clock import WorldTime, WorldTimeConfig
 from world import WorldCatalog
 from world.catalog import MAX_WORLD_NAME_LEN
 from worlds.tiled import EXAMPLE_PREFIX, list_templates
 
 from interaction.api import create_app
+from tests.unit.world_setups import setup_dict
+from tests.unit.confirmed_world import confirmed_world
 
 
 def _client(container, test_config, *, catalog: WorldCatalog | None = None) -> TestClient:
@@ -21,7 +24,7 @@ def _client(container, test_config, *, catalog: WorldCatalog | None = None) -> T
     return TestClient(create_app(container, test_config, catalog=catalog or WorldCatalog(None)))
 
 
-def _snapshot(world_id: str, step: int, relations: dict, *, profiles: dict | None = None) -> WorldSnapshot:
+def _snapshot(world_id: str, step: int, relations: dict) -> WorldSnapshot:
     return WorldSnapshot(
         world_id=world_id,
         step=step,
@@ -34,7 +37,6 @@ def _snapshot(world_id: str, step: int, relations: dict, *, profiles: dict | Non
             },
             relations=relations,
         ),
-        build={"character_profiles": profiles} if profiles else {},
     )
 
 
@@ -55,10 +57,10 @@ def _relation(from_id: str, to_id: str, *, affection: float, label: str) -> dict
 @pytest.mark.asyncio
 async def test_graph_endpoint_reads_relations_for_requested_step(container, test_config) -> None:
     world_id = "world-api"
+    await container.snapshot.save_world_setup(world_id, setup_dict({"agent-1": {"role": "皇子"}, "agent-2": {"role": "谋士"}}))
     await container.snapshot.save(world_id, 0, _snapshot(
         world_id, 0,
         {"agent-1->agent-2": _relation("agent-1", "agent-2", affection=0.5, label="盟友")},
-        profiles={"agent-1": {"role": "皇子"}, "agent-2": {"role": "谋士"}},
     ))
     await container.snapshot.save(world_id, 1, _snapshot(
         world_id, 1,
@@ -213,14 +215,14 @@ async def test_the_step_the_initial_frame_carried_is_not_pushed_twice(
 @pytest.mark.asyncio
 async def test_agent_profile_returns_static_identity(container, test_config) -> None:
     world_id = "world-api"
-    await container.snapshot.save(world_id, 0, _snapshot(
-        world_id, 0, {},
-        profiles={"agent-1": {
+    await container.snapshot.save_world_setup(world_id, setup_dict({"agent-1": {
             "name": "甲", "role": "皇子", "age": 24, "gender": "男",
             "background": "自幼习武", "core_traits": ["果决", "隐忍"],
             "core_values": ["社稷", "成王败寇"], "self_image": "我乃天策上将",
             "life_goal": "夺取帝国最高权力", "is_main_character": True,
-        }},
+        }}))
+    await container.snapshot.save(world_id, 0, _snapshot(
+        world_id, 0, {},
     ))
     client = _client(container, test_config)
     prof = client.get(f"/api/worlds/{world_id}/agents/agent-1/profile").json()
@@ -236,9 +238,7 @@ async def test_agent_profile_returns_static_identity(container, test_config) -> 
 async def test_agent_roster_carries_demographics(container, test_config) -> None:
     """Demographics and identity colors remain available without fetching private profiles."""
     world_id = "world-api"
-    await container.snapshot.save(world_id, 0, _snapshot(
-        world_id, 0, {},
-        profiles={
+    await container.snapshot.save_world_setup(world_id, setup_dict({
             "agent-1": {
                 "name": "甲", "role": "皇子", "age": 24, "gender": "男",
                 "background": "自幼习武", "appearance": "高大", "color": "#123456",
@@ -248,7 +248,9 @@ async def test_agent_roster_carries_demographics(container, test_config) -> None
                 "name": "乙", "role": "女官", "age": 61, "gender": "女",
                 "background": "久居宫中", "appearance": "瘦削", "color": "",
             },
-        },
+        }))
+    await container.snapshot.save(world_id, 0, _snapshot(
+        world_id, 0, {},
     ))
     roster = _client(container, test_config).get(f"/api/worlds/{world_id}/agents").json()
     assert roster == [
@@ -286,12 +288,13 @@ async def test_places_lists_the_worlds_place_identities(container, test_config) 
 @pytest.mark.asyncio
 async def test_identity_color_is_in_cast_and_snapshot_but_not_step_or_graph(container, test_config) -> None:
     world_id = "world-api"
-    snapshot = _snapshot(world_id, 0, {}, profiles={
+    await container.snapshot.save_world_setup(world_id, setup_dict({
         "agent-1": {"name": "甲", "color": "#123456"},
         "agent-2": {"name": "乙", "color": "#abcdef"},
-    })
-    for agent_id, profile in snapshot.build["character_profiles"].items():
-        snapshot.state.agents[agent_id]["color"] = profile["color"]
+    }))
+    snapshot = _snapshot(world_id, 0, {})
+    snapshot.state.agents["agent-1"]["color"] = "#123456"
+    snapshot.state.agents["agent-2"]["color"] = "#abcdef"
     await container.snapshot.save(world_id, 0, snapshot)
 
     client = _client(container, test_config)
@@ -308,19 +311,18 @@ async def test_identity_color_is_in_cast_and_snapshot_but_not_step_or_graph(cont
     persisted = await container.snapshot.load(world_id, 0)
     assert persisted is not None
     assert persisted.state.agents["agent-1"]["color"] == "#123456"
-    assert persisted.build["character_profiles"]["agent-1"]["color"] == "#123456"
 
 
 @pytest.mark.asyncio
-async def test_agent_profile_reads_character_profiles_whole(container, test_config) -> None:
+async def test_agent_profile_reads_the_setup_soul_whole(container, test_config) -> None:
     world_id = "world-api"
-    snap = _snapshot(
-        world_id, 0, {},
-        profiles={"agent-1": {
+    await container.snapshot.save_world_setup(world_id, setup_dict({"agent-1": {
             "name": "甲", "role": "皇子", "core_traits": ["果决"],
             "core_values": ["社稷", "成王败寇"], "life_goal": "夺取帝国最高权力",
             "self_image": "我乃天策上将",
-        }},
+        }}))
+    snap = _snapshot(
+        world_id, 0, {},
     )
     await container.snapshot.save(world_id, 0, snap)
     prof = _client(container, test_config).get(f"/api/worlds/{world_id}/agents/agent-1/profile").json()
@@ -330,15 +332,18 @@ async def test_agent_profile_reads_character_profiles_whole(container, test_conf
 
 
 @pytest.mark.asyncio
-async def test_confirm_locks_world(container, test_config) -> None:
-    world_id = "world-api"
-    await container.snapshot.save(world_id, 0, _snapshot(world_id, 0, {}))
+async def test_confirm_locks_world(mock_build_container, test_config) -> None:
     catalog = WorldCatalog(None)
-    catalog.register(world_id, theme="宫廷", world_name="长安")
-    client = _client(container, test_config, catalog=catalog)
+    world_id = await NarrativeApplication(mock_build_container, test_config, catalog=catalog).build_world(
+        "宫廷", template="changan_iso",
+    )
+    client = _client(mock_build_container, test_config, catalog=catalog)
 
     assert client.get(f"/api/worlds/{world_id}").json()["confirmed"] is False
+    # Nothing is materialized before confirming; confirming writes step 0.
+    assert await mock_build_container.snapshot.list_steps(world_id) == []
     assert client.post(f"/api/worlds/{world_id}/confirm").json()["confirmed"] is True
+    assert await mock_build_container.snapshot.list_steps(world_id) == [0]
     assert client.get(f"/api/worlds/{world_id}").json()["confirmed"] is True
     # Idempotent, and 404 for unknown worlds.
     assert client.post(f"/api/worlds/{world_id}/confirm").json()["confirmed"] is True
@@ -354,8 +359,8 @@ async def test_rename_world_changes_only_the_label(container, test_config) -> No
     await container.snapshot.save(world_id, 0, _snapshot(world_id, 0, {}))
     catalog = WorldCatalog(None)
     catalog.register(world_id, theme="宫廷", world_name="长安")
+    catalog.set_confirmed(world_id, True)
     client = _client(container, test_config, catalog=catalog)
-    client.post(f"/api/worlds/{world_id}/confirm")
 
     renamed = client.patch(f"/api/worlds/{world_id}", json={"world_name": "  武德九年  "})
     assert renamed.status_code == 200
@@ -658,7 +663,7 @@ async def test_build_world_offers_the_right_maps_to_choose_between(container, te
 
     for template in ("metro", None):
         with pytest.raises(RuntimeError):
-            await application.build_world(
+            await confirmed_world(application, 
                 "任意主题", template=template, available_templates=installed
             )
 
@@ -684,7 +689,7 @@ async def test_build_world_with_no_map_available_fails(container, test_config) -
 
     application = NarrativeApplication(container, test_config, catalog=WorldCatalog(None))
     with pytest.raises(ValueError, match="No world templates"):
-        await application.build_world("任意主题", available_templates=[])
+        await confirmed_world(application, "任意主题", available_templates=[])
 
 
 # ---- editable interface content ----------------------------------------------
@@ -809,3 +814,16 @@ async def test_advancing_a_world_reads_its_metadata_once() -> None:
     await services.ensure_advanceable("w")
 
     assert reads == ["w"]
+
+
+def test_the_vocabulary_names_every_emotion_and_need(container, test_config) -> None:
+    """One world-independent vocabulary, for every surface that offers an emotion or a need."""
+    from agent.need import NeedType
+    from agent.personality import EmotionType
+
+    vocabulary = _client(container, test_config).get("/api/vocabulary").json()
+
+    assert [e["value"] for e in vocabulary["emotions"]] == [e.value for e in EmotionType]
+    assert {e["value"]: e["label"] for e in vocabulary["emotions"]}["anger"] == EmotionType.ANGER.label
+    assert [n["value"] for n in vocabulary["needs"]] == [n.value for n in NeedType]
+    assert {n["value"]: n["label"] for n in vocabulary["needs"]}["safety"] == NeedType.SAFETY.label

@@ -79,8 +79,9 @@ class WorldSnapshot:
     # The actor's thread in this step (``core.interfaces.actor.ActorEntry`` as JSON), in order;
     # empty when nobody performs a character.
     actor_thread: list[dict[str, Any]] = field(default_factory=list)
-    # Step 0 only: the record of building the world (manifest, lore, character profiles).
-    build: dict[str, Any] = field(default_factory=dict)
+    # Step 0 only: the world's setup (``world.setup.WorldSetup`` as a dict), frozen when the world
+    # was confirmed. Restore and reset rebuild the agents from it.
+    setup: dict[str, Any] = field(default_factory=dict)
 
     @property
     def time_label(self) -> str:
@@ -136,6 +137,19 @@ class SnapshotProvider(ABC):
     @abstractmethod
     async def load_world_config(self, world_id: str) -> dict[str, Any] | None:
         """Read the world's serialized world-config asset, or None if absent."""
+
+    @abstractmethod
+    async def save_world_setup(self, world_id: str, data: dict[str, Any]) -> None:
+        """Persist the world's setup (``world.setup.WorldSetup`` as a dict) in its own file:
+        written at build and rewritten by every revision until the world is confirmed."""
+
+    @abstractmethod
+    async def load_world_setup(self, world_id: str) -> dict[str, Any] | None:
+        """Read the world's setup file, or None if absent (never built, or confirmed)."""
+
+    @abstractmethod
+    async def delete_world_setup(self, world_id: str) -> None:
+        """Delete the setup file once the setup is frozen into step 0."""
 
     @abstractmethod
     async def save_world_map(self, world_id: str, data: dict[str, Any]) -> None:

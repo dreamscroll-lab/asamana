@@ -22,6 +22,7 @@ from engine.executors.simple import SimpleExecutor
 from engine.executors.social import SocialExecutor
 from engine.executors.work import WorkExecutor
 from core.interfaces.place import Place
+from tests.unit.world_setups import npc_seed
 
 
 def _directory() -> LiveWorldDirectory:
@@ -232,10 +233,9 @@ async def test_errand_always_one_step_regardless_of_estimated_steps(container) -
     have to wait yourself. Charging the requester for the whole trip just makes it a slower MOVE.
     """
     from engine.executors.errand import ErrandExecutor
-    from world.models import NpcSeed
 
     env = _make_environment()
-    env.spawn_npc(NpcSeed(name="王二", description="走得快"), location_id="loc_a")
+    env.spawn_npc(npc_seed("王二", description="走得快"), location_id="loc_a")
     npc_id = env.all_npcs()[0].npc_id
     action = _make_action(ActionType.ERRAND, estimated_steps=9)
     action.target = ActionTarget(acts_on=[Ref.npc(npc_id)])

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Callable, Sequence
-from uuid import uuid4
+from typing import Any, Callable, Sequence, TypeVar
 
 from core.container import Container
 from core.context import get_log_context, set_log_context
@@ -14,14 +13,17 @@ from core.interfaces.world_config import WorldConfig
 
 from world.initializer import WorldInitializer
 from world.models import (
-    AgentDefinition, HistoricalEventSeed, LocationSeed, ThemeAnalysis, World, WorldEntitySeed,
+    AgentDefinition, HistoricalEventSeed, LocationSeed, NpcSeed, ThemeAnalysis, WorldEntitySeed,
 )
+from world.setup import WorldSetup
 from world.builders.agent_generator import AgentGenerator
 from world.builders.cast_designer import CastDesigner
 from world.builders.template_selector import TemplateSelector
 from world.builders.theme_analyzer import ThemeAnalyzer
 
 logger = get_logger(__name__)
+
+_Seed = TypeVar("_Seed", NpcSeed, WorldEntitySeed)
 
 
 class WorldBuilder:
@@ -38,14 +40,18 @@ class WorldBuilder:
         self,
         theme: str,
         *,
-        world_id: str | None = None,
+        world_id: str,
         world_configs: Sequence[WorldConfig],
         min_agents: int | None = None,
         max_agents: int | None = None,
         max_npcs: int = 0,
         on_phase: Callable[[str, Any], None] | None = None,
-    ) -> World:
-        """Build and initialize a runtime-ready world.
+    ) -> WorldSetup:
+        """Build a world's setup from ``theme`` and persist it under ``world_id``.
+
+        Only the setup and the map it stands on are written; the world is materialized when
+        it is confirmed (``WorldInitializer.initialize``), so the director can revise the setup
+        until then at no cost.
 
         ``world_configs`` is the set of maps this world MAY be built on; the
         builder picks the one the theme belongs on (see ``TemplateSelector``).
@@ -60,12 +66,11 @@ class WorldBuilder:
         """
 
         candidates = list(world_configs)
-        resolved_world_id = world_id or str(uuid4())
         previous_context = get_log_context()
         # WORLD_INIT covers the whole build: theme analysis, cast design, agent
         # generation, and initial goal generation all run within this context and
         # inherit the stage (and world_id) for observability.
-        set_log_context(world_id=resolved_world_id, stage=Stage.WORLD_INIT.value)
+        set_log_context(world_id=world_id, stage=Stage.WORLD_INIT.value)
         try:
             active_world_config = await self._template_selector.select(theme, candidates)
             if on_phase is not None:
@@ -85,6 +90,7 @@ class WorldBuilder:
             )
             _canonicalize_analysis_locations(analysis, active_world_config)
             _drop_seeds_shadowing_locations(analysis, active_world_config)
+            _canonicalize_seed_locations(analysis, active_world_config)
             _purge_orphan_references(analysis)
             if on_phase is not None:
                 on_phase("world_build.theme_analysis", analysis)
@@ -92,7 +98,7 @@ class WorldBuilder:
             logger.info(
                 "cast_design_complete",
                 extra={
-                    "world_id": resolved_world_id,
+                    "world_id": world_id,
                     "figure_count": len(cast_design.roles),
                 },
             )
@@ -103,31 +109,27 @@ class WorldBuilder:
             if on_phase is not None:
                 on_phase("world_build.agent_generation", agent_definitions)
             initializer = WorldInitializer(self._container, max_npcs=max_npcs)
-            world = await initializer.initialize(
-                theme=theme,
-                analysis=analysis,
-                agent_definitions=agent_definitions,
-                world_id=resolved_world_id,
-                world_config=active_world_config,
+            setup = await initializer.prepare(
+                world_id,
+                WorldSetup.from_build(theme, analysis, agent_definitions),
+                active_world_config,
             )
-            if on_phase is not None:
-                on_phase("world_build.initialization", world)
             logger.info(
                 "world_build_completed",
                 extra={
-                    "world_id": resolved_world_id,
-                    "world_name": world.analysis.world_name,
-                    "agent_count": len(world.agents),
+                    "world_id": world_id,
+                    "world_name": analysis.world_name,
+                    "agent_count": len(agent_definitions),
                 },
             )
-            return world
+            return setup
         finally:
             set_log_context(**previous_context)
             try:
-                await self._container.trace_sink.flush(resolved_world_id)
+                await self._container.trace_sink.flush(world_id)
             except Exception as exc:
                 logger.warning(
-                    "build_trace_flush_failed", extra={"world_id": resolved_world_id, "error": str(exc)},
+                    "build_trace_flush_failed", extra={"world_id": world_id, "error": str(exc)},
                 )
 
 def _purge_orphan_references(analysis: ThemeAnalysis) -> None:
@@ -221,7 +223,7 @@ def _drop_seeds_shadowing_locations(
                 extra={
                     "seed_name": seed.name,
                     "entity_type": seed.entity_type,
-                    "location_name": seed.location_name,
+                    "location": seed.location,
                 },
             )
             continue
@@ -238,24 +240,40 @@ def _canonicalize_analysis_locations(
         analysis.key_locations = locations
 
 
+def _location_id(world_config: WorldConfig, requested: str, *, name: str) -> str:
+    """Where ``name`` stands, as a location id, on the map's own rules.
+
+    After the build every location in the setup is an id: nothing re-reads location text, so the
+    world needs no aliases and resolves the same way every time it is materialized. Text no place
+    answers to falls back to the first location: someone or something in the wrong place is
+    still usable, one missing from the world isn't.
+    """
+    resolved = world_config.resolve_location_id(requested)
+    if resolved is not None:
+        return resolved
+    places = world_config.get_places()
+    if not places:
+        raise ValueError("The map has no places to put anyone in")
+    fallback = min(places)
+    logger.warning(
+        "location_unresolvable", extra={"placed_name": name, "requested": requested, "fallback": fallback},
+    )
+    return fallback
+
+
+def _canonicalize_seed_locations(analysis: ThemeAnalysis, world_config: WorldConfig) -> None:
+    def placed(seed: _Seed) -> _Seed:
+        return dataclasses.replace(seed, location=_location_id(world_config, seed.location, name=seed.name))
+
+    analysis.npc_seeds = [placed(seed) for seed in analysis.npc_seeds]
+    analysis.world_entity_seeds = [placed(seed) for seed in analysis.world_entity_seeds]
+
+
 def _canonicalize_agent_locations(
     agent_definitions: Sequence[AgentDefinition],
     world_config: WorldConfig,
 ) -> None:
-    available = sorted(world_config.get_places())
-    default_location = available[0] if available else "origin"
     for definition in agent_definitions:
-        resolved = world_config.resolve_location_id(definition.initial_location)
-        if resolved is None:
-            logger.warning(
-                "agent_location_unresolvable",
-                extra={
-                    "agent_id": definition.agent_id,
-                    "agent_name": definition.name,
-                    "requested": definition.initial_location,
-                    "fallback": default_location,
-                },
-            )
-            definition.initial_location = default_location
-        else:
-            definition.initial_location = resolved
+        definition.initial_location = _location_id(
+            world_config, definition.initial_location, name=definition.soul.name,
+        )

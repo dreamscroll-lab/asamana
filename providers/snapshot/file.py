@@ -63,6 +63,9 @@ class FileSnapshotProvider(SnapshotProvider):
     def _world_config_path(self, world_id: str) -> Path:
         return self._world_dir(world_id) / "world_config.json"
 
+    def _world_setup_path(self, world_id: str) -> Path:
+        return self._world_dir(world_id) / "world_setup.json"
+
     def _world_map_path(self, world_id: str) -> Path:
         return self._world_dir(world_id) / "world_map.json"
 
@@ -160,8 +163,8 @@ class FileSnapshotProvider(SnapshotProvider):
             path.unlink(missing_ok=True)
 
     async def delete_world(self, world_id: str) -> None:
-        # Removes every step_*.json plus world_config.json / world_map.json under
-        # this world's dir.
+        # Removes every step_*.json plus world_config.json / world_setup.json /
+        # world_map.json under this world's dir.
         # ignore_errors: partial trees / concurrent unlinks must not raise from a
         # whole-world purge — the operation is irreversible and best-effort by design.
         await asyncio.to_thread(
@@ -180,6 +183,18 @@ class FileSnapshotProvider(SnapshotProvider):
 
     async def load_world_config(self, world_id: str) -> Optional[dict[str, Any]]:
         return await asyncio.to_thread(read_json_file, self._world_config_path(world_id))
+
+    async def save_world_setup(self, world_id: str, data: dict[str, Any]) -> None:
+        target = self._world_setup_path(world_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(atomic_write_text, target, dump_json(data))
+        logger.info("world_setup_saved", extra={"world_id": world_id})
+
+    async def load_world_setup(self, world_id: str) -> Optional[dict[str, Any]]:
+        return await asyncio.to_thread(read_json_file, self._world_setup_path(world_id))
+
+    async def delete_world_setup(self, world_id: str) -> None:
+        await asyncio.to_thread(self._world_setup_path(world_id).unlink, missing_ok=True)
 
     async def save_world_map(self, world_id: str, data: dict[str, Any]) -> None:
         target = self._world_map_path(world_id)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from agent.need import NeedState, NeedType, build_innate_needs
 from agent.personality import (
@@ -18,7 +18,6 @@ from core.context import annotate_call, note_active_call_adoption, observe_stage
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, coerce_bool, extract_json_object, output_budget
 from core.interfaces.trace import Stage
 from core.logging import get_logger
-from core.text import slugify
 from core.prompts import (
     EMOTION_INTENSITY_DEFINITION,
     EMOTION_VALENCE_DEFINITION,
@@ -30,7 +29,7 @@ from core.coerce import (
 
 from world.identity_color import PALETTE_CHOICES, resolve_identity_colors
 from world.models import (
-    AgentDefinition, AgentTier, CastDesign, FigureCastRole, HistoricalEventSeed, RelationSeed,
+    AgentDefinition, AgentTier, CastDesign, FigureCastRole, unique_agent_id,
     ThemeAnalysis, ThemeFigure,
 )
 from world.builders import BUILD_ATTEMPTS
@@ -55,7 +54,7 @@ class AgentGenerator:
         task_contexts: list[tuple[ThemeFigure, str]] = []
         tasks = []
         for figure in analysis.key_figures:
-            agent_id = _unique_agent_id(figure.name, used_ids)
+            agent_id = unique_agent_id(figure.name, used_ids)
             cast_role = cast_design.role_for(figure.name) if cast_design else None
             task_contexts.append((figure, agent_id))
             tasks.append(self._generate_definition(figure, analysis, agent_id, cast_role=cast_role))
@@ -339,7 +338,6 @@ class AgentGenerator:
         )
         return AgentDefinition(
             agent_id=agent_id,
-            name=soul.name,
             tier=figure.tier,
             soul=soul,
             # Keep the LLM's text as-is (it may be a name, alias or id) and don't resolve it here. Text →
@@ -353,8 +351,6 @@ class AgentGenerator:
             ),
             initial_emotion=_emotion_from_payload(payload.get("initial_emotion"), fallback=_default_emotion(figure)),
             long_term_goals=coerce_str_list(payload.get("long_term_goals")),
-            initial_relations=_relations_for_figure(analysis.initial_relations, figure.name),
-            historical_memories=_historical_memories_for_figure(analysis.historical_events, figure.name),
             metadata={
                 "brief": figure.brief,
                 "source": "llm",
@@ -365,15 +361,6 @@ class AgentGenerator:
         )
 
 
-def _unique_agent_id(name: str, used_ids: set[str]) -> str:
-    base = slugify(name, fallback_prefix="agent")
-    candidate = base
-    counter = 2
-    while candidate in used_ids:
-        candidate = f"{base}-{counter}"
-        counter += 1
-    used_ids.add(candidate)
-    return candidate
 
 
 
@@ -470,22 +457,3 @@ def _default_need_label(need_type: NeedType) -> str:
         NeedType.SELF_ACTUALIZATION: "推进长远目标",
     }
     return mapping[need_type]
-
-
-def _relations_for_figure(relations: Sequence[RelationSeed], figure_name: str) -> list[RelationSeed]:
-    return [
-        relation
-        for relation in relations
-        if relation.source_name == figure_name
-    ]
-
-
-def _historical_memories_for_figure(
-    events: Sequence[HistoricalEventSeed],
-    figure_name: str,
-) -> list[HistoricalEventSeed]:
-    return [
-        event
-        for event in events
-        if figure_name in event.related_figures
-    ]

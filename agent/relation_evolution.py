@@ -42,6 +42,7 @@ from core.prompts import (
     MEMORY_ORDER_HINT,
     order_memories_chrono,
     person_referent,
+    relation_labels,
 )
 
 if TYPE_CHECKING:
@@ -171,7 +172,7 @@ class RelationEvolution:
             cleaned_labels: list[str] = []
             new_labels_raw = raw.get("labels")
             if isinstance(new_labels_raw, list):
-                cleaned_labels = [str(x).strip() for x in new_labels_raw if str(x).strip()]
+                cleaned_labels = relation_labels(new_labels_raw)
             applied_summary = str(raw.get("summary") or "").strip()
 
             if not cleaned_labels and not applied_summary:

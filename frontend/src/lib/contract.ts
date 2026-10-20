@@ -9,6 +9,14 @@ import type { ActionTarget } from "../types";
 // — the input caps at it so the backend's 400 is a backstop, not the normal way to find out.
 export const MAX_WORLD_NAME_LEN = 40;
 
+// Most characters a world may have. Mirrors config.models.MAX_CAST_SIZE.
+export const MAX_CAST_SIZE = 15;
+
+// The step lengths a world may take, in whole hours. Mirrors engine.clock.MIN_HOURS_PER_STEP /
+// MAX_HOURS_PER_STEP.
+export const MIN_HOURS_PER_STEP = 1;
+export const MAX_HOURS_PER_STEP = 24;
+
 export const ActionType = {
   talk:         "talk",
   move:         "move",

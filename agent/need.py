@@ -372,6 +372,10 @@ def _apply_prepotency(
     return winner
 
 
+NEED_INTENSITY_RANGE: tuple[float, float] = (0.0, 1.0)
+NEED_WEIGHT_RANGE: tuple[float, float] = (0.1, 2.0)
+
+
 @dataclass
 class NeedState:
     """A single need: its static makeup (type/label/weight/is_hidden) + an intensity.
@@ -388,9 +392,9 @@ class NeedState:
 
     type: NeedType
     label: str
-    intensity: float  # current urgency [0,1]; moves with action outcomes and event shocks (the build seed on innate)
+    intensity: float  # current urgency, in NEED_INTENSITY_RANGE; moves with action outcomes and event shocks (the build seed on innate)
     is_hidden: bool = False
-    weight: float = 1.0  # structural importance in the character's makeup [0.1,2]; semi-static, unaffected by outcomes
+    weight: float = 1.0  # structural importance in the character's makeup, in NEED_WEIGHT_RANGE; semi-static, unaffected by outcomes
 
 
 @dataclass

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import AbstractSet, Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, TypeVar
 
 from agent.personality import SECRET_LABEL
 from agent.relation import NEUTRAL_AFFECTION, NEUTRAL_TRUST
@@ -20,11 +20,13 @@ from engine.clock import SECONDS_PER_HOUR, resolve_step_seconds
 
 from world.models import (
     AgentTier, HistoricalEventSeed, LocationSeed, NpcSeed, RelationSeed, ThemeAnalysis,
-    ThemeFigure, WorldEntitySeed,
+    ThemeFigure, WorldEntitySeed, name_key,
 )
 from world.builders import BUILD_ATTEMPTS
 
 logger = get_logger(__name__)
+
+_Named = TypeVar("_Named", ThemeFigure, NpcSeed, WorldEntitySeed)
 
 
 _THEME_PROMPT_SCHEMA = {
@@ -292,67 +294,36 @@ def _npc_count_constraint(max_npcs: int) -> str:
     )
 
 
-def _distinct_entity_seeds(seeds: Sequence[WorldEntitySeed]) -> list[WorldEntitySeed]:
-    """Keep one thing per id: of two seeds with the same id, only the later one stays in the world.
+def _distinct_names(
+    figures: Sequence[ThemeFigure],
+    npc_seeds: Sequence[NpcSeed],
+    entity_seeds: Sequence[WorldEntitySeed],
+) -> tuple[list[ThemeFigure], list[NpcSeed], list[WorldEntitySeed]]:
+    """One name names one referent across the cast, NPCs and things: of names that collide
+    (``name_key``), the first stands, the cast keeping theirs before NPCs, NPCs before things.
 
-    Decide on the derived entity_id, not name: ``Letter`` and ``letter`` differ as names but share
-    a slug. The prompt doesn't forbid duplicate names, and a silently missing catalyst is impossible
-    to spot: both entity_seed_instantiated logs are there.
+    Decided here, on the names the LLM wrote, because a name is the LLM's and an id is code's:
+    ids come later and only from names already distinct, and the analysis says what the world
+    builds. People and prompts tell everyone apart by name, so two of one name could never be told
+    apart downstream. If dropping a figure leaves too few, the caller's cast-size check retries.
     """
-    kept: list[WorldEntitySeed] = []
-    seen: set[str] = set()
-    for seed in seeds:
-        if seed.entity_id in seen:
-            logger.warning(
-                "entity_seed_duplicate_id",
-                extra={"seed_name": seed.name, "entity_id": seed.entity_id},
-            )
-            continue
-        seen.add(seed.entity_id)
-        kept.append(seed)
-    return kept
+    taken: set[str] = set()
 
+    def kept(items: Sequence[_Named], event: str) -> list[_Named]:
+        out = []
+        for item in items:
+            if name_key(item.name) in taken:
+                logger.warning(event, extra={"taken_name": item.name})
+                continue
+            taken.add(name_key(item.name))
+            out.append(item)
+        return out
 
-def _distinct_npc_seeds(
-    seeds: Sequence[NpcSeed], figure_names: AbstractSet[str]
-) -> list[NpcSeed]:
-    """Keep one body per appellation, and none that answers to a key figure's name.
-
-    This tier's name is an appellation, so both rules are the same thing: one form of address can
-    only refer to one group in the world. Colliding with a key_figure is worse: one name would cover
-    two bodies that don't even think the same way (one weighs things, one only runs errands), and
-    since agents refer to each other by name, downstream can never tell them apart. Dropping the
-    mindless one is the only fix.
-
-    The prompt already forbids both, but when that fails, the world pays for it every step.
-    """
-    kept: list[NpcSeed] = []
-    seen: set[str] = set()
-    for seed in seeds:
-        if seed.name in figure_names:
-            logger.warning("npc_seed_shadows_key_figure", extra={"npc_name": seed.name})
-            continue
-        if seed.name in seen:
-            logger.warning("npc_seed_duplicate_name", extra={"npc_name": seed.name})
-            continue
-        seen.add(seed.name)
-        kept.append(seed)
-    return kept
-
-
-def _distinct_figures(figures: Sequence[ThemeFigure]) -> list[ThemeFigure]:
-    """Keep only the first of duplicate names. Agents refer to each other by name, so two agents with
-    the same name can never be told apart downstream; if that leaves too few, the caller's cast-size
-    check triggers a retry."""
-    kept: list[ThemeFigure] = []
-    seen: set[str] = set()
-    for figure in figures:
-        if figure.name in seen:
-            logger.warning("key_figure_duplicate_name", extra={"figure_name": figure.name})
-            continue
-        seen.add(figure.name)
-        kept.append(figure)
-    return kept
+    return (
+        kept(figures, "key_figure_name_taken"),
+        kept(npc_seeds, "npc_seed_name_taken"),
+        kept(entity_seeds, "entity_seed_name_taken"),
+    )
 
 
 def _theme_max_tokens(max_agents: int | None, max_npcs: int = 0) -> int:
@@ -695,7 +666,6 @@ class ThemeAnalyzer:
             for item in coerce_mapping_list(payload.get("key_figures"))
             if coerce_str(item.get("name"))
         ]
-        figures = _distinct_figures(figures)
         relations = [
             RelationSeed(
                 source_name=coerce_str(item.get("from")),
@@ -710,17 +680,10 @@ class ThemeAnalyzer:
             for item in coerce_mapping_list(payload.get("initial_relations"))
             if coerce_str(item.get("from")) and coerce_str(item.get("to"))
         ]
-        # Backstory "hours ago" → steps uses the step duration just set here: both ends are narrative
-        # durations and the conversion is pure code-layer quantization, with no outside seconds value borrowed from world_context.
-        seconds_per_step = int(merged_time_config["seconds_per_step"])
         historical_events = [
             HistoricalEventSeed(
                 event=coerce_str(item.get("event")),
-                step_offset=-max(1, round(
-                    coerce_int(item.get("hours_before_start"), default=6, minimum=1)
-                    * SECONDS_PER_HOUR
-                    / seconds_per_step
-                )),
+                hours_before_start=coerce_int(item.get("hours_before_start"), default=6, minimum=1),
                 related_figures=coerce_str_list(item.get("related_figures")),
                 importance=coerce_float(
                     item.get("importance"), default=0.5, minimum=0.0, maximum=1.0
@@ -730,33 +693,32 @@ class ThemeAnalyzer:
             if coerce_str(item.get("event"))
         ]
 
-        entity_seeds = _distinct_entity_seeds([
+        entity_seeds = [
             WorldEntitySeed(
                 name=coerce_str(item.get("name")),
                 entity_type=coerce_str(item.get("entity_type"), fallback="item"),
                 description=coerce_str(item.get("description")),
                 initial_state=coerce_str(item.get("initial_state"), fallback="intact"),
-                location_name=coerce_str(item.get("location_name")),
+                location=coerce_str(item.get("location_name")),
                 content=coerce_str(item.get("content")),
             )
             for item in coerce_mapping_list(payload.get("world_entity_seeds"))
             if coerce_str(item.get("name"))
-        ])
+        ]
 
-        npc_seeds = _distinct_npc_seeds(
-            [
-                NpcSeed(
-                    name=coerce_str(item.get("name")),
-                    gender=_normalize_gender(item.get("gender")),
-                    age=coerce_int(item.get("age"), default=30, minimum=1, maximum=120),
-                    description=coerce_str(item.get("description")),
-                    location_name=coerce_str(item.get("location_name")),
-                )
-                for item in coerce_mapping_list(payload.get("npcs"))
-                if coerce_str(item.get("name"))
-            ],
-            {figure.name for figure in figures},
-        )
+        npc_seeds = [
+            NpcSeed(
+                name=coerce_str(item.get("name")),
+                gender=_normalize_gender(item.get("gender")),
+                age=coerce_int(item.get("age"), default=30, minimum=1, maximum=120),
+                description=coerce_str(item.get("description")),
+                location=coerce_str(item.get("location_name")),
+            )
+            for item in coerce_mapping_list(payload.get("npcs"))
+            if coerce_str(item.get("name"))
+        ]
+
+        figures, npc_seeds, entity_seeds = _distinct_names(figures, npc_seeds, entity_seeds)
 
         if not figures:
             return ThemeAnalysis(
@@ -839,9 +801,9 @@ _GENDER_SYNONYMS: dict[str, str] = {
 
 
 def _normalize_gender(value: Any) -> str:
-    """The prompt's 「男 / 女」, canonical: these two values are what every consumer may compare
-    against (the frontend picks a body sheet by it). Anything else becomes "" — unknown, left out
-    of prompts, never guessed."""
+    """The prompt's 「男 / 女」, canonical (``GENDERS``): these two values are what every consumer
+    may compare against (the frontend picks a body sheet by it). Anything else becomes "" —
+    unknown, left out of prompts, never guessed."""
     return _GENDER_SYNONYMS.get(coerce_str(value).lower(), "")
 
 

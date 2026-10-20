@@ -20,6 +20,7 @@ from engine.clock import WorldTimeConfig
 if TYPE_CHECKING:
     from agent.agent import Agent
     from engine.environment import EnvironmentSystem
+    from world.setup import WorldSetup
 
 
 class WorldEntityType(str, Enum):
@@ -144,22 +145,15 @@ class WorldEntitySeed:
 
     name:          str
     entity_type:   str            # WorldEntityType string value
+    # Its id in the world: given by the setup (``WorldSetup.from_build``), empty until then, and
+    # kept whatever later happens to the name.
+    entity_id:     str = ""
     description:   str = ""
     initial_state: str = "intact"
-    location_name: str = ""       # resolved to location_id by WorldInitializer
+    # Where it stands: the build's location text, which the build resolves to a location id
+    # (``world.builder._canonicalize_seed_locations``), as it does a character's initial_location.
+    location:      str = ""
     content:       str = ""
-
-    @property
-    def entity_id(self) -> str:
-        """The id in the world, derived from name rather than a separate field (like is_takeable below).
-
-        When two seeds map to the same id, the later one silently replaces the earlier
-        (register_entity assigns unconditionally): the world is short one catalyst while the log says
-        both were built. So "which seeds are the same thing" must be decided on this derived value, not
-        on name: ``Letter`` and ``letter`` differ as names but share a slug. Dedup is in
-        _distinct_entity_seeds.
-        """
-        return f"seed_{slugify(self.name, fallback_prefix='seed')}"
 
     @property
     def is_takeable(self) -> bool:
@@ -180,11 +174,12 @@ class WorldEntitySeed:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "entity_id": self.entity_id,
             "name": self.name,
             "entity_type": self.entity_type,
             "description": self.description,
             "initial_state": self.initial_state,
-            "location_name": self.location_name,
+            "location": self.location,
             "is_takeable": self.is_takeable,
             "content": self.content,
         }
@@ -196,7 +191,7 @@ class NpcSeed:
 
     Instantiated by WorldInitializer through ``EnvironmentSystem.spawn_npc`` before step 0.
     Sibling of ``WorldEntitySeed`` in every structural way — theme-authored, placed by name,
-    rebuilt from the manifest on restore.
+    kept with the world's setup.
 
     All four identity fields are required and none of them is decoration:
     ``description`` is a SHORT line on who this one is and what they are good and bad at —
@@ -210,18 +205,21 @@ class NpcSeed:
     """
 
     name:          str
+    # Its id in the world, as on ``WorldEntitySeed``: given by the setup, empty until then.
+    npc_id:        str = ""
     gender:        str = ""
     age:           int = 30
     description:   str = ""       # What kind of person this is, what they do, their skills or failings; the main basis for admission in adjudication
-    location_name: str = ""       # resolved to location_id by WorldInitializer
+    location:      str = ""       # as on WorldEntitySeed: text from the build, a location id after it
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "npc_id": self.npc_id,
             "name": self.name,
             "gender": self.gender,
             "age": self.age,
             "description": self.description,
-            "location_name": self.location_name,
+            "location": self.location,
         }
 
 
@@ -417,21 +415,23 @@ class RelationSeed:
 class HistoricalEventSeed:
     """A world event that happened before runtime step 0.
 
-    ``importance`` is a 0.0-1.0 score aligned with the memory subsystem's
+    ``hours_before_start`` is a narrative duration, never a step count: the world's step length
+    can still be revised before the world first runs, and the initializer converts it to the
+    memory's step only when it writes the memory. ``importance`` is a 0.0-1.0 score aligned with the memory subsystem's
     importance scale (see ``MEMORY_IMPORTANCE_SCORE_DEFINITION`` in
     ``core/prompts.py`` and ``agent.memory_types.importance_level`` for the
     threshold anchors).
     """
 
     event: str
-    step_offset: int = -1
+    hours_before_start: int = 1
     related_figures: list[str] = field(default_factory=list)
     importance: float = 0.5
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "event": self.event,
-            "step_offset": self.step_offset,
+            "hours_before_start": self.hours_before_start,
             "related_figures": list(self.related_figures),
             "importance": self.importance,
         }
@@ -517,8 +517,8 @@ class ThemeAnalysis:
       asymmetry).
 
     All three are hard anchors during build (injected into every parallel LLM
-    call to keep generation coordinated) and persisted into the step-0
-    snapshot manifest. They are deliberately **not** consumed by runtime
+    call to keep generation coordinated) and persisted in the world's setup
+    (``WorldLore``). They are deliberately **not** consumed by runtime
     cognition prompts — runtime emergence must be free of these anchors so
     agent decisions are driven only by personality, need, perception, and
     memory.
@@ -557,61 +557,36 @@ class ThemeAnalysis:
             "source_material": self.source_material,
         }
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ThemeAnalysis:
-        return cls(
-            theme_input=data["theme_input"],
-            world_name=data["world_name"],
-            era_description=data["era_description"],
-            core_tension=data["core_tension"],
-            narrative_theme=data["narrative_theme"],
-            narrative_pitch=data["narrative_pitch"],
-            world_time_config=dict(data.get("world_time_config") or {}),
-            key_figures=[
-                ThemeFigure(**f) for f in data.get("key_figures", [])
-            ],
-            initial_relations=[
-                RelationSeed(
-                    source_name=r["from"], target_name=r["to"],
-                    trust=r.get("trust", NEUTRAL_TRUST), affection=r.get("affection", NEUTRAL_AFFECTION),
-                    labels=list(r.get("labels", []) or []),
-                    reverse_trust=r.get("reverse_trust"),
-                    reverse_affection=r.get("reverse_affection"),
-                    reverse_labels=list(r.get("reverse_labels", []) or []),
-                )
-                for r in data.get("initial_relations", [])
-            ],
-            historical_events=[
-                HistoricalEventSeed(**e) for e in data.get("historical_events", [])
-            ],
-            key_locations=[
-                LocationSeed(**loc) for loc in data.get("key_locations", [])
-            ],
-            world_entity_seeds=[
-                WorldEntitySeed(
-                    name=s["name"],
-                    entity_type=s.get("entity_type", "item"),
-                    description=s.get("description", ""),
-                    initial_state=s.get("initial_state", "intact"),
-                    location_name=s.get("location_name", ""),
-                    content=s.get("content", ""),
-                )
-                for s in data.get("world_entity_seeds", [])
-                if isinstance(s, dict) and s.get("name")
-            ],
-            npc_seeds=[
-                NpcSeed(
-                    name=s["name"],
-                    gender=s.get("gender", ""),
-                    age=s.get("age", 30),
-                    description=s.get("description", ""),
-                    location_name=s.get("location_name", ""),
-                )
-                for s in data.get("npc_seeds", [])
-                if isinstance(s, dict) and s.get("name")
-            ],
-            source_material=data.get("source_material", ""),
-        )
+
+
+def name_key(name: str) -> str:
+    """One name however it is padded or cased: ``Letter`` and ``letter`` name one referent."""
+    return name.strip().casefold()
+
+
+def unique_agent_id(name: str, used_ids: set[str]) -> str:
+    """A character's id from its name, distinct from ``used_ids``; adds it to them."""
+    return _unique_id(slugify(name, fallback_prefix="agent"), used_ids)
+
+
+def unique_npc_id(name: str, used_ids: set[str]) -> str:
+    """An NPC's id from its name, distinct from ``used_ids``; adds it to them."""
+    return _unique_id(f"npc_{slugify(name, fallback_prefix=None)}", used_ids)
+
+
+def unique_entity_id(name: str, used_ids: set[str]) -> str:
+    """A thing's id from its name, distinct from ``used_ids``; adds it to them."""
+    return _unique_id(f"seed_{slugify(name, fallback_prefix=None)}", used_ids)
+
+
+def _unique_id(base: str, used_ids: set[str]) -> str:
+    candidate = base
+    counter = 2
+    while candidate in used_ids:
+        candidate = f"{base}-{counter}"
+        counter += 1
+    used_ids.add(candidate)
+    return candidate
 
 
 @dataclass
@@ -619,15 +594,12 @@ class AgentDefinition:
     """WorldBuilder output consumed by WorldInitializer."""
 
     agent_id: str
-    name: str
     tier: AgentTier
     soul: SoulLayer
     initial_location: str
     initial_emotion: EmotionState
     # Static need endowment lives in soul.innate_needs (immutable identity); the long-term goal seed is a top-level field (it evolves at runtime).
     long_term_goals: list[str] = field(default_factory=list)
-    initial_relations: list[RelationSeed] = field(default_factory=list)
-    historical_memories: list[HistoricalEventSeed] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -639,7 +611,6 @@ class AgentDefinition:
         return {
             "name": self.soul.name,
             "role": self.soul.role,
-            "agent_id": self.soul.agent_id,
             "age": self.soul.age,
             "gender": self.soul.gender,
             "core_traits": list(self.soul.core_traits),
@@ -664,7 +635,6 @@ class AgentDefinition:
     def as_dict(self) -> dict[str, Any]:
         return {
             "agent_id": self.agent_id,
-            "name": self.name,
             "tier": self.tier.value,
             "soul_data": self.soul_data,
             "initial_location": self.initial_location,
@@ -677,8 +647,6 @@ class AgentDefinition:
             "long_term_goals": self.long_term_goals,
             "initial_needs": self.initial_needs,
             "hidden_needs": self.hidden_needs,
-            "initial_relations": [relation.as_dict() for relation in self.initial_relations],
-            "historical_memories": [event.as_dict() for event in self.historical_memories],
             "metadata": dict(self.metadata),
         }
 
@@ -709,7 +677,8 @@ class AgentDefinition:
         soul = SoulLayer(
             name=sd["name"],
             role=sd.get("role", ""),
-            agent_id=sd.get("agent_id", data["agent_id"]),
+            # The definition's id is the one relations and events refer to; the soul carries a copy.
+            agent_id=data["agent_id"],
             age=sd.get("age", 30),
             gender=sd.get("gender", ""),
             core_traits=sd.get("core_traits", []),
@@ -732,26 +701,11 @@ class AgentDefinition:
         )
         return cls(
             agent_id=data["agent_id"],
-            name=data["name"],
             tier=AgentTier(data["tier"]),
             soul=soul,
             initial_location=data["initial_location"],
             initial_emotion=initial_emotion,
             long_term_goals=list(data.get("long_term_goals", [])),
-            initial_relations=[
-                RelationSeed(
-                    source_name=r["from"], target_name=r["to"],
-                    trust=r.get("trust", NEUTRAL_TRUST), affection=r.get("affection", NEUTRAL_AFFECTION),
-                    labels=list(r.get("labels", []) or []),
-                    reverse_trust=r.get("reverse_trust"),
-                    reverse_affection=r.get("reverse_affection"),
-                    reverse_labels=list(r.get("reverse_labels", []) or []),
-                )
-                for r in data.get("initial_relations", [])
-            ],
-            historical_memories=[
-                HistoricalEventSeed(**e) for e in data.get("historical_memories", [])
-            ],
             metadata=dict(data.get("metadata") or {}),
         )
 
@@ -761,9 +715,7 @@ class World:
     """Initialized world state ready for runtime orchestration."""
 
     world_id: str
-    theme: str
-    analysis: ThemeAnalysis
-    agent_definitions: list[AgentDefinition]
+    setup: WorldSetup
     agents: dict[str, Agent]
     world_config: WorldConfig
     clock_config: WorldTimeConfig

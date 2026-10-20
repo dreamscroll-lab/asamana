@@ -116,8 +116,8 @@ export function buildStagingScenes({ tight: TIGHT, open: OPEN }: LabPlaces): Lab
             }),
             did(SHI, {
               action_type: ActionType.physical, deed: Deed.relinquish,
-              target: aimThing(`seed_seed-${SHI.id.slice(-8)}0`, RefKind.item, [LIN.id]),
-              affected_entity_ids: [`seed_seed-${SHI.id.slice(-8)}0`],
+              target: aimThing(`seed_${SHI.id.slice(-8)}0`, RefKind.item, [LIN.id]),
+              affected_entity_ids: [`seed_${SHI.id.slice(-8)}0`],
               action_description: "把布包交到阿霖手上。",
               outcome: `在${TIGHT.name}，阿石把布包交到了阿霖手上。`,
             }),

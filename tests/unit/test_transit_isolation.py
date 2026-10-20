@@ -183,7 +183,7 @@ async def test_repatriation_falls_back_to_initial_location(container) -> None:
     agent.personality.update_location(location=IN_TRANSIT)
 
     definition = AgentDefinition(
-        agent_id="agent-a", name="甲", tier=AgentTier.BACKGROUND,
+        agent_id="agent-a", tier=AgentTier.BACKGROUND,
         soul=SoulLayer(name="甲", role="", agent_id="agent-a"),
         initial_location="garden",
         initial_emotion=EmotionState(),

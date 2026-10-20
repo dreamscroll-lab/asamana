@@ -18,6 +18,7 @@ drifts. Hence:
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any, Iterable
 
 from core.duration import describe_duration
 from core.interfaces.phenomenon import Phenomenon
@@ -208,6 +209,31 @@ RELATION_LABEL_FORMAT: str = (
 )
 
 RELATION_LABEL_DESCRIPTION: str = f"labels（关系标签）: {RELATION_LABEL_FORMAT}"
+
+
+def canonical_relation_label(text: str) -> str:
+    """``text`` in the form RELATION_LABEL_FORMAT names, 「关系类型」 or 「关系类型:角色」: a
+    half-width colon, each part stripped. ``ValueError`` when it has no such form.
+
+    Only the structure is checked. Whether the role names the other party rather than the
+    holder takes knowing who they are, so it rests with the producer's prompt.
+    """
+    parts = [part.strip() for part in text.replace("：", ":").split(":")]
+    if len(parts) > 2 or not all(parts):
+        raise ValueError(f"Relation label {text!r} is neither 「关系类型」 nor 「关系类型:角色」")
+    return ":".join(parts)
+
+
+def relation_labels(labels: Iterable[Any]) -> list[str]:
+    """The relation labels among ``labels`` in canonical form, in order and each once. The
+    lenient read for LLM output: an item with no label form is dropped."""
+    canonical: list[str] = []
+    for item in labels:
+        try:
+            canonical.append(canonical_relation_label(str(item)))
+        except ValueError:
+            continue
+    return list(dict.fromkeys(canonical))
 
 
 def relation_legend() -> str:

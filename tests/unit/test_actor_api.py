@@ -23,10 +23,9 @@ from interaction.api.actor import _decode_amendments
 
 async def _unconfirmed_world(container, test_config, catalog: WorldCatalog) -> tuple[str, str]:
     """A world still under review, and a character to cast."""
-    world = await NarrativeApplication(container, test_config, catalog=catalog).build_world(
-        "玄武门之变", template="changan_iso",
-    )
-    return world.world_id, next(iter(world.agents))
+    application = NarrativeApplication(container, test_config, catalog=catalog)
+    world_id = await application.build_world("玄武门之变", template="changan_iso")
+    return world_id, (await application.world_setup(world_id)).characters[0].agent_id
 
 
 def _client(container, test_config, catalog: WorldCatalog) -> TestClient:
@@ -140,20 +139,6 @@ async def test_the_directors_review_is_closed_while_an_actor_performs(mock_build
     assert review.status_code == 409
     # Who the main characters are is not the actor's to know.
     assert meta["main_agent_names"] == []
-
-
-@pytest.mark.asyncio
-async def test_emotions_are_the_vocabulary_an_amendment_picks_from(mock_build_container, test_config) -> None:
-    from agent.personality import EmotionType
-
-    catalog = WorldCatalog(None)
-    world_id, _character_id = await _unconfirmed_world(mock_build_container, test_config, catalog)
-
-    with _client(mock_build_container, test_config, catalog) as client:
-        emotions = client.get(f"/api/worlds/{world_id}/actor/emotions").json()
-
-    assert [e["value"] for e in emotions] == [e.value for e in EmotionType]
-    assert {e["value"]: e["label"] for e in emotions}["anger"] == EmotionType.ANGER.label
 
 
 @pytest.mark.asyncio
@@ -363,6 +348,7 @@ async def test_actor_turn_is_delivered_and_restored_only_through_websocket(mock_
 async def test_turns_and_entries_reach_the_websocket(mock_build_container, test_config) -> None:
     catalog = WorldCatalog(None)
     world_id, _character_id = await _unconfirmed_world(mock_build_container, test_config, catalog)
+    await NarrativeApplication(mock_build_container, test_config, catalog=catalog).confirm_world(world_id)
     turn = ActorTurn(agent_id="a1", step=3, kind=TurnKind.INTERRUPT, doing="誊抄奏章")
 
     with _client(mock_build_container, test_config, catalog) as client:
@@ -388,20 +374,20 @@ async def test_observation_routes_answer_as_the_character_until_the_actor_exits(
 ) -> None:
     catalog = WorldCatalog(None)
     world_id, character_id = await _unconfirmed_world(mock_build_container, test_config, catalog)
-    snapshot = await mock_build_container.snapshot.load(world_id, 0)
-    assert snapshot is not None
+    setup = await mock_build_container.snapshot.load_world_setup(world_id)
+    assert setup is not None
     private = {
         "core_traits": ["谨慎"], "core_values": ["家人"], "self_image": "守护者",
         "life_goal": "保全家人", "secret": "藏有密信",
     }
-    for profile in snapshot.build["character_profiles"].values():
-        profile.update(private)
-    await mock_build_container.snapshot.save(world_id, 0, snapshot)
+    for definition in setup["characters"]:
+        definition["soul_data"].update(private)
+    await mock_build_container.snapshot.save_world_setup(world_id, setup)
 
     with _client(mock_build_container, test_config, catalog) as client:
         profiles = {
             agent_id: client.get(f"/api/worlds/{world_id}/agents/{agent_id}/profile").json()
-            for agent_id in snapshot.build["character_profiles"]
+            for agent_id in (d["agent_id"] for d in setup["characters"])
         }
         client.post(f"/api/worlds/{world_id}/confirm", json={"character_id": character_id})
         performing = {

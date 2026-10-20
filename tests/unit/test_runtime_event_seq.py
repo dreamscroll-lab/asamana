@@ -33,6 +33,7 @@ from tests.unit.test_runtime_smoke import (
     _set_work_decision,
 )
 from tests.unit.bus_tap import tap
+from tests.unit.confirmed_world import confirmed_world
 
 
 def _collect_seqs(records) -> list[int]:
@@ -174,7 +175,7 @@ async def test_seq_persists_in_snapshot_and_resumes_without_collision(
     container = mock_build_container
     published = tap(container.event_bus)
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=2)
 
     snapshot = await container.snapshot.load(world.world_id, 2)

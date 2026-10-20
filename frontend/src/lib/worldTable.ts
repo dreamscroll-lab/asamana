@@ -3,7 +3,9 @@ import { useCallback, useEffect, useSyncExternalStore } from "react";
 /**
  * A world's identity table: entries fixed at build and identical for every viewer, keyed by id,
  * loaded once per world and shared by every view. Successful tables outlive views, playback
- * resets and viewpoint changes; a failed load stays failed until `load` is called again.
+ * resets and viewpoint changes; a failed load stays failed until `load` is called again. The one
+ * change a table sees is a setup revision before the world is confirmed, after which `reload`
+ * re-reads it while the old entries stay shown.
  */
 export type Table<T> = Readonly<Record<string, T>>;
 
@@ -21,6 +23,7 @@ interface Entry<T> {
 
 export interface WorldTable<T> {
   load(worldId: string): Promise<Table<T>>;
+  reload(worldId: string): Promise<Table<T>>;
   useTable(worldId: string): TableState<T>;
 }
 
@@ -47,6 +50,12 @@ export function worldTable<T>(fetch: (worldId: string) => Promise<T[]>, keyOf: (
     if (entry.pending) return entry.pending;
     if (entry.state.status === "ready") return Promise.resolve(entry.state.table);
     publish(entry, { status: "loading", table: empty, error: null });
+    return read(worldId, entry);
+  };
+
+  const reload = (worldId: string): Promise<Table<T>> => read(worldId, entryFor(worldId));
+
+  const read = (worldId: string, entry: Entry<T>): Promise<Table<T>> => {
     entry.pending = fetch(worldId).then(
       (rows) => {
         const table: Table<T> = Object.freeze(Object.fromEntries(rows.map((row) => [keyOf(row), row])));
@@ -78,5 +87,5 @@ export function worldTable<T>(fetch: (worldId: string) => Promise<T[]>, keyOf: (
     return state;
   };
 
-  return { load, useTable };
+  return { load, reload, useTable };
 }

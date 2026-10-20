@@ -19,6 +19,7 @@ from core.interfaces.trace import COGNITION_ORDER, Stage
 from engine.application import NarrativeApplication
 from providers.trace.in_memory import InMemoryTraceSink
 from world import WorldCatalog
+from tests.unit.confirmed_world import confirmed_world
 
 
 def _directive_json(**overrides) -> str:
@@ -40,7 +41,7 @@ async def _app_with_world(container, test_config):
     container.trace_sink = InMemoryTraceSink()
     container.llm_router._trace_sink = container.trace_sink  # noqa: SLF001 — test wiring
     app = NarrativeApplication(container, test_config, catalog=WorldCatalog(None))
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     return app, world.world_id
 
 
@@ -177,7 +178,7 @@ async def test_the_trace_flush_never_sits_in_the_request_path(
     mock_build_container.trace_sink = _SlowSink()
     mock_build_container.llm_router._trace_sink = mock_build_container.trace_sink  # noqa: SLF001
     app = NarrativeApplication(mock_build_container, test_config, catalog=WorldCatalog(None))
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     mock_build_container.llm_router.get(LLMScene.DIRECTIVE).fixed_response = _directive_json()
     # World build awaits its own flush (step=None, a one-off outside this rule).
     # Clear it so it isn't mistaken for the director path's flush.
