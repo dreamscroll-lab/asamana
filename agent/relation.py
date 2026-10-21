@@ -165,15 +165,17 @@ def render_relation_context(named_relations: Sequence[tuple[str, AgentRelation]]
 
 
 def describe_relations(relations: Sequence[PerceivedRelation]) -> str:
-    """Perceived relations as a prompt block: header + legend + one bullet each.
+    """Perceived relations as a prompt block: header + one bullet each.
 
-    Module-level so any holder of the perceived list renders identically without a
-    ``RelationSystem``. No truncation here; relevant_relations is capped upstream.
+    The legend (``relation_legend()``) is a constant, so it belongs in the caller's system
+    message, not beside these per-call lines. Module-level so any holder of the perceived list
+    renders identically without a ``RelationSystem``. No truncation here; relevant_relations is
+    capped upstream.
     """
     rels = list(relations)
     if not rels:
         return "附近没有相关人物。"
-    lines = ["相关人物的关系：", relation_legend()]
+    lines = ["相关人物的关系："]
     lines.extend("- " + line for line in render_relation_lines(rels, limit=len(rels)))
     return "\n".join(lines)
 

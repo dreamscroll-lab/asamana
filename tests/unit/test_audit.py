@@ -1612,3 +1612,119 @@ def test_init_keys_on_the_cast_and_shows_the_tier() -> None:
     assert "没有生成人设" in block   # and says what it's missing
 
 
+
+
+# ---------------------------------------------------------------------------
+# Beats: what landed without an LLM call
+# ---------------------------------------------------------------------------
+
+def _beat(step: int, stage: str, beat_kind: str, payload: dict, *, agent_id: str | None = "agent-x",
+          extra: dict | None = None) -> dict:
+    return {"kind": "beat", "world_id": WORLD, "step": step, "stage": stage, "beat_kind": beat_kind,
+            "payload": payload, "timestamp": "2026-07-01T00:00:02", "agent_id": agent_id,
+            "extra": extra or {}, "actor": agent_id is not None}
+
+
+def _beat_world(tmp_path: Path) -> str:
+    _write(tmp_path, "build.jsonl", [
+        _rec(scene="persona_generation", agent_id="agent-x", extra={"agent_name": "甲"},
+             response_content=json.dumps({"name": "甲"}, ensure_ascii=False)),
+    ])
+    _write(tmp_path, "step_000002.jsonl", [
+        _rec(stage="perception", scene="agent_decision_main", agent_id="agent-x", step=2,
+             response_content=json.dumps({"emotion": "fear", "intensity": 0.4, "valence": -0.3})),
+        # A reading nobody confirmed: the beat below is what the step decided.
+        _rec(stage="decision", scene="actor_intent", agent_id="agent-x", step=2,
+             adopted=False, reject_reason="superseded",
+             response_content=json.dumps({"decision": "act", "action_description": "我去北营"})),
+        _beat(2, "decision", "mind", {"emotion": {"emotion": "anger", "intensity": 0.8, "valence": -0.7},
+                                      "insights": ["乙不可信"]}),
+        _beat(2, "decision", "decision", {
+            "action_type": "TALK", "action_description": "我找乙问个明白", "expected_outcome": "问出实情",
+            "targets": {"person_indices": ["乙"]},
+        }, extra={"verdict": "executed", "location": "北营"}),
+        _beat(2, "director", "injection", {"narrative_desc": "北营火起"}, agent_id=None),
+    ])
+    return str(tmp_path)
+
+
+def test_a_step_settled_without_a_decision_call_reads_its_decision_from_the_beat(tmp_path: Path) -> None:
+    from tuning.judge_audit import _step_lines, sass_units
+
+    view = reconstruct_world(WORLD, trace_dir=_beat_world(tmp_path))
+
+    [sv] = view.per_agent["agent-x"].steps
+    s = sv.summary
+    assert s["decision"]["action_type"] == "TALK"
+    assert s["decision"]["action_description"] == "我找乙问个明白"
+    assert s["decision"]["target"] == "乙"
+    assert s["location"] == "北营"
+    # The reading is no decision; the beat isn't one of the beats sass scores either.
+    assert all(c.scene != "actor_intent" for c in sv.calls)
+    assert [u.call.stage for u in sass_units(sv)] == ["perception"]
+    block = "\n".join(_step_lines(sv, name="甲", sps=3600))
+    # The amendment is the input of the decision it landed before.
+    assert block.index("内心变化") < block.index("决策｜输出：[TALK] 我找乙问个明白")
+    assert "新的感悟：乙不可信" in block
+
+
+def test_a_break_off_he_chose_reads_as_his_own_stop_not_an_unprompted_one(tmp_path: Path) -> None:
+    from tuning.judge_audit import _mams_phase_lines, _step_lines
+
+    _write(tmp_path, "build.jsonl", [
+        _rec(scene="persona_generation", agent_id="agent-x", extra={"agent_name": "甲"},
+             response_content=json.dumps({"name": "甲"}, ensure_ascii=False)),
+    ])
+    _write(tmp_path, "step_000003.jsonl", [
+        _beat(3, "interrupt", "interrupt", {
+            "interrupt": True, "thought": "", "doing": "清点人手", "trigger": "", "self_initiated": True,
+        }, extra={"settles_prior_action": True}),
+        _rec(stage="action", scene="agent_action_narration", agent_id="agent-x", step=3,
+             extra={"settles_prior_action": True},
+             response_content=json.dumps({"fact": "我清点到一半便停了手"}, ensure_ascii=False)),
+    ])
+    view = reconstruct_world(WORLD, trace_dir=str(tmp_path))
+
+    [sv] = view.per_agent["agent-x"].steps
+    block = "\n".join(_step_lines(sv, name="甲", sps=3600))
+    assert "中断｜输入：正在做:清点人手｜突发:无，他自己决定停下手头这件事" in block
+    assert "中断｜输出：未留下想法（interrupt=True）" in block
+    assert any("突发:无，他自己决定停下手头这件事" in line
+               for line in _mams_phase_lines(sv.summary, "甲", sps=3600))
+
+
+def test_an_injection_lands_in_the_world_sequence_whoever_wrote_it(tmp_path: Path) -> None:
+    from tuning.judge_audit import world_block
+
+    view = reconstruct_world(WORLD, trace_dir=_beat_world(tmp_path))
+
+    assert view.world_sequence[0]["injections"] == [{"narrative_desc": "北营火起"}]
+    block = world_block(view)
+    assert "⚡事件：北营火起" in block and "director" not in block
+
+
+def test_a_talk_s_transcript_comes_from_each_side_s_memory_call_with_named_speakers() -> None:
+    from tuning.judge_audit import _mams_script_lines
+
+    dialogue = [{"speaker": "乙", "line": "何事？"}, {"speaker": "甲", "line": "北营的火"}]
+    s = _sum([_call("action", "agent_action_narration", {"fact": "乙来问我北营的事", "success": True},
+                    {"talk_role": "addressee", "action_owner": "甲", "dialogue": dialogue})])
+    assert s["results"][0]["dialogue"] == dialogue
+    assert _mams_script_lines("甲", s) == ["      · 对话：", "          乙：何事？", "          甲：北营的火"]
+
+
+def test_a_talk_is_laid_out_once_in_the_world_view_and_the_other_side_points_to_it() -> None:
+    from tuning.judge_audit import _mams_script_lines
+
+    named = [{"speaker": "乙", "line": "何事？"}, {"speaker": "甲", "line": "北营的火"}]
+    # The narrator's dialogue (speakers by number) on one side, the memory call's (by name) on the other.
+    numbered = [{"speaker": 2, "line": "何事？"}, {"speaker": 1, "line": "北营的火"}]
+    initiator = _sum([_call("action", "agent_action_narration", {"dialogue": numbered},
+                            {"action_owner": "甲", "action_participants": ["甲", "乙"]})], "甲")
+    addressee = _sum([_call("action", "agent_action_narration", {"fact": "甲来问北营", "success": True},
+                            {"talk_role": "addressee", "action_owner": "乙", "dialogue": named})], "乙")
+    shown: dict = {}
+    assert _mams_script_lines("甲", initiator, shown) == [
+        "      · 对话：", "          乙：何事？", "          甲：北营的火",
+    ]
+    assert _mams_script_lines("乙", addressee, shown) == ["      · 对话：同一场，见 甲 处"]

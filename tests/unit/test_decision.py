@@ -267,7 +267,8 @@ def test_every_declared_fact_is_one_the_prompt_actually_showed() -> None:
     Declare bare values only: a prompt fragment (like ``expected_part``) drags the prompt's section
     headings into the facts.
     """
-    from agent.memory_types import Memory, MemoryKind, MemoryStream
+    from agent.memory_types import Memory, MemoryStream
+    from core.interfaces.memory import MemoryKind
 
     def _mem(i: int, stream: MemoryStream, kind: MemoryKind, text: str) -> Memory:
         return Memory(id=f"m{i}", stream=stream, agent_id="a1", raw_content=text,
@@ -488,7 +489,7 @@ def test_a_slot_binds_only_for_the_type_that_declares_it(container: object) -> N
     engine = _make_engine(container)
     packet = _make_packet(reachable_location_ids=["garden"])
     payload = json.dumps(
-        {"selected_index": 0, "destination_index": 1, "item_id": "门",
+        {"selected_index": 0, "destination_index": 1, "item_name": "门",
          "action_description": "我就地歇一会儿。", "inner_monologue": "累了。"},
         ensure_ascii=False,
     )
@@ -851,7 +852,7 @@ def test_parse_llm_selection_extracts_item_id(container: object) -> None:
     payload = json.dumps(
         {
             "selected_index": 0,
-            "item_id": "sword",
+            "item_name": "sword",
             "action_description": "拿起剑。",
             "inner_monologue": "需要自保。",
             "estimated_steps": 1,

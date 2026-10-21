@@ -21,13 +21,14 @@ from agent.memory_ranking import (
     simple_similarity, mmr_select,
 )
 from agent.memory_types import (
-    Memory, MemoryImportance, MemoryKind, MemoryStream, RetrievalResult, coerce_importance,
+    Memory, MemoryImportance, MemoryStream, RetrievalResult, coerce_importance,
     importance_level,
 )
 from agent.memory_write_queue import MemoryWriteQueue
 from core.context import note_active_call_adoption, observe_stage, observe_step
 from core.interfaces.embedding import EmbeddingProvider
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json, output_budget
+from core.interfaces.memory import MemoryKind
 from core.interfaces.trace import Stage
 from core.interfaces.perception import Situation
 from core.prompts import (
@@ -512,6 +513,7 @@ class MemorySystem:
         trace: list[RankedMemory] | None = None,
         touch: bool = True,
         exclude_ids: Collection[str] = (),
+        score_floor: float | None = None,
     ) -> List[Memory]:
         """Recall relevant memories, optionally from one stream.
 
@@ -524,6 +526,8 @@ class MemorySystem:
           recency.
         - ``exclude_ids``: removed before the top_k cut. Don't over-fetch and drop afterwards: the
           extras would be touched without being used.
+        - ``score_floor``: overrides this system's relevance floor for one call, for a caller that
+          would rather recall nothing than something loosely related.
         - Decay floor: below 0.2 the final score is multiplied by decay_score, so an old memory
           still resurfaces when importance and relevance are both high.
 
@@ -539,6 +543,7 @@ class MemorySystem:
         query_embedding = await self._embedding.embed(query)
         streams = [stream] if stream is not None else [MemoryStream.FACTUAL, MemoryStream.EXPERIENTIAL]
         weights = RETRIEVAL_WEIGHTS
+        floor = self._retrieval_score_floor if score_floor is None else score_floor
 
         scope = dict(filters or {})
         if related_agent_id is not None:
@@ -567,7 +572,7 @@ class MemorySystem:
                 # The floor compares fused, not dense: an exact proper-noun hit can be high on sparse
                 # but middling on dense. It must run before min-max normalization, which erases
                 # absolute relevance.
-                if float(result.score) < self._retrieval_score_floor:
+                if float(result.score) < floor:
                     if trace is not None:
                         trace.append(
                             RankedMemory(

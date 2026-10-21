@@ -31,7 +31,7 @@ from core.interfaces.actor import (
 from core.interfaces.agent_store import AgentStoreProvider, relations_snapshot
 from core.interfaces.directory import WorldDirectory
 from core.interfaces.snapshot import EngineState, SnapshotProvider, WorldSnapshot, WorldState
-from core.interfaces.trace import Stage, StepTrace, TraceSink
+from core.interfaces.trace import CONSCRIPTED, BeatKind, Stage, StepTrace, TraceSink, record_beat
 from core.duration import describe_duration
 from core.logging import get_logger
 from core.validate import require_at_least
@@ -165,6 +165,7 @@ class NarrativeRuntime:
         # entry of the actor's thread, goes out on the event bus, like steps.
         self._actor = ActorCoordinator(
             clock.config, on_turn=self._publish_actor_turn, on_entry=self._publish_actor_entry,
+            world_id=world_id, trace_sink=trace_sink,
         )
         # Owns its edge-trigger state (_interrupt_seen_goals); lands torn-down actions
         # through the processor.
@@ -417,6 +418,18 @@ class NarrativeRuntime:
                 locations=self._environment.space.all_places(),
                 entities=self._environment.all_live_entities(),
             )
+        # Injections land without an LLM call of their own: each goes into the trace as a beat
+        # of the step it lands in, under its author's stage.
+        for stage, committed in (
+            *((Stage.DIRECTOR, c) for c in director_injections),
+            *(((Stage.NARRATIVE_EDITOR, editor_injection),) if editor_injection is not None else ()),
+        ):
+            record_beat(self._trace_sink, BeatKind.INJECTION, stage, {
+                "narrative_desc": committed.record.narrative_desc,
+                "affected_names": committed.record.affected_names,
+                "location_label": committed.record.location_label,
+                "dispatched_to": committed.record.dispatched_to,
+            }, world_id=self._world_id, step=step)
         # Reap whoever an injection just killed, before anything acts this step: otherwise the
         # dead keep ticking their actions, get interrupt calls and complete talks until the
         # step-end pass. Taken out of pre_step_active so that pass doesn't wrap them up twice.
@@ -1388,7 +1401,7 @@ class NarrativeRuntime:
                 # the machine breaking, not the world's verdict, so it's marked apart.
                 fields["verdict"] = "start_failed"
             elif resolved.is_passive_join:
-                fields["verdict"] = "conscripted"
+                fields["verdict"] = CONSCRIPTED
             elif resolved.refused:
                 # The invitee refused: it happened, as a failure, so it isn't "rejected".
                 fields["verdict"] = "refused"
@@ -1456,7 +1469,7 @@ class NarrativeRuntime:
             if self._trace_sink is not None:
                 self._trace_sink.mark_call_unadopted(
                     self._world_id, step=plan.step, agent_id=plan.agent_id,
-                    stage=Stage.MOTIVATION.value, reason="conscripted",
+                    stage=Stage.MOTIVATION.value, reason=CONSCRIPTED,
                 )
         else:
             await agent.begin_ongoing_step(

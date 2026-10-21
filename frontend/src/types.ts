@@ -791,8 +791,8 @@ export interface ActorRecordedIntent {
   };
   description: string;
 }
-export interface ActorActionSummary {
-  action_summary_id: string;
+export interface ActorDecisionSummary {
+  decision_summary_id: string;
   description: string;
   operation: string;
   target: ActorTarget | null;
@@ -813,7 +813,7 @@ export interface ActorOperations {
 export interface ActorIntentResult {
   status: "submitted" | "needs_confirmation" | "rejected";
   reason: string | null;
-  action_summary: ActorActionSummary | null;
+  decision_summary: ActorDecisionSummary | null;
 }
 
 export interface EmotionAmendment {
@@ -877,10 +877,10 @@ export interface ActorAmendResult {
 }
 
 /**
- * A DECIDE answer confirms a server-held action summary, or leaves the character idle this step.
+ * A DECIDE answer confirms a server-held decision summary, or leaves the character idle this step.
  * Goals are amended in the mind.
  */
-export interface ActorConfirmation { action_summary_id: string }
+export interface ActorConfirmation { decision_summary_id: string }
 export interface ActorIdleAnswer { idle: true }
 
 /** The answer to an INTERRUPT turn. What to do instead is said at the DECIDE turn it leads into. */
@@ -901,7 +901,7 @@ export interface ActorDialogueTurn {
   end: boolean;
 }
 
-// Client submissions and public records reference server-held decisions by action summary id.
+// Client submissions and public records reference server-held decisions by decision summary id.
 export type ActorPublicAnswer = ActorConfirmation | ActorIdleAnswer | ActorInterruptAnswer | ActorInvitationAnswer | ActorDialogueTurn;
 
 /**
@@ -958,8 +958,9 @@ export type ActorEntry =
   | { kind: "perceived"; entry_id: string; step: number; time_label: string; messages: BriefMessage[]; broadcasts: string[]; acted_upon: string[] }
   // The world asks: a turn opened.
   | { kind: "asked"; entry_id: string; step: number; time_label: string; turn: ActorTurn }
-  // The actor's words at a DECIDE turn and their action summary; `reason` (a refusal slug) when none.
-  | { kind: "said"; entry_id: string; step: number; time_label: string; turn_id: string; words: string; action_summary: ActorActionSummary | null; reason: string | null; intent: ActorRecordedIntent | null }
+  // The actor's words at a DECIDE turn and their decision summary; `reason` (a refusal slug) when none.
+  // `reading`: where the reading got stuck when it found the words unclear, else empty.
+  | { kind: "said"; entry_id: string; step: number; time_label: string; turn_id: string; words: string; decision_summary: ActorDecisionSummary | null; reason: string | null; reading: string; intent: ActorRecordedIntent | null }
   | { kind: "answered"; entry_id: string; step: number; time_label: string; turn_id: string; answer: ActorPublicAnswer }
   // The actor asked to break off the act in progress, outside any turn.
   | { kind: "break_off"; entry_id: string; step: number; time_label: string }

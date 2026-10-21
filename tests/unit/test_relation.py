@@ -168,15 +168,15 @@ async def test_relation_system_describe_formats_all_relations(container: object)
     relations = await system.perceive_many(["agent-2"], emotion=emotion)
     text = describe_relations(relations)
 
-    # Raw trust/affection numbers with the inline scale legend from core.prompts, not a derived
-    # posture string.
+    # Raw trust/affection numbers, not a derived posture string. The scale legend is a constant
+    # and goes in the caller's system message, not in this per-call block.
     from core.prompts import RELATION_SCALE_LEGEND
 
     # No to_name set → renders a descriptive reference, never the raw id (the id
     # must not leak into displayed/embedded relation text).
     assert "agent-2" not in text
     assert "某人" in text
-    assert RELATION_SCALE_LEGEND in text
+    assert RELATION_SCALE_LEGEND not in text
     assert "信任度" in text and "好感度" in text
 
 

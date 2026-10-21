@@ -2,19 +2,19 @@
  * The actor's conversation with the world, read off the actor's thread (`ActorEntry`): one line
  * per thing that passed between them, in the order the backend recorded it.
  *
- * Derived here, never stored: whether an action summary was confirmed or declined, how far an act has
+ * Derived here, never stored: whether a decision summary was confirmed or declined, how far an act has
  * come, whether it can still be broken off, which perceptions belong to the question open now,
  * and where the world's time is shown: once per step, above the first line that step adds. The
  * backend's entries are the only facts.
  */
 
 import type {
-  ActorPublicAnswer, ActorBriefing, ActorActionSummary, ActorRecordedIntent, ActorEntry, ActorTurn, BriefMessage, DialogueTurn,
+  ActorPublicAnswer, ActorBriefing, ActorDecisionSummary, ActorRecordedIntent, ActorEntry, ActorTurn, BriefMessage, DialogueTurn,
 } from "../../types";
 
-// An action summary waiting for the actor while its turn is open; confirmed when the turn was answered
-// with it; declined otherwise (a later action summary, another answer, or the turn closing unanswered).
-export type ActionSummaryState = "pending" | "confirmed" | "declined";
+// A decision summary waiting for the actor while its turn is open; confirmed when the turn was answered
+// with it; declined otherwise (a later decision summary, another answer, or the turn closing unanswered).
+export type DecisionSummaryState = "pending" | "confirmed" | "declined";
 
 export type ThreadItem =
   // The world's time for the lines after it, up to the next one.
@@ -23,9 +23,9 @@ export type ThreadItem =
   | { kind: "perceived"; key: string; messages: BriefMessage[]; broadcasts: string[]; acted_upon: string[]; asking: boolean }
   // A question the world asked; `open` while it still waits for the actor.
   | { kind: "asked"; key: string; turn: ActorTurn; open: boolean }
-  // The actor's intent, its action summary or the reason it was rejected.
-  | { kind: "said"; key: string; words: string; action_summary: ActorActionSummary | null; reason: string | null; intent: ActorRecordedIntent | null; briefing: ActorBriefing | null; state: ActionSummaryState }
-  // An answer that is a choice of its own, not the confirming of an action summary.
+  // The actor's intent, its decision summary or the reason it was rejected.
+  | { kind: "said"; key: string; words: string; decision_summary: ActorDecisionSummary | null; reason: string | null; reading: string; intent: ActorRecordedIntent | null; briefing: ActorBriefing | null; state: DecisionSummaryState }
+  // An answer that is a choice of its own, not the confirming of a decision summary.
   | { kind: "chose"; key: string; choice: "idle" | "carry_on" | "break_off" | "accept" | "refuse"; description: string }
   // An act of the character's, from its start: `elapsed` of `total` steps, `ended` once it is over.
   | { kind: "act"; key: string; description: string; elapsed: number; total: number; ended: boolean; breakingOff: boolean }
@@ -36,11 +36,11 @@ export type ThreadItem =
 /** The thread as lines, oldest first. `turn` is the turn open now (null when none). */
 export function buildThread(entries: ActorEntry[], turn: ActorTurn | null): ThreadItem[] {
   const answered = new Map<string, ActorPublicAnswer>();
-  const lastActionSummary = new Map<string, string>();
+  const lastDecisionSummary = new Map<string, string>();
   const briefings = new Map<string, ActorBriefing | null>();
   for (const e of entries) {
     if (e.kind === "answered") answered.set(e.turn_id, e.answer);
-    if (e.kind === "said") lastActionSummary.set(e.turn_id, e.entry_id);
+    if (e.kind === "said") lastDecisionSummary.set(e.turn_id, e.entry_id);
     if (e.kind === "asked") briefings.set(e.turn.turn_id, e.turn.briefing);
   }
   const lastAnswer = entries.map((e) => e.kind).lastIndexOf("answered");
@@ -88,13 +88,13 @@ export function buildThread(entries: ActorEntry[], turn: ActorTurn | null): Thre
         break;
       case "said": {
         const answer = answered.get(e.turn_id);
-        const latest = lastActionSummary.get(e.turn_id) === e.entry_id;
-        const state: ActionSummaryState =
-          answer && "action_summary_id" in answer && answer.action_summary_id === e.action_summary?.action_summary_id ? "confirmed"
-          : latest && e.action_summary && !answer && turn?.turn_id === e.turn_id ? "pending"
+        const latest = lastDecisionSummary.get(e.turn_id) === e.entry_id;
+        const state: DecisionSummaryState =
+          answer && "decision_summary_id" in answer && answer.decision_summary_id === e.decision_summary?.decision_summary_id ? "confirmed"
+          : latest && e.decision_summary && !answer && turn?.turn_id === e.turn_id ? "pending"
           : "declined";
         push(e, {
-          kind: "said", key: e.entry_id, words: e.words, action_summary: e.action_summary, reason: e.reason, intent: e.intent,
+          kind: "said", key: e.entry_id, words: e.words, decision_summary: e.decision_summary, reason: e.reason, reading: e.reading, intent: e.intent,
           briefing: briefings.get(e.turn_id) ?? null, state,
         });
         break;

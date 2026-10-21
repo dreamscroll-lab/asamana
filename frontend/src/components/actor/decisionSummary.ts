@@ -1,5 +1,5 @@
 /**
- * The public action summary for confirmation and history, with every id named from the
+ * The public decision summary for confirmation and history, with every id named from the
  * turn's own lists.
  *
  * Interface text, not narrative: nothing here reaches the world. Names come only from the
@@ -9,10 +9,11 @@
 
 import { ACTION_IDENTITY } from "../../lib/actionIdentity";
 import type { ActionTypeValue } from "../../lib/contract";
-import type { ActorBriefing, ActorActionSummary, ActorRecordedIntent, ActorTarget, CharacterIdentity } from "../../types";
+import { URGENCY_LABEL } from "../../lib/urgency";
+import type { ActorBriefing, ActorDecisionSummary, ActorRecordedIntent, ActorTarget, CharacterIdentity } from "../../types";
 import { OPERATION_LABEL } from "./shortcuts";
 
-export interface ActionSummaryText { headline: string; details: string[] }
+export interface DecisionSummaryText { headline: string; details: string[] }
 
 export function targetName(target: ActorTarget, b: ActorBriefing, self?: Pick<CharacterIdentity, "agent_id" | "name">): string {
   if (target.kind === "agent") return (self?.agent_id === target.id ? self.name || "自己" : b.people.find((p) => p.agent_id === target.id)?.name) ?? "某人";
@@ -21,12 +22,12 @@ export function targetName(target: ActorTarget, b: ActorBriefing, self?: Pick<Ch
   return b.entities.find((p) => p.entity_id === target.id)?.name ?? "某物";
 }
 
-export function describeActionSummary(actionSummary: Pick<ActorActionSummary, "operation" | "description" | "target" | "parameters">, b: ActorBriefing, self?: Pick<CharacterIdentity, "agent_id" | "name">): ActionSummaryText {
-  const identity = ACTION_IDENTITY[actionSummary.operation as ActionTypeValue];
-  const label = OPERATION_LABEL[actionSummary.operation] ?? (identity ? `${identity.icon} ${identity.label}` : "行动");
+export function describeDecisionSummary(decisionSummary: Pick<ActorDecisionSummary, "operation" | "description" | "target" | "parameters">, b: ActorBriefing, self?: Pick<CharacterIdentity, "agent_id" | "name">): DecisionSummaryText {
+  const identity = ACTION_IDENTITY[decisionSummary.operation as ActionTypeValue];
+  const label = OPERATION_LABEL[decisionSummary.operation] ?? (identity ? `${identity.icon} ${identity.label}` : "行动");
   const details: string[] = [];
-  if (actionSummary.target) details.push(`对象：${targetName(actionSummary.target, b, self)}`);
-  const p = actionSummary.parameters;
+  if (decisionSummary.target) details.push(`对象：${targetName(decisionSummary.target, b, self)}`);
+  const p = decisionSummary.parameters;
   if (typeof p.destination_id === "string" && p.destination_id) details.push(`去往：${targetName({kind: "location", id: p.destination_id}, b, self)}`);
   if (typeof p.item_id === "string" && p.item_id) details.push(`带去：${targetName({kind: "item", id: p.item_id}, b, self)}`);
   if (typeof p.recipient_id === "string" && p.recipient_id) details.push(`交给：${targetName({kind: "agent", id: p.recipient_id}, b, self)}`);
@@ -34,20 +35,22 @@ export function describeActionSummary(actionSummary: Pick<ActorActionSummary, "o
   if (typeof p.message === "string" && p.message) details.push(`内容：${p.message}`);
   if (typeof p.talk_topic === "string" && p.talk_topic) details.push(`来意：${p.talk_topic}`);
   if (Array.isArray(p.person_ids) && p.person_ids.length) {
-    const label = actionSummary.operation === "talk" ? "旁听" : "送给";
-    const ids = actionSummary.operation === "talk" ? p.person_ids.filter((id) => id !== actionSummary.target?.id) : p.person_ids;
+    const label = decisionSummary.operation === "talk" ? "旁听" : "送给";
+    const ids = decisionSummary.operation === "talk" ? p.person_ids.filter((id) => id !== decisionSummary.target?.id) : p.person_ids;
     if (ids.length) details.push(`${label}：${ids.map((id) => targetName({ kind: "agent", id }, b, self)).join("、")}`);
   }
   if (Array.isArray(p.move_carry_ids) && p.move_carry_ids.length) details.push(`强行带走：${p.move_carry_ids.map((id) => targetName({ kind: "agent", id }, b, self)).join("、")}`);
   if (typeof p.item_name === "string" && p.item_name) details.push(`物品：${p.item_name}`);
-  return { headline: `${label} · ${actionSummary.description}`, details };
+  if (typeof p.urgency === "string" && p.urgency in URGENCY_LABEL) details.push(`紧急程度：${URGENCY_LABEL[p.urgency]}`);
+  if (typeof p.expected_outcome === "string" && p.expected_outcome) details.push(`想要的结果：${p.expected_outcome}`);
+  return { headline: decisionSummary.description ? `${label} · ${decisionSummary.description}` : label, details };
 }
 
-export function describeIntent(intent: ActorRecordedIntent, briefing: ActorBriefing, self?: Pick<CharacterIdentity, "agent_id" | "name">): ActionSummaryText | null {
+export function describeIntent(intent: ActorRecordedIntent, briefing: ActorBriefing, self?: Pick<CharacterIdentity, "agent_id" | "name">): DecisionSummaryText | null {
   if (!intent.operation) return null;
   const parameters = Object.fromEntries(Object.entries(intent.parameters).filter((entry): entry is [string, string | boolean] => entry[1] !== null));
   const description = intent.description || "";
-  const result = describeActionSummary({ operation: intent.operation, target: intent.target, parameters, description }, briefing, self);
+  const result = describeDecisionSummary({ operation: intent.operation, target: intent.target, parameters, description }, briefing, self);
   return { ...result, headline: description ? result.headline : result.headline.replace(/ · $/, "") };
 }
 
@@ -58,7 +61,7 @@ const REASON_TEXT: Record<string, string> = {
   npc_busy: "这个人正在办事，暂时无法差遣。",
   item_not_takeable: "这件东西无法拿起。",
   already_held: "这件东西已经在你手中了。",
-  action_summary_not_pending: "这份行动概要已失效，请重新提交。",
+  decision_summary_not_pending: "这份决定已失效，请重新提交。",
   stale_intent: "回合或指令已经变化，请重新提交。",
   operation_constraint_conflict: "补充要求与选定操作或对象冲突，请修改后再试。",
   operation_not_applicable: "这个对象不支持所选操作。",

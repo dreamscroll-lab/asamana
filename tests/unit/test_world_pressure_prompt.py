@@ -160,8 +160,7 @@ def test_agent_prompt_shows_target_reference_and_empty_perceived() -> None:
 
 
 def test_agent_prompt_renders_remote_sender_relation_inline() -> None:
-    """A message sender's relation is shown inline so the pressure can be judged by who sent it;
-    the relation legend appears even with no co-located block."""
+    """A message sender's relation is shown inline so the pressure can be judged by who sent it."""
     ev = _ev()
     agent = _stub_agent(name="李建成", role="太子", location="donggong")
     prompt = ev._build_agent_prompt(
@@ -172,8 +171,8 @@ def test_agent_prompt_renders_remote_sender_relation_inline() -> None:
     )
     assert "收到来自李世民的消息：速来东宫" in prompt
     assert "该角色对李世民的关系：[兄弟:敌对]，信任度0.10、好感度-0.60" in prompt
-    # legend shows even though there is no co-located block
-    assert "涉及的关系字段含义" in prompt
+    # The legend is in the system prompt (test_relation_legend_in_system), not beside the relations.
+    assert "涉及的关系字段含义" not in prompt
     assert "同处一地" not in prompt
 
 

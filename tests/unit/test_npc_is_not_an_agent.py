@@ -227,7 +227,7 @@ def test_the_code_layer_tier_never_crosses_into_the_narrative_layer() -> None:
     import inspect
 
     prompt_source = "\n".join(inspect.getsource(method) for method in (
-        DecisionEngine._build_decision_prompt, DecisionEngine._actor_interpret_output_fields,
+        DecisionEngine._build_decision_prompt, DecisionEngine._intent_output_fields,
     ))
     source_schema = "\n".join(
         ln.split(":", 1)[1] if ":" in ln else ln

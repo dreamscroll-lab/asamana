@@ -8,13 +8,17 @@
 // Don't send another axis's value through `groupBy`, and don't hide a filter based on the current
 // grouping: either makes one control act as two axes.
 //
+// Beats that landed without an LLM call are listed among their group's calls in recording order
+// and counted in none of the call numbers. "Actor only" keeps what exists because an actor
+// performs a character; whose it is stays the Agent filter's business.
+//
 // Call id and search narrow the current batch under either Scope; neither is a separate axis.
 // Call id matches by prefix (you may only have 8 chars from a chip or log line); search needs
 // every whitespace-separated word in the prompt / response / thinking / error / extra.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import CallCard, { isAnyFail } from "./CallCard";
+import CallCard, { BeatCard, isAnyFail } from "./CallCard";
 import { devApi, type Grouping } from "./api";
 import type { CallGroup, CallsPage, TraceDimensions } from "./types";
 import {
@@ -62,6 +66,7 @@ export default function TraceTab({
   const [keyword, setKeyword] = useState("");
   const [keywordQuery, setKeywordQuery] = useState("");
   const [failOnly, setFailOnly] = useState(false);
+  const [actorOnly, setActorOnly] = useState(false);
   const [error, setError] = useState("");
 
   // An id is 32 chars; a request per keystroke is waste. Query once typing stops.
@@ -116,12 +121,13 @@ export default function TraceTab({
               agentId,
               callId: callIdQuery,
               q: keywordQuery,
+              actor: actorOnly,
             });
       if (mine === ticket.current) setPage(next);
     } catch (e) {
       if (mine === ticket.current) setError(e instanceof Error ? e.message : String(e));
     }
-  }, [world, scope, groupBy, step, stage, agentId, callIdQuery, keywordQuery]);
+  }, [world, scope, groupBy, step, stage, agentId, callIdQuery, keywordQuery, actorOnly]);
 
   useEffect(() => {
     void load();
@@ -130,8 +136,9 @@ export default function TraceTab({
   const groups: CallGroup[] = useMemo(() => {
     const raw = page?.groups ?? [];
     if (!failOnly) return raw;
+    // A beat made no request, so it can't have failed.
     return raw
-      .map((g) => ({ ...g, items: g.items.filter(isAnyFail) }))
+      .map((g) => ({ ...g, items: g.items.filter(isAnyFail), beats: [] }))
       .filter((g) => g.items.length > 0);
   }, [page, failOnly]);
 
@@ -212,6 +219,17 @@ export default function TraceTab({
           />
           Failures only
         </label>
+        {runtime && (
+          <label className="flex items-center gap-2 whitespace-nowrap text-xs text-slate-300">
+            <input
+              type="checkbox"
+              checked={actorOnly}
+              onChange={(e) => setActorOnly(e.target.checked)}
+              className="accent-sky-500"
+            />
+            Actor only
+          </label>
+        )}
         {page && (
           <span className="ml-auto text-[11px] text-slate-500">
             This view: {fmt(page.total.calls)} calls · in {fmt(page.total.input_tokens)} · out{" "}
@@ -224,7 +242,7 @@ export default function TraceTab({
 
       {!page && !error && <Empty>Loading…</Empty>}
       {page && groups.length === 0 && (
-        <Empty>{failOnly ? "No failures in this view. 🎉" : "No calls match this view."}</Empty>
+        <Empty>{failOnly ? "No failures in this view. 🎉" : "Nothing matches this view."}</Empty>
       )}
       {groups.map((g) => (
         <GroupBlock
@@ -259,6 +277,15 @@ function GroupBlock({
   // The backend files agent-less calls under key "—". Shown as-is it looks like a name (a lone
   // dash among Chinese names doesn't read as "no agent"), so spell it out.
   const label = axis === "agent" && group.key === "—" ? "(no agent)" : group.label;
+  // ISO timestamps from one clock sort as strings.
+  const entries = useMemo(
+    () =>
+      [
+        ...group.items.map((call) => ({ kind: "call" as const, at: call.timestamp, call })),
+        ...group.beats.map((beat) => ({ kind: "beat" as const, at: beat.timestamp, beat })),
+      ].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)),
+    [group],
+  );
   return (
     <div className={`${panel} overflow-hidden`}>
       <button
@@ -274,6 +301,11 @@ function GroupBlock({
           <span>
             <b className="text-slate-200">{fmt(group.calls)}</b> calls
           </span>
+          {group.beats.length > 0 && (
+            <span className="text-teal-400">
+              <b>{group.beats.length}</b> beats
+            </span>
+          )}
           {group.failures > 0 && (
             <span className="text-rose-400">
               ✗<b>{group.failures}</b> call ({pct(group.failure_rate)})
@@ -296,9 +328,13 @@ function GroupBlock({
       </button>
       {open && (
         <div className="space-y-1 border-t border-slate-800 px-2 py-2">
-          {group.items.map((c, i) => (
-            <CallCard key={c.call_id || i} call={c} onPickCallId={onPickCallId} />
-          ))}
+          {entries.map((e, i) =>
+            e.kind === "call" ? (
+              <CallCard key={e.call.call_id || i} call={e.call} onPickCallId={onPickCallId} />
+            ) : (
+              <BeatCard key={`beat-${i}`} beat={e.beat} />
+            ),
+          )}
         </div>
       )}
     </div>

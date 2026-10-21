@@ -221,3 +221,155 @@ async def test_a_withdrawn_step_is_not_adjudicated_as_a_failure(container) -> No
 
     with pytest.raises(StepWithdrawn):
         await processor.finalize_executions_batch([state], agents, 1)
+
+
+def _spy_recall(agent, recalled: list | None = None) -> list[tuple[str, str, dict]]:
+    """Record every recall ``agent`` makes as ``(kind, query, kwargs)``; ``retrieve`` returns
+    ``recalled`` (default nothing), ``recall_about_agent`` nothing."""
+    calls: list[tuple[str, str, dict]] = []
+
+    async def _about(other_id, query, **kwargs):
+        calls.append(("about", query, kwargs))
+        return []
+
+    async def _retrieve(query, **kwargs):
+        calls.append(("retrieve", query, kwargs))
+        return list(recalled or [])
+
+    agent.memory_system.recall_about_agent = _about
+    agent.memory_system.retrieve = _retrieve
+    return calls
+
+
+def _memory(mid: str, text: str):
+    from agent.memory_types import Memory, MemoryStream
+
+    return Memory(id=mid, stream=MemoryStream.FACTUAL, agent_id=OTHER, stored_content=text,
+                  importance=0.5, created_step=1, kind="event")
+
+
+@pytest.mark.asyncio
+async def test_the_addressee_recalls_by_the_stated_topic_never_the_initiators_purpose(container) -> None:
+    _ai_says(container, "何事？", end=True)
+    executor, env, agents = _setup(container, _ScriptedActor([ActorDialogueTurn(line="大哥")]))
+    addressee = _spy_recall(agents[OTHER])
+    performed = _spy_recall(agents[HERO])
+    action = _talk(HERO, OTHER)
+    action.talk_topic = "商议秋猎"
+
+    await _converse(executor, env, agents, action)
+
+    upfront = [(kind, query) for kind, query, kw in addressee if "score_floor" not in kw]
+    # What he knows of the other is ranked by the other's name, the subject by the stated topic.
+    assert upfront == [("about", "李世民"), ("retrieve", "商议秋猎")]
+    # The performed side's actor remembers for itself: nothing is recalled for it.
+    assert performed == []
+
+
+@pytest.mark.asyncio
+async def test_with_no_stated_topic_the_addressee_recalls_no_subject_up_front(container) -> None:
+    _ai_says(container, "何事？", end=True)
+    executor, env, agents = _setup(container, _ScriptedActor([ActorDialogueTurn(line="大哥")]))
+    addressee = _spy_recall(agents[OTHER])
+
+    await _converse(executor, env, agents, _talk(HERO, OTHER))
+
+    upfront = [(kind, query) for kind, query, kw in addressee if "score_floor" not in kw]
+    assert upfront == [("about", "李世民")]
+
+
+@pytest.mark.asyncio
+async def test_a_live_ai_initiator_recalls_by_its_own_purpose(container) -> None:
+    _ai_says(container, "二郎，坐。", end=True)
+    executor, env, agents = _setup(container, _ScriptedActor(), performed=OTHER)
+    initiator = _spy_recall(agents[HERO])
+    action = _talk(HERO, OTHER)
+    action.talk_topic = "商议秋猎"
+
+    await _converse(executor, env, agents, action)
+
+    upfront = [(kind, query) for kind, query, kw in initiator if "score_floor" not in kw]
+    assert upfront == [("about", "李建成"), ("retrieve", "密议兵符之事")]
+
+
+@pytest.mark.asyncio
+async def test_a_narrated_talk_recalls_both_sides_by_the_purpose(container) -> None:
+    """The narrator writes both sides and recalls only up front: the addressee needs what bears on
+    the purpose, or the talk can't get anywhere."""
+    executor, env, agents = _setup(container, None)
+    agents[HERO].actor = None
+    initiator, addressee = _spy_recall(agents[HERO]), _spy_recall(agents[OTHER])
+    action = _talk(HERO, OTHER)
+    action.talk_topic = "商议秋猎"
+
+    await _converse(executor, env, agents, action)
+
+    assert [(k, q) for k, q, _kw in initiator] == [("about", "李建成"), ("retrieve", "密议兵符之事")]
+    assert [(k, q) for k, q, _kw in addressee] == [("about", "李世民"), ("retrieve", "密议兵符之事")]
+
+
+@pytest.mark.asyncio
+async def test_the_ai_side_recalls_by_the_other_sides_last_line_as_the_talk_goes_on(container) -> None:
+    from engine.executors.social import (
+        _LIVE_RECALL_PER_TURN, _LIVE_RECALL_SCORE_FLOOR, _LIVE_RECALL_TOTAL,
+    )
+
+    _ai_says(container, "确有此事。")
+    lines = ["嗯", "你可还记得三年前那场大火？", "那夜东宫是谁当值？", "火是从哪里烧起来的？", "后来查出了什么？"]
+    actor = _ScriptedActor([ActorDialogueTurn(line=t) for t in lines])
+    executor, env, agents = _setup(container, actor)
+    pool = [_memory(f"m{i}", f"三年前东宫大火的第{i}件事") for i in range(10)]
+    calls: list[tuple[str, dict]] = []
+
+    async def _retrieve(query, *, exclude_ids=(), top_k=10, **kwargs):
+        calls.append((query, {"exclude_ids": set(exclude_ids), "top_k": top_k, **kwargs}))
+        return [m for m in pool if m.id not in exclude_ids][:top_k]
+
+    async def _about(*_a, **_k):
+        return []
+
+    agents[OTHER].memory_system.retrieve = _retrieve
+    agents[OTHER].memory_system.recall_about_agent = _about
+
+    await _converse(executor, env, agents, _talk(HERO, OTHER))
+
+    mid_talk = [(q, kw) for q, kw in calls if "score_floor" in kw]
+    # "嗯" carries no subject; every longer line is recalled by, at the stricter floor.
+    assert [q for q, _kw in mid_talk] == lines[1:1 + _LIVE_RECALL_TOTAL // _LIVE_RECALL_PER_TURN]
+    assert all(kw["score_floor"] == _LIVE_RECALL_SCORE_FLOOR for _q, kw in mid_talk)
+    # What was recalled already is not recalled again.
+    assert mid_talk[1][1]["exclude_ids"] >= {"m0", "m1"}
+    prompts = _line_calls(container)
+    assert "话说到这里，我想起的" not in prompts[0]
+    assert "三年前东宫大火的第0件事" in prompts[1]
+    # The quota is per side for the whole conversation.
+    assert sum(text.count("三年前东宫大火的第") for text in prompts[-1:]) == _LIVE_RECALL_TOTAL
+
+
+@pytest.mark.asyncio
+async def test_the_ai_lines_are_tagged_actor_and_each_memory_call_carries_the_transcript(container) -> None:
+    from core.context import clear_log_context, set_log_context
+    from providers.trace.in_memory import InMemoryTraceSink
+
+    sink = InMemoryTraceSink()
+    container.llm_router._trace_sink = sink  # noqa: SLF001
+    clear_log_context()
+    set_log_context(world_id="w", step="1")
+    _ai_says(container, "何事？")
+    actor = _ScriptedActor([ActorDialogueTurn(line="大哥留步"), ActorDialogueTurn(line="改日再说", end=True)])
+    executor, env, agents = _setup(container, actor)
+    try:
+        await _converse(executor, env, agents, _talk(HERO, OTHER))
+    finally:
+        clear_log_context()
+
+    lines = [c for c in sink.llm_calls if c.prompt_messages[0]["content"] == _LIVE_TURN_SYSTEM]
+    memories = [c for c in sink.llm_calls if c.extra.get("talk_role")]
+    # Spoken turn by turn only because a side is performed; the line is still the AI side's own.
+    assert lines and all(c.actor and c.agent_id == OTHER for c in lines)
+    assert {c.agent_id for c in memories} == {HERO, OTHER}
+    assert all(not c.actor for c in memories)
+    assert all(c.extra["dialogue"] == [
+        {"speaker": "李世民", "line": "大哥留步"}, {"speaker": "李建成", "line": "何事？"},
+        {"speaker": "李世民", "line": "改日再说"},
+    ] for c in memories)

@@ -5,7 +5,7 @@ Layout::
     {base}/{world_id}/step_{step:06d}.jsonl   one runtime step's records
     {base}/{world_id}/build.jsonl             world-build (step-less) records
 
-Each line is one JSON object tagged ``{"kind": "llm_call" | "step", ...}``.
+Each line is one JSON object tagged ``{"kind": "llm_call" | "step" | "beat", ...}``.
 
 Records are buffered in memory per ``(world_id, segment)`` and written once on
 ``flush`` — under ``max_concurrent_llm`` fan-out, per-call synchronous appends
@@ -28,6 +28,7 @@ from typing import Any, NamedTuple
 from core.context import note_call_adoption
 from core.factory import ComponentKind, ProviderFactory
 from core.interfaces.trace import (
+    BeatTrace,
     LLMCallTrace,
     StepTrace,
     TraceSink,
@@ -107,14 +108,19 @@ class BufferedJsonlTraceSink(TraceSink):
         key = (trace.world_id, self._segment_for_step(trace.step))
         self._buffer.setdefault(key, []).append(trace)
 
+    def record_beat(self, trace: BeatTrace) -> None:
+        key = (trace.world_id, self._segment_for_step(trace.step))
+        self._buffer.setdefault(key, []).append(trace)
+
     def _recorded(
-        self, world_id: str, step: int, agent_id: str, stage: str
-    ) -> list[LLMCallTrace]:
-        """Matching calls still buffered and not yet flushed. Mutating them gets the change
-        written with the step (as with parse_ok). Flushed calls are never rewritten: that would
-        mean rewriting the whole segment file."""
+        self, world_id: str, step: int, agent_id: str, stage: str,
+        *, beats: bool = False,
+    ) -> list[Any]:
+        """Matching calls (and with *beats*, the stage's own beat) still buffered and not yet flushed. Mutating
+        them gets the change written with the step (as with parse_ok). Flushed records are never
+        rewritten: that would mean rewriting the whole segment file."""
         return [obj for obj in self._buffer.get((world_id, self._segment_for_step(step)), [])
-                if isinstance(obj, LLMCallTrace)
+                if (isinstance(obj, LLMCallTrace) or (beats and isinstance(obj, BeatTrace) and obj.beat_kind == stage))
                 and obj.agent_id == agent_id and obj.stage == stage]
 
     def mark_call_unadopted(
@@ -126,8 +132,8 @@ class BufferedJsonlTraceSink(TraceSink):
     def annotate_recorded_call(
         self, world_id: str, *, step: int, agent_id: str, stage: str, **fields: Any
     ) -> None:
-        for call in self._recorded(world_id, step, agent_id, stage):
-            call.extra.update(fields)
+        for record in self._recorded(world_id, step, agent_id, stage, beats=True):
+            record.extra.update(fields)
 
     def _to_record(self, obj: Any) -> dict[str, Any]:
         """Serialize a buffered trace object to its jsonl record dict (at flush time,
@@ -141,6 +147,8 @@ class BufferedJsonlTraceSink(TraceSink):
                 ]
                 record["response_content"] = self._truncate(obj.response_content)
             return record
+        if isinstance(obj, BeatTrace):
+            return {"kind": "beat", **dataclasses.asdict(obj)}
         return {"kind": "step", **dataclasses.asdict(obj)}
 
     async def flush(self, world_id: str, step: int | None = None) -> None:
@@ -298,6 +306,18 @@ class BufferedJsonlTraceSink(TraceSink):
         if agent_id is not None:
             calls = [c for c in calls if c.agent_id == agent_id]
         return calls
+
+    def read_beats(
+        self, world_id: str, *, step: int | None = None, agent_id: str | None = None,
+    ) -> list[BeatTrace]:
+        fields = {f.name for f in dataclasses.fields(BeatTrace)}
+        beats = [
+            BeatTrace(**{k: v for k, v in r.items() if k in fields})
+            for r in self._all_records(world_id)
+            if r.get("kind") == "beat"
+        ]
+        return [b for b in beats
+                if (step is None or b.step == step) and (agent_id is None or b.agent_id == agent_id)]
 
     def read_step_summaries(self, world_id: str) -> list[StepTrace]:
         fields = {f.name for f in dataclasses.fields(StepTrace)}

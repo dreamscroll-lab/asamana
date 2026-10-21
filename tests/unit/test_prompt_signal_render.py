@@ -78,9 +78,15 @@ def test_render_memory_recency_never_gets_younger_as_time_passes() -> None:
     assert seen == sorted(seen)
 
 
-def test_render_memory_insight_and_summary_have_no_recency_prefix() -> None:
-    """insight (cross-time belief) / summary (time span) get no time prefix; selective by kind."""
-    assert render_memory(_mem(content="他在躲我", kind="insight"), now_step=99, seconds_per_step=3600) == "他在躲我"
+def test_render_memory_dates_an_insight_by_when_it_was_drawn() -> None:
+    """An insight is a memory like an event and gets the same recency prefix."""
+    assert render_memory(
+        _mem(content="他在躲我", kind="insight", created_step=96), now_step=99, seconds_per_step=3600,
+    ) == "（几小时前）他在躲我"
+
+
+def test_render_memory_summary_has_no_recency_prefix() -> None:
+    """A summary covers a period, so no single point in time fits it."""
     assert render_memory(_mem(content="那段日子人心惶惶", kind="summary"), now_step=99, seconds_per_step=3600) == "那段日子人心惶惶"
 
 

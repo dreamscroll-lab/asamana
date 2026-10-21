@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Sequence
 
 from agent.memory import MemorySystem
-from agent.memory_types import Memory, MemoryKind
+from agent.memory_types import Memory
+from core.interfaces.memory import MemoryKind
 from agent.personality import PersonalityLayer
 from core.coerce import coerce_float
 from core.context import annotate_active_call, note_active_call_adoption

@@ -120,7 +120,7 @@ class ActorBriefing:
     """What a decision can name: the lists an ``ActorAction`` picks its targets from, as an AI
     character's decision binds against them, by the names the character knows.
 
-    It names the ids in an action summary (``ActorActionSummary``), so the actor can see
+    It names the ids in a decision summary (``ActorDecisionSummary``), so the actor can see
     what the words were bound to before confirming; binding itself checks the character's own
     lists, never this. ``people`` are everyone the character can reach, present or not; ``npcs``
     and ``entities`` are those within reach. The scene itself is the map's to show.
@@ -292,10 +292,12 @@ class ActorIntent:
 
 
 @dataclass(frozen=True)
-class ActorActionSummary:
-    """A public action summary, without executor slots or executable authority."""
+class ActorDecisionSummary:
+    """A public decision summary, without executor slots or executable authority: an action, or
+    ``operation`` ``IDLE_OPERATION`` for doing nothing this step (no description, target or
+    duration)."""
 
-    action_summary_id: str
+    decision_summary_id: str
     description: str
     operation: str
     target: Ref | None
@@ -303,11 +305,15 @@ class ActorActionSummary:
     parameters: dict[str, str | bool | list[str]] = field(default_factory=dict)
 
 
+# The ``operation`` of a decision summary that does nothing this step.
+IDLE_OPERATION = "idle"
+
+
 @dataclass(frozen=True)
 class ActorIntentResult:
     status: Literal["submitted", "needs_confirmation", "rejected"]
     reason: str | None = None
-    action_summary: ActorActionSummary | None = None
+    decision_summary: ActorDecisionSummary | None = None
 
 
 @dataclass(frozen=True)
@@ -327,10 +333,10 @@ class ActorOperations:
 
 @dataclass(frozen=True)
 class ActorConfirmation:
-    action_summary_id: str
+    decision_summary_id: str
 
     def __post_init__(self) -> None:
-        require_text(self.action_summary_id, "action_summary_id")
+        require_text(self.decision_summary_id, "decision_summary_id")
 
 
 @dataclass(frozen=True)
@@ -544,7 +550,7 @@ class ActorIdleAnswer:
 ActorAnswer = ActorDecision | ActorInterruptAnswer | ActorInvitationAnswer | ActorDialogueTurn
 
 
-# Client submissions and public records; decisions are referenced by action summary id.
+# Client submissions and public records; decisions are referenced by decision summary id.
 ActorPublicAnswer = ActorConfirmation | ActorIdleAnswer | ActorInterruptAnswer | ActorInvitationAnswer | ActorDialogueTurn
 
 
@@ -609,14 +615,17 @@ class AskedEntry:
 
 @dataclass(frozen=True)
 class SaidEntry:
-    """An intention submitted at a DECIDE turn, its action summary or rejection, and the original
-    request. Explicit operations retain their selected target and parameters even when rejected."""
+    """An intention submitted at a DECIDE turn, its decision summary or rejection, and the original
+    request. Explicit operations retain their selected target and parameters even when rejected.
+    ``reading`` is the reading's reasoning when it found the words unclear: where it got stuck,
+    for the words to be put another way. A summary needs none: it shows what was read."""
 
     step: int
     turn_id: str
     words: str
-    action_summary: ActorActionSummary | None = None
+    decision_summary: ActorDecisionSummary | None = None
     reason: str | None = None
+    reading: str = ""
     intent: ActorIntent | None = None
     time_label: str = ""
     kind: EntryKind = field(default=EntryKind.SAID, init=False)

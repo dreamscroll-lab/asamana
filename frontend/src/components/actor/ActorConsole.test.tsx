@@ -26,7 +26,7 @@ const turn: ActorTurn = {
 };
 const rejected: ActorEntry[] = [
   { kind: "asked", entry_id: "asked", time_label: "", step: 1, turn },
-  { kind: "said", entry_id: "said", time_label: "", step: 1, turn_id: "t", words: "唉", action_summary: null, reason: "unreadable", intent: null },
+  { kind: "said", entry_id: "said", time_label: "", step: 1, turn_id: "t", words: "唉", decision_summary: null, reason: "unreadable", reading: "", intent: null },
 ];
 
 type Element = ReactElement<{ children?: ReactNode }>;
@@ -49,6 +49,19 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("a reading of words awaiting confirmation", () => {
+  it("shows no duration for doing nothing", () => {
+    const markup = renderToStaticMarkup(consoleTree([
+      { kind: "asked", entry_id: "asked", time_label: "", step: 1, turn },
+      { kind: "said", entry_id: "said", time_label: "", step: 1, turn_id: "t", words: "先等等看", reason: null, reading: "", intent: null,
+        decision_summary: { decision_summary_id: "d", description: "", operation: "idle", target: null,
+          estimated_duration_seconds: 0, parameters: {} } },
+    ]));
+    expect(markup).toContain("⏸ 这次先不动");
+    expect(markup).not.toContain("预计耗时");
+  });
+});
+
 describe("actor intent rejection feedback", () => {
   it("emphasizes the recorded rejection once in the thread", () => {
     const markup = renderToStaticMarkup(consoleTree(rejected));
@@ -56,8 +69,14 @@ describe("actor intent rejection feedback", () => {
     expect(markup).toContain('role="alert"');
     expect(markup).toContain("border-rose-400/30");
   });
+  it("shows where the reading got stuck under the rejection", () => {
+    const [asked, said] = rejected;
+    const markup = renderToStaticMarkup(consoleTree([asked, { ...said, reading: "只是一声叹息，没说要做什么" } as ActorEntry]));
+    expect(markup).toContain("没读懂这句话，换个说法试试。");
+    expect(markup).toContain("只是一声叹息，没说要做什么");
+  });
   it.each(["unreadable", "stale_intent"])("only gives unrecorded %s rejections an immediate notice", async (reason) => {
-    vi.spyOn(api, "actorIntent").mockResolvedValue({ status: "rejected", reason, action_summary: null });
+    vi.spyOn(api, "actorIntent").mockResolvedValue({ status: "rejected", reason, decision_summary: null });
     const tree = consoleTree();
     const input = elements(tree).find((element) => element.type === "textarea") as ReactElement<TextareaHTMLAttributes<HTMLTextAreaElement>>;
     input.props.onKeyDown!({ key: "Enter", shiftKey: false, nativeEvent: { isComposing: false }, preventDefault: vi.fn() } as unknown as Parameters<NonNullable<typeof input.props.onKeyDown>>[0]);

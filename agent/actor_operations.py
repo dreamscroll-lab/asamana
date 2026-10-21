@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, fields
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from core.interfaces.action import ActionType, Ref
 from core.action_duration import action_duration_steps, travel_duration_steps
 from core.prompts import person_referent
 from core.interfaces.actor import (
-    ActorAction, ActorAnswerRejected, ActorIntent, ActorOperation, ActorOperationCapability,
-    ActorOperations, ActorActionSummary,
+    IDLE_OPERATION, ActorAction, ActorAnswerRejected, ActorDecision, ActorDecisionSummary, ActorIntent,
+    ActorOperation, ActorOperationCapability, ActorOperations,
 )
 
 if TYPE_CHECKING:
@@ -72,6 +72,58 @@ def _target_name(target: Ref, packet: "PerceptionPacket") -> str:
             if entity.entity_id == target.id and entity.entity_type == target.kind:
                 return entity.name or "某物"
     raise ActorAnswerRejected("target_not_perceived")
+
+
+# ActorAction's target fields → the decision output slot each fills, so a review reads an
+# actor's decision in the same slots as an AI character's (agent/decision.py's output schema).
+_BEAT_TARGET_SLOTS: tuple[tuple[str, str, str], ...] = (
+    ("person_ids", "person_indices", "person"),
+    ("destination_id", "destination_index", "place"),
+    ("physical_person_id", "physical_person_index", "person"),
+    ("physical_npc_id", "physical_npc_index", "npc"),
+    ("physical_entity_id", "physical_entity_index", "entity"),
+    ("physical_recipient_id", "physical_recipient_index", "person"),
+    ("move_carry_ids", "move_carry_indices", "person"),
+    ("errand_npc_id", "errand_npc_index", "npc"),
+    ("errand_destination_id", "errand_destination_index", "place"),
+    ("errand_item_id", "errand_item_index", "entity"),
+    ("errand_recipient_id", "errand_recipient_index", "person"),
+)
+
+
+def actor_decision_beat(decision: ActorDecision, packet: "PerceptionPacket") -> dict[str, Any]:
+    """The decision as a trace beat records it: the act, with each target slot holding names
+    (as the character knows them) where an AI decision's holds indices. Code-layer only."""
+    from agent.decision import candidate_lists
+
+    action = decision.action
+    if action is None:
+        return {"idle": True}
+    spatial = packet.spatial
+    names: dict[str, dict[str, str]] = {
+        "person": {aid: who.name for aid, who in candidate_lists(packet).roster},
+        "place": {rl.location_id: rl.view.name or "某处" for rl in spatial.reachable_locations},
+        "npc": {nid: npc.identity.name or "某人" for nid, npc in spatial.visible_npcs.items()},
+        "entity": {e.entity_id: e.name or "某物" for e in spatial.visible_entities},
+    }
+    fallback = {"person": "某人", "place": "某处", "npc": "某人", "entity": "某物"}
+    targets: dict[str, list[str]] = {}
+    for field_name, slot, kind in _BEAT_TARGET_SLOTS:
+        value = getattr(action, field_name)
+        ids = list(value) if isinstance(value, tuple) else ([value] if value else [])
+        if ids:
+            targets[slot] = [names[kind].get(i, fallback[kind]) for i in ids]
+    beat: dict[str, Any] = {
+        "action_type": action.action_type.value.upper(),
+        "action_description": action.action_description,
+        "expected_outcome": action.expected_outcome,
+        "targets": targets,
+    }
+    if words := action.message_content or action.errand_message:
+        beat["message_content"] = words
+    if action.item_name:
+        beat["item_name"] = action.item_name
+    return beat
 
 
 def actor_operations(turn_id: str, target: Ref, packet: "PerceptionPacket") -> ActorOperations:
@@ -154,11 +206,12 @@ def build_actor_operation(intent: ActorIntent, packet: "PerceptionPacket") -> Ac
 
 def check_actor_operation(action: ActorAction, base: ActorAction, intent: ActorIntent) -> None:
     """Protect fixed operation parameters after unrelated model fields are removed."""
-    mutable = {"action_description", "estimated_steps"}
+    mutable = {"action_description", "estimated_steps", "expected_outcome", "urgency"}
     if intent.operation is ActorOperation.MOVE:
         mutable.add("move_carry_ids")
     elif intent.operation is ActorOperation.TALK:
-        mutable.update(("person_ids", "message_content"))
+        # No operation parameter states a topic: the description is the only place one can come from.
+        mutable.update(("person_ids", "message_content", "talk_topic"))
         if not action.person_ids or action.person_ids[0] != base.person_ids[0]:
             raise ActorAnswerRejected("operation_constraint_conflict")
     elif base.action_type is ActionType.PHYSICAL:
@@ -181,10 +234,13 @@ def check_actor_operation(action: ActorAction, base: ActorAction, intent: ActorI
             raise ActorAnswerRejected("operation_constraint_conflict")
 
 
-def build_actor_action_summary(
-    action: ActorAction, packet: "PerceptionPacket", *, seconds_per_step: int,
+def build_actor_decision_summary(
+    decision: ActorDecision, packet: "PerceptionPacket", *, seconds_per_step: int,
     intent: ActorIntent | None = None,
-) -> ActorActionSummary:
+) -> ActorDecisionSummary:
+    action = decision.action
+    if action is None:
+        return ActorDecisionSummary(uuid.uuid4().hex, "", IDLE_OPERATION, None, 0)
     target: Ref | None = None
     params: dict[str, str | bool | list[str]] = {}
     if action.destination_id:
@@ -216,9 +272,12 @@ def build_actor_action_summary(
         params["recipient_id"] = action.physical_recipient_id
     if action.talk_topic:
         params["talk_topic"] = action.talk_topic
+    if action.expected_outcome:
+        params["expected_outcome"] = action.expected_outcome
     if action.action_type is ActionType.SEND_MESSAGE:
         params["message"] = action.message_content
         params["announce"] = action.message_announce
+        params["urgency"] = action.urgency.value
         if action.message_announce and not action.person_ids:
             target = Ref.place(packet.spatial.location_id)
     if intent is not None and intent.target == Ref.agent(packet.agent_id):
@@ -230,7 +289,7 @@ def build_actor_action_summary(
         steps = travel_duration_steps(destination.travel_seconds, seconds_per_step)
     else:
         steps = action_duration_steps(action.action_type, action.estimated_steps, live_talk=True)
-    return ActorActionSummary(
+    return ActorDecisionSummary(
         uuid.uuid4().hex, action.action_description, operation, target,
         steps * seconds_per_step, params,
     )

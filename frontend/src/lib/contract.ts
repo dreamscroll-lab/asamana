@@ -17,6 +17,10 @@ export const MAX_CAST_SIZE = 15;
 export const MIN_HOURS_PER_STEP = 1;
 export const MAX_HOURS_PER_STEP = 24;
 
+// The operation of an actor's decision summary that does nothing this step. Mirrors
+// core.interfaces.actor.IDLE_OPERATION.
+export const IDLE_OPERATION = "idle";
+
 export const ActionType = {
   talk:         "talk",
   move:         "move",

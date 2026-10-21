@@ -19,7 +19,7 @@ import { AFFECTION_RANGE, EMOTION_INTENSITY_RANGE, EMOTION_VALENCE_RANGE, TRUST_
 import { useVocabulary } from "../../lib/vocabulary";
 import type { ActorAmendments, ActorMind, BriefRelation, EmotionAmendment, GoalAmendment, VocabularyEntry } from "../../types";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
-import { reasonText } from "./actionSummary";
+import { reasonText } from "./decisionSummary";
 import GoalPanel from "./GoalPanel";
 import { goalRows, goalsChanged, shortTermAmendments } from "./goals";
 

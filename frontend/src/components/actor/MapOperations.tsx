@@ -4,7 +4,7 @@ import { useCast } from "../../lib/cast";
 import { api } from "../../api/client";
 import type { ActorOperations, ActorOperationParameters, ActorTurn, MapOperationTarget } from "../../types";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
-import { targetName, reasonText } from "./actionSummary";
+import { targetName, reasonText } from "./decisionSummary";
 import { missingParameters, OPERATION_LABEL } from "./shortcuts";
 import { useActorSubmission } from "./submission";
 import { isSendKey } from "../SendButton";

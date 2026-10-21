@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, List
 
 from agent.relation import format_relation_block, parse_relation_direction, relation_legend
-from core.context import GivenFacts, annotate_call, note_active_call_adoption, observe_stage
+from core.context import GivenFacts, annotate_call, note_active_call_adoption, observe_actor, observe_stage
 from core.interfaces.action import (
     ActionResult, ActionTarget, ActionType, AgentAction, DialogueTurn, Observed, Ref, TargetAgentEffect,
 )
@@ -45,6 +45,7 @@ from engine.scene import SceneVisibility, assemble_scene_context, observe_locati
 
 if TYPE_CHECKING:
     from agent.agent import Agent
+    from agent.memory_types import Memory
     from engine.environment import EnvironmentSystem
     from engine.message_system import MessageSystem
 
@@ -71,6 +72,19 @@ _MAX_DIALOGUE_TURNS: int = 8
 # in its prompt: a count of turns to spare reads as room to keep talking. The actor is shown it.
 _LIVE_MAX_TURNS: int = 20
 _LIVE_ACTOR_TURN_CHARS: int = 100
+
+# What an AI side recalls as a live conversation goes on, by the other side's last line: the
+# context gathered up front can't foresee what the other brings up. Recalled every turn, not every
+# few: a turn that misses the new subject has the AI deny knowing it, and that denial is remembered.
+# Lines shorter than _LIVE_RECALL_MIN_CHARS (assent, greetings) carry no subject.
+#
+# The floor is above RETRIEVAL_SCORE_FLOOR on purpose. That one only filters junk, and raising it
+# loses true answers; here a missed recall costs nothing, while a loose one puts an unrelated
+# memory in the speaker's mouth.
+_LIVE_RECALL_MIN_CHARS: int = 6
+_LIVE_RECALL_PER_TURN: int = 2
+_LIVE_RECALL_TOTAL: int = 6
+_LIVE_RECALL_SCORE_FLOOR: float = 0.45
 
 _EMPTY_CTX: dict[str, Any] = {"relation": None, "about_other": [], "about_topic": [], "recent": []}
 
@@ -119,6 +133,18 @@ def _present_listeners(
     return present
 
 
+def _topic_query(state: ActionExecutionState, *, is_initiator: bool, live: bool) -> str:
+    """What a side recalls the talk's subject by; empty recalls none.
+
+    The narrator writes both sides and knows both aims, and has no later recall: both sides recall
+    by the purpose, or the addressee can't answer what the talk is about. In a live talk the
+    addressee knows only the topic stated up front: don't recall by the initiator's private purpose,
+    which would have him recall just what the hidden aim needs. With no topic he recalls nothing
+    yet; mid-talk recall follows the other side's lines.
+    """
+    return state.purpose if is_initiator or not live else state.talk_topic
+
+
 def _known_relation_block(rel, *, include_legend: bool = True) -> str:
     """format_relation_block only if there's a real relationship; strangers get '' so none is
     invented."""
@@ -153,7 +179,7 @@ def _format_context(
         if affection is None:
             affection = getattr(rel, "affection_objective", 0.0)
         labels = list(getattr(rel, "labels", []) or [])
-        # The caller adds the legend once for both blocks.
+        # The legend is in each caller's system prompt.
         block = format_relation_block(labels=labels, trust=trust, affection=affection, include_legend=False)
         lines.append(f"- {owner_name}对{other_name}的关系：{block}")
         history = getattr(rel, "history_summary", "") or ""
@@ -223,6 +249,9 @@ _DIALOGUE_SYSTEM: str = f"""\
 - 落笔前先看清【现场】给的当前时间与当前地点，避免在对白里的时间和处所错乱。同时有一点必须要注意时间已经过了并不代表某件之前约定好的事情一定发生，它是否发生需要以给定的上下文为准。
 {CLOSED_WORLD_FACT_RULE}
 
+【说明】
+两人关系各栏的含义：{relation_legend()}
+
 【输出】
 严格输出以下 JSON，不要任何多余内容（speaker 用 1 代表 A、2 代表 B，对应下方【A】【B】两人）。
 三个字段按下面的次序写：先 reason（想清楚这场交谈），再据此写 dialogue，再由 dialogue 推出 observation。
@@ -270,7 +299,7 @@ _LIVE_TURN_SYSTEM: str = f"""\
 
 【怎样算说完】（有一条就算）
 - 我想要的已经得到了，或已经明白得不到。
-- 事情已经说定：对方应承了、告退了，或只回了一句应付的话。
+- 事情已经说定：对方已经答应了、告退了，或只回了一句应付的话，或者对方已经明确主动结束对话了。
 - 再说下去，也不会有什么实质的内容和进展了。
 - 谈崩了，或我此时此刻不想再谈了。
 拿不准时就收场：当面说话本来就短。
@@ -278,11 +307,12 @@ _LIVE_TURN_SYSTEM: str = f"""\
 【约束】
 - 对方已经应承或告辞，我还一句接一句地叮嘱、重复说过的事——这是最该避免的。
 - 我只说我自己知道的事：下面「我知道的」和到现在说过的话里没有的，我就不知道。
-- 对方的话我未必信、未必认账；说法相左时，我照自己认定的来，不替两边调和。
-- 话符合我人设，性格，当前的情绪以及与对方的关系等等。
+- 对方的话我未必信、也未必认同：说法和我知道的相冲突时，结合下面「我知道的」想清楚，不一味肯定，也不一味否定。认不认同、嘴上怎么说，取决于我和他的关系、我知道的和我的处境；嘴上和心里可以不一样。
+- 说法相左时，我照自己认定的来，不替两边调和。
+- 说话符合我人设，性格，当前的情绪以及与对方的关系等等。
 - 只说我这一轮的话：不写动作旁白，不替对方说话。
-- 口语、简练，长短随情境。
-- 提到不在场的人要合乎情理：不能指使不在场的人当场做事。
+- 口语、简练，长短随情境；也可随情境做一些适当的调整。比如闲聊是可以偶尔幽默，说正事时需要正经严肃等等。
+- 提到不在场的人要合乎情理：比如不能指使不在场的人当场做事。
 - 先看清此刻的时间和我所在的地方，别在话里把时间、处所说错。
 {CLOSED_WORLD_FACT_RULE_FIRST_PERSON}
 
@@ -290,8 +320,8 @@ _LIVE_TURN_SYSTEM: str = f"""\
 
 【输出】
 严格输出以下 JSON，不要任何多余内容，三个字段按这个次序写：
-{{"thought": "这场话说完了没有、我此刻在想什么，≤40字", "end": true或false, "line": "我这一轮说出口的话，≤60字"}}
-- thought：先照上面【怎样算说完】判断这场话说完了没有，再想对方刚才那句让我怎么想、我还想要什么。
+{{"thought": "对方那句话的意思、这场话说完了没有、我要怎么回，≤60字", "end": true或false, "line": "我这一轮说出口的话，≤60字"}}
+- thought：先弄清对方那句话的意思，对照我知道的和我的处境；再照上面【怎样算说完】判断这场话说完了没有；没说完，就想好我要怎么回。
 - end：说完了就是 true，这一轮之后我不再说。
 - line：说出口的原话。end 为 true 时是收场的话，可以留空。
 
@@ -479,10 +509,20 @@ class SocialExecutor(ActionExecutor):
         initiator = agents.get(initiator_id)
         target = agents.get(target_id) if target_id else None
 
-        # Three-layer context per participant (relation + memories about other + about topic).
+        # Three-layer context per participant (relation + memories about other + about topic),
+        # the topic recalled by what each side knows of the talk (``_topic_query``). A performed side
+        # recalls nothing: its actor remembers for itself, and a recall would only touch memories
+        # nobody reads.
+        live = bool(state.extra.get("live"))
         initiator_ctx_r, target_ctx_r = await asyncio.gather(
-            self._gather_context(initiator, target_id, target_name, state.purpose, step),
-            self._gather_context(target, initiator_id, initiator_name, state.purpose, step),
+            self._gather_context(
+                None if live and initiator is not None and initiator.is_performed else initiator,
+                target_id, target_name, _topic_query(state, is_initiator=True, live=live), step,
+            ),
+            self._gather_context(
+                None if live and target is not None and target.is_performed else target,
+                initiator_id, initiator_name, _topic_query(state, is_initiator=False, live=live), step,
+            ),
             return_exceptions=True,
         )
         initiator_ctx = dict(_EMPTY_CTX) if isinstance(initiator_ctx_r, BaseException) else initiator_ctx_r
@@ -491,7 +531,7 @@ class SocialExecutor(ActionExecutor):
         dialogue: list[dict] = []
         bystander_view = ""
         if initiator is not None and target is not None:
-            if state.extra.get("live"):
+            if live:
                 dialogue = await self._live_dialogue(
                     sides=(
                         _LiveSide(initiator, initiator_name, initiator_ctx, is_initiator=True),
@@ -547,27 +587,30 @@ class SocialExecutor(ActionExecutor):
                 f"与{initiator_name}就「{state.talk_topic}」谈了一场。" if state.talk_topic
                 else f"与{initiator_name}谈了一场。"
             )
-            summary_i_r, summary_t_r, *listener_facts = await asyncio.gather(
-                self._memory_summary(
-                    agent=initiator, other_id=target_id, other_name=target_name, transcript=transcript,
-                    purpose=state.purpose, fallback_fact=_fb_i, is_initiator=True,
-                    now_step=step, environment=environment, expected_outcome=state.expected_outcome,
-                ),
-                self._memory_summary(
-                    agent=target, other_id=initiator_id, other_name=initiator_name, transcript=transcript,
-                    purpose=state.purpose, talk_topic=state.talk_topic, fallback_fact=_fb_t, is_initiator=False,
-                    now_step=step, environment=environment, expected_outcome=state.expected_outcome,
-                ),
-                *(
-                    self._listener_memory(
-                        agent=agents.get(pid), initiator_id=initiator_id,
-                        target_id=target_id, transcript=transcript, talk_topic=state.talk_topic,
-                        now_step=step, environment=environment,
-                    )
-                    for pid in listener_ids
-                ),
-                return_exceptions=True,
-            )
+            # The transcript as data for review, on every side's record of it: the prompts carry
+            # it only as text.
+            with annotate_call(dialogue=[{"speaker": t["speaker"], "line": t["line"]} for t in dialogue]):
+                summary_i_r, summary_t_r, *listener_facts = await asyncio.gather(
+                    self._memory_summary(
+                        agent=initiator, other_id=target_id, other_name=target_name, transcript=transcript,
+                        purpose=state.purpose, fallback_fact=_fb_i, is_initiator=True,
+                        now_step=step, environment=environment, expected_outcome=state.expected_outcome,
+                    ),
+                    self._memory_summary(
+                        agent=target, other_id=initiator_id, other_name=initiator_name, transcript=transcript,
+                        purpose=state.purpose, talk_topic=state.talk_topic, fallback_fact=_fb_t, is_initiator=False,
+                        now_step=step, environment=environment, expected_outcome=state.expected_outcome,
+                    ),
+                    *(
+                        self._listener_memory(
+                            agent=agents.get(pid), initiator_id=initiator_id,
+                            target_id=target_id, transcript=transcript, talk_topic=state.talk_topic,
+                            now_step=step, environment=environment,
+                        )
+                        for pid in listener_ids
+                    ),
+                    return_exceptions=True,
+                )
             summary_i = summary_i_r if not isinstance(summary_i_r, BaseException) else None
             summary_t = summary_t_r if not isinstance(summary_t_r, BaseException) else None
 
@@ -913,11 +956,11 @@ class SocialExecutor(ActionExecutor):
         agent: "Agent | None",
         other_id: str,
         other_name: str,
-        purpose: str,
+        topic_query: str,
         step: int,
     ) -> dict:
         """Collect relation + memories (about the other agent, the topic, his recent past). Each
-        read failure only empties its own column."""
+        read failure only empties its own column; an empty topic query recalls no topic."""
         if agent is None:
             return dict(_EMPTY_CTX)
 
@@ -948,13 +991,13 @@ class SocialExecutor(ActionExecutor):
         seen: set[str] = {m.id for m in recent}
 
         # exclude_ids inside retrieval, so each column still fills its quota; run in order.
-        # "What I know of him" filters by other_id, then ranks by purpose. Don't fall back to
-        # retrieve(other_name): in a single-theme world that recalls the topic, not the person.
-        # Empty means "I don't know him".
+        # "What I know of him" filters by other_id, then ranks by his name: the whole of him, not
+        # the topic's slice, which the next column holds. Don't retrieve(other_name) unfiltered: in
+        # a single-theme world that recalls the topic, not the person. Empty means "I don't know him".
         about_other: list = []
         try:
             about_other = await agent.memory_system.recall_about_agent(
-                other_id, purpose, current_step=step, top_k=5, exclude_ids=seen,
+                other_id, other_name, current_step=step, top_k=5, exclude_ids=seen,
             )
         except Exception as exc:  # noqa: BLE001 — read failed: drop this column, continue
             logger.warning(
@@ -964,8 +1007,8 @@ class SocialExecutor(ActionExecutor):
         seen |= {m.id for m in about_other}
         about_topic: list = []
         try:
-            about_topic = await agent.memory_system.retrieve(
-                purpose, current_step=step, top_k=5, exclude_ids=seen,
+            about_topic = [] if not topic_query else await agent.memory_system.retrieve(
+                topic_query, current_step=step, top_k=5, exclude_ids=seen,
             )
         except Exception as exc:  # noqa: BLE001 — read failed: drop this column, continue
             logger.warning(
@@ -1011,10 +1054,6 @@ class SocialExecutor(ActionExecutor):
         )
         expected_part = f"\n对话发起者的期望：{expected_outcome}" if expected_outcome else ""
         scene_part = f"\n【现场】\n{scene}" if scene else ""
-        # One legend for both relation blocks, only if either has one.
-        has_relation = bool(initiator_ctx.get("relation") or target_ctx.get("relation"))
-        legend_block = f"关系数值含义：{relation_legend()}\n\n" if has_relation else ""
-
         initiator_condition = condition_line(
             initiator.personality.state.condition, voice=SituationVoice.THIRD,
             now_step=now_step, seconds_per_step=self._seconds_per_step,
@@ -1039,7 +1078,7 @@ class SocialExecutor(ActionExecutor):
         )
         system = _DIALOGUE_SYSTEM
         user = f"""\
-{legend_block}【A：{initiator_name}】
+【A：{initiator_name}】
 {lane_a}
 
 【B：{target_name}】
@@ -1129,6 +1168,8 @@ class SocialExecutor(ActionExecutor):
         performed side as it is spoken.
         """
         dialogue: list[DialogueTurn] = []
+        # Per AI side: what it recalled as the conversation went on (``_recall_mid_talk``).
+        recalled: dict[str, list["Memory"]] = {side.agent.agent_id: [] for side in sides}
         spoken = 0
         while spoken < _LIVE_MAX_TURNS:
             me, other = sides[spoken % 2], sides[1 - spoken % 2]
@@ -1146,10 +1187,12 @@ class SocialExecutor(ActionExecutor):
                 answer = await me.agent.actor_dialogue_turn(step=step, conversation=conversation)
                 line, end = answer.line, answer.end
             else:
+                mine = recalled[me.agent.agent_id]
+                mine.extend(await self._recall_mid_talk(me, dialogue, mine, step))
                 reply = await self._ai_turn(
                     me=me, conversation=conversation, purpose=purpose, talk_topic=talk_topic,
-                    expected_outcome=expected_outcome, environment=environment, agents=agents,
-                    step=step,
+                    expected_outcome=expected_outcome, recalled=mine, environment=environment,
+                    agents=agents, step=step,
                 )
                 line, end = reply if reply is not None else ("", True)
             turn = DialogueTurn(speaker_id=me.agent.agent_id, speaker=me.name, line=line)
@@ -1163,6 +1206,31 @@ class SocialExecutor(ActionExecutor):
                 break
         return [dataclasses.asdict(t) for t in dialogue]
 
+    async def _recall_mid_talk(
+        self, me: "_LiveSide", dialogue: "list[DialogueTurn]", recalled: "list[Memory]", step: int,
+    ) -> "list[Memory]":
+        """What the other side's last line brings back to ``me``, beyond what it already holds.
+        Empty on a read failure (Rule 6), a line too short to carry a subject, or a full quota."""
+        if not dialogue or dialogue[-1].speaker_id == me.agent.agent_id:
+            return []
+        line = dialogue[-1].line
+        room = min(_LIVE_RECALL_PER_TURN, _LIVE_RECALL_TOTAL - len(recalled))
+        if len(line) < _LIVE_RECALL_MIN_CHARS or room <= 0:
+            return []
+        held = {m.id for column in ("about_other", "about_topic", "recent") for m in me.ctx.get(column, [])}
+        held |= {m.id for m in recalled}
+        try:
+            return await me.agent.memory_system.retrieve(
+                line, current_step=step, top_k=room, exclude_ids=held,
+                score_floor=_LIVE_RECALL_SCORE_FLOOR,
+            )
+        except Exception as exc:  # noqa: BLE001 — read failed: recall nothing this turn
+            logger.warning(
+                "talk_live_recall_failed",
+                extra={"agent_id": me.agent.agent_id, "step": step, "error": str(exc)},
+            )
+            return []
+
     async def _ai_turn(
         self,
         *,
@@ -1171,6 +1239,7 @@ class SocialExecutor(ActionExecutor):
         purpose: str,
         talk_topic: str,
         expected_outcome: str,
+        recalled: "list[Memory]",
         environment: "EnvironmentSystem",
         agents: dict[str, "Agent"],
         step: int,
@@ -1197,6 +1266,18 @@ class SocialExecutor(ActionExecutor):
             now_step=step, seconds_per_step=self._seconds_per_step,
             world_start_second_of_day=self._world_start_second_of_day,
         )
+        recalled_lines = [
+            c for c in render_memory_lines(
+                recalled, now_step=step, seconds_per_step=self._seconds_per_step,
+                world_start_second_of_day=self._world_start_second_of_day)
+            if c
+        ]
+        if recalled_lines:
+            known = "\n".join([
+                *([known] if known else []),
+                f"- 话说到这里，我想起的（{MEMORY_ORDER_HINT}）：",
+                *(f"  - {c}" for c in recalled_lines),
+            ])
         known_part = f"\n\n【我知道的】\n{known}" if known else ""
         if me.is_initiator:
             expected_part = f"我原本期望：{expected_outcome}" if expected_outcome else ""
@@ -1232,7 +1313,8 @@ class SocialExecutor(ActionExecutor):
             self._llm.complete_with_retry if agent.is_main_character else self._llm.complete
         )
         try:
-            with observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
+            # Only a conversation with a performed character is spoken turn by turn.
+            with observe_actor(), observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
                 given_facts=facts, action_owner=agent.personality.soul.name,
             ):
                 response = await call(
@@ -1242,9 +1324,9 @@ class SocialExecutor(ActionExecutor):
                         LLMMessage(role="user", content=user),
                     ],
                     temperature=0.8,
-                    # thought ≤40 chars ≈60 + end ≈3 + line ≤60 chars ≈90 + three fields'
-                    # structure ≈15; est. ~170 tok.
-                    max_tokens=output_budget(170),
+                    # thought ≤60 chars ≈90 + end ≈3 + line ≤60 chars ≈90 + three fields'
+                    # structure ≈15; est. ~200 tok.
+                    max_tokens=output_budget(200),
                     json_mode=True,
                 )
             data = extract_json(response.content)

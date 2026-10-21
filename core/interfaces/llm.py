@@ -503,7 +503,7 @@ class LLMRouter:
         Recording must never break the observed call."""
         from datetime import datetime
 
-        from core.context import get_call_annotations, get_log_context, set_active_call
+        from core.context import get_call_annotations, get_log_context, in_actor_call, set_active_call
         from core.interfaces.trace import LLMCallTrace, Stage
 
         try:
@@ -534,6 +534,7 @@ class LLMRouter:
                 error=error,
                 call_id=call_id,
                 extra=get_call_annotations(),
+                actor=in_actor_call(),
             )
             self._trace_sink.record_llm_call(call)  # type: ignore[union-attr]
             # The shared parser fills in this call's parse_ok next.

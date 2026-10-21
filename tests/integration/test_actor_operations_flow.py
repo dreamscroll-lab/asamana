@@ -89,7 +89,7 @@ async def test_explicit_move_executes_without_parsing_and_persists_public_thread
         began = next(entry for entry in thread if entry["kind"] == "began")
         said = next(entry for entry in thread if entry["kind"] == "said")
         seconds_per_step = client.get(base).json()["seconds_per_step"]
-        assert said["action_summary"]["estimated_duration_seconds"] == began["total_steps"] * seconds_per_step
+        assert said["decision_summary"]["estimated_duration_seconds"] == began["total_steps"] * seconds_per_step
         _assert_public(thread)
         stale = client.post(f"{base}/actor/intent", json={
             "turn_id": turn["turn_id"], "operation": "move", "target": target,

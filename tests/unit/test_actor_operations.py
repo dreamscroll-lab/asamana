@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from agent.actor_operations import actor_operations, build_actor_action_summary, build_actor_operation, requires_actor_interpretation
+from agent.actor_operations import actor_operations, build_actor_decision_summary, build_actor_operation, requires_actor_interpretation
 from agent.decision import DecisionEngine
+from agent.personality import ActionStatus
 from core.interfaces.action import ActionType, Ref
 from core.interfaces.actor import (
     ActorAction, ActorAnswerRejected, ActorConfirmation, ActorDecision, ActorIntent, ActorIdleAnswer,
@@ -70,14 +70,10 @@ async def test_description_only_errand_binds_parsed_destination(container, desti
     assert base.errand_npc_id == "runner" and base.errand_destination_id is None
     provider = container.llm_router.get(LLMScene.ACTOR_INTENT)
     provider.fixed_response = json.dumps({
-        "decision": "act", "operation": "errand", "operation_consistent": True,
-        "action_description": "我让信使去门口看看", "errand_destination_index": destination_index,
+        "decision": "act", "action_description": "我让信使去门口看看", "errand_destination_index": destination_index,
     })
     engine = DecisionEngine(container.llm_router)
-    system, _user, _fixed = engine._build_operation_interpret_prompt(intent.description, _make_personality(), packet, intent, base)
-    output = system.split("【输出】", 1)[1]
-    assert '"errand_destination_index"' in output and '"errand_npc_index"' not in output
-    decision = await engine.interpret_actor_decision(intent.description, personality=_make_personality(), packet=packet, intent=intent, base=base)
+    decision, _reason = await engine.interpret_actor_decision(intent.description, personality=_make_personality(), packet=packet, intent=intent, base=base)
     if reason is not None:
         with pytest.raises(ActorAnswerRejected, match=reason):
             engine.bind_actor_action(decision.action, personality=_make_personality(), packet=packet)
@@ -104,8 +100,7 @@ async def test_description_only_errand_reaches_confirmation_after_full_binding(c
     assert turn.briefing.places
     provider = container.llm_router.get(LLMScene.ACTOR_INTENT)
     provider.fixed_response = json.dumps({
-        "decision": "act", "operation": "errand", "operation_consistent": True,
-        "action_description": "我请他去看看后回来", "errand_destination_index": destination_index,
+        "decision": "act", "action_description": "我请他去看看后回来", "errand_destination_index": destination_index,
     })
     result = await runtime.actor_intent(ActorIntent(
         turn.turn_id, operation=ActorOperation.ERRAND, target=Ref.npc(npc_id),
@@ -117,9 +112,9 @@ async def test_description_only_errand_reaches_confirmation_after_full_binding(c
         runtime.answer_actor(ActorIdleAnswer())
     else:
         assert result.status == "needs_confirmation" and not task.done()
-        assert result.action_summary.target == Ref.npc(npc_id)
-        assert result.action_summary.parameters["destination_id"] == turn.briefing.places[0].location_id
-        runtime.answer_actor(ActorConfirmation(result.action_summary.action_summary_id))
+        assert result.decision_summary.target == Ref.npc(npc_id)
+        assert result.decision_summary.parameters["destination_id"] == turn.briefing.places[0].location_id
+        runtime.answer_actor(ActorConfirmation(result.decision_summary.decision_summary_id))
     await task
     thread = (await container.snapshot.load(world_id, 1)).actor_thread
     said = next(entry for entry in thread if entry["kind"] == "said")
@@ -134,7 +129,7 @@ async def test_description_only_errand_reaches_confirmation_after_full_binding(c
 @pytest.mark.parametrize("seconds_per_step", [1800, 7200])
 def test_summary_duration_uses_execution_authority(action_type: ActionType, expected_steps: int, seconds_per_step: int) -> None:
     action = ActorAction(action_type, "我按计划行动", estimated_steps=7)
-    summary = build_actor_action_summary(action, _packet(), seconds_per_step=seconds_per_step)
+    summary = build_actor_decision_summary(ActorDecision(action=action), _packet(), seconds_per_step=seconds_per_step)
     assert summary.estimated_duration_seconds == expected_steps * seconds_per_step
 
 
@@ -143,7 +138,7 @@ def test_move_summary_duration_uses_scheduled_travel_time(travel_seconds: int, e
     packet = _packet()
     packet.spatial.reachable_locations[0] = replace(packet.spatial.reachable_locations[0], travel_seconds=travel_seconds)
     action = ActorAction(ActionType.MOVE, "我前往门口", estimated_steps=99, destination_id="xuanwu_gate")
-    summary = build_actor_action_summary(action, packet, seconds_per_step=7200)
+    summary = build_actor_decision_summary(ActorDecision(action=action), packet, seconds_per_step=7200)
     assert summary.estimated_duration_seconds == expected_steps * 7200
 
 
@@ -198,9 +193,9 @@ def test_explicit_operations_bind_through_existing_action_rules(container, opera
     bound = DecisionEngine(container.llm_router).bind_actor_action(action, personality=_make_personality(), packet=packet)
     assert bound.action_type is expected
     assert bound.target.acts_on == [target]
-    action_summary = build_actor_action_summary(action, packet, seconds_per_step=3600, intent=intent)
-    assert action_summary.operation == operation and action_summary.target == target
-    assert "action" not in vars(action_summary)
+    decision_summary = build_actor_decision_summary(ActorDecision(action=action), packet, seconds_per_step=3600, intent=intent)
+    assert decision_summary.operation == operation and decision_summary.target == target
+    assert "action" not in vars(decision_summary)
 
 
 def test_broadcast_and_errand_parameters_are_authoritative(container) -> None:
@@ -230,8 +225,7 @@ async def test_errand_address_conflicts_are_refused_by_backend(container) -> Non
     intent = _intent("errand", Ref.npc("runner"), description="交代清楚", **parameters)
     base = build_actor_operation(intent, packet)
     container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps({
-        "decision": "act", "operation": "errand", "operation_consistent": True,
-        "action_description": "我让他传话", "errand_recipient_index": 1,
+        "decision": "act", "action_description": "我让他传话", "errand_recipient_index": 1,
     })
     with pytest.raises(ActorAnswerRejected, match="errand_address_conflict"):
         await DecisionEngine(container.llm_router).interpret_actor_decision(
@@ -276,9 +270,9 @@ def test_intent_description_matches_capability_requirements() -> None:
 
 
 def test_confirmation_decoder_never_accepts_execution_slots() -> None:
-    assert _decode_answer({"action_summary_id": "r"}) == ActorConfirmation("r")
+    assert _decode_answer({"decision_summary_id": "r"}) == ActorConfirmation("r")
     assert _decode_answer({"idle": True}) == ActorIdleAnswer()
-    for payload in ({"action_summary_id": 3}, {"action_summary_id": " "}, {"action_summary_id": "r", "idle": True},
+    for payload in ({"decision_summary_id": 3}, {"decision_summary_id": " "}, {"decision_summary_id": "r", "idle": True},
                     {"reading_id": "r"}, {"action_id": "r"},
                     {"idle": False}, {"idle": 1}, {"idle": "true"}, {"idle": True, "extra": True},
                     {"action": {"action_type": "rest", "action_description": "休息"}}):
@@ -297,14 +291,14 @@ def test_interrupt_answer_decodes_optional_thought() -> None:
 
 def test_move_summary_preserves_the_carried_people_concept() -> None:
     action = ActorAction(ActionType.MOVE, "我带他离开", destination_id="xuanwu_gate", move_carry_ids=(HERE,))
-    summary = build_actor_action_summary(action, _packet(), seconds_per_step=3600)
+    summary = build_actor_decision_summary(ActorDecision(action=action), _packet(), seconds_per_step=3600)
     assert summary.target == Ref.place("xuanwu_gate")
     assert summary.parameters == {"move_carry_ids": [HERE]}
 
 
 def test_summary_preserves_the_item_name_concept() -> None:
     action = ActorAction(ActionType.PHYSICAL, "我检查门闩", item_name="门闩")
-    summary = build_actor_action_summary(action, _packet(), seconds_per_step=3600)
+    summary = build_actor_decision_summary(ActorDecision(action=action), _packet(), seconds_per_step=3600)
     assert summary.target is None
     assert summary.parameters == {"item_name": "门闩"}
 
@@ -315,13 +309,24 @@ def test_idle_answer_requires_explicit_true(idle) -> None:
         ActorIdleAnswer(idle=idle)
 
 
-@pytest.mark.parametrize("operation,excluded,retained", [
-    ("move", {"selected_index", "destination_index"}, {"move_carry_indices"}),
-    ("talk", {"selected_index"}, {"person_indices"}),
-    ("errand", {"selected_index", "errand_npc_index", "errand_destination_index", "errand_message"},
-     {"errand_recipient_index", "errand_item_index", "errand_announce"}),
+def _fixed_part(engine: DecisionEngine, intent, packet) -> tuple[str, dict]:
+    """The 【已定下的】 section of the reading prompt for ``intent``, and the fixed slots."""
+    from agent.decision import _fixed_intent_payload
+
+    base = build_actor_operation(intent, packet)
+    fixed = _fixed_intent_payload(packet, intent, base)
+    user = engine._intent_user_prompt(  # noqa: SLF001
+        intent.description, _make_personality(), packet, recent=(), recalled=(), fixed=(base, fixed),
+    )
+    return user[user.index("【已定下的】"):user.index("【意图】")], fixed
+
+
+@pytest.mark.parametrize("operation,fixed_keys", [
+    ("move", {"selected_index", "destination_index"}),
+    ("talk", {"selected_index", "person_indices"}),
+    ("errand", {"selected_index", "errand_npc_index", "errand_destination_index", "errand_message"}),
 ])
-def test_operation_prompt_defines_only_mutable_output_fields(container, operation, excluded, retained) -> None:
+def test_the_fixed_part_of_an_operation_is_shown_as_slots_the_reading_keeps(container, operation, fixed_keys) -> None:
     packet = _packet()
     packet.spatial.visible_npcs["runner"] = PerceivedNpc(NpcIdentity("信使", "男"))
     targets = {"move": Ref.place("xuanwu_gate"),
@@ -330,20 +335,14 @@ def test_operation_prompt_defines_only_mutable_output_fields(container, operatio
     if operation == "errand":
         parameters["destination_id"] = "xuanwu_gate"
     intent = _intent(operation, targets[operation], description="平静地做", **parameters)
-    engine = DecisionEngine(container.llm_router)
-    system, user, fixed = engine._build_operation_interpret_prompt(
-        intent.description, _make_personality(), packet, intent, build_actor_operation(intent, packet),
-    )
-    output = system.split("【输出】", 1)[1]
-    fields = set(re.findall(r'^\s*"([^"]+)":', output, re.MULTILINE))
-    assert not fields & excluded
-    assert retained | {"operation", "operation_consistent", "reason", "decision", "action_description", "estimated_steps"} <= fields
-    assert '"operation": ' + json.dumps(operation) in output
-    assert "从【行动类型】里挑恰好一个" not in system
-    assert "保持固定操作的行动类型、对象和已填写参数" in system
-    assert "【指令】\n平静地做" in user
-    assert excluded <= fixed.keys()
-    assert system.index("【固定操作】") < system.index("【任务】") < system.index("【约束】") < system.index("【输出】")
+
+    section, fixed = _fixed_part(DecisionEngine(container.llm_router), intent, packet)
+
+    shown = json.loads(section.split("已定下的栏（序号沿用上面的名单）：", 1)[1].splitlines()[0])
+    assert fixed_keys <= shown.keys()
+    # What the reading fills is never shown as fixed.
+    assert not {"action_description", "estimated_steps", "expected_outcome", "urgency"} & shown.keys()
+    assert fixed_keys <= fixed.keys()
 
 
 def test_operation_prompt_preserves_explicit_false_announce(container) -> None:
@@ -351,12 +350,9 @@ def test_operation_prompt_preserves_explicit_false_announce(container) -> None:
     packet.spatial.visible_npcs["runner"] = PerceivedNpc(NpcIdentity("信使", "男"))
     intent = _intent("errand", Ref.npc("runner"), description="顺便看看那边的情况",
                      destination_id="xuanwu_gate", announce=False)
-    system, _user, fixed = DecisionEngine(container.llm_router)._build_operation_interpret_prompt(
-        intent.description, _make_personality(), packet, intent, build_actor_operation(intent, packet),
-    )
+    section, fixed = _fixed_part(DecisionEngine(container.llm_router), intent, packet)
     assert fixed["errand_announce"] is False
-    assert '"errand_announce": false' in system.split("【任务】", 1)[0]
-    assert '"errand_announce"' not in system.split("【输出】", 1)[1]
+    assert '"errand_announce": false' in section
 
 
 @pytest.mark.asyncio
@@ -374,25 +370,21 @@ async def test_interpretation_paths_share_failure_handling(container, constraine
     result = await DecisionEngine(container.llm_router).interpret_actor_decision(
         "平静地说", personality=_make_personality(), packet=packet, intent=intent, base=base,
     )
-    assert result is None
+    # Only an unclear reading has reasoning to keep; a failed call or an unbuildable act has none.
+    assert result == ((None, "") if response == '{"decision": "unclear"}' else None)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["operation", "consistency", "type", "target", "message"])
+@pytest.mark.parametrize("change", ["type", "target", "message"])
 async def test_constrained_interpretation_cannot_change_authority(container, change: str) -> None:
     packet = _packet()
     packet.spatial.visible_npcs["runner"] = PerceivedNpc(NpcIdentity("信使", "男"))
     intent = _intent("errand", Ref.npc("runner"), destination_id="xuanwu_gate",
                      message="请来这里", recipient_id=AWAY, description="说得温和")
     base = build_actor_operation(intent, packet)
-    payload = {"decision": "act", "operation": "errand", "operation_consistent": True,
-               "selected_index": _index_of(ActionType.ERRAND),
+    payload = {"decision": "act", "selected_index": _index_of(ActionType.ERRAND),
                "errand_message": "请来这里", "action_description": "我请信使温和地传话"}
-    if change == "operation":
-        payload["operation"] = "move"
-    elif change == "consistency":
-        payload["operation_consistent"] = False
-    elif change == "type":
+    if change == "type":
         payload["selected_index"] = _index_of(ActionType.MOVE)
     elif change == "target":
         payload["errand_recipient_index"] = 1
@@ -424,18 +416,15 @@ async def test_selected_operation_ignores_unrelated_output_fields(container, ope
     intent = _intent(operation, target, description="具体行动", **parameters)
     base = build_actor_operation(intent, packet)
     container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps({
-        "decision": "act", "operation": operation, "operation_consistent": True,
-        "action_description": "我照此行动", "unknown_field": {"noise": [1]},
-        "inner_monologue": "不属于意图解读的独白", "expected_outcome": "不属于意图解读的预期", **extra,
+        "decision": "act", "action_description": "我照此行动", "unknown_field": {"noise": [1]},
+        "inner_monologue": "不属于意图解读的独白", "expected_outcome": "让事情有个着落", **extra,
     })
     engine = DecisionEngine(container.llm_router)
-    decision = await engine.interpret_actor_decision(intent.description, personality=_make_personality(), packet=packet, intent=intent, base=base)
-    assert decision.action == replace(base, action_description="我照此行动")
+    decision, _reason = await engine.interpret_actor_decision(intent.description, personality=_make_personality(), packet=packet, intent=intent, base=base)
+    # The reading fills the decision around the fixed part: its description and expectation.
+    assert decision.action == replace(base, action_description="我照此行动", expected_outcome="让事情有个着落")
     bound = engine.bind_actor_action(decision.action, personality=_make_personality(), packet=packet)
     assert bound.target == engine.bind_actor_action(base, personality=_make_personality(), packet=packet).target
-    system, _user, _fixed = engine._build_operation_interpret_prompt(intent.description, _make_personality(), packet, intent, base)
-    output = system.split("【输出】", 1)[1]
-    assert not set(extra) & set(re.findall(r'^\s*"([^"]+)":', output, re.MULTILINE))
 
 
 @pytest.mark.asyncio
@@ -448,8 +437,7 @@ async def test_selected_physical_operation_rejects_rewritten_targets(container, 
     intent = _intent("physical", Ref.agent(HERE), description="搀扶他坐下")
     base = build_actor_operation(intent, packet)
     container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps({
-        "decision": "act", "operation": "physical", "operation_consistent": True,
-        "action_description": "我扶他坐下", target_field: target_index,
+        "decision": "act", "action_description": "我扶他坐下", target_field: target_index,
     })
     with pytest.raises(ActorAnswerRejected, match="operation_constraint_conflict"):
         await DecisionEngine(container.llm_router).interpret_actor_decision(
@@ -463,7 +451,7 @@ async def test_helping_a_person_with_redundant_person_indices_reaches_confirmati
     task = asyncio.create_task(runtime.run_step(agents))
     turn = await _next_turn(runtime, task)
     container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps({
-        "operation": "physical", "operation_consistent": True, "decision": "act",
+        "decision": "act",
         "reason": "搀扶眼前的人坐下", "person_indices": [1],
         "action_description": "我搀住他的手臂，扶他坐下。", "estimated_steps": 1,
     })
@@ -471,26 +459,38 @@ async def test_helping_a_person_with_redundant_person_indices_reaches_confirmati
         turn.turn_id, operation=ActorOperation.PHYSICAL, target=Ref.agent(agents[1].agent_id), description="搀扶他坐下",
     ))
     assert result.status == "needs_confirmation"
-    assert result.action_summary.target == Ref.agent(agents[1].agent_id)
-    assert result.action_summary.operation == "physical" and result.action_summary.parameters == {}
+    assert result.decision_summary.target == Ref.agent(agents[1].agent_id)
+    assert result.decision_summary.operation == "physical" and result.decision_summary.parameters == {}
     runtime.answer_actor(ActorIdleAnswer())
     await task
 
 
 @pytest.mark.asyncio
-async def test_constrained_physical_operation_detects_semantic_conflict(container) -> None:
+async def test_a_fixed_talk_takes_its_topic_from_the_description(container) -> None:
+    packet = _packet()
+    intent = _intent("talk", Ref.agent(HERE), description="借这个机会问问秋猎的事")
+    base = build_actor_operation(intent, packet)
+    container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps({
+        "reason": "当面问他秋猎的事", "decision": "act", "selected_index": _index_of(ActionType.TALK),
+        "person_indices": [1], "action_description": "我借机问他秋猎的事", "talk_topic": "秋猎的事",
+    })
+    decision, _reason = await DecisionEngine(container.llm_router).interpret_actor_decision(
+        intent.description, personality=_make_personality(), packet=packet, intent=intent, base=base)
+    assert (decision.action.person_ids[0], decision.action.talk_topic) == (HERE, "秋猎的事")
+
+
+@pytest.mark.asyncio
+async def test_an_intent_that_conflicts_with_the_fixed_operation_reads_as_nothing(container) -> None:
     packet = _packet()
     packet.spatial.visible_entities[1].is_takeable = True
     intent = _intent("take", Ref.entity("memorial"), description="把它烧掉")
     base = build_actor_operation(intent, packet)
-    container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps({
-        "decision": "act", "operation": "destroy", "operation_consistent": False,
-        "selected_index": _index_of(ActionType.PHYSICAL), "physical_entity_index": 2,
-        "action_description": "我烧毁奏章",
-    })
-    with pytest.raises(ActorAnswerRejected, match="operation_constraint_conflict"):
-        await DecisionEngine(container.llm_router).interpret_actor_decision(
-            intent.description, personality=_make_personality(), packet=packet, intent=intent, base=base)
+    for reading, expected in (({"reason": "拿起不是烧毁", "decision": "unclear"}, (None, "拿起不是烧毁")),
+                              # Doing nothing is no reading of an intent that fixed an act.
+                              ({"reason": "先不动", "decision": "idle"}, None)):
+        container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps(reading)
+        assert await DecisionEngine(container.llm_router).interpret_actor_decision(
+            intent.description, personality=_make_personality(), packet=packet, intent=intent, base=base) == expected
 
 
 @pytest.mark.asyncio
@@ -500,17 +500,16 @@ async def test_constrained_interpretation_preserves_parameters_and_requires_conf
     turn = await _next_turn(runtime, task)
     provider = container.llm_router.get(LLMScene.ACTOR_INTENT)
     provider.fixed_response = json.dumps({
-        "decision": "act", "operation": "work", "operation_consistent": True,
-        "action_description": "我整理账册",
+        "decision": "act", "action_description": "我整理账册",
     })
     result = await runtime.actor_intent(ActorIntent(turn.turn_id, operation=ActorOperation.WORK,
         target=Ref.agent(agents[0].agent_id), description="整理账册"))
     assert result.status == "needs_confirmation" and not task.done()
-    assert result.action_summary.operation == "work"
-    assert result.action_summary.target == Ref.agent(agents[0].agent_id)
-    runtime.answer_actor(ActorConfirmation(result.action_summary.action_summary_id))
-    with pytest.raises(ActorAnswerRejected, match="action_summary_not_pending"):
-        runtime.answer_actor(ActorConfirmation(result.action_summary.action_summary_id))
+    assert result.decision_summary.operation == "work"
+    assert result.decision_summary.target == Ref.agent(agents[0].agent_id)
+    runtime.answer_actor(ActorConfirmation(result.decision_summary.decision_summary_id))
+    with pytest.raises(ActorAnswerRejected, match="decision_summary_not_pending"):
+        runtime.answer_actor(ActorConfirmation(result.decision_summary.decision_summary_id))
     await task
 
 
@@ -530,12 +529,29 @@ async def test_direct_submission_bypasses_parser_and_records_only_public_data(co
     thread = (await container.snapshot.load(world_id, 1)).actor_thread
     said = next(e for e in thread if e["kind"] == "said")
     answered = next(e for e in thread if e["kind"] == "answered")
-    assert said["action_summary"]["operation"] == "broadcast"
+    assert said["decision_summary"]["operation"] == "broadcast"
     assert said["intent"]["description"] == description
-    assert said["action_summary"]["description"] == "我向这里的人广播"
-    assert said["action_summary"]["parameters"]["message"] == "请来这里"
-    assert answered["answer"] == {"action_summary_id": said["action_summary"]["action_summary_id"]}
+    assert said["decision_summary"]["description"] == "我向这里的人广播"
+    assert said["decision_summary"]["parameters"]["message"] == "请来这里"
+    assert answered["answer"] == {"decision_summary_id": said["decision_summary"]["decision_summary_id"]}
     assert "action_type" not in json.dumps(thread)
+
+
+@pytest.mark.asyncio
+async def test_unclear_words_keep_where_the_reading_got_stuck(container) -> None:
+    world_id = "operations-unclear-reading"
+    runtime, _messages, agents = _setup(container, world_id)
+    task = asyncio.create_task(runtime.run_step(agents))
+    turn = await _next_turn(runtime, task)
+    agents[0].interpret_actor_decision = AsyncMock(return_value=(None, "只是一声叹息，没说要做什么"))
+    assert (await runtime.actor_intent(ActorIntent(turn.turn_id, text="唉"))).status == "rejected"
+    agents[0].interpret_actor_decision = AsyncMock(return_value=(ActorDecision(idle=True), "说的是先等等"))
+    summary = (await runtime.actor_intent(ActorIntent(turn.turn_id, text="先等等看"))).decision_summary
+    runtime.answer_actor(ActorConfirmation(summary.decision_summary_id))
+    await task
+
+    said = [e for e in (await container.snapshot.load(world_id, 1)).actor_thread if e["kind"] == "said"]
+    assert [(e["reason"], e["reading"]) for e in said] == [("unreadable", "只是一声叹息，没说要做什么"), (None, "")]
 
 
 @pytest.mark.asyncio
@@ -543,14 +559,33 @@ async def test_new_failed_intent_invalidates_old_confirmation(container) -> None
     runtime, _messages, agents = _setup(container, "operations-invalidation")
     task = asyncio.create_task(runtime.run_step(agents))
     turn = await _next_turn(runtime, task)
-    agents[0].interpret_actor_decision = AsyncMock(return_value=ActorDecision(action=_work()))
+    agents[0].interpret_actor_decision = AsyncMock(return_value=(ActorDecision(action=_work()), ""))
     first = await runtime.actor_intent(ActorIntent(turn.turn_id, text="工作"))
     agents[0].interpret_actor_decision.return_value = None
     assert (await runtime.actor_intent(ActorIntent(turn.turn_id, text="唉"))).status == "rejected"
-    with pytest.raises(ActorAnswerRejected, match="action_summary_not_pending"):
-        runtime.answer_actor(ActorConfirmation(first.action_summary.action_summary_id))
+    with pytest.raises(ActorAnswerRejected, match="decision_summary_not_pending"):
+        runtime.answer_actor(ActorConfirmation(first.decision_summary.decision_summary_id))
     runtime.answer_actor(ActorIdleAnswer())
     await task
+
+
+@pytest.mark.asyncio
+async def test_words_read_as_idling_are_confirmed_like_any_reading(container) -> None:
+    from core.interfaces.actor import IDLE_OPERATION
+
+    runtime, _messages, agents = _setup(container, "operations-idle-reading")
+    task = asyncio.create_task(runtime.run_step(agents))
+    turn = await _next_turn(runtime, task)
+    agents[0].interpret_actor_decision = AsyncMock(return_value=(ActorDecision(idle=True), "说的是先等等"))
+
+    result = await runtime.actor_intent(ActorIntent(turn.turn_id, text="先等等看"))
+
+    assert result.status == "needs_confirmation" and not task.done()
+    summary = result.decision_summary
+    assert (summary.operation, summary.description, summary.target) == (IDLE_OPERATION, "", None)
+    runtime.answer_actor(ActorConfirmation(summary.decision_summary_id))
+    await task
+    assert agents[0].personality.state.action_status != ActionStatus.IN_PROGRESS
 
 
 @pytest.mark.asyncio
@@ -565,7 +600,7 @@ async def test_inflight_old_intent_cannot_publish_after_newer_request_or_closed_
         if text == "first":
             entered.set()
             await release.wait()
-            return ActorDecision(action=_work())
+            return ActorDecision(action=_work()), ""
         return None
 
     agents[0].interpret_actor_decision = interpret
@@ -602,17 +637,15 @@ async def test_constrained_long_verbatim_message_is_preserved_without_model_echo
     base = build_actor_operation(intent, packet)
     provider = container.llm_router.get(LLMScene.ACTOR_INTENT)
     provider.fixed_response = json.dumps({
-        "decision": "act", "operation": operation, "operation_consistent": True,
-        "action_description": "我平静地交代这番话",
+        "decision": "act", "action_description": "我平静地交代这番话",
     })
     provider.complete = AsyncMock(wraps=provider.complete)
     result = await DecisionEngine(container.llm_router).interpret_actor_decision(
         intent.description, personality=_make_personality(), packet=packet, intent=intent, base=base)
-    action = result.action
+    action = result[0].action
     assert action.errand_message == message
     system = provider.complete.call_args.args[0][0].content
-    output = system.split("【输出】", 1)[1]
-    assert '"errand_message"' not in output
+    assert message not in system
 
 
 @pytest.mark.asyncio
@@ -625,8 +658,7 @@ async def test_constrained_details_can_fill_unspecified_business_parameters(cont
     parameters = {"destination_id": "xuanwu_gate", "message": "请来这里"} if operation == "errand" else {}
     intent = _intent(operation, targets[operation], description="也照顾到在场的那个人", **parameters)
     base = build_actor_operation(intent, packet)
-    payload = {"decision": "act", "operation": operation, "operation_consistent": True,
-               "action_description": "我照此行动"}
+    payload = {"decision": "act", "action_description": "我照此行动"}
     if operation == "move":
         payload["move_carry_indices"] = [1]
     elif operation == "physical":
@@ -640,7 +672,7 @@ async def test_constrained_details_can_fill_unspecified_business_parameters(cont
     engine = DecisionEngine(container.llm_router)
     result = await engine.interpret_actor_decision(
         intent.description, personality=_make_personality(), packet=packet, intent=intent, base=base)
-    bound = engine.bind_actor_action(result.action, personality=_make_personality(), packet=packet)
+    bound = engine.bind_actor_action(result[0].action, personality=_make_personality(), packet=packet)
     if operation == "move":
         assert bound.target.claims == [Ref.agent(HERE)]
     elif operation == "physical":
@@ -718,12 +750,12 @@ def test_self_operations_preserve_targetless_execution_and_public_identity(conta
     bound = DecisionEngine(container.llm_router).bind_actor_action(action, personality=_make_personality(), packet=packet)
     assert bound.action_type is action_type
     assert not bound.target.acts_on and not bound.target.claims and not bound.target.reaches
-    action_summary = build_actor_action_summary(action, packet, seconds_per_step=3600, intent=intent)
-    assert action_summary.target == Ref.agent(packet.agent_id) and action_summary.operation == operation
-    assert "某人" not in action_summary.description
+    decision_summary = build_actor_decision_summary(ActorDecision(action=action), packet, seconds_per_step=3600, intent=intent)
+    assert decision_summary.target == Ref.agent(packet.agent_id) and decision_summary.operation == operation
+    assert "某人" not in decision_summary.description
     if operation == "covert":
-        assert action_summary.description == "我暗中观察"
-        assert "前往" not in action_summary.description and "潜行" not in action_summary.description
+        assert decision_summary.description == "我暗中观察"
+        assert "前往" not in decision_summary.description and "潜行" not in decision_summary.description
 
 
 @pytest.mark.asyncio
@@ -745,9 +777,9 @@ async def test_direct_self_operations_bypass_parser_and_persist_request(containe
     thread = (await container.snapshot.load(world_id, 1)).actor_thread
     said = next(e for e in thread if e["kind"] == "said")
     answered = next(e for e in thread if e["kind"] == "answered")
-    assert said["intent"]["operation"] == said["action_summary"]["operation"] == operation
-    assert said["intent"]["target"] == said["action_summary"]["target"] == {"kind": "agent", "id": target.id}
-    assert answered["answer"] == {"action_summary_id": said["action_summary"]["action_summary_id"]}
+    assert said["intent"]["operation"] == said["decision_summary"]["operation"] == operation
+    assert said["intent"]["target"] == said["decision_summary"]["target"] == {"kind": "agent", "id": target.id}
+    assert answered["answer"] == {"decision_summary_id": said["decision_summary"]["decision_summary_id"]}
     assert "action_type" not in json.dumps(thread)
 
 
@@ -770,7 +802,7 @@ async def test_rejected_explicit_intent_persists_action_target_parameters_and_de
     assert said["intent"]["target"] == {"kind": "npc", "id": "unseen"}
     assert said["intent"]["parameters"]["message"] == "请来这里"
     assert said["intent"]["description"] == "语气温和"
-    assert said["action_summary"] is None and said["reason"] == result.reason
+    assert said["decision_summary"] is None and said["reason"] == result.reason
     assert next(e for e in thread if e["kind"] == "answered")["answer"] == {"idle": True}
 
 
@@ -781,11 +813,10 @@ async def test_self_operation_ignores_unrelated_target_slots(container, operatio
     intent = _intent(operation, Ref.agent(packet.agent_id), description="照此做")
     base = build_actor_operation(intent, packet)
     container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps({
-        "decision": "act", "operation": operation, "operation_consistent": True,
-        "action_description": "我照此做", "physical_person_index": 1,
+        "decision": "act", "action_description": "我照此做", "physical_person_index": 1,
     })
     engine = DecisionEngine(container.llm_router)
-    decision = await engine.interpret_actor_decision(
+    decision, _reason = await engine.interpret_actor_decision(
         intent.description, personality=_make_personality(), packet=packet, intent=intent, base=base)
     bound = engine.bind_actor_action(decision.action, personality=_make_personality(), packet=packet)
     assert not bound.target.acts_on and not bound.target.claims and not bound.target.reaches
@@ -794,25 +825,24 @@ async def test_self_operation_ignores_unrelated_target_slots(container, operatio
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["work", "covert"])
 async def test_parsed_self_operation_records_selected_operation_and_description(container, operation: str) -> None:
-    world_id = "operations-self-action_summary-record"
+    world_id = "operations-self-decision_summary-record"
     runtime, _messages, agents = _setup(container, world_id)
     task = asyncio.create_task(runtime.run_step(agents))
     turn = await _next_turn(runtime, task)
     container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps({
-        "decision": "act", "operation": operation, "operation_consistent": True,
-        "action_description": "我整理手头的账册",
+        "decision": "act", "action_description": "我整理手头的账册",
     })
     result = await runtime.actor_intent(ActorIntent(
         turn.turn_id, operation=ActorOperation(operation), target=Ref.agent(agents[0].agent_id), description="整理账册",
     ))
     assert result.status == "needs_confirmation" and not task.done()
-    runtime.answer_actor(ActorConfirmation(result.action_summary.action_summary_id))
+    runtime.answer_actor(ActorConfirmation(result.decision_summary.decision_summary_id))
     await task
     thread = (await container.snapshot.load(world_id, 1)).actor_thread
     said = next(e for e in thread if e["kind"] == "said")
     assert said["intent"]["operation"] == operation and said["intent"]["description"] == "整理账册"
     assert said["intent"]["target"] == {"kind": "agent", "id": agents[0].agent_id}
-    assert said["action_summary"]["description"] == "我整理手头的账册"
+    assert said["decision_summary"]["description"] == "我整理手头的账册"
 
 
 @pytest.mark.parametrize("place_id,place_name", [("harbor-7", "海港"), ("deck-a", "星舰甲板")])

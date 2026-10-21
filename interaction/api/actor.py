@@ -8,7 +8,7 @@
 - The waiting turn is pushed over the WebSocket as an ``actor_turn`` frame on connection
   and whenever one opens or closes.
 - ``POST /actor/intent``: a natural-language or explicit operation intent. Operation semantics
-  determine interpretation; interpreted intentions require action_summary_id confirmation.
+  determine interpretation; interpreted intentions require decision_summary_id confirmation.
 - ``GET /actor/operations``: operations the character may attempt on one perceived target.
 - ``POST /actor/answer``: answer the open turn, naming it by ``turn_id``. A SPEAK turn is
   answered with the character's dialogue turn (``ActorDialogueTurn``); one longer than the
@@ -223,10 +223,10 @@ def _decode_answer(data: Any) -> ActorPublicAnswer:
         return _build(ActorInterruptAnswer, data, {"interrupt": _boolean, "thought": _string})
     if isinstance(data, Mapping) and "accept" in data:
         return _build(ActorInvitationAnswer, data, {"accept": _boolean})
-    if isinstance(data, Mapping) and "action_summary_id" in data:
-        return _build(ActorConfirmation, data, {"action_summary_id": _string})
+    if isinstance(data, Mapping) and "decision_summary_id" in data:
+        return _build(ActorConfirmation, data, {"decision_summary_id": _string})
     if not isinstance(data, Mapping) or set(data) != {"idle"} or data["idle"] is not True:
-        raise ValueError("A decision answer requires action_summary_id or idle:true")
+        raise ValueError("A decision answer requires decision_summary_id or idle:true")
     return ActorIdleAnswer()
 
 

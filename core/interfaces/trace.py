@@ -1,7 +1,17 @@
 """LLM observability contracts.
 
-``LLMRouter`` records each call as an ``LLMCallTrace`` tagged with its **cognition stage**; each
-runtime step emits a ``StepTrace``.
+Three records, one question each:
+
+- ``LLMCallTrace``: one LLM request, recorded by ``LLMRouter`` and tagged with its **cognition
+  stage**: what was sent and returned, what it cost, whether it failed or was used. It is also
+  the record of the beat that request settled: review reads what an AI-driven beat produced from
+  its call's output and annotations.
+- ``StepTrace``: one runtime step's wall-clock time and where it went, by phase.
+- ``BeatTrace``: a beat that landed without a request (the actor's decision, an injection
+  landing), in the slots its call would fill, so a reader sees every beat of a step. Only those:
+  an AI-driven beat already has its call, and a beat record beside it would say it twice.
+
+Only calls carry cost, so only calls feed the call statistics.
 
 ``stage`` can't be derived from ``scene``: one scene spans several stages (``AGENT_DECISION_*``
 covers perception / decision / feedback), so it is set at each cognition seam via
@@ -17,6 +27,11 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from enum import Enum
 from typing import Any
+
+from core.context import get_call_annotations, get_log_context
+from core.logging import get_logger
+
+_logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +148,16 @@ def to_jsonable(obj: Any) -> Any:
 # Records
 # ---------------------------------------------------------------------------
 
+# ``reject_reason``s of output set aside for what happened around it, not for what it said. Not
+# adopted, yet nothing was wrong with it: it counts toward no discard statistic and is no failure.
+# Output a person passed over for another (an intent reading the actor didn't confirm).
+SUPERSEDED = "superseded"
+# A character's motivation voided because it was drawn into someone else's act this step; also
+# the arbitration verdict stamped on that step's decision.
+CONSCRIPTED = "conscripted"
+# Both, for readers that leave them out of discard statistics.
+SET_ASIDE_REASONS = frozenset({SUPERSEDED, CONSCRIPTED})
+
 @dataclasses.dataclass
 class LLMCallTrace:
     """One LLM call captured at the router boundary.
@@ -145,7 +170,8 @@ class LLMCallTrace:
     - ``adopted``: did the **consumer use** it? Only this catches a parseable payload the engine
       couldn't act on (e.g. a missing required field). Successful responses default to True;
       consumers mark rejected output False with ``reject_reason``. None means no provider output.
-      A deliberate no-op the engine honored (``act:false``) is adopted.
+      A deliberate no-op the engine honored (``act:false``) is adopted. Output set aside for what
+      happened around it is not adopted, with a ``SET_ASIDE_REASONS`` reason: no defect.
 
     Mutable so ``parse_ok`` / ``adopted`` can be filled in before the step is flushed.
     Observability only — never read back into logic, a prompt, or an embedding.
@@ -184,10 +210,43 @@ class LLMCallTrace:
     # generically, so a new field needs no schema/router/UI change. JSON-serializable;
     # observability only.
     extra: dict[str, Any] = dataclasses.field(default_factory=dict)
+    # The call exists because an actor performs a character (core.context.observe_actor). Whose
+    # call it is stays ``agent_id``.
+    actor: bool = False
 
     @property
     def total_tokens(self) -> int:
         return self.input_tokens + self.output_tokens
+
+
+class BeatKind(str, Enum):
+    """What a ``BeatTrace`` records."""
+
+    DECISION = "decision"    # the decision a DECIDE turn was answered with
+    INTERRUPT = "interrupt"  # the answer to an INTERRUPT turn, or a break-off
+    MIND = "mind"            # amendments to the character's mind, as they land
+    INJECTION = "injection"  # an injection landing in the world, from either author
+
+
+@dataclasses.dataclass
+class BeatTrace:
+    """A beat that landed without an LLM call, in the slots the matching call would fill.
+
+    No request was made, so it carries no tokens or latency and counts toward no call
+    statistics. Mutable so the runtime can stamp a verdict on a decision beat as it does on a
+    decision call (``TraceSink.annotate_recorded_call``). Observability only.
+    """
+
+    world_id: str
+    step: int
+    stage: str
+    # Not ``kind``: the JSONL sinks tag each record with a ``kind`` of its own.
+    beat_kind: str
+    payload: dict[str, Any]
+    timestamp: str
+    agent_id: str | None = None
+    extra: dict[str, Any] = dataclasses.field(default_factory=dict)
+    actor: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -205,6 +264,42 @@ class StepTrace:
     wall_ms: float
     timestamp: str
     phase_ms: dict[str, float] = dataclasses.field(default_factory=dict)
+
+
+def record_beat(
+    sink: "TraceSink | None",
+    kind: BeatKind,
+    stage: Stage,
+    payload: dict[str, Any],
+    *,
+    world_id: str | None = None,
+    step: int | None = None,
+    agent_id: str | None = None,
+    actor: bool = False,
+) -> None:
+    """Record a beat in *sink*, filling what isn't passed from the log context, and the call
+    annotations in scope as ``extra``, as the router does for a call. Recording must never break
+    the beat it observes, so a failure is only logged."""
+    if sink is None:
+        return
+    try:
+        ctx = get_log_context()
+        step_raw = ctx.get("step", "")
+        if step is None and not step_raw.isdigit():
+            return  # outside any step: nowhere to file it
+        sink.record_beat(BeatTrace(
+            world_id=world_id if world_id is not None else ctx.get("world_id", ""),
+            step=step if step is not None else int(step_raw),
+            stage=stage.value,
+            beat_kind=kind.value,
+            payload=to_jsonable(payload),
+            timestamp=datetime.now().isoformat(),
+            agent_id=agent_id,
+            extra=to_jsonable(get_call_annotations()),
+            actor=actor,
+        ))
+    except Exception as exc:  # noqa: BLE001 — recording must never break the beat
+        _logger.warning("beat_trace_record_failed", extra={"kind": kind.value, "error": str(exc)})
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +322,9 @@ class TraceSink(ABC):
     def record_step(self, trace: StepTrace) -> None: ...
 
     @abstractmethod
+    def record_beat(self, trace: BeatTrace) -> None: ...
+
+    @abstractmethod
     def mark_call_unadopted(
         self, world_id: str, *, step: int, agent_id: str, stage: str, reason: str
     ) -> None:
@@ -245,7 +343,10 @@ class TraceSink(ABC):
         """Merge diagnostic *fields* into an already-recorded call's ``extra``, by coordinates.
 
         The coordinate-addressed ``annotate_active_call``, as ``mark_call_unadopted`` is to
-        ``note_active_call_adoption``; same rules.
+        ``note_active_call_adoption``; same rules. The beat of that stage (``beat_kind`` equal to
+        ``stage``) gets the fields too: the caller annotates "this step's decision" whether a
+        call or a beat recorded it. Other beats filed under the stage (mind amendments landing
+        before the decision) are not that beat and get nothing.
         """
 
     @abstractmethod
@@ -285,6 +386,12 @@ class TraceSink(ABC):
         agent_id: str | None = None,
     ) -> list[LLMCallTrace]:
         """Return LLM calls for a world, filtered by any combination of dimensions."""
+
+    @abstractmethod
+    def read_beats(
+        self, world_id: str, *, step: int | None = None, agent_id: str | None = None,
+    ) -> list[BeatTrace]:
+        """Return a world's beats in recording order, filtered by step and agent."""
 
     @abstractmethod
     def read_step_summaries(self, world_id: str) -> list[StepTrace]:

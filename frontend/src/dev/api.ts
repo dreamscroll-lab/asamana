@@ -38,9 +38,11 @@ export const devApi = {
       agentId?: string;
       callId?: string;
       q?: string;
+      actor?: boolean;
     },
   ) => {
     const q = new URLSearchParams({ group_by: opts.groupBy });
+    if (opts.actor) q.set("actor", "true");
     if (opts.step) q.set("step", opts.step);
     if (opts.stage) q.set("stage", opts.stage);
     if (opts.agentId) q.set("agent_id", opts.agentId);

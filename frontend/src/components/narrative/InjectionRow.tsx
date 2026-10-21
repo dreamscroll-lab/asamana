@@ -1,5 +1,6 @@
 import { Fragment } from "react";
 
+import { URGENCY_LABEL } from "../../lib/urgency";
 import type { InjectionReceipt, InjectionSummary } from "../../types";
 
 // What a director's intervention actually DID. An injection can be delivered to the right
@@ -25,7 +26,7 @@ function ReceiptLine({ receipt }: { receipt: InjectionReceipt }) {
   if (pressure.length) {
     rows.push([
       "压力",
-      pressure.map((p: { name: string; urgency: string }) => `${p.name}（${p.urgency}）`).join("、"),
+      pressure.map((p: { name: string; urgency: string }) => `${p.name}（${URGENCY_LABEL[p.urgency] ?? p.urgency}）`).join("、"),
     ]);
   }
   if (decided.length) rows.push(["因此决策", names(decided)]);

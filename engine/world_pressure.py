@@ -105,6 +105,9 @@ _SYSTEM_PROMPT = f"""\
  - 处于行动中时，对于周边环境的压力敏感度会下降。
 {ABSOLUTE_TIME_RULE}
 
+【说明】
+关系各栏的含义：{relation_legend()}
+
 每个角色最多 3 个目标，按紧迫度降序。每个目标包含：
 - text: 指引该角色行动的一句话（中文，≤{_GOAL_TEXT_MAX_CHARS}字，用该角色当下视角；**不得使用事件的事后命名，也不要预测未来走向，也不要臆想当前情景。**）
 - {URGENCY_SCALE_DESCRIPTION}
@@ -301,7 +304,7 @@ class WorldPressureEvaluator:
 
     @staticmethod
     def _format_relation(c: dict[str, Any]) -> str:
-        """Render via ``format_relation_block``; the scale legend is given once near the list."""
+        """Render via ``format_relation_block``; the scale legend is in the system prompt."""
         trust, affection = c.get("trust"), c.get("affection")
         if trust is None and affection is None:
             labels = " | ".join(c.get("labels") or [])
@@ -342,10 +345,6 @@ class WorldPressureEvaluator:
   背景：{background}{secret_line}
 
 【该角色此刻感知到的内容（外部压力的唯一来源）】"""]
-
-        # Co-located people and message senders share one scale: explain it once.
-        if co_located or sender_relations:
-            lines.append(f"（涉及的关系字段含义：{relation_legend()}）")
 
         has_any = False
         for bc in broadcasts:

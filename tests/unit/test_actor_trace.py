@@ -37,8 +37,7 @@ async def test_actor_requests_record_context_and_result(
     container.trace_sink = sink
     container.llm_router._trace_sink = sink  # noqa: SLF001
     world_id = "actor-trace-world"
-    runtime, _messages, agents = _setup(container, world_id)
-    runtime._trace_sink = sink  # noqa: SLF001 — mirror production wiring
+    runtime, _messages, agents = _setup(container, world_id, trace_sink=sink)
     app = NarrativeApplication(container, test_config)
     app._sessions[world_id] = SimpleNamespace(runtime=runtime)  # noqa: SLF001
     task = asyncio.create_task(runtime.run_step(agents))
@@ -62,10 +61,11 @@ async def test_actor_requests_record_context_and_result(
         call = calls[0]
         assert (call.step, call.agent_id, call.stage) == (turn.step, HERO, Stage.DECISION.value)
         assert call.extra == {"actor_words": "抄奏章", "turn_id": turn.turn_id}
+        assert call.actor is True
         assert (call.ok, call.parse_ok, call.adopted, call.reject_reason) == (
             response is not None, parse_ok, adopted, reason,
         )
-        assert (said.action_summary is not None) is (adopted is True)
+        assert (said.decision_summary is not None) is (adopted is True)
         if response is None:
             assert "provider down" in call.error
         # Arbitration still annotates this step, so the request must not flush it early.
@@ -93,8 +93,7 @@ async def test_actor_trace_flush_does_not_block_the_request(container, test_conf
     sink = SlowSink()
     container.trace_sink = sink
     container.llm_router._trace_sink = sink  # noqa: SLF001
-    runtime, _messages, agents = _setup(container, "actor-slow-trace")
-    runtime._trace_sink = sink  # noqa: SLF001 — mirror production wiring
+    runtime, _messages, agents = _setup(container, "actor-slow-trace", trace_sink=sink)
     app = NarrativeApplication(container, test_config)
     app._sessions["actor-slow-trace"] = SimpleNamespace(runtime=runtime)  # noqa: SLF001
     task = asyncio.create_task(runtime.run_step(agents))
@@ -121,8 +120,7 @@ async def test_live_actor_trace_stays_annotatable_until_step_commit(container, t
     container.trace_sink = sink
     container.llm_router._trace_sink = sink  # noqa: SLF001
     world_id = "actor-live-trace"
-    runtime, _messages, agents = _setup(container, world_id)
-    runtime._trace_sink = sink  # noqa: SLF001
+    runtime, _messages, agents = _setup(container, world_id, trace_sink=sink)
     app = NarrativeApplication(container, test_config)
     app._sessions[world_id] = SimpleNamespace(runtime=runtime)  # noqa: SLF001
     container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps({
@@ -136,7 +134,7 @@ async def test_live_actor_trace_stays_annotatable_until_step_commit(container, t
         calls = [c for c in sink.read_calls(world_id) if c.scene == LLMScene.ACTOR_INTENT.value]
         assert len(calls) == 1 and "verdict" not in calls[0].extra
         assert not (tmp_path / world_id / "step_000001.jsonl").exists()
-        runtime.answer_actor(ActorConfirmation(said.action_summary.action_summary_id))
+        runtime.answer_actor(ActorConfirmation(said.decision_summary.decision_summary_id))
         await task
         await asyncio.gather(*runtime._trace_flush_tasks, return_exceptions=True)  # noqa: SLF001
         calls = [c for c in sink.read_calls(world_id) if c.scene == LLMScene.ACTOR_INTENT.value]
@@ -147,3 +145,125 @@ async def test_live_actor_trace_stays_annotatable_until_step_commit(container, t
         if not task.done():
             runtime.answer_actor(ActorIdleAnswer())
         await task
+
+
+def _wired(container, world_id: str):
+    sink = InMemoryTraceSink()
+    container.trace_sink = sink
+    container.llm_router._trace_sink = sink  # noqa: SLF001
+    runtime, _messages, agents = _setup(container, world_id, trace_sink=sink)
+    return sink, runtime, agents
+
+
+def _readings(sink: InMemoryTraceSink, world_id: str) -> list:
+    return [c for c in sink.read_calls(world_id) if c.scene == LLMScene.ACTOR_INTENT.value]
+
+
+@pytest.mark.asyncio
+async def test_the_confirmed_reading_is_the_decision_beat_and_the_others_are_superseded(
+    container, test_config,
+) -> None:
+    world_id = "actor-beat-confirmed"
+    sink, runtime, agents = _wired(container, world_id)
+    app = NarrativeApplication(container, test_config)
+    app._sessions[world_id] = SimpleNamespace(runtime=runtime)  # noqa: SLF001
+    provider = container.llm_router.get(LLMScene.ACTOR_INTENT)
+    task = asyncio.create_task(runtime.run_step(agents))
+    try:
+        turn = await _next_turn(runtime, task)
+        for words in ("抄一份", "誊抄奏章"):
+            provider.fixed_response = json.dumps({
+                "decision": "act", "selected_index": _WORK_INDEX, "action_description": words,
+                "expected_outcome": "奏章誊好",
+            })
+            said = await app.actor_intent(world_id, ActorIntent(turn_id=turn.turn_id, text=words))
+        runtime.answer_actor(ActorConfirmation(said.decision_summary.decision_summary_id))
+        await task
+    finally:
+        if not task.done():
+            runtime.answer_actor(ActorIdleAnswer())
+        await task
+    first, second = _readings(sink, world_id)
+    assert (first.adopted, first.reject_reason) == (False, "superseded")
+    assert second.adopted is True
+    [beat] = [b for b in sink.read_beats(world_id) if b.beat_kind == "decision"]
+    assert (beat.step, beat.agent_id, beat.stage, beat.actor) == (turn.step, HERO, Stage.DECISION.value, True)
+    assert beat.payload["action_type"] == "WORK"
+    assert beat.payload["action_description"] == "誊抄奏章"
+    assert beat.payload["expected_outcome"] == "奏章誊好"
+    # Arbitration stamps its verdict on this step's decision, a beat as much as a call.
+    assert beat.extra["verdict"] == "executed"
+
+
+@pytest.mark.asyncio
+async def test_answering_without_a_reading_supersedes_every_reading(container, test_config) -> None:
+    world_id = "actor-beat-idle"
+    sink, runtime, agents = _wired(container, world_id)
+    app = NarrativeApplication(container, test_config)
+    app._sessions[world_id] = SimpleNamespace(runtime=runtime)  # noqa: SLF001
+    container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps({
+        "decision": "act", "selected_index": _WORK_INDEX, "action_description": "誊抄奏章",
+    })
+    task = asyncio.create_task(runtime.run_step(agents))
+    try:
+        turn = await _next_turn(runtime, task)
+        await app.actor_intent(world_id, ActorIntent(turn_id=turn.turn_id, text="抄奏章"))
+        runtime.answer_actor(ActorIdleAnswer())
+        await task
+    finally:
+        if not task.done():
+            runtime.answer_actor(ActorIdleAnswer())
+        await task
+    [reading] = _readings(sink, world_id)
+    assert (reading.adopted, reading.reject_reason) == (False, "superseded")
+    [beat] = [b for b in sink.read_beats(world_id) if b.beat_kind == "decision"]
+    assert beat.payload == {"idle": True} and beat.actor is True
+
+
+def _coordinator(sink: InMemoryTraceSink):
+    from engine.actor_coordinator import ActorCoordinator
+    from engine.clock import WorldTimeConfig
+
+    return ActorCoordinator(WorldTimeConfig(start_hour=6, seconds_per_step=60), world_id="w", trace_sink=sink)
+
+
+@pytest.mark.asyncio
+async def test_a_break_off_is_the_interrupt_beat() -> None:
+    sink = InMemoryTraceSink()
+    coordinator = _coordinator(sink)
+    coordinator.channel.request_break_off()
+    agent = SimpleNamespace(agent_id=HERO, personality=SimpleNamespace(
+        state=SimpleNamespace(current_action="誊抄奏章")))
+
+    assert await coordinator.evaluate_interrupt(agent, step=5) == (True, "")
+
+    [beat] = sink.read_beats("w")
+    assert (beat.step, beat.agent_id, beat.stage, beat.beat_kind, beat.actor) == (
+        5, HERO, Stage.INTERRUPT.value, "interrupt", True,
+    )
+    assert beat.payload == {
+        "interrupt": True, "thought": "", "doing": "誊抄奏章", "trigger": "", "self_initiated": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_amendments_saved_between_steps_are_a_mind_beat_where_they_land() -> None:
+    from core.interfaces.actor import ActorAmendments
+
+    sink = InMemoryTraceSink()
+    coordinator = _coordinator(sink)
+    changed = {"insights": ["他在躲我"]}
+    agent = SimpleNamespace(
+        agent_id=HERO, check_amendments=AsyncMock(), amend_mind=AsyncMock(return_value=changed),
+    )
+    coordinator._agent = agent  # noqa: SLF001 — performing without a real character
+    coordinator._channel.follow(HERO)  # noqa: SLF001
+
+    assert await coordinator.amend(ActorAmendments(insights=("他在躲我",))) is False
+    assert sink.read_beats("w") == []
+    await coordinator.land_amendments(agent, step=7)
+
+    [beat] = sink.read_beats("w")
+    # Landed before the character perceives the step: the input of what follows.
+    assert (beat.step, beat.stage, beat.beat_kind, beat.actor) == (7, Stage.PERCEPTION.value, "mind", True)
+    assert beat.payload == changed

@@ -156,6 +156,9 @@ _SHORT_TERM_GOAL_SYSTEM = """\
 - 综合所有信息后，如果存在明显的事实性冲突，禁止直接忽略严重的或需要关注的事实性冲突，必须要思考为什么会有这样的冲突，必要时可以在新的目标中体现。
 """ + ABSOLUTE_TIME_RULE_FIRST_PERSON + """
 
+【说明】
+此刻相关的人与我的关系各栏的含义：""" + relation_legend() + """
+
 【输出】
 只输出 JSON，不要任何多余内容。先在 thought 里（≤75 字、以"我"的口吻）把眼下想清楚——此刻真正在驱动我的是哪个需求、我刚感知到了什么、我的短期目标里哪些已经覆盖到了（这些不必再提）、哪个长期方向我一直没沾——由此推出真正还**新**缺的方向，再落到 goals：先写这件事本身（text，每条不超过 32 字；里头若提到时间，写具体时间点，不写「明日 / 今夜」等），再看它有没有定下时候（due_in_hours）。
 - 有新方向 → {{"thought": "我此刻……", "goals": [{{"text": "目标1", "due_in_hours": null}}, {{"text": "目标2", "due_in_hours": 10}}]}}
@@ -1028,7 +1031,6 @@ class NeedEngine:
             relation_lines = render_relation_lines(perceived_relations or [])
             relations_section = (
                 "此刻相关的人与我的关系：\n"
-                + f"关系刻度：{relation_legend()}\n"
                 + "\n".join(f"- {l}" for l in relation_lines) + "\n"
                 if relation_lines else ""
             )

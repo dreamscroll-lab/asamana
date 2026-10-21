@@ -10,6 +10,7 @@ from enum import Enum, IntEnum
 from typing import Any, Dict, List
 
 from agent.personality import EmotionType
+from core.interfaces.memory import MemoryKind
 
 
 # Importance bucket cutoffs. Perception's strength buckets reuse them, so "HIGH/MEDIUM" has one
@@ -93,12 +94,6 @@ def importance_level(score: float) -> MemoryImportance:
     if score >= IMPORTANCE_MEDIUM_CUTOFF:
         return MemoryImportance.MEDIUM
     return MemoryImportance.LOW
-
-
-class MemoryKind(str, Enum):
-    EVENT = "event"
-    INSIGHT = "insight"
-    SUMMARY = "summary"
 
 
 @dataclass

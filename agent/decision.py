@@ -67,6 +67,7 @@ from core.prompts import (
     render_entity,
     render_memory,
     render_memory_lines,
+    relation_legend,
     render_situation_header,
     situation_location,
     urgency_label,
@@ -365,7 +366,7 @@ def _bind_physical(slots: _Slots) -> "_Bound | None":
             if recipient_id is None or recipient_id not in slots.visible_ids:
                 return slots.reject("physical_recipient_unresolvable")
     else:
-        abstract = _text(slots.payload, "item_id")
+        abstract = _text(slots.payload, "item_name")
         if abstract:
             acted_on = Ref.entity(abstract, KIND_OBJECT)
     if slots.filled("physical_recipient_index") and recipient_id is None:
@@ -458,7 +459,7 @@ def _bind_errand(slots: _Slots) -> "_Bound | None":
 def _bind_nothing(slots: _Slots) -> "_Bound | None":
     """WORK / REST act only on oneself.
 
-    No catch-all: a slot filled under another type (``destination_index``, ``item_id``) isn't
+    No catch-all: a slot filled under another type (``destination_index``, ``item_name``) isn't
     bound, or the record and the narrative would name different things.
     """
     return _Bound(ActionTarget())
@@ -483,7 +484,7 @@ _ACTION_FIELDS: dict[ActionType, frozenset[str]] = {
     ActionType.SEND_MESSAGE: frozenset({"person_indices", "message_content", "message_announce"}),
     ActionType.MOVE: frozenset({"destination_index", "move_carry_indices"}),
     ActionType.PHYSICAL: frozenset({
-        "physical_person_index", "physical_npc_index", "physical_entity_index", "physical_recipient_index", "item_id",
+        "physical_person_index", "physical_npc_index", "physical_entity_index", "physical_recipient_index", "item_name",
     }),
     ActionType.ERRAND: frozenset({
         "errand_npc_index", "errand_destination_index", "errand_item_index", "errand_recipient_index",
@@ -819,7 +820,7 @@ class DecisionEngine:
                     # + expected_outcome≤30 + several index/enum fields; est. ~380 tok. The last three
                     # may each carry a bracketed date (ABSOLUTE_TIME_RULE, ≈8 chars×3 ≈36 tok) → ~416.
                     # Per-type extras are mutually exclusive: PHYSICAL recipient index ≈11 or
-                    # item_id≤10 chars ≈20 → ≤~436; MOVE move_carry_indices ≈12 → ~439; SEND
+                    # item_name≤10 chars ≈20 → ≤~436; MOVE move_carry_indices ≈12 → ~439; SEND
                     # message_announce ≈8 → ~447; TALK talk_topic≤30 chars ≈50 → ~466. ERRAND is
                     # costliest: ~416 + errand_message≤60 chars ≈90 + four index fields ≈44 +
                     # errand_announce ≈8 → ~558.
@@ -907,37 +908,44 @@ class DecisionEngine:
         *,
         personality: PersonalityLayer,
         packet: PerceptionPacket,
+        recent: Sequence[str] = (),
+        recalled: Sequence[Memory] = (),
         intent: ActorIntent | None = None,
         base: ActorAction | None = None,
-    ) -> ActorDecision | None:
-        """Interpret free text, or a description constrained by a selected operation.
-        Waiting is chosen directly, and goals are amended in the mind; neither is read from words.
+    ) -> tuple[ActorDecision | None, str] | None:
+        """Resolve the character's intent into a decision this step can execute: an action, or
+        doing nothing this step, with the reading's reasoning. The decision is ``None`` when the
+        reading finds the intent unclear; its reasoning then says where the reading got stuck.
 
-        A functional translation; it decides nothing for the character. ``None`` when the words
-        name nothing the character can do, or the call fails (Rule 1: nothing is persisted from
-        it; the actor says it again).
+        Functional. The ends come only from the intent; what it leaves open is filled from what the
+        character knows (``recent``: his latest doings; ``recalled``: memories the intent brings
+        up), only as far as execution needs. ``base`` is the part already fixed (a chosen operation,
+        its target and parameters): the reading fills around it and never changes it
+        (``ActorAnswerRejected``). Goals are amended in the mind, never read from an intent.
+        ``None`` when the reading names nothing executable, or the call fails (Rule 1: nothing is
+        persisted from it).
         """
         has_selected_operation = intent is not None and base is not None
-        if has_selected_operation:
-            system, user, fixed_payload = self._build_operation_interpret_prompt(
-                text, personality, packet, intent, base,
-            )
-        else:
-            system, user = self._build_interpret_prompt(text, personality, packet)
+        fixed_payload = _fixed_intent_payload(packet, intent, base) if has_selected_operation else None
         agent_id = personality.soul.agent_id
         try:
             response = await self._llm_router.complete(
                 LLMScene.ACTOR_INTENT,
                 [
-                    LLMMessage(role="system", content=system),
-                    LLMMessage(role="user", content=user),
+                    LLMMessage(role="system", content=self._intent_system_prompt()),
+                    LLMMessage(role="user", content=self._intent_user_prompt(
+                        text, personality, packet, recent=recent, recalled=recalled,
+                        fixed=(base, fixed_payload) if has_selected_operation else None,
+                    )),
                 ],
                 temperature=0.2,
-                # reason/action_description ≤40 chars each ≈120 + decision/steps ≈6 + keys ≈20.
-                # ERRAND adds ≤4 indices ≈32 + message ≤60 chars ≈95 + announce ≈8;
-                # operation/consistency ≈16 → <320; TALK's talk_topic ≤30 chars ≈50 stays under
-                # ERRAND's. Free text retains its full-schema estimate.
-                max_tokens=output_budget(320 if has_selected_operation else 420),
+                # reason ≤60 chars ≈90 + action_description ≤40 ≈60 + expected_outcome ≤30 ≈45
+                # + decision/selected_index/estimated_steps ≈9 → ~204, plus per type (exclusive):
+                # SEND_MESSAGE message_content ≤60 ≈90 + urgency ≈3 + ≤10 person indices ≈30 +
+                # announce ≈3 → ~330; ERRAND errand_message ≤60 ≈90 + four indices ≈12 + announce
+                # ≈3 → ~309; TALK talk_topic ≤30 ≈45 + indices ≈30 → ~279. Keys and structure:
+                # ≤12 fields × 5 ≈60 → ~390.
+                max_tokens=output_budget(390),
                 json_mode=True,
             )
         except Exception as exc:
@@ -950,100 +958,118 @@ class DecisionEngine:
             note_active_call_adoption(False, "no_json_object")
             logger.info("actor_decision_unreadable", extra={"agent_id": agent_id})
             return None
-        if payload.get("decision") == "act":
+        reason = _text(payload, "reason")
+        decision = payload.get("decision")
+        # Idling is no reading of an intent that already fixed an act: that conflict is unclear.
+        if decision == "idle" and not has_selected_operation:
+            return ActorDecision(idle=True), reason
+        if decision == "act":
             lists = candidate_lists(packet)
             if has_selected_operation:
                 action = _constrained_actor_action_from_payload(payload, fixed_payload, lists, intent, base)
             else:
                 action = _actor_action_from_payload(payload, lists)
             if action is not None:
-                return ActorDecision(action=action)
-        note_active_call_adoption(False, "invalid_action" if payload.get("decision") == "act" else "unclear")
+                return ActorDecision(action=action), reason
+        note_active_call_adoption(False, "invalid_action" if decision == "act" else "unclear")
         logger.info("actor_decision_unclear", extra={"agent_id": agent_id})
-        return None
+        return (None, reason) if decision == "unclear" else None
 
-    def _build_operation_interpret_prompt(
-        self, text: str, personality: PersonalityLayer, packet: PerceptionPacket,
-        intent: ActorIntent, base: ActorAction,
-    ) -> tuple[str, str, dict]:
-        assert intent.operation is not None
-        fixed_payload = _actor_payload(base, candidate_lists(packet))
-        fixed_payload["selected_index"] = next(i for i, c in enumerate(_ACTION_SPACE) if c.action_type is base.action_type)
-        if intent.parameters.announce is not None:
-            fixed_payload["errand_announce"] = intent.parameters.announce
-        fixed_keys = set(fixed_payload) - {"action_description", "estimated_steps"}
-        if intent.operation.value == "talk":
-            fixed_keys.discard("person_indices")
-        applicable = _action_fields(base.action_type) | {"reason", "decision"}
-        output_fields = {
-            "operation": json.dumps(intent.operation.value),
-            "operation_consistent": "<补充描述符合固定操作原意时 true，否则 false>",
-            **{key: value for key, value in self._actor_interpret_output_fields().items()
-               if key in applicable and key not in fixed_keys},
-        }
-        fixed_parameters = {key: value for key, value in fixed_payload.items()
-                            if key not in {"action_description", "estimated_steps"}}
-        operation_context = f"""【固定操作】
-用户选定的操作：{intent.operation.value}
-操作原意：{base.action_description}
-固定的行动类型：{base.action_type.value}
-固定参数（序号沿用输入名单）：{json.dumps(fixed_parameters, ensure_ascii=False)}
-固定字段由系统保留，不要在输出里重复或改写；只输出补充解读需要的栏。
+    def _intent_system_prompt(self) -> str:
+        """Byte-identical across calls in a world (the step duration is a world constant): the
+        fixed part of an intent and everything about the character go in the user message."""
+        catalog = "\n".join(_format_candidate_line(i, c) for i, c in enumerate(_ACTION_SPACE))
+        output = ",\n".join(f'  "{key}": {value}' for key, value in self._intent_output_fields().items())
+        return f"""【角色】
+你是意图解析器：把一个角色此刻的意图，解析成他这一步可执行的决策（落到下面的行动类型和带 #序号 的名单上）。目的只来自意图本身；你只为它找到能执行的做法，不替角色另立目的。
+
+【输入】
+- 下面先给出这个角色是谁、他的关系、近来做过的事、记得的相关的事和这一步传到他这里的动静、广播与捎话，再给出他此刻的处境和可指认的名单。都以角色的「我」来写，名单各带 #序号。
+- 若有【已定下的】，那是这个意图里已经定死的行动类型、对象和参数。
+- 最后是他此刻的意图。意图里的「我」、「他」「她」或角色名，都指这个角色。
+
+【任务】
+先看意图具体到哪一档，再照这一档解析：
+1. 说清了一件具体的事：照原样落地，不增不改。
+2. 说了要做什么，但缺对象或参数：从他所知的里补齐，只补到能执行为止。
+3. 只说了方向或目标（比如要知道什么、要讨好谁、要离开……）：拟出此刻最直接、他够得着的第一步，只拟这一步。
+4. 明确说的是这一步先不动（比如先等等、看看再说等等）：decision 填 idle。
+5. 读不出他要什么，或把决定交了出去（比如"看着办""随便"等等）：decision 填 unclear。
+
+【约束】
+- 目的只来自意图：他的关系和所知的信息只用来找做法，不用来添一个意图里没有的目的。
+- 意图里说明了的（行动类型、对象、要说的原话、参数等等）一律不改。【已定下的】栏原样保留，不在输出里重复。
+- 要说出口的话：意图里有原话就照录；只说了要传达的意思，就照这意思写成他会说出口的话；什么都没说就不写。
+- 只用所给的：名单上找不到的对象就留空，不猜一个相近的；不臆造他不知道的人和事。
+- 序号只取自对应名单，各份名单各自从 1 数起，不混用。
+- TALK 只能找标(在场)的人；SEND_MESSAGE 可以发给标(不在场)的人。
+- 拿起、使用、毁坏等等是不同的事，不能互换。派人时，去处必须是已定下的或意图里说明的，不替他猜。
+- 有【已定下的】时，decision 只能是 act 或 unclear：意图与已定下的冲突，或超出了它，就填 unclear，不把要求悄悄删掉。
+
+【行动类型】
+{catalog}
+
+【说明】
+相关人物的关系各栏的含义：{relation_legend()}
+
+【输出】
+严格 JSON，字段按下面的次序写，只填与 decision 和所选类型相关的字段，其余省略：
+{{
+{output}
+}}
+（urgency 取值含义：{URGENCY_SCALE_DESCRIPTION}）
 """
-        task = """- 判断补充描述能否在固定操作范围内落实：可以则 decision 填 act；无法理解或存在冲突则填 unclear。
-- 保持固定操作的行动类型、对象和已填写参数，只理解补充描述中的行动方式和未指定内容。
-- 把行动写成角色第一人称的描述；需要补充对象时，只用对应名单里的 #序号。"""
-        constraints = """- 补充描述不能更换操作原意、行动类型、对象或已填写参数。
-- 拿起、使用、毁坏是不同操作，不能互换；通用 physical 操作按描述理解具体的物理行动。
-- 派人时，目的地必须来自已填写参数或描述明确指定的去处；不要替用户猜测，未指明则 decision 填 unclear。
-- 存在冲突或要求超出所选操作时 decision 填 unclear；不要把要求悄悄删掉。"""
-        system, user = self._build_actor_interpret_messages(
-            text, personality, packet, task=task, output_fields=output_fields,
-            operation_context=operation_context, constraints=constraints,
-        )
-        return system, user, fixed_payload
 
-    def _build_interpret_prompt(
-        self, text: str, personality: PersonalityLayer, packet: PerceptionPacket,
-    ) -> tuple[str, str]:
-        task = """- 先判断这条指令是要做一件事（act），还是读不出能做的事（unclear）。只说先等着、不动、看情况的，也是 unclear。
-- 做一件事：从【行动类型】里挑恰好一个最贴合的；指向的人、地点、东西，用对应名单里的 #序号 指认；把指令写成角色第一人称的行动描述；要对人说出口的话，照录进对应的话语栏。"""
-        return self._build_actor_interpret_messages(
-            text, personality, packet, task=task, output_fields=self._actor_interpret_output_fields(),
-        )
-
-    def _actor_interpret_output_fields(self) -> dict[str, str]:
+    def _intent_output_fields(self) -> dict[str, str]:
         step_duration = self._step_duration_hint()
         return {
-            "reason": '"<这条指令要做什么、指向谁或何处，≤40字>"',
-            "decision": '"<act | unclear>"',
+            "reason": '"<先想清楚：这个意图要做什么，怎样落到行动类型和名单上；表达尽量简洁易懂，≤60字>"',
+            "decision": '"<act | idle | unclear>"',
             "selected_index": '<act 时：【行动类型】里的序号，0 起>',
-            "person_indices": '<最多10个整数，"我能触及的人"的序号；TALK 第一个是交谈对象，SEND_MESSAGE 是收件人>',
+            "person_indices": '<最多10个整数，"我能触及的人"的序号；TALK 第一个是交谈对象，其余旁听；SEND_MESSAGE 是收件人>',
             "message_announce": '<SEND_MESSAGE 不指名、当众宣告时填 true>',
-            "message_content": '"<SEND_MESSAGE 要送出的原话，第一人称对收件人说，≤60字；SEND_MESSAGE 必填，指令里没有可照录的话就不要硬编；TALK 不填：交谈的话由角色当面一句句说>"',
             "destination_index": '<MOVE 的去处，"我可前往"的序号>',
             "move_carry_indices": '<最多10个整数，MOVE 时强行带走的在场者，"我能触及的人"的序号>',
             "physical_person_index": '<PHYSICAL 对人，"我能触及的人"里标(在场)者的序号>',
             "physical_npc_index": '<PHYSICAL 对"此处听人吩咐做事的"人，其序号>',
             "physical_entity_index": '<PHYSICAL 对物，"我够得着的东西"的序号>',
             "physical_recipient_index": '<把手里的东西交给某个在场者时，"我能触及的人"的序号>',
-            "item_id": '"<PHYSICAL 的对象不在任何名单上时，写它的名称，≤10字>"',
+            "item_name": '"<PHYSICAL 的对象不在任何名单上时，写它的名称，≤10字>"',
             "errand_npc_index": '<ERRAND 派谁，"此处听人吩咐做事的"序号>',
             "errand_destination_index": '<ERRAND 去哪，"我可前往"序号>',
             "errand_item_index": '<ERRAND 让他带上的、我手里的东西，"我够得着的东西"序号>',
             "errand_recipient_index": '<ERRAND 交给或说给谁，"我能触及的人"序号>',
             "errand_announce": '<ERRAND 到了那处当众说出 errand_message 时填 true>',
+            "action_description": '"<act 时：角色第一人称，写这一步做什么，≤40字>"',
+            "talk_topic": '"<TALK 时，意图里说明的、要让对方一开始就知道的来意，≤30字；没说明就不填>"',
+            "message_content": '"<SEND_MESSAGE 要送出的原话，第一人称对收件人说，≤60字；SEND_MESSAGE 必填。TALK 不填：交谈的话由角色当面一句句说>"',
             "errand_message": '"<ERRAND 他到那头要原样说出口的话，≤60字>"',
-            "action_description": '"<act 时：角色第一人称，写这一拍做什么，≤40字>"',
-            "talk_topic": '"<TALK 时，指令里说明的、要让对方一开始就知道的来意，≤30字；指令没说明就不填>"',
-            "estimated_steps": f'<act 时：整数，>=1；每步{step_duration}，这件事要做多久；没说就填 1>',
+            "expected_outcome": '"<act 时：角色第一人称，这一步想带来什么，≤30字；意图里读不出就不填>"',
+            "estimated_steps": f'<act 时：整数，>=1；每步{step_duration}，这件事要做多久；意图里说了就照它，没说就按事情本身估>',
+            "urgency": '"<SEND_MESSAGE 时：low | normal | high | critical，照上面这句原话有多急来定>"',
         }
 
-    def _build_actor_interpret_messages(
-        self, text: str, personality: PersonalityLayer, packet: PerceptionPacket,
-        *, task: str, output_fields: dict[str, str], operation_context: str = "", constraints: str = "",
-    ) -> tuple[str, str]:
-        lines: List[str] = []
+    def _intent_user_prompt(
+        self, text: str, personality: PersonalityLayer, packet: PerceptionPacket, *,
+        recent: Sequence[str], recalled: Sequence[Memory],
+        fixed: "tuple[ActorAction, dict] | None",
+    ) -> str:
+        awareness = packet.internal_context
+        now, sps, day_start = packet.spatial.current_step, self._seconds_per_step, self._world_start_second_of_day
+        lines: List[str] = [
+            "【我是谁】",
+            personality.soul.identity_text() + "。",
+            "",
+            "【我知道的】",
+            describe_relations(awareness.relevant_relations),
+        ]
+        lines.append(f"我近来做过的事（{MEMORY_ORDER_HINT}）：\n{_bullet_block(list(recent))}")
+        recalled_lines = render_memory_lines(
+            recalled, now_step=now, seconds_per_step=sps, world_start_second_of_day=day_start)
+        if recalled_lines:
+            lines.append(f"我记得的、与这个意图相关的事（{MEMORY_ORDER_HINT}）：\n{_bullet_block(recalled_lines)}")
+        _render_perceived_signals(packet, lines, GivenFacts())
+        lines.append("")
         situation_header = render_situation_header(
             Situation.from_spatial(packet.spatial), voice=SituationVoice.FIRST,
         )
@@ -1051,43 +1077,25 @@ class DecisionEngine:
             lines.extend([situation_header, ""])
         lines.append("【名单】")
         _render_candidate_lists(personality, packet, lines, GivenFacts())
+        if fixed is not None:
+            base, payload = fixed
+            shown = {k: v for k, v in payload.items() if k not in _INTENT_FILLED_FIELDS}
+            lines.extend([
+                "",
+                "【已定下的】",
+                f"这件事：{base.action_description}",
+                f"已定下的栏（序号沿用上面的名单）：{json.dumps(shown, ensure_ascii=False)}",
+            ])
+            if base.action_type is ActionType.TALK:
+                lines.append("person_indices 的第一个已定下；旁听的人可以按意图再添。")
         lines.extend([
             "",
-            "【指令】",
+            "【意图】",
             text.strip(),
             "",
-            "依上面说定的规则与 JSON 格式填写，只输出 JSON。",
+            "依上面说定的规则与 JSON 格式解析，只输出 JSON。",
         ])
-        catalog = "\n".join(_format_candidate_line(i, c) for i, c in enumerate(_ACTION_SPACE))
-        output = ",\n".join(f'  "{key}": {value}' for key, value in output_fields.items())
-        system = f"""【角色】
-你是指令解读器：把关于一个角色的一条指令，读成这个角色这一拍要做的一件事（落到下面的行动类型和带 #序号 的名单上）。你只翻译，不替角色拿主意。
-
-【输入】
-- 下面给出角色此刻的处境和可指认的名单，都以角色的「我」来写，名单各带 #序号。
-- 最后是一条指令。指令里的「我」、「他」「她」或角色名，都指这个角色。
-
-{operation_context}
-【任务】
-{task}
-
-【约束】
-- 只读出指令里有的内容，不补充指令里没有的意图、对象或话语。
-- 序号只取自对应名单，各份名单各自从 1 数起，不混用；名单上找不到的对象就留空，不要猜一个相近的。
-- TALK 只能找标(在场)的人；SEND_MESSAGE 可以发给标(不在场)的人。
-
-{constraints}
-
-【行动类型】
-{catalog}
-
-【输出】
-严格 JSON，只填与判断和所选类型相关的栏，其余省略：
-{{
-{output}
-}}
-"""
-        return system, "\n".join(lines)
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Prompt construction
@@ -1190,35 +1198,7 @@ class DecisionEngine:
                 awareness.period_summaries, now_step=_now, seconds_per_step=_sps, world_start_second_of_day=_day_start)
             facts.add("那段时期的印象", _periods)
             lines.append(f"那段时期给我的整体印象：\n{_bullet_block(_periods)}")
-        # One block per perception channel (public goings-on / world broadcast / direct message),
-        # items listed under one header; an empty channel drops its block.
-        if spatial.ambient_events:                  # location-level public events / action outcomes
-            lines.append("我注意到（周围的动静）：")
-            lines.extend(f"- {ev.content}" for ev in spatial.ambient_events[:SIGNAL_CAPS["ambient"]])
-            facts.add("周围的动静", [ev.content for ev in spatial.ambient_events[:SIGNAL_CAPS["ambient"]]])
-        if packet.broadcasts:
-            # One block may mix world-wide and local broadcasts, so each line carries its own tag.
-            # broadcast_type stays out: a code-layer category (its only value, WORLD_EVENT,
-            # carries no information); rendering it into first-person text would leak across layers.
-            heard = [
-                f"{broadcast_tag(b.location_scope)}：{b.content}"
-                for b in packet.broadcasts[:SIGNAL_CAPS["broadcast"]]
-            ]
-            lines.append("我听到的广播：")
-            facts.add("广播", heard)
-            lines.extend(f"- {line}" for line in heard)
-        # The narrator's sender_name is already "不知来源", so it reads as an unknown sender like
-        # any other.
-        if packet.inbox:
-            lines.append("有人捎话给我：")
-            lines.extend(
-                f"- {msg.sender_name or '某人'}：{msg.content}"
-                for msg in packet.inbox[:SIGNAL_CAPS["inbox"]]
-            )
-            facts.add("有人捎话", [
-                f"{msg.sender_name or '某人'}：{msg.content}"
-                for msg in packet.inbox[:SIGNAL_CAPS["inbox"]]
-            ])
+        _render_perceived_signals(packet, lines, facts)
         lines.append("")
 
         # 4) 【我所处的现实】 hard constraints = bottom lines + bindable options (the only place I
@@ -1327,10 +1307,10 @@ class DecisionEngine:
 - 我想说话/动手的人、想去的地方、想用的东西，只能从【我所处的现实】里带#序号的名单里挑，用序号指认——没列出的，我此刻够不着。
 - “我可前往”的每一处都是一大片地方，里头还有许多具体的去处。我想去的地方若不在名单上，多半就落在其中某一处里头——我照名单上各处的说明判断它最可能在哪一处，就去那一处；若我心里本没有非去不可的地方，就不必硬挑一个。
 - 当面说话/动手（TALK/COVERT/PHYSICAL-对人）只能挑“我能触及的人”里标(在场)的；只有传讯（SEND_MESSAGE）可以发给标(不在场)的人。
-- 动手（PHYSICAL）必须指认出下手的对象，且**只指认一个**：对“我能触及的人”里的人就填 physical_person_index，对“此处听人吩咐做事的”里的人就填 physical_npc_index（两份名单各数各的序号，拿错名单就打到别人身上了），对物就填 physical_entity_index，名单外的抽象之物才自填 item_id——四者填其一，一个都不填等于没动手，这一拍就白费了。
+- 动手（PHYSICAL）必须指认出下手的对象，且**只指认一个**：对“我能触及的人”里的人就填 physical_person_index，对“此处听人吩咐做事的”里的人就填 physical_npc_index（两份名单各数各的序号，拿错名单就打到别人身上了），对物就填 physical_entity_index，名单外的抽象之物才自填 item_name——四者填其一，一个都不填等于没动手，这一拍就白费了。
 - 唯一的例外是「把手里的东西交出去」：这一动受动的仍是那样东西（照填 physical_entity_index），只是另可填 physical_recipient_index 指认我要交给谁——他必须是“我能触及的人”里标(在场)的。我只是把东西放下、不交给谁，就不填它。
 - 派人跑腿（ERRAND）时我交代他的话——去看什么、看完回来报我、别惊动人——写进 action_description，绝不写进 errand_message：那一栏他会一字不改说出口，我的交代一旦写进去，就等于我自己把此行的目的喊了出来。
-- 如果要进行的行动涉及到人，行动一定要与【相关人物关系】中描述的关系符合常识，除非有特殊情况。
+- 如果要进行的行动涉及到人，行动一定要与下面「相关人物的关系」中描述的关系符合常识，除非有特殊情况。
 - 不要脱离我此刻的需求与目标空转，也别被与我无关的事带跑。
 - 不要重复我刚刚做完的事，要往前推进。
 {CLOSED_WORLD_FACT_RULE_FIRST_PERSON}
@@ -1346,6 +1326,9 @@ class DecisionEngine:
 - 我综合所有信息后，如果存在明显的事实性冲突，我必须要思考为什么会有这样的冲突，同时也会有可能付出必要的行动。
 - 如果行动中涉及到人，先确认“我能触及的人”有没有这个人，如果没有，则不要选择该行动，除非有特殊情况。
 - 我接下来只做一件事：从【我能做的】里选一个。
+
+【说明】
+相关人物的关系各栏的含义：{relation_legend()}
 
 【输出】
 我用严格 JSON 说出我的选择，不写任何多余内容。字段按我心里成形的先后排列，我就照这个次序往下写：
@@ -1364,16 +1347,16 @@ class DecisionEngine:
   "physical_npc_index": <若我选 PHYSICAL 且要对**此处听人吩咐做事的**那些人动手(拦下、按住、夺他手里的东西)：填"此处听人吩咐做事的"里的序号(1起)；否则省略>,
   "physical_entity_index": <若我选 PHYSICAL 且要**对物**动手：填"我够得着的东西"里那样东西的序号(1起)；对人动手则省略>,
   "physical_recipient_index": <仅当我这一动是把手中之物交到某人手上：填"我能触及的人"里某个标(在场)者的序号(1起)；只是把东西放下、或这一动与交付无关，一律省略>,
-  "item_id": "<仅当 PHYSICAL 的目标不在上面两份名单里(抽象之物，如'门'、'地面')才自填名称，≤10字；能用序号就别用它；非 PHYSICAL 省略>",
+  "item_name": "<仅当 PHYSICAL 的目标不在上面两份名单里(抽象之物，如'门'、'地面')才自填名称，≤10字；能用序号就别用它；非 PHYSICAL 省略>",
   "errand_npc_index": <若我选 ERRAND：填"此处听人吩咐做事的"里那个人的序号(1起)；否则省略。**必填**——这一动就是吩咐他去办，没有他就不成立>,
   "errand_destination_index": <若我选 ERRAND：填"我可前往"里他要去的那个地方的序号(1起)；否则省略。**必填**——一趟不去别处的差事不成立，那种事我自己伸手就够得到>,
   "errand_item_index": <仅当我要让他带上某样东西：填"我够得着的东西"里那一件的序号(1起)，**只能选标了「由我持有」的**——不能带别人手上、也带不了在地上的东西，得先拿到手才托得出去。不带东西就省略>,
   "errand_recipient_index": <仅当这一趟是**只限于对某个人的**：填"我能触及的人"里的序号(1起)。**这一栏决定东西和话落到哪儿**——填了就是交到他手上、只说给他听；不填就是把东西搁在那处、把话在那处当众说出。只是去看看情形则省略>,
   "errand_announce": <仅当我要他到了那处把 errand_message *当众*广播宣告给在场的所有听时：填 true。我看不见那处有谁，所以公开是我主动选的，不是默认；只说给某个人听、或那只是我对他的交代，就省略此字段>,
-  "errand_message": "<他到了那头**说出口**的原话。**先定听众**：填了 errand_recipient_index 就只说给那一个人听；填了 errand_announce=true 就是当众宣告。两个都没有，那这句话就不会被他说出口——它会被当成我打发他时的交代收起来。写成能照着说出口的话：第一人称，对听的人说，20-60字。这趟差事是干什么的已经写在 action_description 里，不必在这儿重复。不带话就省略>",
   "action_description": "<**act=true 时必填，任何行动都不可省**。第一人称，写我打算做什么，内容要具体完整：若上面指认了对象，就落到那个人 / 地点 / 物上；若这一动只关乎我自己(无对象可指认)，就直接写我此刻要做的事。描述具体清晰，简洁明了，15-40字>",
   "talk_topic": "<仅当 TALK：我找对方谈的来意，谈话一开始对方和旁听的人就都知道；不想让他们事先知道我的来意，就省略此字段。≤30字>",
   "message_content": "<仅当 SEND_MESSAGE：我此刻要对**上面 person_indices 指认的那些收件人**(或在场众人)当面说出的**原话**，第一人称直接对其说，像真的在传话/宣告——不是对我自己动作的描述，也不要以第三人称提到对方；20-60字。SEND_MESSAGE 必填：没有原话，这一动就作废。其他行动一律省略此字段>",
+  "errand_message": "<他到了那头**说出口**的原话。**先定听众**：填了 errand_recipient_index 就只说给那一个人听；填了 errand_announce=true 就是当众宣告。两个都没有，那这句话就不会被他说出口——它会被当成我打发他时的交代收起来。写成能照着说出口的话：第一人称，对听的人说，20-60字。这趟差事是干什么的已经写在 action_description 里，不必在这儿重复。不带话就省略>",
   "expected_outcome": "<我期望这一步带来什么，10-30字>",
   "estimated_steps": <整数，>=1；每步{step_hint}，完成某件事情或者持续做某件事的时长，MOVE 由距离自动决定，填 1 即可；若选 REST，休息时长看两头——身体亏空越深(越接近垮掉)越要久，手头待办越多/越急则越短(只够缓口气)，在两者间权衡取值。>,
   "urgency": <"low"|"normal"|"high"|"critical"，仅 SEND_MESSAGE 有效；照我上面写下的原话有多急来定，对方据此判断是否中断手头事>
@@ -1456,7 +1439,6 @@ def _insights_with_sources(
     rendered: list[str] = []
     # Same oldest-first contract as the experience lists (order_memories_chrono).
     for insight in order_memories_chrono(insights):
-        # render_memory renders insights as timeless beliefs (no recency prefix).
         line = f"- {render_memory(insight, now_step=now_step, seconds_per_step=seconds_per_step, world_start_second_of_day=world_start_second_of_day)}"
         sources = insight_sources.get(insight.id, [])
         if sources:
@@ -1533,11 +1515,44 @@ def _message_roster(packet: PerceptionPacket) -> List[tuple[str, PerceivedIdenti
     return out
 
 
+def _render_perceived_signals(packet: PerceptionPacket, lines: List[str], facts: GivenFacts) -> None:
+    """What reached the character this step, one block per perception channel (public goings-on
+    / broadcast / direct message), in the character's voice; an empty channel drops its block.
+    Shared by the decision prompt and the intent reading prompt."""
+    if packet.spatial.ambient_events:  # location-level public events / action outcomes
+        lines.append("我注意到（周围的动静）：")
+        lines.extend(f"- {ev.content}" for ev in packet.spatial.ambient_events[:SIGNAL_CAPS["ambient"]])
+        facts.add("周围的动静", [ev.content for ev in packet.spatial.ambient_events[:SIGNAL_CAPS["ambient"]]])
+    if packet.broadcasts:
+        # One block may mix world-wide and local broadcasts, so each line carries its own tag.
+        # broadcast_type stays out: a code-layer category (its only value, WORLD_EVENT,
+        # carries no information); rendering it into first-person text would leak across layers.
+        heard = [
+            f"{broadcast_tag(b.location_scope)}：{b.content}"
+            for b in packet.broadcasts[:SIGNAL_CAPS["broadcast"]]
+        ]
+        lines.append("我听到的广播：")
+        facts.add("广播", heard)
+        lines.extend(f"- {line}" for line in heard)
+    # The narrator's sender_name is already "不知来源", so it reads as an unknown sender like
+    # any other.
+    if packet.inbox:
+        lines.append("有人捎话给我：")
+        lines.extend(
+            f"- {msg.sender_name or '某人'}：{msg.content}"
+            for msg in packet.inbox[:SIGNAL_CAPS["inbox"]]
+        )
+        facts.add("有人捎话", [
+            f"{msg.sender_name or '某人'}：{msg.content}"
+            for msg in packet.inbox[:SIGNAL_CAPS["inbox"]]
+        ])
+
+
 def _render_candidate_lists(
     personality: PersonalityLayer, packet: PerceptionPacket, lines: List[str], facts: GivenFacts,
 ) -> None:
     """The #N lists a decision binds its targets against (``candidate_lists`` order), in the
-    character's voice. Shared by the decision prompt and the actor's drafting prompt."""
+    character's voice. Shared by the decision prompt and the intent reading prompt."""
     spatial = packet.spatial
     # One person roster (present + reachable absent), numbering shared by person_indices and
     # physical_person_index. Marked "在场" / "不在场": TALK and PHYSICAL-on-a-person may only
@@ -1630,7 +1645,7 @@ _ACTOR_TEXT_SLOTS: tuple[tuple[str, str], ...] = (
     ("expected_outcome", "expected_outcome"),
     ("message_content", "message_content"),
     ("talk_topic", "talk_topic"),
-    ("item_name", "item_id"),
+    ("item_name", "item_name"),
     ("errand_message", "errand_message"),
 )
 _ACTOR_FLAG_SLOTS: tuple[str, ...] = ("message_announce", "errand_announce")
@@ -1662,6 +1677,23 @@ def _actor_payload(action: ActorAction, lists: CandidateLists) -> dict:
     return payload
 
 
+# The decision fields a reading of an intent fills besides the action's own. No monologue: the
+# character's mind is not the reader's to write.
+_INTENT_DECISION_FIELDS: frozenset[str] = _DECISION_FIELDS - {"inner_monologue"}
+
+# Fields a reading fills even when the operation is fixed; never shown as fixed.
+_INTENT_FILLED_FIELDS: frozenset[str] = frozenset({"action_description", "estimated_steps", *_INTENT_DECISION_FIELDS})
+
+
+def _fixed_intent_payload(packet: PerceptionPacket, intent: ActorIntent, base: ActorAction) -> dict:
+    """The fixed part of an intent as the slots the reading must keep."""
+    payload = _actor_payload(base, candidate_lists(packet))
+    payload["selected_index"] = next(i for i, c in enumerate(_ACTION_SPACE) if c.action_type is base.action_type)
+    if intent.parameters.announce is not None:
+        payload["errand_announce"] = intent.parameters.announce
+    return payload
+
+
 def _actor_action_from_payload(payload: dict, lists: CandidateLists) -> ActorAction | None:
     """A model's slots as the actor's form. Indices off their list are left empty for the actor
     to fill, never guessed."""
@@ -1669,7 +1701,7 @@ def _actor_action_from_payload(payload: dict, lists: CandidateLists) -> ActorAct
     if not isinstance(raw_index, int) or isinstance(raw_index, bool) or not 0 <= raw_index < len(_ACTION_SPACE):
         return None
     action_type = _ACTION_SPACE[raw_index].action_type
-    applicable = _action_fields(action_type)
+    applicable = _action_fields(action_type) | _INTENT_DECISION_FIELDS
     payload = {key: value for key, value in payload.items() if key in applicable}
     fields: dict = {"action_type": action_type}
     for field_name, key in _ACTOR_TEXT_SLOTS:
@@ -1686,6 +1718,8 @@ def _actor_action_from_payload(payload: dict, lists: CandidateLists) -> ActorAct
             fields[field_name] = resolved[0] if resolved else None
     steps = payload.get("estimated_steps")
     fields["estimated_steps"] = steps if isinstance(steps, int) and not isinstance(steps, bool) and steps >= 1 else 1
+    if action_type is ActionType.SEND_MESSAGE:
+        fields["urgency"] = parse_urgency(payload.get("urgency"), default=Urgency.NORMAL)
     if not fields["action_description"]:
         fields["action_description"] = fields["message_content"]
     try:
@@ -1706,9 +1740,6 @@ def _constrained_actor_action_from_payload(
             return None
         if selected != fixed_payload["selected_index"]:
             raise ActorAnswerRejected("operation_constraint_conflict")
-    assert intent.operation is not None
-    if payload.get("operation") != intent.operation.value or payload.get("operation_consistent") is not True:
-        raise ActorAnswerRejected("operation_constraint_conflict")
     for key in ("message_content", "errand_message"):
         if key in fixed_payload and key in payload and payload[key] != fixed_payload[key]:
             raise ActorAnswerRejected("operation_constraint_conflict")

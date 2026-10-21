@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from core.interfaces.trace import LLMCallTrace
+from core.interfaces.trace import CONSCRIPTED, SUPERSEDED, BeatTrace, LLMCallTrace
 from world import WorldCatalog
 
 from interaction.api import create_app
@@ -90,6 +90,46 @@ def test_trace_calls_filter_by_call_id_prefix(container, test_config) -> None:
     assert miss["groups"] == [] and miss["total"]["calls"] == 0
     # Without the parameter, you get everything as usual.
     assert client.get("/api/worlds/w1/trace/calls").json()["total"]["calls"] == 2
+
+
+def test_trace_calls_list_beats_beside_calls_and_count_only_calls(container, test_config) -> None:
+    """A beat made no request: it is listed in its group, never in the call numbers. Actor only
+    keeps what exists because an actor performs a character, calls and beats alike."""
+    tagged = dataclasses.replace(_call("c-actor"), actor=True)
+    container.trace_sink.read_calls = lambda world_id, **k: [_call("c-ai"), tagged]  # type: ignore[method-assign]
+    beat = BeatTrace(world_id="w1", step=3, stage="decision", beat_kind="decision",
+                     payload={"action_type": "WORK"}, timestamp=datetime.now().isoformat(),
+                     agent_id="agent-1", actor=True)
+    container.trace_sink.read_beats = lambda world_id, **k: [beat]  # type: ignore[method-assign]
+    client = _client(container, test_config)
+
+    body = client.get("/api/worlds/w1/trace/calls", params={"group_by": "stage"}).json()
+    [group] = body["groups"]
+    assert group["calls"] == 2 and body["total"]["calls"] == 2
+    assert [b["beat_kind"] for b in group["beats"]] == ["decision"]
+
+    only = client.get("/api/worlds/w1/trace/calls", params={"actor": "true"}).json()
+    [group] = only["groups"]
+    assert [c["call_id"] for c in group["items"]] == ["c-actor"] and len(group["beats"]) == 1
+    # A call id names a call; no beat has one.
+    by_id = client.get("/api/worlds/w1/trace/calls", params={"call_id": "c-ai"}).json()
+    assert by_id["groups"][0]["beats"] == []
+
+
+def test_output_set_aside_for_what_happened_around_it_is_no_discard(container, test_config) -> None:
+    """A reading the actor didn't confirm, and a motivation voided because its character was
+    drawn into someone else's act, had nothing wrong with them: they count toward no discard
+    statistic, while output the engine threw away still does."""
+    passed_over = dataclasses.replace(_call("c-1"), adopted=False, reject_reason=SUPERSEDED)
+    voided = dataclasses.replace(_call("c-3"), adopted=False, reject_reason=CONSCRIPTED)
+    thrown_away = dataclasses.replace(_call("c-2"), adopted=False, reject_reason="unclear")
+    calls = [passed_over, voided, thrown_away]
+    container.trace_sink.read_calls = lambda world_id, **k: calls  # type: ignore[method-assign]
+    container.trace_sink.read_beats = lambda world_id, **k: []  # type: ignore[method-assign]
+    client = _client(container, test_config)
+
+    total = client.get("/api/worlds/w1/trace/calls").json()["total"]
+    assert (total["calls"], total["adoption_verdicts"], total["discarded"]) == (3, 1, 1)
 
 
 @pytest.mark.asyncio

@@ -7,6 +7,7 @@ from typing import Any
 from core.context import note_call_adoption
 from core.factory import ComponentKind, ProviderFactory
 from core.interfaces.trace import (
+    BeatTrace,
     LLMCallTrace,
     StepTrace,
     TraceSink,
@@ -21,12 +22,16 @@ class InMemoryTraceSink(TraceSink):
     def __init__(self) -> None:
         self.llm_calls: list[LLMCallTrace] = []
         self.steps: list[StepTrace] = []
+        self.beats: list[BeatTrace] = []
 
     def record_llm_call(self, trace: LLMCallTrace) -> None:
         self.llm_calls.append(trace)
 
     def record_step(self, trace: StepTrace) -> None:
         self.steps.append(trace)
+
+    def record_beat(self, trace: BeatTrace) -> None:
+        self.beats.append(trace)
 
     def _recorded(
         self, world_id: str, step: int, agent_id: str, stage: str
@@ -45,6 +50,11 @@ class InMemoryTraceSink(TraceSink):
     ) -> None:
         for call in self._recorded(world_id, step, agent_id, stage):
             call.extra.update(fields)
+        for beat in self.beats:
+            if (beat.world_id, beat.step, beat.agent_id, beat.stage, beat.beat_kind) == (
+                world_id, step, agent_id, stage, stage,
+            ):
+                beat.extra.update(fields)
 
     async def flush(self, world_id: str, step: int | None = None) -> None:
         return None
@@ -52,6 +62,7 @@ class InMemoryTraceSink(TraceSink):
     def delete_world(self, world_id: str) -> None:
         self.llm_calls = [c for c in self.llm_calls if c.world_id != world_id]
         self.steps = [s for s in self.steps if s.world_id != world_id]
+        self.beats = [b for b in self.beats if b.world_id != world_id]
 
     def delete_run_traces(self, world_id: str) -> None:
         # Keep this world's build calls (step is None); drop everything a run produced.
@@ -59,6 +70,7 @@ class InMemoryTraceSink(TraceSink):
             c for c in self.llm_calls if c.world_id != world_id or c.step is None
         ]
         self.steps = [s for s in self.steps if s.world_id != world_id]
+        self.beats = [b for b in self.beats if b.world_id != world_id]
 
     def read_calls(
         self,
@@ -76,6 +88,12 @@ class InMemoryTraceSink(TraceSink):
         if agent_id is not None:
             calls = [c for c in calls if c.agent_id == agent_id]
         return calls
+
+    def read_beats(
+        self, world_id: str, *, step: int | None = None, agent_id: str | None = None,
+    ) -> list[BeatTrace]:
+        return [b for b in self.beats if b.world_id == world_id
+                and (step is None or b.step == step) and (agent_id is None or b.agent_id == agent_id)]
 
     def read_step_summaries(self, world_id: str) -> list[StepTrace]:
         return sorted((s for s in self.steps if s.world_id == world_id), key=lambda s: s.step)

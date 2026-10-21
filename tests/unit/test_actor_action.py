@@ -9,7 +9,7 @@ import pytest
 
 from agent.actor_briefing import build_actor_briefing
 from agent.actor_perception import build_perceived_entry
-from agent.decision import _ACTION_SPACE, DecisionEngine, candidate_lists
+from agent.decision import _ACTION_SPACE, _SEND_MESSAGE_EXPECTED_OUTCOME, DecisionEngine, candidate_lists
 from agent.memory_types import MemoryStream
 from agent.relation import PerceivedRelation
 from core.interfaces.action import ActionType, Ref
@@ -25,6 +25,7 @@ from core.interfaces.perception import (
     Broadcast, BroadcastType, LocationView, NpcIdentity, PerceivedIdentity, PerceivedNpc, PerceivedPresence, VisibleEntity,
 )
 from core.interfaces.urgency import Urgency
+from core.prompts import relation_legend
 from tests.unit.test_decision_m4_gaps import _make_packet, _make_personality, _mem
 
 ME = "agent-shimin"
@@ -156,11 +157,11 @@ async def test_words_read_as_an_action_name_targets_by_id(container, engine) -> 
 
     reading = await _read(engine, "跟大哥说借一步说话", short_term_goals=["探明大哥的打算"])
 
-    assert reading == ActorDecision(action=ActorAction(
+    assert reading == (ActorDecision(action=ActorAction(
         action_type=ActionType.TALK, action_description="请大哥借一步说话",
         person_ids=(HERE,), message_content="大哥，借一步说话", estimated_steps=2,
-    ))
-    assert _bind(engine, reading.action).target.acts_on == [Ref.agent(HERE)]
+    )), "想和大哥当面说清楚")
+    assert _bind(engine, reading[0].action).target.acts_on == [Ref.agent(HERE)]
 
 
 @pytest.mark.asyncio
@@ -187,24 +188,38 @@ async def test_free_text_and_autonomous_decisions_bind_only_relevant_fields(cont
     assert selection.inner_monologue == "我想清楚了" and selection.expected_outcome == "完成眼前的事"
     assert selection.estimated_steps == 3 and selection.urgency is Urgency.HIGH
     _reply(container, decision="act", **payload)
-    decision = await engine.interpret_actor_decision("具体行动", personality=_make_personality(), packet=packet)
+    reading = await engine.interpret_actor_decision("具体行动", personality=_make_personality(), packet=packet)
+    assert reading is not None
+    decision = reading[0]
     bound = engine.bind_actor_action(decision.action, personality=_make_personality(), packet=packet)
     assert bound.action_type is action_type and bound.target == selection.target
     assert bound.intent.errand == selection.errand
-    assert decision.action.expected_outcome == ""
+    # A reading is a whole decision: what the step is for, and how pressing words are, reach
+    # the action as they do from the model's own decision (a message's expectation is pinned).
+    assert decision.action.expected_outcome == "完成眼前的事"
+    assert bound.expected_outcome == (
+        _SEND_MESSAGE_EXPECTED_OUTCOME if action_type is ActionType.SEND_MESSAGE else "完成眼前的事"
+    )
     assert decision.action.estimated_steps == 3
+    expected_urgency = Urgency.HIGH if action_type is ActionType.SEND_MESSAGE else Urgency.NORMAL
+    assert decision.action.urgency is expected_urgency and bound.urgency is expected_urgency
     if action_type not in (ActionType.TALK, ActionType.SEND_MESSAGE):
         assert selection.message_content == ""
         assert decision.action.person_ids == () and decision.action.message_content == ""
 
 
 @pytest.mark.asyncio
+async def test_an_intent_to_do_nothing_this_step_reads_as_idling(container, engine) -> None:
+    _reply(container, reason="说的是先等等", decision="idle")
+    assert await _read(engine, "先等等看") == (ActorDecision(idle=True), "说的是先等等")
+
+
+@pytest.mark.asyncio
 async def test_words_that_name_nothing_doable_read_as_nothing(container, engine) -> None:
     _reply(container, reason="只是感慨", decision="unclear")
-    assert await _read(engine, "唉") is None
-    # Waiting is chosen directly, never read from words.
-    _reply(container, reason="先等着", decision="wait")
-    assert await _read(engine, "先等等看") is None
+    assert await _read(engine, "唉") == (None, "只是感慨")
+    _reply(container, reason="?", decision="wait")
+    assert await _read(engine, "随便") is None
 
     async def _down(*_args, **_kwargs):
         raise RuntimeError("provider down")
@@ -213,25 +228,93 @@ async def test_words_that_name_nothing_doable_read_as_nothing(container, engine)
     assert await _read(engine, "去玄武门") is None
 
 
-def test_the_reading_prompt_shows_the_lists_the_words_bind_against(engine) -> None:
-    system, user = engine._build_interpret_prompt(  # noqa: SLF001
-        "把奏章拿给大哥看", _make_personality(short_term_goals=["探明大哥的打算"]), _packet(),
+def _intent_prompt(engine, text: str, **kwargs) -> tuple[str, str]:
+    personality = _make_personality(short_term_goals=["探明大哥的打算"])
+    return engine._intent_system_prompt(), engine._intent_user_prompt(  # noqa: SLF001
+        text, personality, _packet(), recent=kwargs.get("recent", ()), recalled=kwargs.get("recalled", ()),
+        fixed=kwargs.get("fixed"),
+    )
+
+
+def test_the_reading_prompt_shows_the_lists_and_what_the_character_knows(engine) -> None:
+    system, user = _intent_prompt(
+        engine, "把奏章拿给大哥看", recent=["昨日：我去了东宫"],
+        recalled=[_mem("大哥曾说奏章之事要当面谈", MemoryStream.FACTUAL, mid="r1")],
     )
 
     assert "#1 李建成（男，在场，面带倦色）" in user
     assert "#2 李元吉（男，不在场）" in user
     assert "#1 玄武门（脚程" in user and "xuanwu_gate" not in user
+    assert "昨日：我去了东宫" in user and "大哥曾说奏章之事要当面谈" in user
+    assert "李元吉" in user.split("【名单】")[0]   # relations come before the lists
     assert user.rstrip().endswith("只输出 JSON。")
-    assert "【指令】\n把奏章拿给大哥看" in user
-    assert "演员" not in system + user
-    # Goals are amended in the mind, never read from words.
-    assert "探明大哥的打算" not in user
+    assert "【意图】\n把奏章拿给大哥看" in user
+    # The parser reads a character's intent: who drives the character is no part of it.
+    assert "演员" not in system + user and "指令" not in system + user and "用户" not in system + user
     # The prefix stays the same for every character and sentence.
     assert "李" not in system and "奏章" not in system
-    assert "从【行动类型】里挑恰好一个" in system
-    assert "【固定操作】" not in system
-    assert '"operation_consistent"' not in system
+    assert "【已定下的】" not in user
     assert system.index("【角色】") < system.index("【任务】") < system.index("【输出】")
+    # The relation legend is a constant: in the cached prefix, not beside the relations.
+    assert relation_legend() in system and relation_legend() not in user
+    assert system.index("【说明】") < system.index(relation_legend()) < system.index("【输出】")
+
+
+def test_the_reading_prompt_carries_what_just_reached_the_character(engine) -> None:
+    from core.interfaces.perception import AmbientEvent
+
+    packet = _packet()
+    packet.inbox = [Message(
+        id="m1", world_id="w", sender_id=HERE, sender_name="李建成", content="今夜子时，玄武门见",
+        recipients=[ME], location_scope=None, created_step=1, deliver_step=2, urgency=Urgency.HIGH,
+    )]
+    packet.broadcasts = [Broadcast(
+        content="东宫走水", source="system", broadcast_type=BroadcastType.WORLD_EVENT, deliver_step=2,
+    )]
+    packet.spatial.ambient_events = [AmbientEvent(content="门外有人在争吵")]
+
+    user = engine._intent_user_prompt(  # noqa: SLF001
+        "回他的信", _make_personality(), packet, recent=(), recalled=(), fixed=None,
+    )
+
+    known = user[user.index("【我知道的】"):user.index("【名单】")]
+    assert "李建成：今夜子时，玄武门见" in known
+    assert "东宫走水" in known and "门外有人在争吵" in known
+
+
+def test_the_reading_prompt_leaves_out_what_only_weighs_what_to_do(engine) -> None:
+    """The ends come only from the intent: what the character would weigh to choose them
+    (persona, mood, needs, goals) stays out, so the reading has nothing to add an end from."""
+    personality = _make_personality(short_term_goals=["探明大哥的打算"], long_term_goals=["登基为帝"])
+    user = engine._intent_user_prompt(  # noqa: SLF001
+        "去玄武门", personality, _packet(), recent=(), recalled=(), fixed=None,
+    )
+
+    assert personality.soul.identity_text() in user
+    assert "探明大哥的打算" not in user and "登基为帝" not in user
+    assert "心境" not in user and "性格" not in user and "背景" not in user
+
+
+def test_the_reading_fields_come_in_dependency_order(engine) -> None:
+    system, _user = _intent_prompt(engine, "去玄武门")
+    schema = system[system.index("【输出】"):]
+    order = ["reason", "decision", "selected_index", "person_indices", "errand_recipient_index",
+             "action_description", "talk_topic", "message_content", "errand_message",
+             "expected_outcome", "estimated_steps", "urgency"]
+    positions = [schema.index(f'"{key}"') for key in order]
+    assert positions == sorted(positions)
+    assert '"operation"' not in schema and '"operation_consistent"' not in schema
+    assert '"item_name"' in schema and '"item_id"' not in schema
+
+
+def test_one_system_prompt_serves_free_words_and_a_fixed_operation(engine) -> None:
+    base = ActorAction(action_type=ActionType.MOVE, action_description="我前往玄武门", destination_id="xuanwu_gate")
+    free_system, _ = _intent_prompt(engine, "去玄武门")
+    fixed_system, fixed_user = _intent_prompt(engine, "悄悄地去", fixed=(base, {"destination_index": 1, "selected_index": 0}))
+
+    assert free_system == fixed_system
+    fixed = fixed_user[fixed_user.index("【已定下的】"):fixed_user.index("【意图】")]
+    assert "我前往玄武门" in fixed and '"destination_index": 1' in fixed
 
 
 def test_the_briefing_lists_are_the_binding_lists() -> None:

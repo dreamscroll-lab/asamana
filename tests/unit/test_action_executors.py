@@ -6442,7 +6442,7 @@ async def test_talk_recent_past_comes_first_and_the_other_blocks_give_way() -> N
             sample_recent_events=lambda step, top_k: pairs[:top_k],
         ),
     )
-    ctx = await SocialExecutor(None, _directory())._gather_context(agent, "b", "乙", "议事", 5)  # type: ignore[arg-type]
+    ctx = await SocialExecutor(None, _directory())._gather_context(agent, "b", "议事", "议事", 5)  # type: ignore[arg-type]
 
     recent_ids = [m.id for m in ctx["recent"]]
     assert recent_ids[0] == "quarrel" and "exp-only" not in recent_ids
@@ -6482,7 +6482,7 @@ async def test_talk_one_failed_recall_does_not_blank_the_other_blocks() -> None:
             sample_recent_events=lambda step, top_k: [(fact, None)],
         ),
     )
-    ctx = await SocialExecutor(None, _directory())._gather_context(agent, "b", "乙", "议事", 5)  # type: ignore[arg-type]
+    ctx = await SocialExecutor(None, _directory())._gather_context(agent, "b", "议事", "议事", 5)  # type: ignore[arg-type]
 
     assert ctx["about_other"] == []
     assert [m.id for m in ctx["about_topic"]] == ["t0"]

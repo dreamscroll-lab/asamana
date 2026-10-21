@@ -21,6 +21,7 @@ from enum import Enum
 from typing import Any, Iterable
 
 from core.duration import describe_duration
+from core.interfaces.memory import MemoryKind
 from core.interfaces.phenomenon import Phenomenon
 from core.interfaces.urgency import Urgency
 
@@ -566,9 +567,9 @@ def _recency_label(elapsed_seconds: int, day_delta: int) -> str:
 
 
 def render_memory(memory, *, now_step: int, seconds_per_step: int, world_start_second_of_day: int = 0) -> str:
-    """Render one memory for a prompt; event memories get a coarse recency prefix.
+    """Render one memory for a prompt; event and insight memories get a coarse recency prefix.
 
-    - Only event memories get the prefix: insights span time and summaries cover a period.
+    - An insight is dated by when it was drawn. A summary gets no prefix: it covers a period.
     - Render time only, never written back to stored_content (timestamps are embedding noise).
       No leading "- " or index; the caller adds those.
 
@@ -576,7 +577,7 @@ def render_memory(memory, *, now_step: int, seconds_per_step: int, world_start_s
     midnight falls on; default 0. The start date cancels out, so the calendar stays out of here.
     """
     content = getattr(memory, "stored_content", "") or ""
-    if getattr(memory, "kind", "event") != "event":
+    if getattr(memory, "kind", MemoryKind.EVENT) not in (MemoryKind.EVENT, MemoryKind.INSIGHT):
         return content
     created = getattr(memory, "created_step", now_step)
     return recency_prefix(

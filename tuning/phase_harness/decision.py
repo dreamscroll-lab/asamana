@@ -5,7 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from agent.memory_types import Memory, MemoryKind, MemoryStream
+from agent.memory_types import Memory, MemoryStream
+from core.interfaces.memory import MemoryKind
 from agent.perception import PerceptionPacket
 from agent.relation import describe_relations
 from config.models import Config

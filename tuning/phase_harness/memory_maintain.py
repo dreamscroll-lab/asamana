@@ -6,7 +6,8 @@ from datetime import datetime
 from typing import Any
 
 from agent.memory import COMPRESSION_TRIGGER_COUNT, _is_compression_candidate, _is_emotional_anchor
-from agent.memory_types import MemoryKind, MemoryStream
+from agent.memory_types import MemoryStream
+from core.interfaces.memory import MemoryKind
 from config.models import Config
 from core.container import Container
 from core.context import clear_log_context, set_log_context

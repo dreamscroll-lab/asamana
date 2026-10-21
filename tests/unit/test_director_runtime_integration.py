@@ -74,7 +74,7 @@ async def _submit(runtime, environment, agents, text: str):
     )
 
 
-def _runtime(container):
+def _runtime(container, *, trace_sink=None):
     """A runtime with a human author and a cast the directory knows.
 
     Build the cast before the directory: a directory built from an empty map answers 「某人」 for
@@ -108,6 +108,7 @@ def _runtime(container):
         executor_registry=build_default_registry(container.llm_router, directory),
         pressure_evaluator=_SignalPressure(),
         llm_router=container.llm_router,
+        trace_sink=trace_sink,
     )
     return runtime, environment, agents, location
 
@@ -154,6 +155,32 @@ async def test_both_authors_share_one_event_stream_distinguished_by_hand(contain
     assert [e["authored_by"] for e in snapshot.events_of("injection")] == ["director"]
     # Events carry a seq and share one emission-ordered timeline with actions, messages and broadcasts.
     assert isinstance(snapshot.events_of("injection")[0]["seq"], int)
+
+
+@pytest.mark.asyncio
+async def test_a_landed_injection_is_a_beat_of_the_step_it_lands_in(container) -> None:
+    """A directive lands at drain with no LLM call of its own; the trace still shows the step it
+    landed in, not the step it was composed against."""
+    from providers.trace.in_memory import InMemoryTraceSink
+
+    _set_work_decision(container)
+    sink = InMemoryTraceSink()
+    runtime, environment, agents, _loc = _runtime(container, trace_sink=sink)
+    container.llm_router.get(LLMScene.DIRECTIVE).fixed_response = _directive_json(
+        narrative_desc="钟声大作",
+        broadcast={"content": "钟声大作。", "severity": "medium", "location_scope": None},
+    )
+    await _submit(runtime, environment, agents, "敲钟")
+    assert sink.read_beats(WORLD_ID) == []
+
+    await runtime.run_step(agents)
+
+    [beat] = sink.read_beats(WORLD_ID)
+    assert (beat.step, beat.stage, beat.beat_kind, beat.agent_id, beat.actor) == (
+        1, "director", "injection", None, False,
+    )
+    assert beat.payload["narrative_desc"] == "钟声大作"
+    assert beat.payload["dispatched_to"] == ["broadcast"]
 
 
 @pytest.mark.asyncio

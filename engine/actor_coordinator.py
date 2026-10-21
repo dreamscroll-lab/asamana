@@ -16,6 +16,10 @@ Everything that passes between actor and world is recorded as the actor's thread
 (``core.interfaces.actor.ActorEntry``), each entry stamped with its step's world time, told to ``on_entry`` as it is recorded and
 handed to the step's snapshot when the step commits (``take_thread``).
 
+The beats the actor settles without an LLM call (the decision, the interrupt answer, the mind
+amendments) also go into the trace as ``BeatTrace``s, so a review reads the character's step
+whole; those beats and the intent-reading calls are tagged ``actor``.
+
 The actor also amends the character's mind (``mind``, ``amend``). Amendments land at once while a
 DECIDE or INTERRUPT turn is open, since the step waits on the actor and nothing else writes the
 character; otherwise, an INVITE or SPEAK turn included, they wait for the start of the next step, where the
@@ -35,10 +39,15 @@ from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 from agent.personality import ActionStatus
 from agent.actor_operations import (
-    actor_operations, build_actor_action_summary, build_actor_operation, requires_actor_interpretation,
+    actor_decision_beat, actor_operations, build_actor_decision_summary, build_actor_operation,
+    requires_actor_interpretation,
 )
-from core.context import annotate_call, note_active_call_adoption
+from core.context import (
+    annotate_call, get_active_call, note_active_call_adoption, note_call_adoption, observe_actor,
+)
 from core.interfaces.action import DialogueTurn, Ref
+from core.interfaces.trace import SUPERSEDED, BeatKind, Stage, TraceSink, record_beat
+from core.prompts import situation_location
 from core.interfaces.actor import (
     UNREADABLE,
     ActorAction,
@@ -50,7 +59,7 @@ from core.interfaces.actor import (
     ActorIntent,
     ActorIntentResult,
     ActorOperations,
-    ActorActionSummary,
+    ActorDecisionSummary,
     ActorPublicAnswer,
     ActorIdleAnswer,
     ActorEntry,
@@ -85,6 +94,29 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+
+@dataclasses.dataclass(frozen=True)
+class _PendingDecision:
+    """A decision read from the actor's intent, waiting for the actor to confirm it."""
+
+    summary: ActorDecisionSummary
+    decision: ActorDecision
+    # The intent-reading call it came from; None for a direct operation.
+    reading: Any = None
+
+
+@dataclasses.dataclass
+class _DecideTurn:
+    """What the coordinator holds while one DECIDE turn is open: the character and the
+    perception intents are read against, every intent-reading call made in the turn, and the
+    decision awaiting confirmation. Created when the turn is asked, dropped when it closes."""
+
+    agent: "Agent"
+    packet: "PerceptionPacket"
+    readings: list[Any] = dataclasses.field(default_factory=list)
+    pending: _PendingDecision | None = None
+    confirmed: _PendingDecision | None = None
+
 # Told each entry of the actor's thread, as JSON, as it is recorded.
 EntryListener = Callable[[dict[str, Any]], None]
 
@@ -102,17 +134,21 @@ class ActorCoordinator:
         *,
         on_turn: TurnListener | None = None,
         on_entry: EntryListener | None = None,
+        world_id: str = "",
+        trace_sink: TraceSink | None = None,
     ) -> None:
         self._time_config = time_config
+        self._world_id = world_id
+        self._trace_sink = trace_sink
         self._on_turn = on_turn
+        # Counts intents across turns, so a reading that returns after a newer intent, or after
+        # its turn closed, is dropped as stale.
         self._intent_generation = 0
-        self._action_summary: tuple[str, ActorActionSummary, ActorDecision] | None = None
         self._channel = ActorChannel(self._turn_changed)
         self._on_entry = on_entry
         self._agent: "Agent | None" = None
         self._pace = ActorPace.EVERY_STEP
-        # The character and perception used to interpret intentions during the open DECIDE turn.
-        self._asking: "tuple[Agent, PerceptionPacket] | None" = None
+        self._deciding: _DecideTurn | None = None
         # The thread since the last commit, as JSON.
         self._thread: list[dict[str, Any]] = []
         # The latest step the character perceived: the step an entry outside any stage belongs to.
@@ -126,7 +162,8 @@ class ActorCoordinator:
 
     def _turn_changed(self, turn: ActorTurn | None) -> None:
         self._intent_generation += 1
-        self._action_summary = None
+        if self._deciding is not None:
+            self._deciding.pending = None
         if self._on_turn is not None:
             self._on_turn(turn)
 
@@ -216,15 +253,26 @@ class ActorCoordinator:
         return self._channel.break_off_requested or reached
 
     async def evaluate_interrupt(self, agent: "Agent", *, step: int) -> tuple[bool, str]:
-        """A break-off already requested needs no turn; otherwise retain the actor's thought."""
-        if self._channel.take_break_off():
-            return True, ""
-        answer = await self._ask(ActorTurn(
-            agent_id=agent.agent_id, step=step, kind=TurnKind.INTERRUPT,
-            doing=agent.personality.state.current_action or "", reason=self._reason_for(step),
-        ))
-        assert isinstance(answer, ActorInterruptAnswer)
-        return answer.interrupt, answer.thought
+        """A break-off already requested needs no turn; otherwise retain the actor's thought.
+
+        A break-off records no trigger even when something reached the character: it was asked
+        for before, so it answers nothing that reached it."""
+        doing = agent.personality.state.current_action or ""
+        self_initiated = self._channel.take_break_off()
+        if self_initiated:
+            interrupt, thought, trigger = True, "", ""
+        else:
+            trigger = self._reason_for(step)
+            answer = await self._ask(ActorTurn(
+                agent_id=agent.agent_id, step=step, kind=TurnKind.INTERRUPT, doing=doing, reason=trigger,
+            ))
+            assert isinstance(answer, ActorInterruptAnswer)
+            interrupt, thought = answer.interrupt, answer.thought
+        self._beat(BeatKind.INTERRUPT, Stage.INTERRUPT, agent.agent_id, step, {
+            "interrupt": interrupt, "thought": thought, "doing": doing, "trigger": trigger,
+            "self_initiated": self_initiated,
+        })
+        return interrupt, thought
 
     async def decide(self, agent: "Agent", *, step: int, packet: "PerceptionPacket") -> ActorDecision:
         # The character is idle: a break-off still requested has nothing left to stop.
@@ -236,7 +284,7 @@ class ActorCoordinator:
             if answer.action is not None:
                 agent.bind_actor_action(answer.action, packet)
 
-        self._asking = (agent, packet)
+        deciding = self._deciding = _DecideTurn(agent, packet)
         try:
             answer = await self._ask(
                 ActorTurn(
@@ -249,8 +297,16 @@ class ActorCoordinator:
                 check=check,
             )
         finally:
-            self._asking = None
+            self._deciding = None
         assert isinstance(answer, ActorDecision)
+        # Readings the actor didn't confirm never shaped the world.
+        chosen = deciding.confirmed.reading if deciding.confirmed is not None else None
+        for call in deciding.readings:
+            if call is not chosen:
+                note_call_adoption(call, False, SUPERSEDED)
+        with annotate_call(location=situation_location(packet.spatial)):
+            self._beat(BeatKind.DECISION, Stage.DECISION, agent.agent_id, step,
+                       actor_decision_beat(answer, packet))
         return answer
 
     async def consider_invitation(
@@ -296,10 +352,12 @@ class ActorCoordinator:
         resolved_answer: ActorAnswer
         if isinstance(answer, ActorConfirmation):
             turn = self._channel.pending_turn
-            pending = self._action_summary
-            if turn is None or turn.kind is not TurnKind.DECIDE or pending is None or pending[0] != turn.turn_id or pending[1].action_summary_id != answer.action_summary_id:
-                raise ActorAnswerRejected("action_summary_not_pending")
-            resolved_answer = pending[2]
+            deciding = self._deciding
+            pending = deciding.pending if deciding is not None else None
+            if turn is None or turn.kind is not TurnKind.DECIDE or pending is None or pending.summary.decision_summary_id != answer.decision_summary_id:
+                raise ActorAnswerRejected("decision_summary_not_pending")
+            resolved_answer = pending.decision
+            deciding.confirmed = pending
         elif isinstance(answer, ActorIdleAnswer):
             resolved_answer = ActorDecision(idle=True)
         elif isinstance(answer, (ActorInterruptAnswer, ActorInvitationAnswer, ActorDialogueTurn)):
@@ -318,39 +376,45 @@ class ActorCoordinator:
             raise ValueError("The actor performs no character")
         return self._agent
 
-    def _decision_turn(self, turn_id: str) -> ActorTurn:
+    def _decision_turn(self, turn_id: str) -> tuple[ActorTurn, _DecideTurn]:
         self._performed()
         turn = self._channel.pending_turn
-        if turn is None or turn.turn_id != turn_id or turn.kind is not TurnKind.DECIDE or self._asking is None:
+        deciding = self._deciding
+        if turn is None or turn.turn_id != turn_id or turn.kind is not TurnKind.DECIDE or deciding is None:
             raise ValueError("That decision turn is no longer waiting for the actor")
-        return turn
+        return turn, deciding
 
     def operations(self, turn_id: str, target: Ref) -> ActorOperations:
-        self._decision_turn(turn_id)
-        assert self._asking is not None
-        return actor_operations(turn_id, target, self._asking[1])
+        _turn, deciding = self._decision_turn(turn_id)
+        return actor_operations(turn_id, target, deciding.packet)
 
     async def intent(self, intent: ActorIntent) -> ActorIntentResult:
-        """Prepare or submit one intention; only this generation may publish its action summary."""
-        turn = self._decision_turn(intent.turn_id)
-        assert self._asking is not None
-        agent, packet = self._asking
+        """Prepare or submit one intention; only this generation may publish its decision summary."""
+        turn, deciding = self._decision_turn(intent.turn_id)
+        agent, packet = deciding.agent, deciding.packet
         self._intent_generation += 1
         generation = self._intent_generation
-        self._action_summary = None
+        deciding.pending = None
         words = intent.text if intent.text is not None else intent.description
         base: ActorAction | None = None
+        reading = ""
+        reading_call: Any = None
         try:
             base = build_actor_operation(intent, packet) if intent.operation is not None else None
             is_direct_operation = not requires_actor_interpretation(intent)
+            decision: ActorDecision | None
             if is_direct_operation:
                 decision = ActorDecision(action=base)
             else:
-                with annotate_call(actor_words=words, turn_id=turn.turn_id):
+                with observe_actor(), annotate_call(actor_words=words, turn_id=turn.turn_id):
                     if base is None:
-                        decision = await agent.interpret_actor_decision(words, packet)
+                        read = await agent.interpret_actor_decision(words, packet)
                     else:
-                        decision = await agent.interpret_actor_decision(words, packet, intent=intent, base=base)
+                        read = await agent.interpret_actor_decision(words, packet, intent=intent, base=base)
+                    reading_call = get_active_call()
+                if reading_call is not None:
+                    deciding.readings.append(reading_call)
+                decision, reading = read if read is not None else (None, "")
             if decision is not None and decision.action is not None:
                 # A selected operation may lack slots until its description is interpreted.
                 agent.bind_actor_action(decision.action, packet)
@@ -361,17 +425,21 @@ class ActorCoordinator:
         current = self._channel.pending_turn
         if generation != self._intent_generation or current is None or current.turn_id != turn.turn_id:
             return ActorIntentResult("rejected", "stale_intent")
-        action_summary = build_actor_action_summary(
-            decision.action, packet, seconds_per_step=self._time_config.seconds_per_step, intent=intent,
-        ) if decision is not None and decision.action is not None else None
-        self._record(SaidEntry(step=turn.step, turn_id=turn.turn_id, words=words or (base.action_description if base else ""), action_summary=action_summary, reason=reason, intent=intent))
-        if action_summary is None or decision is None:
+        decision_summary = build_actor_decision_summary(
+            decision, packet, seconds_per_step=self._time_config.seconds_per_step, intent=intent,
+        ) if decision is not None else None
+        self._record(SaidEntry(
+            step=turn.step, turn_id=turn.turn_id, words=words or (base.action_description if base else ""),
+            decision_summary=decision_summary, reason=reason, intent=intent,
+            reading=reading if reason == UNREADABLE else "",
+        ))
+        if decision_summary is None or decision is None:
             return ActorIntentResult("rejected", reason)
-        self._action_summary = (turn.turn_id, action_summary, decision)
+        deciding.pending = _PendingDecision(decision_summary, decision, reading_call)
         if is_direct_operation:
-            self.answer(ActorConfirmation(action_summary.action_summary_id))
+            self.answer(ActorConfirmation(decision_summary.decision_summary_id))
             return ActorIntentResult("submitted")
-        return ActorIntentResult("needs_confirmation", action_summary=action_summary)
+        return ActorIntentResult("needs_confirmation", decision_summary=decision_summary)
 
     def break_off(self) -> None:
         """Break off what the character is doing: now if an INTERRUPT turn is open, otherwise at
@@ -405,7 +473,9 @@ class ActorCoordinator:
         # it is spoken while the step's other acts are adjudicated, and its own feedback is yet
         # to land.
         if turn is not None and turn.kind in (TurnKind.DECIDE, TurnKind.INTERRUPT):
-            await agent.amend_mind(amendments, step=turn.step)
+            changed = await agent.amend_mind(amendments, step=turn.step)
+            stage = Stage.DECISION if turn.kind is TurnKind.DECIDE else Stage.INTERRUPT
+            self._beat(BeatKind.MIND, stage, agent.agent_id, turn.step, changed)
             return True
         self._pending_amendments = (
             amendments if self._pending_amendments is None else self._pending_amendments.then(amendments)
@@ -415,4 +485,11 @@ class ActorCoordinator:
     async def land_amendments(self, agent: "Agent", *, step: int) -> None:
         pending, self._pending_amendments = self._pending_amendments, None
         if pending is not None:
-            await agent.amend_mind(pending, step=step)
+            changed = await agent.amend_mind(pending, step=step)
+            # Landed before the character perceives this step.
+            self._beat(BeatKind.MIND, Stage.PERCEPTION, agent.agent_id, step, changed)
+
+    def _beat(self, kind: BeatKind, stage: Stage, agent_id: str, step: int, payload: dict[str, Any]) -> None:
+        if payload:
+            record_beat(self._trace_sink, kind, stage, payload, world_id=self._world_id, step=step,
+                        agent_id=agent_id, actor=True)

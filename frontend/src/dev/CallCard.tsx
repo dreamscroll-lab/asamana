@@ -1,16 +1,25 @@
 // One LLM call, opened up: tags → call id → extra → prompt → thinking → response.
 // Shared by the trace list and the prompt bench, so "what a call looks like" is
-// defined once.
+// defined once. A beat that landed without a call (BeatCard) is shown the same way, minus
+// everything a request has.
 
 import { Collapse, Mono, fmt, prettyJson } from "./ui";
-import type { TraceCall } from "./types";
+import type { TraceBeat, TraceCall } from "./types";
+
+const ACTOR_TONE = "border-sky-800 bg-sky-950/40 text-sky-300";
 
 const isCallFail = (c: TraceCall) => c.ok === false;
 const isParseFail = (c: TraceCall) => c.ok !== false && c.parse_ok === false;
+// core.interfaces.trace.SET_ASIDE_REASONS: output set aside for what happened around it (a
+// person passed it over, its character was drawn into someone else's act). Not adopted, but
+// nothing was wrong with it, so it is no failure.
+const SET_ASIDE: Record<string, string> = { superseded: "NOT CHOSEN", conscripted: "CONSCRIPTED" };
+const setAside = (c: TraceCall) => (c.adopted === false ? SET_ASIDE[c.reject_reason] : undefined);
+const isSetAside = (c: TraceCall) => setAside(c) !== undefined;
 // The quiet one: the provider answered, the JSON parsed — and the engine threw the result
 // away anyway (a required field missing, a hallucinated index…). Nothing in ok/parse_ok
 // shows it, so without this the burned beat looks like a perfectly healthy call.
-const isDiscarded = (c: TraceCall) => c.adopted === false;
+const isDiscarded = (c: TraceCall) => c.adopted === false && !isSetAside(c);
 export const isAnyFail = (c: TraceCall) => isCallFail(c) || isParseFail(c) || isDiscarded(c);
 
 function Tag({ children, tone = "" }: { children: React.ReactNode; tone?: string }) {
@@ -44,6 +53,9 @@ export default function CallCard({
           🚫 DISCARDED{call.reject_reason ? `: ${call.reject_reason}` : ""}
         </Tag>
       )}
+      {call.actor && <Tag tone={ACTOR_TONE}>ACTOR</Tag>}
+      {isSetAside(call) && <Tag>{setAside(call)}</Tag>}
+      <VerdictTag extra={call.extra} />
       <Tag tone="border-indigo-800 bg-indigo-950/40 text-indigo-300">{call.scene}</Tag>
       <Tag>{call.step != null ? `step ${call.step}` : "build"}</Tag>
       <Tag>{call.stage}</Tag>
@@ -110,7 +122,9 @@ export default function CallCard({
                 ? " (unparseable)"
                 : isDiscarded(call)
                   ? ` (discarded — ${call.reject_reason || "not adopted"})`
-                  : ""
+                  : isSetAside(call)
+                    ? ` (${setAside(call)?.toLowerCase()})`
+                    : ""
             }`}
           >
             <Mono accent className="max-h-96">
@@ -118,6 +132,51 @@ export default function CallCard({
             </Mono>
           </Labeled>
         )}
+      </div>
+    </Collapse>
+  );
+}
+
+// The arbitration verdict the runtime stamps on a decision (``extra.verdict``): what the world
+// did with the intent. Executed is the usual case and goes untagged; the rest are world outcomes,
+// not failures, except start_failed, the machine breaking.
+function VerdictTag({ extra }: { extra: Record<string, unknown> | undefined }) {
+  const verdict = extra?.verdict;
+  if (typeof verdict !== "string" || verdict === "executed") return null;
+  const label = verdict.replace(/_/g, " ").toUpperCase();
+  return verdict === "start_failed" ? (
+    <Tag tone="border-amber-800 bg-amber-950/50 text-amber-300">⚠ {label}</Tag>
+  ) : (
+    <Tag>{label}</Tag>
+  );
+}
+
+export function BeatCard({ beat }: { beat: TraceBeat }) {
+  const head = (
+    <span className="flex flex-wrap items-center gap-1.5">
+      {beat.actor && <Tag tone={ACTOR_TONE}>ACTOR</Tag>}
+      <Tag tone="border-teal-800 bg-teal-950/40 text-teal-300">beat · {beat.beat_kind}</Tag>
+      <VerdictTag extra={beat.extra} />
+      <Tag>step {beat.step}</Tag>
+      <Tag>{beat.stage}</Tag>
+      {beat.agent_name && <Tag tone="border-emerald-900 bg-emerald-950/30 text-emerald-300">{beat.agent_name}</Tag>}
+      <span className="text-[10px] text-slate-500">no LLM request</span>
+    </span>
+  );
+  const extraEntries = Object.entries(beat.extra || {});
+  return (
+    <Collapse title={head}>
+      <div className="space-y-2">
+        {extraEntries.length > 0 && (
+          <Labeled label="extra">
+            <Mono>{extraEntries.map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join("\n")}</Mono>
+          </Labeled>
+        )}
+        <Labeled label="payload">
+          <Mono accent className="max-h-96">
+            {JSON.stringify(beat.payload, null, 2)}
+          </Mono>
+        </Labeled>
       </div>
     </Collapse>
   );

@@ -31,6 +31,7 @@ from core.interfaces.actor import (
     TurnKind,
 )
 from engine.run_control import StepWithdrawn
+from providers.trace.in_memory import InMemoryTraceSink
 from core.interfaces.llm import LLMScene
 from core.interfaces.message import Message
 from core.interfaces.perception import Broadcast, BroadcastType
@@ -44,9 +45,12 @@ HERO = "agent-1"
 OTHER = "agent-2"
 
 
-def _setup(container, world_id: str, *, other_at: str = "garden", pace: ActorPace = ActorPace.EVERY_STEP):
+def _setup(
+    container, world_id: str, *, other_at: str = "garden", pace: ActorPace = ActorPace.EVERY_STEP,
+    trace_sink=None,
+):
     """The actor plays HERO. OTHER, an AI character, is elsewhere unless placed beside him."""
-    runtime, environment, message_system = _build_runtime(container, world_id=world_id)
+    runtime, environment, message_system = _build_runtime(container, world_id=world_id, trace_sink=trace_sink)
     environment.place_agent(agent_id=HERO, location_id="palace")
     environment.place_agent(agent_id=OTHER, location_id=other_at)
     agents = [
@@ -103,12 +107,12 @@ async def _step_answering(runtime, agents, *answers: "ActorDecision | ActorPubli
 async def _answer_decision(runtime, agent, decision: ActorDecision) -> None:
     """Submit a fixture decision through the public intent and confirmation boundary."""
     assert decision.action is not None
-    with patch.object(agent, "interpret_actor_decision", new=AsyncMock(return_value=decision)):
+    with patch.object(agent, "interpret_actor_decision", new=AsyncMock(return_value=(decision, ""))):
         result = await _say(runtime, decision.action.action_description)
     if result.status == "rejected":
         raise ActorAnswerRejected(result.reason or "unreadable")
-    assert result.action_summary is not None
-    runtime.answer_actor(ActorConfirmation(result.action_summary.action_summary_id))
+    assert result.decision_summary is not None
+    runtime.answer_actor(ActorConfirmation(result.decision_summary.decision_summary_id))
 
 
 async def _thread(container, runtime, world_id: str, kind: str | None = None) -> list[dict]:
@@ -284,7 +288,8 @@ async def test_a_place_broadcast_stays_in_view_after_the_character_leaves(contai
 @pytest.mark.asyncio
 async def test_a_busy_character_can_carry_on(container) -> None:
     world_id = "world-actor-carry-on"
-    runtime, message_system, agents = _setup(container, world_id)
+    sink = InMemoryTraceSink()
+    runtime, message_system, agents = _setup(container, world_id, trace_sink=sink)
     hero = agents[0]
     await _step_answering(runtime, agents, ActorDecision(action=_work(steps=6)))
     assert hero.personality.state.action_status == ActionStatus.IN_PROGRESS
@@ -296,6 +301,8 @@ async def test_a_busy_character_can_carry_on(container) -> None:
     assert [t.kind for t in turns] == [TurnKind.INTERRUPT]
     assert turns[0].reason == "有 1 件事发生"
     assert runtime._executor_registry.get_active_for_agent(HERO).execution_id == first
+    [beat] = [b for b in sink.read_beats(world_id) if b.beat_kind == "interrupt"]
+    assert (beat.payload["trigger"], beat.payload["self_initiated"]) == ("有 1 件事发生", False)
 
 
 @pytest.mark.asyncio
@@ -591,18 +598,18 @@ async def test_words_are_read_only_while_a_decision_turn_waits(container) -> Non
     turn = await _next_turn(runtime, task)
     said = await _say(runtime, "抄奏章")
     assert said.status == "needs_confirmation" and said.reason is None
-    assert said.action_summary.description == "亲自誊抄奏章"
+    assert said.decision_summary.description == "亲自誊抄奏章"
     assert runtime.actor_live_thread[-1]["turn_id"] == turn.turn_id
-    assert runtime.actor.pending_turn is not None   # action_summary answers nothing
+    assert runtime.actor.pending_turn is not None   # decision_summary answers nothing
 
-    runtime.answer_actor(ActorConfirmation(said.action_summary.action_summary_id))
+    runtime.answer_actor(ActorConfirmation(said.decision_summary.decision_summary_id))
     await task
     with pytest.raises(ValueError):
         await _say(runtime, "抄奏章")
 
 
 @pytest.mark.asyncio
-async def test_words_with_no_action_summary_say_why(container) -> None:
+async def test_words_with_no_decision_summary_say_why(container) -> None:
     runtime, _ms, agents = _setup(container, "world-actor-read-refused")   # OTHER is in the garden
     _read_as(container, decision="act", selected_index=_TALK_INDEX, action_description="找大哥说话",
              person_indices=[1])
@@ -614,8 +621,8 @@ async def test_words_with_no_action_summary_say_why(container) -> None:
     _read_as(container, decision="unclear")
     unreadable = await _say(runtime, "唉")
 
-    assert (refused.action_summary, refused.reason) == (None, "talk_without_target")
-    assert (unreadable.action_summary, unreadable.reason) == (None, "unreadable")
+    assert (refused.decision_summary, refused.reason) == (None, "talk_without_target")
+    assert (unreadable.decision_summary, unreadable.reason) == (None, "unreadable")
     runtime.answer_actor(_IDLE)
     await task
 
@@ -631,16 +638,16 @@ async def test_the_thread_records_the_exchange_and_the_act_in_order(container) -
     task = asyncio.create_task(runtime.run_step(agents))
     await _next_turn(runtime, task)
     said = await _say(runtime, "抄奏章")
-    runtime.answer_actor(ActorConfirmation(said.action_summary.action_summary_id))
+    runtime.answer_actor(ActorConfirmation(said.decision_summary.decision_summary_id))
     await task
 
     thread = (await container.snapshot.load(world_id, 1)).actor_thread
     assert [e["kind"] for e in thread] == ["asked", "said", "answered", "began", "ended"]
     asked, said_entry, answered, began, ended = thread
     assert said_entry["turn_id"] == answered["turn_id"] == asked["turn"]["turn_id"]
-    assert answered["answer"] == {"action_summary_id": said.action_summary.action_summary_id}
-    assert said_entry["action_summary"]["description"] == "亲自誊抄奏章"
-    assert "action" not in said_entry["action_summary"]
+    assert answered["answer"] == {"decision_summary_id": said.decision_summary.decision_summary_id}
+    assert said_entry["decision_summary"]["description"] == "亲自誊抄奏章"
+    assert "action" not in said_entry["decision_summary"]
     assert (began["description"], began["total_steps"]) == ("亲自誊抄奏章", 1)
     assert ended["fact"] and ended["succeeded"] and ended["happened"]
     # Each entry names its step's moment in the world's own calendar, never by step.

@@ -610,6 +610,21 @@ async def test_retrieval_floor_compares_fused_score() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_call_may_hold_its_recall_to_a_stricter_floor() -> None:
+    """``score_floor`` overrides the system's floor for that one call only."""
+    dense_w = VECTOR_WEIGHTS[0]
+    system = _make_floor_system(floor=dense_w - 0.1)
+    await system.ensure_collections()
+    await system.write("alpha 事件", MemoryStream.FACTUAL, personality=_make_personality(),
+                       importance=MemoryImportance.MEDIUM, current_step=1)
+
+    strict = await system.retrieve("alpha", current_step=5, stream=MemoryStream.FACTUAL, score_floor=dense_w + 0.1)
+    default = await system.retrieve("alpha", current_step=5, stream=MemoryStream.FACTUAL)
+
+    assert strict == [] and [m.stored_content for m in default] == ["alpha 事件"]
+
+
+@pytest.mark.asyncio
 async def test_retrieval_score_floor_all_irrelevant_returns_empty() -> None:
     """If every candidate is irrelevant, return nothing rather than a top N of unrelated memories."""
     system = _make_floor_system(floor=0.2)

@@ -848,14 +848,13 @@ def _phase_lines(s: dict[str, Any], *, name: str, sps: Any) -> list[str]:
     settles); they're then numbered and listed. Merging would pair A's result with B's inputs, and
     dropping one leaves the judge unable to tell anything is missing.
     """
-    lines: list[str] = []
+    lines: list[str] = _mind_lines(s, "perception") + _mind_lines(s, "interrupt")
     itr = s.get("interrupt") or {}
-    if itr.get("doing") or itr.get("trigger"):
-        ip = [x for x in (f"正在做:{itr['doing']}" if itr.get("doing") else "",
-                          f"突发:{itr['trigger']}" if itr.get("trigger") else "") if x]
-        lines.append("  中断｜输入：" + "｜".join(ip))
+    if ip := _interrupt_context(itr):
+        lines.append(f"  中断｜输入：{ip}")
     if itr.get("thought") is not None or itr.get("interrupt") is not None:
-        lines.append(f"  中断｜输出：{itr.get('thought', '')}（interrupt={itr.get('interrupt')}）")
+        thought = itr.get("thought") or ("未留下想法" if itr.get("self_initiated") else "")
+        lines.append(f"  中断｜输出：{thought}（interrupt={itr.get('interrupt')}）")
     if s.get("location"):
         # Where he is: the premise for judging "conflicting actions in the same place" and "did he show up
         # when the agreement fell due". Location only: time is one per step and already in the step
@@ -886,6 +885,7 @@ def _phase_lines(s: dict[str, Any], *, name: str, sps: Any) -> list[str]:
     if s.get("motivation_thought"):
         lines.append(f"  动机｜输出：思考:{s['motivation_thought']}")
     lines.extend(_goal_lines("  新短期目标", s.get("short_term_goals")))
+    lines.extend(_mind_lines(s, "decision"))
     lines.extend(_decision_lines(s, sps))
     lines.extend(_action_lines(s, name))
     for ap in s.get("appraisal") or []:
@@ -900,6 +900,41 @@ def _phase_lines(s: dict[str, Any], *, name: str, sps: Any) -> list[str]:
         lines.append(f"  记忆(主观感受)：{mem}")
     lines.extend(_step_level_lines(s))
     return lines
+
+
+def _interrupt_context(itr: dict[str, Any]) -> str:
+    """What he was doing and what cut in. A break-off he chose himself has no trigger, and says
+    so: a bare stop reads as an unprompted one."""
+    trigger = "无，他自己决定停下手头这件事" if itr.get("self_initiated") else itr.get("trigger")
+    return "｜".join(x for x in (f"正在做:{itr['doing']}" if itr.get("doing") else "",
+                                f"突发:{trigger}" if trigger else "") if x)
+
+
+def _mind_text(m: dict[str, Any]) -> str:
+    """What changed in his mind, in one line: the input of the beat that follows it."""
+    parts: list[str] = []
+    if isinstance(emo := m.get("emotion"), dict):
+        parts.append(f"心境变为 {_emo(emo.get('emotion'), emo.get('intensity'), emo.get('valence'))}")
+    for r in m.get("relations") or []:
+        vals = "/".join(x for x in (f"信任{_num(r['trust'])}" if r.get("trust") is not None else "",
+                                    f"好感{_num(r['affection'])}" if r.get("affection") is not None else "") if x)
+        parts.append(f"对 {r.get('to') or '某人'} 变为 {vals}")
+    if m.get("long_term_goals") is not None:
+        parts.append(f"长期目标变为：{_join(m['long_term_goals']) or '（无）'}")
+    if m.get("short_term_goals") is not None:
+        parts.append(f"短期目标变为：{_join(m['short_term_goals']) or '（无）'}")
+    if m.get("removed_short_term_goals"):
+        parts.append(f"放下了：{_join(m['removed_short_term_goals'])}")
+    if m.get("insights"):
+        parts.append(f"新的感悟：{_join(m['insights'])}")
+    return "｜".join(parts)
+
+
+def _mind_lines(s: dict[str, Any], before: str, pad: str = "  ") -> list[str]:
+    """Changes in his mind that landed before the *before* beat. They have no beat of their own:
+    the beat after them already reads the new state, and this says where it came from."""
+    return [f"{pad}内心变化（此后各拍以此为准）：{text}"
+            for m in s.get("mind") or [] if m.get("before") == before and (text := _mind_text(m))]
 
 
 def _decision_lines(s: dict[str, Any], sps: Any) -> list[str]:
@@ -1115,10 +1150,10 @@ def _mams_phase_lines(s: dict[str, Any], name: str, *, sps: Any) -> list[str]:
     itr = s.get("interrupt") or {}
     if s.get("location"):
         lines.append(f"      · 他在：{s['location']}")
+    for before in ("perception", "interrupt", "decision"):
+        lines.extend(_mind_lines(s, before, pad="      · "))
     if itr.get("interrupt"):
-        ctx = "｜".join(x for x in ((f"正在做:{itr['doing']}" if itr.get("doing") else ""),
-                                    (f"突发:{itr['trigger']}" if itr.get("trigger") else "")) if x)
-        lines.append(f"      · 【中断】他当场放下了手上那件事（{ctx}）：{itr.get('thought') or ''}")
+        lines.append(f"      · 【中断】他当场放下了手上那件事（{_interrupt_context(itr)}）：{itr.get('thought') or ''}")
     if (why := s.get("intent_dropped")):
         lines.append({
             "conscripted": "      · 【本步他没有自己的行动】被并进了别人的行动，自己决定的那件事与"
@@ -1194,8 +1229,9 @@ def _mams_phase_lines(s: dict[str, Any], name: str, *, sps: Any) -> list[str]:
     return lines
 
 
-def _mams_script_lines(doer: str, s: dict[str, Any]) -> list[str]:
-    """God's-eye script: TALK's actual dialogue (speaker 1 = initiator, 2 = other party, resolved to names).
+def _mams_script_lines(doer: str, s: dict[str, Any], shown: dict[tuple[str, ...], str] | None = None) -> list[str]:
+    """God's-eye script: TALK's actual dialogue. A narrator's speakers are 1 = initiator, 2 = other
+    party, resolved to names here; a memory call's transcript names its speakers already.
     mams is the director's view and needs to read what was actually said to judge the narrative, so
     there's no viewpoint filtering here; every line is laid out. Words sent out (letters / messages
     carried by errand-runners) aren't here; they travel with "what he does".
@@ -1203,6 +1239,10 @@ def _mams_script_lines(doer: str, s: dict[str, Any]) -> list[str]:
     Both phases are searched: an interrupted conversation settles at step start, so its dialogue belongs
     to the carry-over segment. The other party is resolved from that phase's own participants/targets,
     never borrowed across phases.
+
+    Every side of a talk carries its transcript, so a step's cells share ``shown`` (lines → whose
+    cell printed them): a talk is laid out once and the other sides point to it. Laid out twice, it
+    reads as two talks.
     """
     for phase in (s.get("carried"), s):
         if not isinstance(phase, dict):
@@ -1214,12 +1254,19 @@ def _mams_script_lines(doer: str, s: dict[str, Any]) -> list[str]:
     else:
         dlg = None
     if isinstance(dlg, list) and dlg:
+        key = tuple(str(t.get("line", "")).strip() for t in dlg if isinstance(t, dict))
+        if shown is not None:
+            if (where := shown.get(key)) is not None:
+                return [f"      · 对话：同一场，见 {where} 处"]
+            shown[key] = doer
         who = {1: doer, 2: str(target) if target else "对方"}
         out = ["      · 对话："]
         for turn in dlg:
             if not isinstance(turn, dict):
                 continue
-            sp = who.get(turn.get("speaker"), f"角色{turn.get('speaker')}")
+            speaker = turn.get("speaker")
+            named = isinstance(speaker, str) and not speaker.isdigit()
+            sp = speaker if named else who.get(speaker, f"角色{speaker}")
             out.append(f"          {sp}：{str(turn.get('line', '')).strip()}")
         return out
     return []
@@ -1282,11 +1329,12 @@ def world_block(view: WorldAuditView) -> str:
             if isinstance(ev, dict) and (ev.get("message") or ev.get("narrative_desc")):
                 lines.append(f"  ⚡事件：{ev.get('narrative_desc') or ev.get('message')}")
         rel_changes: list[str] = []
+        scripts: dict[tuple[str, ...], str] = {}
         # Same cell path as mass (view.cells_at), just laid out step × character here.
         for _aid, nm, sv in view.cells_at(entry["step"]):
             if block := _mams_lines(nm, sv.summary, sps=sps):  # empty cells produce no block; the rendering decides
                 lines.extend(block)
-                lines.extend(_mams_script_lines(nm, sv.summary))  # god's-eye: what was actually said
+                lines.extend(_mams_script_lines(nm, sv.summary, scripts))  # god's-eye: what was actually said
             rel_changes.extend(_rel_deltas(nm, sv.summary.get("relations"), prior_rel))
         # Changes between agents: this step's relation matrix vs the last time it was seen. Relations are
         # only visible on steps where the agent perceived, and steps without perception aren't compared, so

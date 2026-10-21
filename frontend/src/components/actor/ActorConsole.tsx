@@ -4,7 +4,7 @@
  *
  * Top to bottom: the character's mind (MindPanel, folded to its tabs) and the actor's pace; the
  * thread (thread.ts): what reached the character, folded; the world's questions as cards; the
- * actor's words and the world's action summary of them, confirmed on the card; each act with its
+ * actor's words and the world's decision summary of them, confirmed on the card; each act with its
  * progress, and how it ended as the character remembers it; each live conversation as a folded
  * card; then the actor's words box. A live conversation going on is spoken in its own window over
  * the map (ConversationWindow), which the actor closes once it is over.
@@ -25,9 +25,10 @@ import { useCast } from "../../lib/cast";
 import { identityColor, toHex } from "../../lib/color";
 import { durationLabel } from "../../lib/duration";
 import type {
-  ActorPublicAnswer, ActorBriefing, ActorActionSummary, ActorEntry, ActorDialogueTurn, ActorMind, ActorPace, ActorTurn, CharacterIdentity, RunState,
+  ActorPublicAnswer, ActorBriefing, ActorDecisionSummary, ActorEntry, ActorDialogueTurn, ActorMind, ActorPace, ActorTurn, CharacterIdentity, RunState,
 } from "../../types";
-import { ActionType } from "../../lib/contract";
+import { ActionType, IDLE_OPERATION } from "../../lib/contract";
+import { URGENCY_LABEL } from "../../lib/urgency";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
 import {
   CONSOLE_USER_MESSAGE, CONSOLE_WORLD_MESSAGE, CONSOLE_RAISED, CONSOLE_COLLAPSED, CONSOLE_PANEL, CONSOLE_HEADER,
@@ -40,14 +41,14 @@ import InterruptQuestion from "./InterruptQuestion";
 import { goalChoices, type GoalRow } from "./goals";
 import SendButton, { SEND_HINT, isSendKey } from "../SendButton";
 import { useActorSubmission } from "./submission";
-import { describeActionSummary, describeIntent, reasonText } from "./actionSummary";
+import { describeDecisionSummary, describeIntent, reasonText } from "./decisionSummary";
 import { breakableAct, buildThread, conversationsOf, liveConversation, type ThreadItem } from "./thread";
 
 // The backend's cap on what the actor says at once (interaction/api/actor.py).
 const MAX_WORDS = 500;
 
-// Only the pressing levels are worth a mark; the rest read as plain words.
-const URGENCY_MARK: Record<string, string> = { high: "（急）", critical: "（十万火急）" };
+// Only the pressing levels are worth a mark on a letter; the rest read as plain words.
+const PRESSING = new Set(["high", "critical"]);
 
 
 // A person's name in their identity color.
@@ -81,7 +82,7 @@ export default function ActorConsole({
   const [text, setText] = useState("");
   const { busy, message, run } = useActorSubmission();
   const [mind, setMind] = useState<ActorMind | null>(null);
-  // Words just said, shown at once until their action summary comes back as a `said` entry: `after` is
+  // Words just said, shown at once until their decision summary comes back as a `said` entry: `after` is
   // how many there were when they were said.
   const [pending, setPending] = useState<{ words: string; after: number } | null>(null);
   const saidCount = entries.filter((e) => e.kind === "said").length;
@@ -373,7 +374,7 @@ function Perceived({ item }: { item: Extract<ThreadItem, { kind: "perceived" }> 
               <span className="text-slate-500">✉ </span>
               {m.sender_name && <span className="text-slate-400">{m.sender_name}：</span>}
               {m.content}
-              {URGENCY_MARK[m.urgency] && <span className="text-amber-400">{URGENCY_MARK[m.urgency]}</span>}
+              {PRESSING.has(m.urgency) && <span className="text-amber-400">（{URGENCY_LABEL[m.urgency]}）</span>}
             </li>
           ))}
           {item.broadcasts.map((b, i) => (
@@ -474,38 +475,41 @@ function Said({
           {submitted.details.map((detail, index) => <div key={index} className="text-xs opacity-80">{detail}</div>)}
         </> : item.words}</div>
       </div>
-      {item.action_summary && item.briefing ? (
-        <ActionSummaryCard
-          actionSummary={item.action_summary}
+      {item.decision_summary && item.briefing ? (
+        <DecisionSummaryCard
+          decisionSummary={item.decision_summary}
           briefing={item.briefing}
           self={self}
           state={item.state}
           busy={busy}
-          onConfirm={() => onAnswer({ action_summary_id: item.action_summary!.action_summary_id })}
+          onConfirm={() => onAnswer({ decision_summary_id: item.decision_summary!.decision_summary_id })}
         />
       ) : (
-        <div role="alert" className={`${CONSOLE_WORLD_MESSAGE} border border-rose-400/30 bg-rose-950/30 text-rose-200`}>{reasonText(item.reason)}</div>
+        <div role="alert" className={`${CONSOLE_WORLD_MESSAGE} border border-rose-400/30 bg-rose-950/30 text-rose-200`}>
+          {reasonText(item.reason)}
+          {item.reading && <div className="mt-1 text-[11px] leading-relaxed text-rose-200/70">{item.reading}</div>}
+        </div>
       )}
     </div>
   );
 }
 
-function ActionSummaryCard({
-  actionSummary,
+function DecisionSummaryCard({
+  decisionSummary,
   briefing,
   state,
   busy,
   self,
   onConfirm,
 }: {
-  actionSummary: ActorActionSummary;
+  decisionSummary: ActorDecisionSummary;
   briefing: ActorBriefing;
   state: Extract<ThreadItem, { kind: "said" }>["state"];
   busy: boolean;
   self: Pick<CharacterIdentity, "agent_id" | "name">;
   onConfirm: () => void;
 }) {
-  const text = describeActionSummary(actionSummary, briefing, self);
+  const text = describeDecisionSummary(decisionSummary, briefing, self);
   return (
     <div
       className={`max-w-[92%] rounded-xl rounded-tl-sm border px-3 py-2 ${CONSOLE_RAISED} ${
@@ -513,7 +517,9 @@ function ActionSummaryCard({
       }`}
     >
       <div className="text-[13px] font-semibold text-slate-100">{text.headline}</div>
-      <div className="text-[12px] leading-relaxed text-slate-300">预计耗时：{actionSummary.estimated_duration_seconds / 3600}h</div>
+      {decisionSummary.operation !== IDLE_OPERATION && (
+        <div className="text-[12px] leading-relaxed text-slate-300">预计耗时：{decisionSummary.estimated_duration_seconds / 3600}h</div>
+      )}
       {text.details.map((d, i) => (
         <div key={i} className="text-[12px] leading-relaxed text-slate-300">{d}</div>
       ))}

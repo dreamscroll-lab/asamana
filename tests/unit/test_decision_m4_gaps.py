@@ -913,7 +913,7 @@ def test_parse_send_message_stray_item_id_not_bound(container) -> None:
     packet = _make_packet(visible_agent_ids=[])
     candidates = [ActionCandidate(ActionType.SEND_MESSAGE, "传讯")]
     raw = json.dumps({
-        "selected_index": 0, "item_id": "禁军统领", "message_announce": True,
+        "selected_index": 0, "item_name": "禁军统领", "message_announce": True,
         "action_description": "通告全军戒备", "message_content": "全军戒备。", "estimated_steps": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
@@ -1012,7 +1012,7 @@ def test_parse_physical_without_target_rejected(container) -> None:
     # adjudicated as an untracked thing. Catching that would require guessing from the string
     # whether a name looks like a person, which is the keyword matching Rule 7 forbids.
     freeform = json.dumps({
-        "selected_index": 0, "item_id": "宫门",
+        "selected_index": 0, "item_name": "宫门",
         "action_description": "我用肩撞开紧闭的宫门", "estimated_steps": 1,
     })
     sel = engine._parse_llm_selection(freeform, candidates, packet)
@@ -1055,6 +1055,31 @@ def test_recipient_index_precedes_action_description_in_schema(main_engine) -> N
     assert prompt.index('"physical_recipient_index"') < prompt.index('"action_description"')
 
 
+
+def test_spoken_words_follow_action_description_in_schema(main_engine) -> None:
+    """The words said are what the step comes to in speech: written after the step, so they carry
+    it out instead of the step being summed up to fit them (§5b)."""
+    prompt = _decision_prompt(main_engine, _make_personality(), _make_packet(), candidates=[])
+    described = prompt.index('"action_description"')
+    assert described < prompt.index('"message_content"')
+    assert described < prompt.index('"errand_message"')
+
+
+
+def test_the_relation_legend_sits_in_the_system_prefix(main_engine) -> None:
+    """The legend is the same for every call: in system it stays in the cached prefix; beside the
+    relations in user it would be resent with every call."""
+    from core.prompts import relation_legend
+
+    rel = PerceivedRelation(trust=0.85, affection=0.4, target_agent_id="agent-weichi",
+                            target_agent_name="尉迟恭", labels=["心腹"])
+    system, user, _facts = main_engine._build_decision_prompt(  # noqa: SLF001
+        _make_personality(), _make_packet(relevant_relations=[rel]), candidates=[],
+    )
+    assert relation_legend() in system and relation_legend() not in user
+    assert system.index("【说明】") < system.index(relation_legend()) < system.index("【输出】")
+    assert "尉迟恭" in user
+
 def test_item_list_marks_who_holds_what(main_engine) -> None:
     """One list, one set of indices. Holding is an attribute of an entry, not a second namespace.
 
@@ -1084,7 +1109,7 @@ def test_item_list_marks_who_holds_what(main_engine) -> None:
     assert "#3 虎符（由尉迟恭持有）" in prompt       # in someone else's hands: not marked "可取"
     assert "#4 密函（由某人持有" in prompt      # an unrecognized holder falls back to a descriptive referent
     assert "#5 包裹（由信使持有）" in prompt
-    _system, actor_prompt = main_engine._build_interpret_prompt("拿回包裹", _make_personality(), packet)
+    actor_prompt = main_engine._intent_user_prompt("拿回包裹", _make_personality(), packet, recent=(), recalled=(), fixed=None)
     assert "#5 包裹（由信使持有）" in actor_prompt
     for leaked in ("agent-shimin", "agent-weichi", "agent-ghost", "npc-runner", "e1", "e2"):
         assert leaked not in prompt

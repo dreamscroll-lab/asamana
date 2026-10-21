@@ -105,6 +105,10 @@ _PERCEPTION_EMOTION_RECENT_FACTUAL_K = 6
 # (see _supplement_recent). More factual (objective anchors), fewer experiential (feelings make decide drift).
 _DECIDE_RECENT_FACTUAL_SUPPLEMENT_K = 5
 _DECIDE_RECENT_EXPERIENTIAL_SUPPLEMENT_K = 2
+# Reading an intent: his latest doings let "go on" read as going on with them, and memories the
+# intent brings up let a goal resolve into a first step he knows how to take.
+_INTENT_RECENT_K = 5
+_INTENT_RECALL_K = 3
 # Forgetting period for foiled counts: a key untouched for this many steps is dropped. Keep close to
 # _FOILED_LOOKBACK_STEPS (how long the same matter stays visible in the decision prompt).
 _FOILED_MISS_AGE_STEPS = 5
@@ -510,9 +514,18 @@ class Agent:
     async def interpret_actor_decision(
         self, text: str, packet: PerceptionPacket, *, intent: ActorIntent | None = None,
         base: ActorAction | None = None,
-    ) -> ActorDecision | None:
+    ) -> tuple[ActorDecision | None, str] | None:
+        """The decision this step's intent resolves into, with the reading's reasoning; read
+        against what he did lately and what the intent brings back to him."""
+        recalled: list[Memory] = []
+        try:
+            recalled = await self.memory_system.retrieve(text, current_step=packet.step, top_k=_INTENT_RECALL_K)
+        except Exception as exc:  # noqa: BLE001 — read failed: read the intent without them
+            logger.warning("intent_recall_failed", extra={"agent_id": self.agent_id, "error": str(exc)})
         return await self.decision_engine.interpret_actor_decision(
-            text, personality=self.personality, packet=packet, intent=intent, base=base,
+            text, personality=self.personality, packet=packet,
+            recent=self._recent_factual_lines(packet.step, top_k=_INTENT_RECENT_K),
+            recalled=recalled, intent=intent, base=base,
         )
 
     async def actor_mind(self, *, pending: ActorAmendments | None, step: int) -> ActorMind:
@@ -554,9 +567,16 @@ class Agent:
         if self.actor is not None and self.is_active:
             await self.actor.land_amendments(self, step=step)
 
-    async def amend_mind(self, amendments: ActorAmendments, *, step: int) -> None:
-        """Apply the actor's amendments (checked by ``check_amendments``)."""
+    async def amend_mind(self, amendments: ActorAmendments, *, step: int) -> dict[str, Any]:
+        """Apply the actor's amendments (checked by ``check_amendments``) and return what changed,
+        people by the names the character knows them by, for the trace."""
+        changed: dict[str, Any] = {}
         if amendments.emotion is not None:
+            changed["emotion"] = {
+                "emotion": amendments.emotion.emotion,
+                "intensity": amendments.emotion.intensity,
+                "valence": amendments.emotion.valence,
+            }
             self.personality.update_emotion(
                 primary=EmotionType(amendments.emotion.emotion),
                 intensity=amendments.emotion.intensity,
@@ -571,13 +591,23 @@ class Agent:
                 importance=INSIGHT_BASE_IMPORTANCE,
                 emotion_valence=self.personality.state.emotion.valence,
             )
+        if amendments.insights:
+            changed["insights"] = [text.strip() for text in amendments.insights]
         for relation in amendments.relations:
             await self.relation_system.set_trust_affection(
                 relation.agent_id, trust=relation.trust, affection=relation.affection, step=step,
             )
+            existing = await self.relation_system.load_existing(relation.agent_id)
+            changed.setdefault("relations", []).append({
+                "to": (existing.to_name if existing is not None else "") or "某人",
+                "trust": relation.trust,
+                "affection": relation.affection,
+            })
         if amendments.long_term_goals is not None:
             self.personality.set_long_term_goals(amendments.long_term_goals)
+            changed["long_term_goals"] = list(amendments.long_term_goals)
         if amendments.short_term_goals is not None:
+            before = {g.id: g.text for g in self.personality.state.short_term_goal_entities}
             self.personality.set_short_term_goal_entities(
                 amend_short_term_goals(
                     self.personality.state.short_term_goal_entities,
@@ -587,6 +617,10 @@ class Agent:
                 ),
                 step=step,
             )
+            changed["short_term_goals"] = list(self.personality.state.short_term_goals)
+            if removed := [before[i] for i in amendments.removed_short_term_goal_ids if i in before]:
+                changed["removed_short_term_goals"] = removed
+        return changed
 
     def _actor_plan(
         self,

@@ -10,7 +10,8 @@ from dataclasses import replace
 import pytest
 
 from agent.goals import GoalEntity, GoalOrigin, GoalStatus
-from agent.memory_types import MemoryKind, MemoryStream
+from agent.memory_types import MemoryStream
+from core.interfaces.memory import MemoryKind
 from core.interfaces.actor import (
     ActorAmendments,
     ActorAnswerRejected,
@@ -233,3 +234,34 @@ def test_amendments_are_well_formed() -> None:
         ActorAmendments(removed_short_term_goal_ids=("stg-0-1",))
 
 
+
+
+@pytest.mark.asyncio
+async def test_amendments_made_during_a_decision_are_a_mind_beat_of_it(container) -> None:
+    from providers.trace.in_memory import InMemoryTraceSink
+
+    sink = InMemoryTraceSink()
+    runtime, _ms, agents = _setup(container, "world-actor-mind-beat", trace_sink=sink)
+    hero = agents[0]
+    await hero.relation_system.apply_interaction(OTHER, trust_delta=-0.1, affection_delta=-0.1, step=1)
+    dropped = GoalEntity(id="stg-0-9", text="不再追求", goal_type="short_term")
+    hero.personality.set_short_term_goal_entities([dropped])
+    task = asyncio.create_task(runtime.run_step(agents))
+    turn = await _next_turn(runtime, task)
+
+    await runtime.amend_actor_mind(replace(_AMENDED, removed_short_term_goal_ids=(dropped.id,)))
+    runtime.answer_actor(_IDLE)
+    await task
+
+    [beat] = [b for b in sink.read_beats("world-actor-mind-beat") if b.beat_kind == "mind"]
+    # Landed while the decision waited: the input of that decision.
+    assert (beat.step, beat.agent_id, beat.stage, beat.actor) == (turn.step, HERO, "decision", True)
+    expected_to = (await hero.relation_system.load_existing(OTHER)).to_name or "某人"
+    assert beat.payload == {
+        "emotion": {"emotion": "anger", "intensity": 0.7, "valence": -0.6},
+        "insights": ["大哥终究容不下我"],
+        "relations": [{"to": expected_to, "trust": 0.05, "affection": None}],
+        "long_term_goals": ["保全秦王府上下"],
+        "short_term_goals": ["今夜先见长孙无忌"],
+        "removed_short_term_goals": ["不再追求"],
+    }

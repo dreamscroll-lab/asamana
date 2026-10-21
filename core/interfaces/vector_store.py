@@ -12,11 +12,12 @@ class SearchResult:
     """Similarity search result.
 
     ``score`` is the **fused** hybrid score (dense×w_d + sparse×w_s), scaled by the caller's
-    weights: only for *ranking within one query*, never against an absolute threshold.
+    weights. A relevance floor applies to it, so a floor is tied to the weights it was set under
+    (``RETRIEVAL_SCORE_FLOOR`` beside ``VECTOR_WEIGHTS``): change the weights and the floor needs
+    resetting.
 
-    ``dense_score`` is the raw cosine similarity ∈ [-1, 1]. A relevance floor must be applied to
-    **this**: a floor on ``score`` moves with the weights and goes silently dead.
-    ``sparse_score`` is the raw sparse overlap, for retrieval diagnostics.
+    ``dense_score`` is the raw cosine similarity ∈ [-1, 1]; ``sparse_score`` the raw sparse
+    overlap. Both are for retrieval diagnostics.
     """
 
     id: str
