@@ -21,6 +21,7 @@ from engine.clock import WorldTimeConfig
 if TYPE_CHECKING:
     from agent.agent import Agent
     from engine.environment import EnvironmentSystem
+    from engine.executors.base import ActionExecutionState
     from world.setup import WorldSetup
 
 
@@ -724,6 +725,8 @@ class World:
     step_zero_snapshot: WorldSnapshot
     directory: WorldDirectory
     current_step: int = 0  # step the world resumes at (latest snapshot); 0 for a fresh build
+    # The multi-step acts under way at ``current_step``, for the runtime to carry on with.
+    active_executions: list[ActionExecutionState] = field(default_factory=list)
 
     def agent_list(self) -> list[Agent]:
         return list(self.agents.values())

@@ -883,11 +883,30 @@ class NarrativeRuntime:
                 # Next seq to assign; restore (NarrativeApplication._build_runtime →
                 # start_event_seq) resumes strictly increasing.
                 event_seq=self._event_seqs.next_seq,
+                active_executions=self._active_execution_payloads(step),
                 environment=self._environment.engine_state(),
                 schedule=schedule,
             ),
             actor_thread=self._actor.take_thread(),
         )
+
+    def _active_execution_payloads(self, step: int) -> List[Dict[str, Any]]:
+        """The acts under way, as the snapshot keeps them. One that can't be saved is left out
+        and logged (Rule 6) rather than costing the whole snapshot; a restore leaves its
+        participants idle."""
+        payloads: List[Dict[str, Any]] = []
+        for execution in self._executor_registry.all_active():
+            try:
+                payloads.append(execution.to_payload())
+            except TypeError as exc:
+                logger.error(
+                    "active_execution_unsaveable",
+                    extra={
+                        "world_id": self._world_id, "step": step,
+                        "execution_id": execution.execution_id, "error": str(exc),
+                    },
+                )
+        return payloads
 
     def _agent_records(
         self,

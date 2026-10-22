@@ -91,11 +91,26 @@ async def _converse(executor, env, agents, action: AgentAction):
 async def test_a_live_conversation_takes_one_step_whatever_was_estimated(container) -> None:
     executor, env, agents = _setup(container, _ScriptedActor())
     state = await executor.start(_talk(HERO, OTHER, steps=3), 1, agents=agents, environment=env, message_system=None)
-    assert (state.estimated_steps, state.extra["live"]) == (1, True)
+    assert state.estimated_steps == 1
 
     agents[HERO].actor = None
     narrated = await executor.start(_talk(HERO, OTHER, steps=3), 1, agents=agents, environment=env, message_system=None)
-    assert (narrated.estimated_steps, narrated.extra["live"]) == (3, False)
+    assert narrated.estimated_steps == 3
+
+
+@pytest.mark.asyncio
+async def test_a_talk_begun_unperformed_is_spoken_live_once_a_side_is_performed(container) -> None:
+    """A resumed talk may have begun under another casting: whether it is spoken turn by turn is
+    asked of the sides when it ends, never recorded when it began."""
+    _ai_says(container, "且慢")
+    actor = _ScriptedActor([ActorDialogueTurn(line="大哥留步", end=True)])
+    executor, env, agents = _setup(container, None)
+    state = await executor.start(_talk(HERO, OTHER, steps=3), 1, agents=agents, environment=env, message_system=None)
+    assert state.estimated_steps == 3
+
+    agents[HERO].actor = actor
+    await executor.complete(state, 3, agents=agents, environment=env, message_system=None)
+    assert actor.told and actor.told[0][0].line == "大哥留步"
 
 
 @pytest.mark.asyncio

@@ -430,7 +430,6 @@ class SocialExecutor(ActionExecutor):
             talk_topic=action.talk_topic,
         )
         state.extra["target_id"] = target_ids[0]
-        state.extra["live"] = live
         return state
 
     def _failed_result(self, action: AgentAction, step: int, outcome: str, location: str) -> ActionExecutionState:
@@ -513,7 +512,9 @@ class SocialExecutor(ActionExecutor):
         # the topic recalled by what each side knows of the talk (``_topic_query``). A performed side
         # recalls nothing: its actor remembers for itself, and a recall would only touch memories
         # nobody reads.
-        live = bool(state.extra.get("live"))
+        # Asked of the sides now, not recorded at start: a talk a restore resumes may have been
+        # begun under another casting, and a performed side always speaks for itself.
+        live = any(side is not None and side.is_performed for side in (initiator, target))
         initiator_ctx_r, target_ctx_r = await asyncio.gather(
             self._gather_context(
                 None if live and initiator is not None and initiator.is_performed else initiator,

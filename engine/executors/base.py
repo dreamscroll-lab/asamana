@@ -6,6 +6,7 @@ Scene assembly lives in ``engine.scene``; outcome wording in ``engine.narration`
 
 from __future__ import annotations
 
+import json
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -244,6 +245,65 @@ class ActionExecutionState:
         )
         state.extra["completed_result"] = failure_result
         return state
+
+    def to_payload(self) -> dict[str, Any]:
+        """This execution as the step snapshot keeps it, so a restored world carries on with it.
+
+        Only executions still under way reach a snapshot: one that completes in its own step
+        (``create_failed`` among them) leaves the registry before the commit point. ``extra`` must
+        be JSON-native; the round trip here raises on anything else instead of letting the
+        snapshot writer stringify it into something no restore can read.
+        """
+        return {
+            "execution_id": self.execution_id,
+            "action_type": self.action_type.value,
+            "initiator_id": self.initiator_id,
+            "participant_ids": list(self.participant_ids),
+            "started_step": self.started_step,
+            "estimated_steps": self.estimated_steps,
+            "remaining_steps": self.remaining_steps,
+            "purpose": self.purpose,
+            **target_semantics(self.target),
+            "expected_outcome": self.expected_outcome,
+            "opening_outcome": self.opening_outcome,
+            "opening_observations": [
+                {"location_id": o.location_id, "text": o.text, "strength": o.strength}
+                for o in self.opening_observations
+            ],
+            "listener_ids": list(self.listener_ids),
+            "talk_topic": self.talk_topic,
+            "extra": json.loads(json.dumps(self.extra)),
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "ActionExecutionState":
+        """Inverse of ``to_payload``. Raises on a malformed payload; the restore decides what a
+        world does without it."""
+        target = payload.get("target") or {}
+
+        def refs(group: str) -> list[Ref]:
+            return [Ref(str(r["kind"]), str(r["id"])) for r in target.get(group) or []]
+
+        return cls(
+            execution_id=str(payload["execution_id"]),
+            action_type=ActionType(payload["action_type"]),
+            initiator_id=str(payload["initiator_id"]),
+            participant_ids=[str(pid) for pid in payload["participant_ids"]],
+            started_step=int(payload["started_step"]),
+            estimated_steps=int(payload["estimated_steps"]),
+            remaining_steps=int(payload["remaining_steps"]),
+            purpose=str(payload.get("purpose", "")),
+            target=ActionTarget(acts_on=refs("acts_on"), claims=refs("claims"), reaches=refs("reaches")),
+            expected_outcome=str(payload.get("expected_outcome", "")),
+            opening_outcome=str(payload.get("opening_outcome", "")),
+            opening_observations=[
+                Observed(location_id=str(o["location_id"]), text=str(o["text"]), strength=o.get("strength"))
+                for o in payload.get("opening_observations") or []
+            ],
+            listener_ids=[str(lid) for lid in payload.get("listener_ids") or []],
+            talk_topic=str(payload.get("talk_topic", "")),
+            extra=dict(payload.get("extra") or {}),
+        )
 
 
 class Conscription(str, Enum):

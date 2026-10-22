@@ -224,8 +224,8 @@ class EnvironmentSystem:
         # the former, "what's here" of the latter.
         self._entities: Dict[str, WorldEntity] = {}    # all of them, tombstones included
         self._items: Dict[str, WorldEntity] = {}       # the ones still alive
-        # agent_id → origin. Without it an agent in transit at snapshot time is stranded after
-        # restore; restore sends it back to the origin.
+        # body_id → origin. A body caught in transit with no trip to carry it on after a restore
+        # (an Npc, or an agent whose execution was lost) is sent back here instead of stranded.
         self._transit_origins: Dict[str, str] = {}
         self._current_step = 0
         self._current_world_time_label = ""
@@ -1024,8 +1024,8 @@ class EnvironmentSystem:
 
         The caller rebuilds places and agent placement; this restores entity state (re-registering
         runtime-made ones, re-killing tombstoned seeds), ``transit_origins`` (so the caller can
-        send mid-MOVE agents back), next step's carried observations, and Npcs whole, position
-        included.
+        send back a body left in transit with no trip), next step's carried observations, and
+        Npcs whole, position included.
         """
         carry = engine.get("carry_annotations")
         if isinstance(carry, Mapping):

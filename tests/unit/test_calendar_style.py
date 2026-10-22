@@ -154,6 +154,7 @@ def test_the_runtime_clock_keeps_the_world_s_whole_clock_config(container, test_
         environment=environment,
         directory=LiveWorldDirectory.from_agents({}, environment),
         setup=SimpleNamespace(lore=SimpleNamespace(core_tension="", narrative_theme="")),
+        active_executions=[],
     )
     runtime = NarrativeApplication(container, test_config)._build_runtime(world)
 

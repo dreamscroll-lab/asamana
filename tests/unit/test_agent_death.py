@@ -333,7 +333,7 @@ async def test_restore_derives_inactive_from_zero_vitality(container) -> None:
 
     fresh = _make_agent(container, agent_id="agent-dead", vitality=1.0)
     assert fresh.is_active is True  # active by default
-    _apply_stored_state(fresh, stored)
+    _apply_stored_state(fresh, stored, in_resumed_execution=False)
     assert fresh.is_active is False  # derived from vitality=0: no resurrection
 
 

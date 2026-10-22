@@ -6,7 +6,7 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 from agent.agent import Agent, snapshot_agent_state
 from agent.decision import DecisionEngine
@@ -30,6 +30,7 @@ from engine.clock import (
 )
 from engine.directory import LiveWorldDirectory
 from engine.environment import DEFAULT_MAX_NPCS, IN_TRANSIT, EnvironmentSystem
+from engine.executors.base import ActionExecutionState
 from core.interfaces.world_config import WorldConfig
 from worlds.tiled import CAST_ART_FIELDS, CHARACTERS_FILENAME
 
@@ -456,6 +457,13 @@ class WorldInitializer:
             default=0,
         )
         await self._rollback_relations(world_id, resume_step)
+        latest = await self._container.snapshot.load(world_id, resume_step)
+        stored_states = {
+            definition.agent_id: await self._container.agent_store.load_agent_state(world_id, definition.agent_id)
+            for definition in agent_definitions
+        }
+        active_executions = _resumable_executions(world_id, latest, stored_states)
+        resumed_participants = {pid for execution in active_executions for pid in execution.participant_ids}
 
         for definition in agent_definitions:
             agent = self._instantiate_agent(
@@ -469,22 +477,27 @@ class WorldInitializer:
             # Before warming: an uncommitted step's memories must not come back with the rest.
             await agent.memory_system.purge_memories_after(resume_step)
 
-            stored = await self._container.agent_store.load_agent_state(world_id, agent.agent_id)
+            stored = stored_states[agent.agent_id]
             if stored is not None:
-                _apply_stored_state(agent, stored)
+                _apply_stored_state(
+                    agent, stored, in_resumed_execution=agent.agent_id in resumed_participants
+                )
                 # Don't place the dead: death handling already removed them from the environment (current_location
                 # isn't cleared, it only records where they fell). Placing them unconditionally would stand the
                 # corpse back up in the room, visible to everyone there forever.
                 # Check liveness with is_active (just derived by _apply_stored_state from vitality, the single source of truth), not a raw vitality comparison.
                 if agent.is_active:
-                    environment.place_agent(agent_id=agent.agent_id, location_id=stored.current_location)
+                    environment.place_agent(
+                        agent_id=agent.agent_id,
+                        location_id=_body_location(latest, agent.agent_id, stored, resumed_participants),
+                    )
                 await agent.memory_system.warm_recent_memories(current_step=stored.updated_step)
             else:
                 environment.place_agent(agent_id=agent.agent_id, location_id=definition.initial_location)
                 await agent.memory_system.warm_recent_memories(current_step=0)
 
-        await self._restore_environment_state(world_id, environment, resume_step)
-        self._repatriate_transit_agents(agents, agent_definitions, environment)
+        self._restore_environment_state(latest, environment)
+        self._repatriate_transit_agents(agents, agent_definitions, environment, resumed_participants=resumed_participants)
         directory = LiveWorldDirectory.from_agents(agents, environment)
 
         logger.info(
@@ -505,6 +518,7 @@ class WorldInitializer:
             step_zero_snapshot=step_zero,
             directory=directory,
             current_step=resume_step,
+            active_executions=active_executions,
         )
 
     async def _rollback_relations(self, world_id: str, resume_step: int) -> None:
@@ -532,18 +546,21 @@ class WorldInitializer:
         agents: dict[str, Agent],
         agent_definitions: Sequence[AgentDefinition],
         environment: EnvironmentSystem,
+        *,
+        resumed_participants: set[str],
     ) -> None:
-        """Fix the location of agents caught mid-move in a snapshot.
+        """Land a body left in transit with no trip to carry it.
 
-        Execution state isn't persisted with snapshots (IN_PROGRESS is reset to IDLE on restore). If the
-        snapshot lands mid multi-step MOVE, the agent's stored location is the IN_TRANSIT pseudo-location,
-        which has no connections and no entities, so every move feasibility check fails and the agent is
-        stuck forever. Matches movement's interrupt turn-back (<50%): return to the origin registered in
-        the environment; if none is registered (older snapshots), fall back to the initial location.
+        A body on a resumed MOVE (in ``resumed_participants``) stays where the snapshot left it and
+        walks on. One with no trip (its snapshot saved no MOVE for it, or the MOVE wasn't resumed)
+        stands on the IN_TRANSIT pseudo-location, which has no connections and no entities, so
+        every move feasibility check fails and it is stuck forever. Matches movement's interrupt
+        turn-back (<50%): return to the origin registered in the environment, else the initial
+        location.
         """
         initial_by_id = {d.agent_id: d.initial_location for d in agent_definitions}
         for agent_id, agent in agents.items():
-            if environment.get_body_location(agent_id) != IN_TRANSIT:
+            if agent_id in resumed_participants or environment.get_body_location(agent_id) != IN_TRANSIT:
                 continue
             origin = environment.transit_origin(agent_id)
             landed = origin or initial_by_id.get(agent_id, "")
@@ -560,8 +577,9 @@ class WorldInitializer:
                 },
             )
 
-    async def _restore_environment_state(
-        self, world_id: str, environment: EnvironmentSystem, resume_step: int
+    @staticmethod
+    def _restore_environment_state(
+        snapshot: WorldSnapshot | None, environment: EnvironmentSystem
     ) -> None:
         """Re-apply the persisted environment state onto a freshly seeded world.
 
@@ -576,7 +594,6 @@ class WorldInitializer:
         puts them back. Skipping step 0 (every fresh world's first run, every reset) leaves the
         world with none: ERRAND silently out of reach.
         """
-        snapshot = await self._container.snapshot.load(world_id, resume_step)
         if snapshot is None:
             return
         environment.restore_state(
@@ -828,7 +845,66 @@ def _coerce_due_step(raw: object) -> int | None:
         return None
 
 
-def _apply_stored_state(agent: Agent, stored: AgentState) -> None:
+def _resumable_executions(
+    world_id: str, snapshot: WorldSnapshot | None, stored_states: Mapping[str, AgentState | None],
+) -> list[ActionExecutionState]:
+    """The multi-step acts the resume step's snapshot left under way, each kept only if every
+    participant's saved state is still in it.
+
+    Both are written at the step's commit point, so they agree unless an agent state write
+    failed (Rule 6). An act that can't be read, or that someone in it has no record of, is
+    dropped whole: half an act would tick a character who isn't in it. Its participants are then
+    left idle by ``_apply_stored_state``, as is anyone whose snapshot saved no act at all.
+    """
+    if snapshot is None:
+        return []
+    resumed: list[ActionExecutionState] = []
+    for payload in snapshot.engine.active_executions:
+        try:
+            execution = ActionExecutionState.from_payload(payload)
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning(
+                "active_execution_unreadable",
+                extra={"world_id": world_id, "execution_id": payload.get("execution_id"), "error": str(exc)},
+            )
+            continue
+        states = [stored_states.get(pid) for pid in execution.participant_ids]
+        if not all(
+            state is not None
+            and state.action_status == ActionStatus.IN_PROGRESS.value
+            and state.vitality > 0.0
+            for state in states
+        ):
+            logger.warning(
+                "active_execution_dropped",
+                extra={
+                    "world_id": world_id, "execution_id": execution.execution_id,
+                    "participant_ids": execution.participant_ids,
+                },
+            )
+            continue
+        resumed.append(execution)
+    return resumed
+
+
+def _body_location(
+    snapshot: WorldSnapshot | None, agent_id: str, stored: AgentState, resumed_participants: set[str],
+) -> str:
+    """Where to stand a living body on restore.
+
+    A body in a resumed act stands where the snapshot saw it: a MOVE in progress is on a
+    waypoint or IN_TRANSIT, while the character's own ``current_location`` changes only on
+    arrival, so that would put him back at his origin for the step before his trip ticks on.
+    Everyone else stands where they last knew themselves to be.
+    """
+    if agent_id in resumed_participants and snapshot is not None:
+        where = (snapshot.state.agents.get(agent_id) or {}).get("location_id")
+        if where:
+            return str(where)
+    return stored.current_location
+
+
+def _apply_stored_state(agent: Agent, stored: AgentState, *, in_resumed_execution: bool) -> None:
     """Sync a loaded AgentState into an Agent's in-memory StateLayer.
 
     Calls personality.restore_state() to write directly into _state, bypassing
@@ -857,6 +933,9 @@ def _apply_stored_state(agent: Agent, stored: AgentState) -> None:
     else:
         goal_entities = []
 
+    # An act in progress goes on only with the execution that carries it; without one nothing
+    # would ever tick or end it, and the character would stay busy forever.
+    orphaned = stored.action_status == ActionStatus.IN_PROGRESS.value and not in_resumed_execution
     restored = StateLayer(
         agent_id=agent.agent_id,
         step=stored.updated_step,
@@ -872,30 +951,12 @@ def _apply_stored_state(agent: Agent, stored: AgentState) -> None:
         short_term_goals=list(stored.short_term_goals),
         current_location=stored.current_location,
         activity_status=(
-            AgentActivityStatus.IDLE
-            if stored.action_status == ActionStatus.IN_PROGRESS.value
-            else AgentActivityStatus(stored.activity_status)
+            AgentActivityStatus.IDLE if orphaned else AgentActivityStatus(stored.activity_status)
         ),
-        activity_target=(
-            None
-            if stored.action_status == ActionStatus.IN_PROGRESS.value
-            else stored.activity_target
-        ),
-        action_status=(
-            ActionStatus.IDLE
-            if stored.action_status == ActionStatus.IN_PROGRESS.value
-            else ActionStatus(stored.action_status)
-        ),
-        current_action=(
-            None
-            if stored.action_status == ActionStatus.IN_PROGRESS.value
-            else stored.current_action
-        ),
-        action_remaining_steps=(
-            0
-            if stored.action_status == ActionStatus.IN_PROGRESS.value
-            else stored.action_remaining_steps
-        ),
+        activity_target=None if orphaned else stored.activity_target,
+        action_status=ActionStatus.IDLE if orphaned else ActionStatus(stored.action_status),
+        current_action=None if orphaned else stored.current_action,
+        action_remaining_steps=0 if orphaned else stored.action_remaining_steps,
         last_action=stored.last_action,
         last_action_result=stored.last_action_result,
         last_action_succeeded=stored.last_action_succeeded,
@@ -917,7 +978,7 @@ def _apply_stored_state(agent: Agent, stored: AgentState) -> None:
     # vitality is the single source of truth for alive/dead: restore is_active from it, or the dead come
     # back to life on restart (default True) → decay kills them again next step → duplicate death notices. is_active isn't persisted separately.
     agent.set_active(stored.vitality > 0.0)
-    if stored.action_status == ActionStatus.IN_PROGRESS.value:
+    if orphaned:
         logger.info(
             "in_progress_action_cleared",
             extra={

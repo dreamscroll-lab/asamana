@@ -946,6 +946,16 @@ class NarrativeApplication:
         # channel is fresh on every _build_runtime.
         for broadcast in pending_broadcasts or ():
             broadcast_channel.publish(broadcast)
+        executor_registry = build_default_registry(
+            self._container.llm_router,
+            world.directory,
+            seconds_per_step=clock.config.seconds_per_step,
+            world_start_second_of_day=WorldTime.from_step(0, clock.config).elapsed_seconds,
+        )
+        # The registry is fresh on every _build_runtime too: the acts a restored world was in
+        # the middle of go on from where its snapshot left them.
+        for execution in world.active_executions:
+            executor_registry.add_active(execution)
         runtime = NarrativeRuntime(
             world_id=world.world_id,
             clock=clock,
@@ -969,12 +979,7 @@ class NarrativeApplication:
             event_bus=self._container.event_bus,
             broadcast_channel=broadcast_channel,
             directory=world.directory,
-            executor_registry=build_default_registry(
-                self._container.llm_router,
-                world.directory,
-                seconds_per_step=clock.config.seconds_per_step,
-                world_start_second_of_day=WorldTime.from_step(0, clock.config).elapsed_seconds,
-            ),
+            executor_registry=executor_registry,
             maintenance=CognitionMaintenance(
                 memory_decay_interval=self._config.engine.decay_interval,
                 long_term_goal_revision_interval=self._config.engine.long_term_goal_revision_interval,

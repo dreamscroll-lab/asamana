@@ -42,6 +42,9 @@ class EngineState:
     pending_broadcasts: list[Broadcast] = field(default_factory=list)
     # Next ordinal to assign on the emission timeline; restore resumes strictly increasing.
     event_seq: int = 0
+    # Multi-step acts still under way (``ActionExecutionState.to_payload``). Unsaved, a restore
+    # would drop them: half-done acts vanish with no result and nobody remembers them.
+    active_executions: list[dict[str, Any]] = field(default_factory=list)
     # ``EnvironmentSystem.engine_state``: in-transit origins and the ambient annotations
     # (this step's and the ones carried to the next).
     environment: dict[str, Any] = field(default_factory=dict)

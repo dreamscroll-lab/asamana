@@ -7,8 +7,9 @@ IN_TRANSIT is not "a room all travelers share":
   is referred to in narrative terms;
 - in-transit records such as MOVE ticks are not carried as ambient (guarded by
   runtime._carry_step_observations);
-- on mid-journey snapshot restore, travelers "turn back" to the origin registered by the
-  environment (transit_origins), or to their initial location if none is registered.
+- a traveler restored in transit with no trip to carry him on "turns back" to the origin
+  registered by the environment (transit_origins), or to his initial location if none is
+  registered. One whose trip resumes stays on the road (see test_execution_resume).
 """
 
 from __future__ import annotations
@@ -166,7 +167,7 @@ async def test_repatriation_lands_at_transit_origin(container) -> None:
     agent.personality.update_location(location=IN_TRANSIT)
 
     initializer = WorldInitializer(container)
-    initializer._repatriate_transit_agents({"agent-a": agent}, [], env)  # noqa: SLF001
+    initializer._repatriate_transit_agents({"agent-a": agent}, [], env, resumed_participants=set())  # noqa: SLF001
 
     assert env.get_body_location("agent-a") == "hall"
     assert agent.personality.state.current_location == "hall"
@@ -189,7 +190,7 @@ async def test_repatriation_falls_back_to_initial_location(container) -> None:
         initial_emotion=EmotionState(),
     )
     initializer = WorldInitializer(container)
-    initializer._repatriate_transit_agents({"agent-a": agent}, [definition], env)  # noqa: SLF001
+    initializer._repatriate_transit_agents({"agent-a": agent}, [definition], env, resumed_participants=set())  # noqa: SLF001
 
     assert env.get_body_location("agent-a") == "garden"
     assert agent.personality.state.current_location == "garden"
