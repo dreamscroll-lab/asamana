@@ -4,14 +4,14 @@
 import { useState } from "react";
 
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
+import { SETUP_INPUT } from "./styles";
 import type { Places } from "../../lib/places";
 import { joinList, splitList } from "../../lib/textList";
 import type {
   CharacterRevision, CharacterSetupView, InnateNeedView, NewCharacter, Vocabulary,
 } from "../../types";
 
-const INPUT =
-  "w-full bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500/70 disabled:opacity-50";
+const INPUT = `${SETUP_INPUT} w-full`;
 const LABEL = "text-[10px] font-bold text-slate-400";
 
 type TextField = "role" | "appearance" | "background" | "secret" | "self_image" | "life_goal";
@@ -208,7 +208,7 @@ export default function CharacterEditor({
         <label className="space-y-1">
           <span className={LABEL}>性别</span>
           <select value={draft.gender} disabled={busy} onChange={(e) => set("gender")(e.target.value)} className={INPUT}>
-            {!draft.gender && <option value="" disabled>请选择</option>}
+            {!draft.gender && <option value="" disabled>请选择性别</option>}
             <option value="男">男</option>
             <option value="女">女</option>
           </select>
@@ -220,7 +220,7 @@ export default function CharacterEditor({
         <label className="space-y-1">
           <span className={LABEL}>初始地点</span>
           <select value={draft.initial_location} disabled={busy} onChange={(e) => set("initial_location")(e.target.value)} className={INPUT}>
-            {!draft.initial_location && <option value="" disabled>请选择</option>}
+            {!draft.initial_location && <option value="" disabled>请选择初始地点</option>}
             {Object.values(places).map((p) => <option key={p.location_id} value={p.location_id}>{p.name}</option>)}
           </select>
         </label>

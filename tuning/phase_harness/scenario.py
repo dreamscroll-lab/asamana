@@ -12,7 +12,7 @@ from agent.need import NeedType
 from agent.personality import parse_emotion_type
 from core.interfaces.action import ErrandOrder
 from core.interfaces.message import Message
-from core.interfaces.perception import AmbientEvent, Broadcast, BroadcastType
+from core.interfaces.perception import DEFAULT_ENTITY_STATE, AmbientEvent, Broadcast, BroadcastType
 from core.interfaces.urgency import Urgency, parse_urgency
 from core.interfaces.condition import BodyCondition
 from engine.presence import attach_presence
@@ -201,7 +201,7 @@ async def apply_action_scene(scenario: dict, world: World, run_step: int, id_by_
         ) if holder_ref else None
         env.register_entity(WorldEntity(
             entity_id=f"act-item-{i}", name=str(it.get("name", "")), entity_type=etype,
-            state=str(it.get("state", "intact")),
+            state=str(it.get("state", DEFAULT_ENTITY_STATE)),
             description=str(it.get("desc", "")),
             presence=EntityPresence.HELD if holder else EntityPresence.AT_LOCATION,
             presence_ref=holder or base_loc,

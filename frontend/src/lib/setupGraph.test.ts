@@ -14,6 +14,7 @@ const character = (agent_id: string, is_main_character: boolean) => ({
 describe("setupGraph", () => {
   it("draws each relation of the setup as both its directions", () => {
     const setup: SetupView = {
+      entities: [], npcs: [],
       seconds_per_step: 3600,
       characters: [character("a", true), character("b", false)],
       historical_events: [],

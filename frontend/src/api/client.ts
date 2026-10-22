@@ -23,6 +23,10 @@ import type {
   PlaceIdentity,
   SetupRelationView,
   SetupView,
+  EntityRevision,
+  NewEntity,
+  NewNpc,
+  NpcRevision,
   BuildJob,
   Deployment,
   DirectiveResult,
@@ -110,6 +114,22 @@ export const api = {
     req<SetupView>(`/api/worlds/${id}/setup/seconds-per-step`, {
       method: "PUT",
       body: JSON.stringify({ seconds_per_step: secondsPerStep }),
+    }),
+  addEntity: (id: string, entity: NewEntity) =>
+    req<{ entity_id: string; setup: SetupView }>(`/api/worlds/${id}/setup/entities`, { method: "POST", body: JSON.stringify(entity) }),
+  removeEntity: (id: string, entityId: string) =>
+    req<SetupView>(`/api/worlds/${id}/setup/entities/${entityId}`, { method: "DELETE" }),
+  addNpc: (id: string, npc: NewNpc) =>
+    req<{ npc_id: string; setup: SetupView }>(`/api/worlds/${id}/setup/npcs`, { method: "POST", body: JSON.stringify(npc) }),
+  removeNpc: (id: string, npcId: string) =>
+    req<SetupView>(`/api/worlds/${id}/setup/npcs/${npcId}`, { method: "DELETE" }),
+  reviseEntity: (id: string, entityId: string, revision: EntityRevision) =>
+    req<SetupView>(`/api/worlds/${id}/setup/entities/${entityId}`, {
+      method: "PATCH", body: JSON.stringify(revision),
+    }),
+  reviseNpc: (id: string, npcId: string, revision: NpcRevision) =>
+    req<SetupView>(`/api/worlds/${id}/setup/npcs/${npcId}`, {
+      method: "PATCH", body: JSON.stringify(revision),
     }),
   // Both replace the whole list: an event or a relation left out is removed.
   replaceHistory: (id: string, events: SetupHistoricalEventView[]) =>

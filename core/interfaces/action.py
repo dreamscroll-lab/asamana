@@ -11,6 +11,7 @@ from typing import Any, Iterable, List
 
 from core.coerce import coerce_enum
 from core.interfaces.condition import BodyCondition
+from core.interfaces.perception import DEFAULT_ENTITY_STATE
 from core.interfaces.urgency import Urgency
 
 
@@ -362,7 +363,7 @@ class EntitySpawn:
     # WorldEntityType string value; ``str`` so ``core/`` keeps no dependency on ``world/``
     # (same reason as ``VisibleEntity.entity_type``).
     entity_type: str = "item"
-    state: str = "intact"
+    state: str = DEFAULT_ENTITY_STATE
     content: str = ""
     # Set → born in this agent's hands (HELD); None → born at the doer's location.
     holder_id: str | None = None

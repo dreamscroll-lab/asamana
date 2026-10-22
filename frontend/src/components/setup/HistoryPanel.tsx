@@ -5,12 +5,10 @@ import { useState } from "react";
 
 import { identityOf } from "../../lib/worldTable";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
+import { SETUP_INPUT } from "./styles";
 import { durationLabel } from "../../lib/duration";
 import type { Cast } from "../../lib/cast";
 import type { SetupHistoricalEventView } from "../../types";
-
-const INPUT =
-  "bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500/70 disabled:opacity-50";
 
 const pct = (x: number) => Math.round(x * 100);
 
@@ -94,7 +92,7 @@ export default function HistoryPanel({
                 disabled={busy}
                 placeholder="发生了什么"
                 onChange={(ev) => update(i, { event: ev.target.value })}
-                className={`${INPUT} w-full resize-y`}
+                className={`${SETUP_INPUT} w-full resize-y`}
               />
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-[11px] text-slate-400 mr-1">相关角色</span>
@@ -129,7 +127,7 @@ export default function HistoryPanel({
                     value={e.hours_before_start}
                     disabled={busy}
                     onChange={(ev) => update(i, { hours_before_start: Math.max(1, Math.round(Number(ev.target.value) || 1)) })}
-                    className={`${INPUT} w-20`}
+                    className={`${SETUP_INPUT} w-20`}
                   />
                   小时（{durationLabel(e.hours_before_start * 3600)}）
                 </label>

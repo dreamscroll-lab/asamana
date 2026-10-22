@@ -18,7 +18,7 @@ about a theme.
 
 from __future__ import annotations
 
-from collections.abc import Sequence, Set as AbstractSet
+from collections.abc import Sequence
 from dataclasses import dataclass, fields, replace
 from typing import Any
 
@@ -26,6 +26,8 @@ from agent.memory_types import IMPORTANCE_RANGE
 from agent.need import NEED_INTENSITY_RANGE, NEED_WEIGHT_RANGE, NeedState, build_innate_needs
 from agent.personality import GENDERS, EmotionState, SoulLayer
 from core.interfaces.snapshot import SnapshotProvider
+from core.interfaces.perception import DEFAULT_ENTITY_STATE
+from core.interfaces.world_config import WorldConfig
 from core.logging import get_logger
 from core.prompts import (
     AFFECTION_RANGE, EMOTION_INTENSITY_RANGE, EMOTION_VALENCE_RANGE, TRUST_RANGE,
@@ -35,12 +37,31 @@ from core.validate import require_at_least, require_in_range, require_member, re
 from engine.clock import STEP_SECONDS_RANGE, resolve_step_seconds
 from world.identity_color import free_identity_color
 from world.models import (
-    AgentDefinition, AgentTier, NpcSeed, ThemeAnalysis, WorldEntitySeed, name_key,
+    AgentDefinition, AgentTier, NpcSeed, ThemeAnalysis, WorldEntitySeed, WorldEntityType, name_key,
     unique_agent_id, unique_entity_id, unique_npc_id,
 )
 
 logger = get_logger(__name__)
 
+
+
+@dataclass(frozen=True)
+class MapPlaces:
+    """The map a setup stands on: the location ids it places people and things in, and the names
+    a thing may not take (each place's id, name and aliases, as ``name_key``)."""
+
+    ids: frozenset[str]
+    names: frozenset[str]
+
+    @classmethod
+    def of(cls, config: WorldConfig) -> MapPlaces:
+        places = config.get_places()
+        names = {name_key(place_id) for place_id in places}
+        names.update(name_key(place.name) for place in places.values() if place.name.strip())
+        names.update(
+            name_key(alias) for alias, target in config.get_location_aliases().items() if target in places
+        )
+        return cls(ids=frozenset(places), names=frozenset(names))
 
 
 class SetupRejected(Exception):
@@ -177,6 +198,33 @@ class CharacterRevision:
         return {f.name: value for f in fields(self) if (value := getattr(self, f.name)) is not None}
 
 
+@dataclass(frozen=True)
+class EntityRevision:
+    """The fields of a thing a revision may set; ``None`` leaves a field as it is."""
+
+    entity_type: str | None = None
+    description: str | None = None
+    initial_state: str | None = None
+    location: str | None = None
+    content: str | None = None
+
+    def changes(self) -> dict[str, Any]:
+        return {f.name: value for f in fields(self) if (value := getattr(self, f.name)) is not None}
+
+
+@dataclass(frozen=True)
+class NpcRevision:
+    """The fields of an NPC a revision may set; ``None`` leaves a field as it is."""
+
+    gender: str | None = None
+    age: int | None = None
+    description: str | None = None
+    location: str | None = None
+
+    def changes(self) -> dict[str, Any]:
+        return {f.name: value for f in fields(self) if (value := getattr(self, f.name)) is not None}
+
+
 # The revision fields that live on the soul; the rest are the definition's.
 _SOUL_FIELDS = frozenset({
     "role", "age", "gender", "appearance", "background", "self_image", "life_goal", "secret",
@@ -214,7 +262,7 @@ class WorldSetup:
     characters: tuple[AgentDefinition, ...]
     relations: tuple[SetupRelation, ...]
     historical_events: tuple[SetupHistoricalEvent, ...]
-    # Built with the world and not revisable: what stands in its places, and who keeps them.
+    # What stands in the world's places, and who keeps them.
     entity_seeds: tuple[WorldEntitySeed, ...] = ()
     npc_seeds: tuple[NpcSeed, ...] = ()
 
@@ -334,7 +382,7 @@ class WorldSetup:
                     entity_id=s["entity_id"],
                     entity_type=s.get("entity_type", "item"),
                     description=s.get("description", ""),
-                    initial_state=s.get("initial_state", "intact"),
+                    initial_state=s.get("initial_state", DEFAULT_ENTITY_STATE),
                     location=s.get("location", ""),
                     content=s.get("content", ""),
                 )
@@ -355,9 +403,8 @@ class WorldSetup:
 
     # ----- the rules ---------------------------------------------------------
 
-    def validate(self, places: AbstractSet[str]) -> None:
-        """Refuse (``ValueError``) a setup a world can't start from. ``places``: the location
-        ids of the world's map."""
+    def validate(self, places: MapPlaces) -> None:
+        """Refuse (``ValueError``) a setup a world can't start from. ``places``: the world's map."""
         require_text(self.lore.world_name, "world_name")
         # The authored value, not ``lore.seconds_per_step``: that falls back to the default.
         seconds = self.lore.world_time_config.get("seconds_per_step")
@@ -385,8 +432,10 @@ class WorldSetup:
             seen.add(name_key(name))
         for definition in self.characters:
             _validate_character(definition, places)
-        for seed in (*self.npc_seeds, *self.entity_seeds):
-            require_member(seed.location, places, f"location of {seed.name!r}")
+        for npc in self.npc_seeds:
+            _validate_npc(npc, places)
+        for entity in self.entity_seeds:
+            _validate_entity(entity, places)
 
         cast = set(ids)
         pairs: set[frozenset[str]] = set()
@@ -425,7 +474,7 @@ class WorldSetup:
 
     # ----- revisions ---------------------------------------------------------
     #
-    # Each returns a new setup that has passed ``validate``; ``places`` is the map's location ids.
+    # Each returns a new setup that has passed ``validate``; ``places`` is the world's map.
 
     def character(self, agent_id: str) -> AgentDefinition:
         for definition in self.characters:
@@ -434,14 +483,14 @@ class WorldSetup:
         raise ValueError(f"No character {agent_id!r} in this world")
 
     def with_character(
-        self, agent_id: str, revision: CharacterRevision, *, places: AbstractSet[str],
+        self, agent_id: str, revision: CharacterRevision, *, places: MapPlaces,
     ) -> WorldSetup:
         revised = _revised(self.character(agent_id), revision)
         characters = tuple(revised if d.agent_id == agent_id else d for d in self.characters)
         return replace(self, characters=characters)._validated(places)
 
     def with_character_added(
-        self, name: str, revision: CharacterRevision, *, places: AbstractSet[str], cast_limit: int,
+        self, name: str, revision: CharacterRevision, *, places: MapPlaces, cast_limit: int,
     ) -> tuple[WorldSetup, str]:
         """Add a character written by hand; returns the setup and the new character's id.
 
@@ -456,11 +505,7 @@ class WorldSetup:
             if getattr(revision, field_name) is None:
                 raise ValueError(f"A new character needs {field_name}")
         require_text(revision.role or "", "role")
-        agent_id = unique_agent_id(name, {
-            *(d.agent_id for d in self.characters),
-            *(n.npc_id for n in self.npc_seeds),
-            *(e.entity_id for e in self.entity_seeds),
-        })
+        agent_id = unique_agent_id(name, self._used_ids())
         blank = AgentDefinition(
             agent_id=agent_id,
             tier=AgentTier.BACKGROUND,
@@ -477,7 +522,7 @@ class WorldSetup:
         setup = replace(self, characters=(*self.characters, _revised(blank, revision)))
         return setup._validated(places), agent_id
 
-    def without_character(self, agent_id: str, *, places: AbstractSet[str]) -> WorldSetup:
+    def without_character(self, agent_id: str, *, places: MapPlaces) -> WorldSetup:
         """Remove a character with its relations; historical events keep their text but no longer
         list it, and an event nobody is left in goes too."""
         self.character(agent_id)
@@ -492,17 +537,88 @@ class WorldSetup:
             historical_events=tuple(e for e in events if e.figure_ids),
         )._validated(places)
 
-    def with_seconds_per_step(self, seconds: int, *, places: AbstractSet[str]) -> WorldSetup:
+    def with_entity(self, entity_id: str, revision: EntityRevision, *, places: MapPlaces) -> WorldSetup:
+        self._entity(entity_id)
+        return replace(self, entity_seeds=tuple(
+            replace(seed, **revision.changes()) if seed.entity_id == entity_id else seed
+            for seed in self.entity_seeds
+        ))._validated(places)
+
+    def with_npc(self, npc_id: str, revision: NpcRevision, *, places: MapPlaces) -> WorldSetup:
+        self._npc(npc_id)
+        return replace(self, npc_seeds=tuple(
+            replace(seed, **revision.changes()) if seed.npc_id == npc_id else seed for seed in self.npc_seeds
+        ))._validated(places)
+
+    def with_entity_added(
+        self, name: str, revision: EntityRevision, *, places: MapPlaces,
+    ) -> tuple[WorldSetup, str]:
+        """Add a thing written by hand; returns the setup and the new thing's id. Its type and
+        location are required, and its id comes from its name."""
+        for field_name in ("entity_type", "location"):
+            if getattr(revision, field_name) is None:
+                raise ValueError(f"A new entity needs {field_name}")
+        entity_id = unique_entity_id(name, self._used_ids())
+        seed = replace(WorldEntitySeed(name=name, entity_id=entity_id, entity_type=""), **revision.changes())
+        return replace(self, entity_seeds=(*self.entity_seeds, seed))._validated(places), entity_id
+
+    def with_npc_added(
+        self, name: str, revision: NpcRevision, *, places: MapPlaces, npc_limit: int,
+    ) -> tuple[WorldSetup, str]:
+        """Add an NPC written by hand; returns the setup and the new NPC's id. All its fields are
+        required, its id comes from its name, and ``npc_limit`` is the quota ``spawn_npc`` keeps:
+        an NPC past it would never come into the world."""
+        if len(self.npc_seeds) >= npc_limit:
+            raise ValueError(f"A world has at most {npc_limit} NPCs")
+        for field_name in ("gender", "age", "description", "location"):
+            if getattr(revision, field_name) is None:
+                raise ValueError(f"A new NPC needs {field_name}")
+        npc_id = unique_npc_id(name, self._used_ids())
+        seed = replace(NpcSeed(name=name, npc_id=npc_id), **revision.changes())
+        return replace(self, npc_seeds=(*self.npc_seeds, seed))._validated(places), npc_id
+
+    def without_entity(self, entity_id: str, *, places: MapPlaces) -> WorldSetup:
+        self._entity(entity_id)
+        return replace(self, entity_seeds=tuple(
+            seed for seed in self.entity_seeds if seed.entity_id != entity_id
+        ))._validated(places)
+
+    def without_npc(self, npc_id: str, *, places: MapPlaces) -> WorldSetup:
+        self._npc(npc_id)
+        return replace(self, npc_seeds=tuple(
+            seed for seed in self.npc_seeds if seed.npc_id != npc_id
+        ))._validated(places)
+
+    def with_seconds_per_step(self, seconds: int, *, places: MapPlaces) -> WorldSetup:
         """Set how much world time one step spans. Durations in the setup are kept in narrative
         units (``SetupHistoricalEvent.hours_before_start``), so nothing else needs rewriting."""
         time_config = {**self.lore.world_time_config, "seconds_per_step": seconds}
         return replace(self, lore=replace(self.lore, world_time_config=time_config))._validated(places)
 
-    def with_history(self, events: Sequence[SetupHistoricalEvent], *, places: AbstractSet[str]) -> WorldSetup:
+    def with_history(self, events: Sequence[SetupHistoricalEvent], *, places: MapPlaces) -> WorldSetup:
         return replace(self, historical_events=tuple(events))._validated(places)
 
-    def with_relations(self, relations: Sequence[SetupRelation], *, places: AbstractSet[str]) -> WorldSetup:
+    def with_relations(self, relations: Sequence[SetupRelation], *, places: MapPlaces) -> WorldSetup:
         return replace(self, relations=tuple(relations))._validated(places)
+
+    def _entity(self, entity_id: str) -> WorldEntitySeed:
+        for seed in self.entity_seeds:
+            if seed.entity_id == entity_id:
+                return seed
+        raise ValueError(f"No entity {entity_id!r} in this world")
+
+    def _npc(self, npc_id: str) -> NpcSeed:
+        for seed in self.npc_seeds:
+            if seed.npc_id == npc_id:
+                return seed
+        raise ValueError(f"No NPC {npc_id!r} in this world")
+
+    def _used_ids(self) -> set[str]:
+        return {
+            *(d.agent_id for d in self.characters),
+            *(n.npc_id for n in self.npc_seeds),
+            *(e.entity_id for e in self.entity_seeds),
+        }
 
     def _names(self) -> list[str]:
         return [
@@ -511,12 +627,32 @@ class WorldSetup:
             *(e.name for e in self.entity_seeds),
         ]
 
-    def _validated(self, places: AbstractSet[str]) -> WorldSetup:
+    def _validated(self, places: MapPlaces) -> WorldSetup:
         self.validate(places)
         return self
 
 
-def _validate_character(definition: AgentDefinition, places: AbstractSet[str]) -> None:
+def _validate_entity(seed: WorldEntitySeed, places: MapPlaces) -> None:
+    require_text(seed.name, "name")
+    # A thing named like a place is one name for two referents, one enterable and one not.
+    if name_key(seed.name) in places.names:
+        raise ValueError(f"The thing {seed.name!r} has a place's name")
+    require_member(seed.entity_type, tuple(t.value for t in WorldEntityType), f"type of {seed.name!r}")
+    require_text(seed.initial_state, f"initial_state of {seed.name!r}")
+    require_member(seed.location, places.ids, f"location of {seed.name!r}")
+
+
+def _validate_npc(seed: NpcSeed, places: MapPlaces) -> None:
+    require_text(seed.name, "name")
+    # "" is a gender the build left unknown rather than guessed, as for a character.
+    require_member(seed.gender, ("", *GENDERS), f"gender of {seed.name!r}")
+    require_at_least(seed.age, 0, f"age of {seed.name!r}")
+    # What an adjudicator reads to judge what this one can do (see ``NpcSeed``).
+    require_text(seed.description, f"description of {seed.name!r}")
+    require_member(seed.location, places.ids, f"location of {seed.name!r}")
+
+
+def _validate_character(definition: AgentDefinition, places: MapPlaces) -> None:
     soul = definition.soul
     require_text(soul.name, "name")
     # "" is a gender the build left unknown rather than guessed (see ``_revised``).
@@ -528,7 +664,7 @@ def _validate_character(definition: AgentDefinition, places: AbstractSet[str]) -
     ):
         for item in items:
             require_text(item, name)
-    require_member(definition.initial_location, places, "initial_location")
+    require_member(definition.initial_location, places.ids, "initial_location")
     emotion = definition.initial_emotion
     require_in_range(emotion.intensity, EMOTION_INTENSITY_RANGE, "emotion intensity")
     require_in_range(emotion.valence, EMOTION_VALENCE_RANGE, "emotion valence")

@@ -11,7 +11,7 @@ from core.interfaces.action import (
 )
 from core.interfaces.condition import condition_from_dict, condition_to_dict
 from core.interfaces.perception import (
-    PerceivedNpc, PerceivedPresence,
+    DEFAULT_ENTITY_STATE, PerceivedNpc, PerceivedPresence,
     AmbientEvent, LocationView, ReachableLocation, SpatialPerception, VisibleEntity,
 )
 from core.logging import get_logger
@@ -516,7 +516,7 @@ class EnvironmentSystem:
                 entity_id=entity_id,
                 name=name,
                 entity_type=entity_type,
-                state=spawn.state or "intact",
+                state=spawn.state or DEFAULT_ENTITY_STATE,
                 description=spawn.description,
                 content=spawn.content,
                 presence=presence,
@@ -1077,7 +1077,7 @@ class EnvironmentSystem:
                     entity_id=str(entity_id),
                     name=str(payload.get("name", entity_id)),
                     entity_type=entity_type,
-                    state=str(payload.get("state", "intact")),
+                    state=str(payload.get("state", DEFAULT_ENTITY_STATE)),
                     description=str(payload.get("description", "")),
                     presence=presence,
                     presence_ref=presence_ref,

@@ -12,7 +12,7 @@ const global = vi.hoisted(() => ({
   reloadCast: vi.fn(), reloadPlaces: vi.fn(), reloadNpcs: vi.fn(),
 }));
 const controls = vi.hoisted(() => ({
-  navigate: vi.fn(), confirm: undefined as (() => Promise<void>) | undefined,
+  navigate: vi.fn(), confirm: undefined as (() => Promise<void>) | undefined, confirmDisabled: false,
 }));
 vi.mock("react/jsx-dev-runtime", async (original) => {
   const runtime = await original<typeof import("react/jsx-dev-runtime")>();
@@ -21,6 +21,7 @@ vi.mock("react/jsx-dev-runtime", async (original) => {
     if (type === "button" && props && typeof props === "object" && "children" in props
       && props.children === "确认并进入叙事 →" && "onClick" in props) {
       controls.confirm = props.onClick as () => Promise<void>;
+      controls.confirmDisabled = "disabled" in props && Boolean(props.disabled);
     }
     return runtime.jsxDEV(...args);
   };
@@ -60,6 +61,7 @@ const meta: WorldMeta = {
   actor_pace: "every_step", director_reviewed: false,
 };
 const setup: SetupView = {
+  entities: [], npcs: [],
   seconds_per_step: 3600, historical_events: [], relations: [],
   characters: [{
     agent_id: "a", name: "甲", role: "新身份", age: 30, gender: "女", background: "新背景",
@@ -117,6 +119,18 @@ describe("world identity phase boundary", () => {
     expect(html).toContain("保存响应里的秘密");
     expect(api.agentProfile).not.toHaveBeenCalled();
     expectNoGlobalIdentityReads();
+  });
+
+  it("blocks world confirmation while an entity or NPC draft is being edited", () => {
+    state.values.set(0, { ...meta, director_reviewed: true });
+    state.values.set(5, setup);
+    state.values.set(12, true);
+    renderToStaticMarkup(<ReviewView />);
+    expect(controls.confirmDisabled).toBe(true);
+    state.cursor = 0;
+    state.values.set(12, false);
+    renderToStaticMarkup(<ReviewView />);
+    expect(controls.confirmDisabled).toBe(false);
   });
 
   it("uses global identities for confirmed director review", () => {

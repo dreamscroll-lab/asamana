@@ -13,9 +13,9 @@ from core.interfaces.world_config import WorldConfig
 
 from world.initializer import WorldInitializer
 from world.models import (
-    AgentDefinition, HistoricalEventSeed, LocationSeed, NpcSeed, ThemeAnalysis, WorldEntitySeed,
+    AgentDefinition, HistoricalEventSeed, LocationSeed, NpcSeed, ThemeAnalysis, WorldEntitySeed, name_key,
 )
-from world.setup import WorldSetup
+from world.setup import MapPlaces, WorldSetup
 from world.builders.agent_generator import AgentGenerator
 from world.builders.cast_designer import CastDesigner
 from world.builders.template_selector import TemplateSelector
@@ -198,26 +198,16 @@ def _drop_seeds_shadowing_locations(
     twice in the directory (an enterable location and a non-enterable entity), ambiguous for both
     narrative and addressing.
 
-    Match on exact identity only (location id / display name / alias, case- and
-    whitespace-insensitive). Don't use ``resolve_location_id``: its substring fallback would also
-    kill legitimate landmarks like "玄武门前的石狮". No type filter: any seed sharing a location's
-    name is the same ambiguity, whether it calls itself an item or a landmark.
+    Match on exact identity only (location id / display name / alias, by ``name_key``), the same
+    rule ``WorldSetup.validate`` holds a revised thing to. Don't use ``resolve_location_id``: its
+    substring fallback would also kill legitimate landmarks like "玄武门前的石狮". No type filter:
+    any seed sharing a location's name is the same ambiguity, whether it calls itself an item or
+    a landmark.
     """
-    places = world_config.get_places()
-    location_ids = set(places)
-    taken: set[str] = set()
-    for place_id, place in places.items():
-        taken.add(str(place_id).strip().lower())
-        place_name = str(getattr(place, "name", "")).strip()
-        if place_name:
-            taken.add(place_name.lower())
-    for alias, target in world_config.get_location_aliases().items():
-        if target in location_ids:
-            taken.add(str(alias).strip().lower())
-
+    taken = MapPlaces.of(world_config).names
     kept: list[WorldEntitySeed] = []
     for seed in analysis.world_entity_seeds:
-        if seed.name.strip().lower() in taken:
+        if name_key(seed.name) in taken:
             logger.warning(
                 "entity_seed_shadows_location",
                 extra={

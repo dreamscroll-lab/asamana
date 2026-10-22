@@ -13,7 +13,7 @@ from config.models import Config
 from core.container import Container
 from core.context import clear_log_context, set_log_context
 from core.logging import get_logger
-from core.interfaces.perception import VisibleEntity
+from core.interfaces.perception import DEFAULT_ENTITY_STATE, VisibleEntity
 from engine.presence import attach_presence, reset_visible
 
 from tuning.fixtures import load_fixture, save_fixture
@@ -104,7 +104,7 @@ def _apply_entities_from_scenario(scenario: dict | None, spatials: dict, name_by
                         entity_id=f"inj-ent-{idx}-{j}",
                         name=str(it.get("name", "")),
                         entity_type=str(it.get("type", "object")),
-                        state=str(it.get("state", "intact")),
+                        state=str(it.get("state", DEFAULT_ENTITY_STATE)),
                         description=str(it.get("desc", "")),
                         is_takeable=bool(it.get("takeable", False)),
                         holder_id=holder_id,

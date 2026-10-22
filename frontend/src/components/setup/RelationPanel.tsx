@@ -5,12 +5,10 @@ import { useState } from "react";
 
 import { identityOf } from "../../lib/worldTable";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
+import { SETUP_INPUT } from "./styles";
 import type { Cast } from "../../lib/cast";
 import { joinList, splitList } from "../../lib/textList";
 import type { SetupRelationView } from "../../types";
-
-const INPUT =
-  "bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500/70 disabled:opacity-50";
 
 const pct = (x: number) => Math.round(x * 100);
 
@@ -85,7 +83,7 @@ function Direction({
             disabled={busy}
             placeholder="关系类型:对方身份、关系类型"
             onChange={(e) => onChange({ labels: e.target.value })}
-            className={`${INPUT} w-full`}
+            className={`${SETUP_INPUT} w-full`}
           />
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400">
             <label className="flex items-center gap-1.5">
@@ -147,7 +145,7 @@ export default function RelationPanel({
   }
 
   const personSelect = (value: string, onChange: (id: string) => void) => (
-    <select value={value} disabled={busy} onChange={(e) => onChange(e.target.value)} className={INPUT}>
+    <select value={value} disabled={busy} onChange={(e) => onChange(e.target.value)} className={SETUP_INPUT}>
       <option value="">选择角色</option>
       {members.map((m) => <option key={m.agent_id} value={m.agent_id}>{m.name}</option>)}
     </select>

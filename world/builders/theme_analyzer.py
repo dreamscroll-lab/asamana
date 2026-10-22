@@ -10,6 +10,7 @@ from agent.personality import SECRET_LABEL
 from agent.relation import NEUTRAL_AFFECTION, NEUTRAL_TRUST
 from core.context import note_active_call_adoption
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json_object, output_budget
+from core.interfaces.perception import DEFAULT_ENTITY_STATE
 from core.logging import get_logger
 from core.prompts import MEMORY_IMPORTANCE_SCORE_DEFINITION, RELATION_LABEL_FORMAT
 from core.coerce import (
@@ -20,11 +21,15 @@ from engine.clock import SECONDS_PER_HOUR, resolve_step_seconds
 
 from world.models import (
     AgentTier, HistoricalEventSeed, LocationSeed, NpcSeed, RelationSeed, ThemeAnalysis,
-    ThemeFigure, WorldEntitySeed, name_key,
+    ThemeFigure, WorldEntitySeed, WorldEntityType, name_key,
 )
 from world.builders import BUILD_ATTEMPTS
 
 logger = get_logger(__name__)
+
+# What an NPC the build left undescribed reads as. Adjudication reads the description to judge what
+# the NPC can do, so this says plainly that nothing is known rather than inventing a trait.
+NPC_NO_DESCRIPTION = "无描述"
 
 _Named = TypeVar("_Named", ThemeFigure, NpcSeed, WorldEntitySeed)
 
@@ -693,30 +698,8 @@ class ThemeAnalyzer:
             if coerce_str(item.get("event"))
         ]
 
-        entity_seeds = [
-            WorldEntitySeed(
-                name=coerce_str(item.get("name")),
-                entity_type=coerce_str(item.get("entity_type"), fallback="item"),
-                description=coerce_str(item.get("description")),
-                initial_state=coerce_str(item.get("initial_state"), fallback="intact"),
-                location=coerce_str(item.get("location_name")),
-                content=coerce_str(item.get("content")),
-            )
-            for item in coerce_mapping_list(payload.get("world_entity_seeds"))
-            if coerce_str(item.get("name"))
-        ]
-
-        npc_seeds = [
-            NpcSeed(
-                name=coerce_str(item.get("name")),
-                gender=_normalize_gender(item.get("gender")),
-                age=coerce_int(item.get("age"), default=30, minimum=1, maximum=120),
-                description=coerce_str(item.get("description")),
-                location=coerce_str(item.get("location_name")),
-            )
-            for item in coerce_mapping_list(payload.get("npcs"))
-            if coerce_str(item.get("name"))
-        ]
+        entity_seeds = _entity_seeds(payload)
+        npc_seeds = _npc_seeds(payload)
 
         figures, npc_seeds, entity_seeds = _distinct_names(figures, npc_seeds, entity_seeds)
 
@@ -798,6 +781,52 @@ _GENDER_SYNONYMS: dict[str, str] = {
     "男": "男", "男性": "男", "male": "男", "m": "男",
     "女": "女", "女性": "女", "female": "女", "f": "女",
 }
+
+
+def _entity_seeds(payload: Mapping[str, Any]) -> list[WorldEntitySeed]:
+    """The payload's things. One whose type isn't a ``WorldEntityType`` is dropped: whether it can
+    be taken follows from the type, and guessing it would decide that for the world."""
+    kinds = {kind.value for kind in WorldEntityType}
+    seeds: list[WorldEntitySeed] = []
+    for item in coerce_mapping_list(payload.get("world_entity_seeds")):
+        name = coerce_str(item.get("name"))
+        if not name:
+            continue
+        entity_type = coerce_str(item.get("entity_type"), fallback=WorldEntityType.ITEM.value)
+        if entity_type not in kinds:
+            logger.warning("entity_seed_type_unknown", extra={"seed_name": name, "entity_type": entity_type})
+            continue
+        seeds.append(WorldEntitySeed(
+            name=name,
+            entity_type=entity_type,
+            description=coerce_str(item.get("description")),
+            initial_state=coerce_str(item.get("initial_state"), fallback=DEFAULT_ENTITY_STATE),
+            location=coerce_str(item.get("location_name")),
+            content=coerce_str(item.get("content")),
+        ))
+    return seeds
+
+
+def _npc_seeds(payload: Mapping[str, Any]) -> list[NpcSeed]:
+    """The payload's NPCs. A missing description becomes ``NPC_NO_DESCRIPTION``, which
+    ``WorldSetup.validate`` accepts, so one omission doesn't fail the whole build."""
+    seeds: list[NpcSeed] = []
+    for item in coerce_mapping_list(payload.get("npcs")):
+        name = coerce_str(item.get("name"))
+        if not name:
+            continue
+        description = coerce_str(item.get("description"))
+        if not description:
+            logger.warning("npc_seed_description_missing", extra={"npc_name": name})
+            description = NPC_NO_DESCRIPTION
+        seeds.append(NpcSeed(
+            name=name,
+            gender=_normalize_gender(item.get("gender")),
+            age=coerce_int(item.get("age"), default=30, minimum=1, maximum=120),
+            description=description,
+            location=coerce_str(item.get("location_name")),
+        ))
+    return seeds
 
 
 def _normalize_gender(value: Any) -> str:

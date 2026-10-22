@@ -36,7 +36,7 @@ from worlds.tiled import CAST_ART_FIELDS, CHARACTERS_FILENAME
 from core.coerce import coerce_int
 from world.catalog import ActorCasting
 from world.models import AgentDefinition, AgentTier, NpcSeed, World, WorldEntity, WorldEntitySeed, WorldEntityType
-from world.setup import SetupHistoricalEvent, WorldLore, WorldSetup
+from world.setup import MapPlaces, SetupHistoricalEvent, WorldLore, WorldSetup
 from world.stored_config import StoredWorldConfig, serialize_world_config
 
 logger = get_logger(__name__)
@@ -62,7 +62,7 @@ class WorldInitializer:
         must pass ``WorldSetup.validate`` (else ``ValueError``: a build that can't start a world
         fails, Rule 2). Returns the setup as persisted.
         """
-        setup.validate(frozenset(world_config.get_places()))
+        setup.validate(MapPlaces.of(world_config))
         await self._container.snapshot.save_world_config(
             world_id, serialize_world_config(world_config)
         )
@@ -95,7 +95,7 @@ class WorldInitializer:
         world_config = StoredWorldConfig(config_data)
         setup = WorldSetup.from_dict(stored)
         # It passed every revision's check; this is the last line before anything is written.
-        setup.validate(frozenset(world_config.get_places()))
+        setup.validate(MapPlaces.of(world_config))
         clock_config = self._clock_config_for(setup.lore, world_config)
         environment = EnvironmentSystem(world_config, max_npcs=self._max_npcs)
         await self._instantiate_entity_seeds(setup.entity_seeds, environment)

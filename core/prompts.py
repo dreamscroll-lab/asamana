@@ -23,6 +23,7 @@ from typing import Any, Iterable
 from core.duration import describe_duration
 from core.interfaces.memory import MemoryKind
 from core.interfaces.phenomenon import Phenomenon
+from core.interfaces.perception import DEFAULT_ENTITY_STATE
 from core.interfaces.urgency import Urgency
 
 # ============================================================================
@@ -514,7 +515,7 @@ def render_entity(
         return "某物"
     attrs: list[str] = []
     state = (getattr(entity, "state", "") or "").strip()
-    if state and state != "intact":
+    if state and state != DEFAULT_ENTITY_STATE:
         attrs.append(f"状态：{state}")
     if owner_name:
         attrs.append(f"由{owner_name}持有")

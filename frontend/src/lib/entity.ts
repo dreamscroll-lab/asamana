@@ -2,7 +2,7 @@ import type { EntityView } from "../types";
 import type { TipLine } from "./tip";
 
 /**
- * The backend's default state (world/models.py), which its prompts skip (core/prompts.py
+ * The backend's default state (core/interfaces/perception.py), which its prompts skip (core/prompts.py
  * render_entity). The map skips it too, so a pocket doesn't repeat "intact" for every item.
  */
 export const DEFAULT_ENTITY_STATE = "intact";

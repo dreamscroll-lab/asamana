@@ -606,9 +606,36 @@ export interface CharacterSetupView extends AgentProfile {
   needs: InnateNeedView[];
 }
 
+export interface EntitySetupView {
+  entity_id: string;
+  name: string;
+  entity_type: "item" | "landmark";
+  description: string;
+  initial_state: string;
+  location: string;
+  content: string;
+}
+
+export interface NpcSetupView {
+  npc_id: string;
+  name: string;
+  gender: string;
+  age: number;
+  description: string;
+  location: string;
+}
+
+export type NewEntity = Omit<EntitySetupView, "entity_id">;
+export type NewNpc = Omit<NpcSetupView, "npc_id">;
+
+export type EntityRevision = Partial<Omit<EntitySetupView, "entity_id" | "name">>;
+export type NpcRevision = Partial<Omit<NpcSetupView, "npc_id" | "name">>;
+
 export interface SetupView {
   seconds_per_step: number;
   characters: CharacterSetupView[];
+  entities: EntitySetupView[];
+  npcs: NpcSetupView[];
   historical_events: SetupHistoricalEventView[];
   relations: SetupRelationView[];
 }

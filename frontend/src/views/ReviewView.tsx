@@ -21,6 +21,7 @@ import ActorIcon from "../components/ActorIcon";
 import CharacterCard, { ObservedCharacterCard, type CardAgent } from "../components/CharacterCard";
 import EditableWorldName from "../components/EditableWorldName";
 import RelationshipGraph from "../components/RelationshipGraph";
+import SeedPanel from "../components/setup/SeedPanel";
 import HistoryPanel from "../components/setup/HistoryPanel";
 import RelationPanel from "../components/setup/RelationPanel";
 import StepLengthEditor from "../components/setup/StepLengthEditor";
@@ -126,6 +127,7 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
   const [graphExpanded, setGraphExpanded] = useState(false);
   // Picking whom to perform; chosen with the confirmation and locked by it.
   const [casting, setCasting] = useState(false);
+  const [seedEditing, setSeedEditing] = useState(false);
   const cast: Cast = useMemo(() => !meta.confirmed && setup
     ? Object.fromEntries(setup.characters.map((c) => [c.agent_id, {
       agent_id: c.agent_id, name: c.name, gender: c.gender, age: c.age, role: c.role,
@@ -294,7 +296,7 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
           {(stage === "director" || stage === "casting") && (
             <button
               onClick={confirm}
-              disabled={busy || (stage === "casting" && !castId)}
+              disabled={busy || seedEditing || (stage === "casting" && !castId)}
               className="text-xs font-semibold px-5 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 border border-indigo-500 shadow-lg shadow-indigo-600/30 transition disabled:opacity-40"
             >
               {/* Confirming materializes the world (its backstory memories embedded), which takes a moment. */}
@@ -483,21 +485,31 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
 
       {stage === "director" && setup && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          <div className="lg:col-span-5">
+          <div className="lg:col-span-5 space-y-8">
             <HistoryPanel
               events={setup.historical_events}
               cast={cast}
               editable={revisable}
               onSave={async (events) => setSetup(await api.replaceHistory(id, events))}
             />
+            <SeedPanel kind="entity" entities={setup.entities} places={places}
+              editable={revisable && !busy && !seedEditing} onEditingChange={setSeedEditing}
+              onSave={async (entityId, revision) => setSetup(await api.reviseEntity(id, entityId, revision))}
+              onAdd={async (entity) => setSetup((await api.addEntity(id, entity)).setup)}
+              onRemove={async (entityId) => setSetup(await api.removeEntity(id, entityId))} />
           </div>
-          <div className="lg:col-span-7">
+          <div className="lg:col-span-7 space-y-8">
             <RelationPanel
               relations={setup.relations}
               cast={cast}
               editable={revisable}
               onSave={async (relations) => setSetup(await api.replaceRelations(id, relations))}
             />
+            <SeedPanel kind="npc" npcs={setup.npcs} places={places}
+              editable={revisable && !busy && !seedEditing} onEditingChange={setSeedEditing}
+              onSave={async (npcId, revision) => setSetup(await api.reviseNpc(id, npcId, revision))}
+              onAdd={async (npc) => setSetup((await api.addNpc(id, npc)).setup)}
+              onRemove={async (npcId) => setSetup(await api.removeNpc(id, npcId))} />
           </div>
         </div>
       )}

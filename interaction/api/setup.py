@@ -14,12 +14,17 @@ from agent.need import NeedState, NeedType
 from config.models import MAX_CAST_SIZE
 from core.prompts import canonical_relation_label
 from agent.personality import EmotionState, EmotionType
-from world.setup import CharacterRevision, SetupHistoricalEvent, SetupRejected, SetupRelation, WorldSetup
+from world.setup import (
+    CharacterRevision, EntityRevision, MapPlaces, NpcRevision, SetupHistoricalEvent, SetupRejected, SetupRelation,
+    WorldSetup,
+)
 
 from interaction.api.app import ApiServices
 from interaction.api.serialization import to_jsonable
 from interaction.models import (
     CharacterSetupView,
+    EntitySetupView,
+    NpcSetupView,
     InitialEmotionView,
     SetupHistoricalEventView,
     InnateNeedView,
@@ -40,6 +45,8 @@ _CHARACTER_FIELDS = frozenset({
 def setup_view(setup: WorldSetup) -> SetupView:
     return SetupView(
         seconds_per_step=setup.lore.seconds_per_step,
+        entities=[EntitySetupView(**asdict(seed)) for seed in setup.entity_seeds],
+        npcs=[NpcSetupView(**asdict(seed)) for seed in setup.npc_seeds],
         characters=[
             CharacterSetupView(
                 **asdict(agent_profile(d)),
@@ -125,6 +132,23 @@ def character_revision(payload: dict[str, Any]) -> CharacterRevision:
     return CharacterRevision(**changes)
 
 
+def entity_revision(payload: dict[str, Any]) -> EntityRevision:
+    allowed = {"entity_type", "description", "initial_state", "location", "content"}
+    if unknown := sorted(set(payload) - allowed):
+        raise ValueError(f"Unknown entity fields: {unknown}")
+    return EntityRevision(**{key: _text(value, key) for key, value in payload.items()})
+
+
+def npc_revision(payload: dict[str, Any]) -> NpcRevision:
+    allowed = {"gender", "age", "description", "location"}
+    if unknown := sorted(set(payload) - allowed):
+        raise ValueError(f"Unknown NPC fields: {unknown}")
+    return NpcRevision(**{
+        key: _integer(value, key) if key == "age" else _text(value, key)
+        for key, value in payload.items()
+    })
+
+
 def historical_events(payload: Any) -> list[SetupHistoricalEvent]:
     return [
         SetupHistoricalEvent(
@@ -201,7 +225,7 @@ def build_setup_router(services: ApiServices) -> Any:
         revision = _parsed(character_revision, {k: v for k, v in payload.items() if k != "name"})
         added: list[str] = []
 
-        def add(s: WorldSetup, places: frozenset[str]) -> WorldSetup:
+        def add(s: WorldSetup, places: MapPlaces) -> WorldSetup:
             # Not ``world.max_agents``: that bounds what a build generates, for the build's own
             # output budget, and a character written by hand costs the build nothing.
             setup, agent_id = s.with_character_added(
@@ -226,6 +250,58 @@ def build_setup_router(services: ApiServices) -> Any:
     @router.delete("/characters/{agent_id}")
     async def remove_character(world_id: str, agent_id: str) -> dict[str, Any]:
         setup = await _revise(world_id, lambda s, places: s.without_character(agent_id, places=places))
+        return to_jsonable(setup_view(setup))
+
+    @router.post("/entities")
+    async def add_entity(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
+        """Add a thing written by hand. Answers with its id and the setup."""
+        name = _parsed(lambda p: _text(_field(p, "name"), "name"), payload)
+        revision = _parsed(entity_revision, {k: v for k, v in payload.items() if k != "name"})
+        added: list[str] = []
+
+        def add(s: WorldSetup, places: MapPlaces) -> WorldSetup:
+            setup, entity_id = s.with_entity_added(name, revision, places=places)
+            added.append(entity_id)
+            return setup
+
+        setup = await _revise(world_id, add)
+        return {"entity_id": added[0], "setup": to_jsonable(setup_view(setup))}
+
+    @router.delete("/entities/{entity_id}")
+    async def remove_entity(world_id: str, entity_id: str) -> dict[str, Any]:
+        setup = await _revise(world_id, lambda s, places: s.without_entity(entity_id, places=places))
+        return to_jsonable(setup_view(setup))
+
+    @router.post("/npcs")
+    async def add_npc(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
+        """Add an NPC written by hand. Answers with its id and the setup."""
+        name = _parsed(lambda p: _text(_field(p, "name"), "name"), payload)
+        revision = _parsed(npc_revision, {k: v for k, v in payload.items() if k != "name"})
+        added: list[str] = []
+
+        def add(s: WorldSetup, places: MapPlaces) -> WorldSetup:
+            setup, npc_id = s.with_npc_added(name, revision, places=places, npc_limit=services.config.engine.max_npcs)
+            added.append(npc_id)
+            return setup
+
+        setup = await _revise(world_id, add)
+        return {"npc_id": added[0], "setup": to_jsonable(setup_view(setup))}
+
+    @router.delete("/npcs/{npc_id}")
+    async def remove_npc(world_id: str, npc_id: str) -> dict[str, Any]:
+        setup = await _revise(world_id, lambda s, places: s.without_npc(npc_id, places=places))
+        return to_jsonable(setup_view(setup))
+
+    @router.patch("/entities/{entity_id}")
+    async def revise_entity(world_id: str, entity_id: str, payload: dict = Body(...)) -> dict[str, Any]:
+        revision = _parsed(entity_revision, payload)
+        setup = await _revise(world_id, lambda s, places: s.with_entity(entity_id, revision, places=places))
+        return to_jsonable(setup_view(setup))
+
+    @router.patch("/npcs/{npc_id}")
+    async def revise_npc(world_id: str, npc_id: str, payload: dict = Body(...)) -> dict[str, Any]:
+        revision = _parsed(npc_revision, payload)
+        setup = await _revise(world_id, lambda s, places: s.with_npc(npc_id, revision, places=places))
         return to_jsonable(setup_view(setup))
 
     @router.put("/history")

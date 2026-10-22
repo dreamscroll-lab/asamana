@@ -15,13 +15,15 @@ from agent.personality import EmotionState, EmotionType
 from engine.application import NarrativeApplication
 from world import WorldCatalog
 from world.models import HistoricalEventSeed, NpcSeed, RelationSeed, ThemeAnalysis, WorldEntitySeed
-from world.setup import CharacterRevision, SetupHistoricalEvent, SetupRelation, WorldSetup
+from world.setup import (
+    CharacterRevision, EntityRevision, MapPlaces, NpcRevision, SetupHistoricalEvent, SetupRelation, WorldSetup,
+)
 
 from interaction.api import create_app
 from tests.unit.world_setups import setup_of
 
 
-PLACES = frozenset({"palace", "garden"})
+PLACES = MapPlaces(ids=frozenset({"palace", "garden"}), names=frozenset({"palace", "garden", "正殿", "御花园"}))
 
 
 def _setup() -> WorldSetup:
@@ -84,7 +86,8 @@ def test_the_build_gives_every_npc_and_thing_its_own_id() -> None:
     analysis = ThemeAnalysis(
         theme_input="t", world_name="w", era_description="", core_tension="", narrative_theme="",
         world_time_config={"seconds_per_step": 3600},
-        npc_seeds=[NpcSeed(name="脚夫", location="palace"), NpcSeed(name="更夫", location="palace")],
+        npc_seeds=[NpcSeed(name="脚夫", description="挑夫", location="palace"),
+                   NpcSeed(name="更夫", description="打更", location="palace")],
         world_entity_seeds=[
             WorldEntitySeed(name="Red Seal", entity_type="item", location="palace"),
             WorldEntitySeed(name="red-seal", entity_type="item", location="palace"),
@@ -135,7 +138,7 @@ def test_validate_refuses_a_setup_no_world_can_start_from(broken) -> None:
 def _with_seeds(npcs: tuple[str, ...] = (), things: tuple[str, ...] = ()) -> WorldSetup:
     return replace(
         _setup(),
-        npc_seeds=tuple(NpcSeed(name=n, npc_id=f"npc_{i}", location="palace") for i, n in enumerate(npcs)),
+        npc_seeds=tuple(NpcSeed(name=n, npc_id=f"npc_{i}", description="跑腿", location="palace") for i, n in enumerate(npcs)),
         entity_seeds=tuple(
             WorldEntitySeed(name=t, entity_id=f"seed_{i}", entity_type="item", location="palace")
             for i, t in enumerate(things)
@@ -631,3 +634,230 @@ async def test_confirming_moves_the_setup_from_its_file_into_step_zero(mock_buil
     assert await snapshots.load_world_setup(world_id) is None
     assert step_zero is not None and step_zero.setup == stored
     assert roles[ids["Li Shimin"]] == "天策上将"
+
+
+@pytest.mark.asyncio
+async def test_revised_entities_and_npcs_materialize_and_survive_reset(mock_build_container, test_config) -> None:
+    catalog = WorldCatalog(None)
+    world_id, _ = await _built_world(mock_build_container, test_config, catalog)
+    snapshots = mock_build_container.snapshot
+    with _client(mock_build_container, test_config, catalog) as client:
+        base = f"/api/worlds/{world_id}"
+        original = client.get(f"{base}/setup").json()
+        entity, npc = original["entities"][0], original["npcs"][0]
+        location = client.get(f"{base}/places").json()[-1]["location_id"]
+        entity_revision = {
+            "entity_type": "landmark", "initial_state": "sealed", "description": "封存的信物",
+            "content": "不得擅启", "location": location,
+        }
+        npc_revision = {"gender": "女", "age": 42, "description": "熟悉城门的守卫", "location": location}
+        entity_url = f"{base}/setup/entities/{entity['entity_id']}"
+        npc_url = f"{base}/setup/npcs/{npc['npc_id']}"
+        saved = client.patch(entity_url, json=entity_revision)
+        assert saved.status_code == 200
+        assert saved.json()["entities"][0] == {**entity, **entity_revision}
+        saved = client.patch(npc_url, json=npc_revision)
+        assert saved.status_code == 200
+        assert saved.json()["npcs"][0] == {**npc, **npc_revision}
+        assert await snapshots.load(world_id, 0) is None
+        persisted = await snapshots.load_world_setup(world_id)
+        assert persisted["entity_seeds"][0]["content"] == "不得擅启"
+        assert persisted["npc_seeds"][0]["age"] == 42
+        assert client.post(f"{base}/confirm").status_code == 200
+        assert client.patch(entity_url, json={"description": "changed"}).status_code == 409
+        assert client.patch(npc_url, json={"age": 1}).status_code == 409
+        confirmed = await snapshots.load(world_id, 0)
+        assert confirmed.state.entities[entity["entity_id"]]["content"] == "不得擅启"
+        assert confirmed.state.npcs[npc["npc_id"]]["age"] == 42
+        assert client.post(f"{base}/reset").status_code == 200
+    snapshot = await snapshots.load(world_id, 0)
+    assert snapshot is not None
+    actual_entity = snapshot.state.entities[entity["entity_id"]]
+    for key, value in entity_revision.items():
+        persisted_key = {"initial_state": "state", "location": "presence_ref"}.get(key, key)
+        assert actual_entity[persisted_key] == value
+    assert actual_entity["is_takeable"] is False
+    actual_npc = snapshot.state.npcs[npc["npc_id"]]
+    for key in ("gender", "age", "description"):
+        assert actual_npc[key] == npc_revision[key]
+    assert actual_npc["location_id"] == location
+    frozen = WorldSetup.from_dict(snapshot.setup)
+    assert frozen.entity_seeds[0].content == "不得擅启"
+    assert frozen.npc_seeds[0].age == 42
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind,revision", [
+    ("entities", {"entity_type": "location"}),
+    ("entities", {"initial_state": " "}),
+    ("entities", {"name": "Other"}),
+    ("entities", {"entity_id": "other"}),
+    ("entities", {"is_takeable": True}),
+    ("entities", {"location": "missing"}),
+    ("entities", {"description": None}),
+    ("npcs", {"name": "Other"}),
+    ("npcs", {"npc_id": "other"}),
+    ("npcs", {"age": -1}),
+    ("npcs", {"age": True}),
+    ("npcs", {"age": 1.5}),
+    ("npcs", {"gender": "invalid"}),
+    ("npcs", {"location": "missing"}),
+    ("npcs", {"description": None}),
+    ("npcs", {"description": " "}),
+    ("entities", {"entity_type": "weapon"}),
+    ("entities", {"initial_state": " "}),
+])
+async def test_invalid_seed_revision_changes_nothing(mock_build_container, test_config, kind, revision) -> None:
+    catalog = WorldCatalog(None)
+    world_id, _ = await _built_world(mock_build_container, test_config, catalog)
+    with _client(mock_build_container, test_config, catalog) as client:
+        base = f"/api/worlds/{world_id}/setup"
+        before = client.get(base).json()
+        id_field = "entity_id" if kind == "entities" else "npc_id"
+        seed_id = before[kind][0][id_field]
+        assert client.patch(f"{base}/{kind}/{seed_id}", json=revision).status_code == 400
+        assert client.get(base).json() == before
+        assert client.patch(f"{base}/{kind}/missing", json={"description": "x"}).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_added_and_removed_seeds_survive_confirmation_and_reset(mock_build_container, test_config) -> None:
+    catalog = WorldCatalog(None)
+    world_id, _ = await _built_world(mock_build_container, test_config, catalog)
+    snapshots = mock_build_container.snapshot
+    with _client(mock_build_container, test_config, catalog) as client:
+        base = f"/api/worlds/{world_id}"
+        original = client.get(f"{base}/setup").json()
+        location = original["entities"][0]["location"]
+        additions = {
+            "entities": {"name": "新告示", "entity_type": "landmark", "location": location,
+                         "description": "贴在门边", "initial_state": "intact", "content": "今日闭门"},
+            "npcs": {"name": "新信使", "gender": "女", "age": 25,
+                     "description": "熟悉道路", "location": location},
+        }
+        added_ids: dict[str, str] = {}
+        removed_ids: dict[str, str] = {}
+        for kind, payload in additions.items():
+            id_field = "entity_id" if kind == "entities" else "npc_id"
+            removed_ids[kind] = original[kind][0][id_field]
+            response = client.post(f"{base}/setup/{kind}", json=payload)
+            assert response.status_code == 200
+            added_ids[kind] = response.json()[id_field]
+            added = next(seed for seed in response.json()["setup"][kind] if seed[id_field] == added_ids[kind])
+            assert {key: added[key] for key in payload} == payload
+            removed = client.delete(f"{base}/setup/{kind}/{removed_ids[kind]}")
+            assert removed.status_code == 200
+            assert all(seed[id_field] != removed_ids[kind] for seed in removed.json()[kind])
+        assert await snapshots.load(world_id, 0) is None
+        assert client.post(f"{base}/confirm").status_code == 200
+        for kind, payload in additions.items():
+            assert client.post(f"{base}/setup/{kind}", json=payload).status_code == 409
+            assert client.delete(f"{base}/setup/{kind}/{added_ids[kind]}").status_code == 409
+        assert client.post(f"{base}/reset").status_code == 200
+    snapshot = await snapshots.load(world_id, 0)
+    assert snapshot is not None
+    assert added_ids["entities"] in snapshot.state.entities
+    assert snapshot.state.entities[added_ids["entities"]]["content"] == "今日闭门"
+    assert added_ids["npcs"] in snapshot.state.npcs
+    assert snapshot.state.npcs[added_ids["npcs"]]["description"] == "熟悉道路"
+    assert removed_ids["entities"] not in snapshot.state.entities
+    assert removed_ids["npcs"] not in snapshot.state.npcs
+    setup = WorldSetup.from_dict(snapshot.setup)
+    assert added_ids["entities"] in {seed.entity_id for seed in setup.entity_seeds}
+    assert added_ids["npcs"] in {seed.npc_id for seed in setup.npc_seeds}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind,invalid", [
+    ("entities", {"name": " "}),
+    ("entities", {"entity_type": "location"}),
+    ("entities", {"location": "missing"}),
+    ("entities", {"entity_id": "chosen"}),
+    ("entities", {"initial_state": ""}),
+    ("npcs", {"name": " "}),
+    ("npcs", {"age": -1}),
+    ("npcs", {"age": True}),
+    ("npcs", {"description": " "}),
+    ("npcs", {"gender": "invalid"}),
+    ("npcs", {"location": "missing"}),
+    ("npcs", {"npc_id": "chosen"}),
+])
+async def test_invalid_seed_addition_changes_nothing(mock_build_container, test_config, kind, invalid) -> None:
+    catalog = WorldCatalog(None)
+    world_id, _ = await _built_world(mock_build_container, test_config, catalog)
+    with _client(mock_build_container, test_config, catalog) as client:
+        base = f"/api/worlds/{world_id}/setup"
+        before = client.get(base).json()
+        payload = ({"name": "新物件", "entity_type": "item"} if kind == "entities" else
+                   {"name": "新信使", "gender": "男", "age": 20, "description": "认得路"})
+        payload["location"] = before["entities"][0]["location"]
+        assert client.post(f"{base}/{kind}", json={**payload, **invalid}).status_code == 400
+        assert client.get(base).json() == before
+        for name in (before["characters"][0]["name"], before["entities"][0]["name"], before["npcs"][0]["name"]):
+            assert client.post(f"{base}/{kind}", json={**payload, "name": name}).status_code == 400
+        assert client.delete(f"{base}/{kind}/missing").status_code == 400
+        assert client.get(base).json() == before
+
+
+@pytest.mark.asyncio
+async def test_npc_addition_refuses_quota_without_losing_the_draft(mock_build_container, test_config) -> None:
+    catalog = WorldCatalog(None)
+    world_id, _ = await _built_world(mock_build_container, test_config, catalog)
+    test_config.engine.max_npcs = 2
+    with _client(mock_build_container, test_config, catalog) as client:
+        base = f"/api/worlds/{world_id}/setup"
+        before = client.get(base).json()
+        payload = {"name": "新信使", "gender": "男", "age": 20, "description": "认得路",
+                   "location": before["npcs"][0]["location"]}
+        response = client.post(f"{base}/npcs", json=payload)
+        assert response.status_code == 400
+        assert "at most 2" in response.json()["detail"]
+        assert client.get(base).json() == before
+        assert client.delete(f"{base}/npcs/{before['npcs'][0]['npc_id']}").status_code == 200
+        assert client.post(f"{base}/npcs", json=payload).status_code == 200
+
+
+def test_seed_addition_requires_fields_and_generates_unique_ids() -> None:
+    setup = _setup()
+    with pytest.raises(ValueError, match="entity_type"):
+        setup.with_entity_added("Seal", EntityRevision(location="palace"), places=PLACES)
+    with pytest.raises(ValueError, match="age"):
+        setup.with_npc_added("Guard", NpcRevision(gender="男"), places=PLACES, npc_limit=6)
+    setup, first = setup.with_entity_added("Red Seal", EntityRevision(entity_type="item", location="palace"), places=PLACES)
+    setup, second = setup.with_entity_added("red-seal", EntityRevision(entity_type="item", location="palace"), places=PLACES)
+    assert first != second
+    setup, first_npc = setup.with_npc_added("Red Guard", NpcRevision(
+        gender="男", age=30, description="认得路", location="palace",
+    ), places=PLACES, npc_limit=6)
+    setup, second_npc = setup.with_npc_added("red-guard", NpcRevision(
+        gender="女", age=30, description="认得路", location="palace",
+    ), places=PLACES, npc_limit=6)
+    assert first_npc != second_npc
+    setup.validate(PLACES)
+
+
+def test_a_thing_may_not_take_a_places_name() -> None:
+    for name in ("正殿", " palace ", "御花园"):
+        with pytest.raises(ValueError, match="place's name"):
+            _setup().with_entity_added(name, EntityRevision(entity_type="landmark", location="palace"), places=PLACES)
+    setup, _ = _setup().with_entity_added(
+        "正殿前的石狮", EntityRevision(entity_type="landmark", location="palace"), places=PLACES,
+    )
+    setup.validate(PLACES)
+
+
+def test_validate_holds_built_seeds_to_the_revision_rules() -> None:
+    thing = WorldEntitySeed(name="印", entity_id="seal", entity_type="weapon", location="palace")
+    with pytest.raises(ValueError, match="type of"):
+        replace(_setup(), entity_seeds=(thing,)).validate(PLACES)
+    blank = NpcSeed(name="守卫", npc_id="npc_guard", gender="男", age=30, description="", location="palace")
+    with pytest.raises(ValueError, match="description of"):
+        replace(_setup(), npc_seeds=(blank,)).validate(PLACES)
+
+
+def test_an_npc_of_unknown_gender_stays_revisable() -> None:
+    unknown = NpcSeed(name="守卫", npc_id="npc_guard", gender="", age=30, description="力大", location="palace")
+    setup = replace(_setup(), npc_seeds=(unknown,))
+    revised = setup.with_npc("npc_guard", NpcRevision(gender="", description="力大，识字"), places=PLACES)
+    assert revised.npc_seeds[0].gender == ""
+    assert revised.npc_seeds[0].description == "力大，识字"

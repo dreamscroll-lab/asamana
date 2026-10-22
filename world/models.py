@@ -12,6 +12,7 @@ from agent.relation import NEUTRAL_AFFECTION, NEUTRAL_TRUST
 from core.interfaces.action import ErrandOrder
 from core.interfaces.condition import BodyCondition
 from core.interfaces.directory import WorldDirectory
+from core.interfaces.perception import DEFAULT_ENTITY_STATE
 from core.interfaces.snapshot import WorldSnapshot
 from core.interfaces.world_config import WorldConfig
 from core.text import slugify
@@ -87,7 +88,7 @@ class WorldEntity:
     entity_id:      str
     name:           str
     entity_type:    WorldEntityType
-    state:          str = "intact"
+    state:          str = DEFAULT_ENTITY_STATE
     description:    str = ""
     presence:       EntityPresence = EntityPresence.AT_LOCATION
     presence_ref:   str | None = None   # location_id (AT_LOCATION) | agent_id (HELD) | None
@@ -149,7 +150,7 @@ class WorldEntitySeed:
     # kept whatever later happens to the name.
     entity_id:     str = ""
     description:   str = ""
-    initial_state: str = "intact"
+    initial_state: str = DEFAULT_ENTITY_STATE
     # Where it stands: the build's location text, which the build resolves to a location id
     # (``world.builder._canonicalize_seed_locations``), as it does a character's initial_location.
     location:      str = ""

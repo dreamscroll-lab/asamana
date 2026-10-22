@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
+import { SETUP_INPUT } from "./styles";
 import { MAX_HOURS_PER_STEP, MIN_HOURS_PER_STEP } from "../../lib/contract";
 import { durationLabel } from "../../lib/duration";
 
@@ -57,7 +58,7 @@ export default function StepLengthEditor({
             value={Math.round(draft / 3600)}
             disabled={busy}
             onChange={(e) => setDraft(Number(e.target.value) * 3600)}
-            className="bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-slate-200"
+            className={SETUP_INPUT}
           >
             {HOURS.map((h) => <option key={h} value={h}>{durationLabel(h * 3600)}</option>)}
           </select>

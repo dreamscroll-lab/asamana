@@ -1077,6 +1077,27 @@ def test_entity_seed_content_is_parsed_and_absent_content_stays_empty() -> None:
     assert [s.content for s in analysis.world_entity_seeds] == ["敢有擅入者斩", ""]
 
 
+def test_an_entity_seed_of_unknown_type_is_dropped_alone(caplog: pytest.LogCaptureFixture) -> None:
+    analysis = _analyze(_theme_payload(world_entity_seeds=[
+        {"name": "石碑", "entity_type": "landmark", "location_name": "x"},
+        {"name": "长枪", "entity_type": "weapon", "location_name": "x"},
+        {"name": "佩刀", "location_name": "x"},
+    ]))
+    assert [(s.name, s.entity_type) for s in analysis.world_entity_seeds] == [("石碑", "landmark"), ("佩刀", "item")]
+    assert any(r.message == "entity_seed_type_unknown" for r in caplog.records)
+
+
+def test_an_npc_seed_without_a_description_is_marked_undescribed(caplog: pytest.LogCaptureFixture) -> None:
+    from world.builders.theme_analyzer import NPC_NO_DESCRIPTION
+
+    analysis = _analyze(_theme_payload(npcs=[
+        {"name": "脚夫", "gender": "男", "age": 30, "location_name": "x"},
+        {"name": "更夫", "gender": "男", "age": 50, "description": "打更", "location_name": "x"},
+    ]))
+    assert [s.description for s in analysis.npc_seeds] == [NPC_NO_DESCRIPTION, "打更"]
+    assert any(r.message == "npc_seed_description_missing" for r in caplog.records)
+
+
 # --- Build-time write failures must propagate (Rule 2/6) -------------------------------------
 #
 # Relations and pre-history are written once by the LLM for this world and never come again: initial

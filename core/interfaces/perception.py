@@ -12,6 +12,9 @@ from core.interfaces.severity import Severity, parse_severity
 if TYPE_CHECKING:
     from core.interfaces.message import Message
 
+# A thing's state when nothing has happened to it. Prompts and the observer skip it, so an
+# untouched thing isn't described as "intact" in every line that mentions it.
+DEFAULT_ENTITY_STATE = "intact"
 
 class BroadcastType(str, Enum):
     """World-state broadcast categories.
@@ -39,7 +42,7 @@ class VisibleEntity:
     entity_id:   str
     name:        str
     entity_type: str      # WorldEntityType string value; str to avoid core→world dep
-    state:       str = "intact"
+    state:       str = DEFAULT_ENTITY_STATE
     description: str = ""
     is_takeable: bool = False
     holder_id:   str | None = None   # the agent carrying it; None = lying here

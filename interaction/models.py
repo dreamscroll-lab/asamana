@@ -259,11 +259,34 @@ class CharacterSetupView(AgentProfile):
 
 
 @dataclass(frozen=True)
+class EntitySetupView:
+    entity_id: str
+    name: str
+    entity_type: str
+    description: str
+    initial_state: str
+    location: str
+    content: str
+
+
+@dataclass(frozen=True)
+class NpcSetupView:
+    npc_id: str
+    name: str
+    gender: str
+    age: int
+    description: str
+    location: str
+
+
+@dataclass(frozen=True)
 class SetupView:
     """A world's complete revisable setup, read-only after confirmation."""
 
     seconds_per_step: int
     characters: list[CharacterSetupView] = field(default_factory=list)
+    entities: list[EntitySetupView] = field(default_factory=list)
+    npcs: list[NpcSetupView] = field(default_factory=list)
     historical_events: list[SetupHistoricalEventView] = field(default_factory=list)
     relations: list[SetupRelationView] = field(default_factory=list)
 

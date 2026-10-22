@@ -43,7 +43,7 @@ from engine.scheduler import AgentScheduler
 from engine.world_pressure import WorldPressureEvaluator
 from world import ActorCasting, World, WorldBuilder, WorldCatalog
 from world.initializer import WorldInitializer
-from world.setup import SetupRejected, WorldSetup
+from world.setup import MapPlaces, SetupRejected, WorldSetup
 from world.stored_config import StoredWorldConfig
 
 logger = get_logger(__name__)
@@ -399,13 +399,13 @@ class NarrativeApplication:
         return setup
 
     async def revise_setup(
-        self, world_id: str, revise: Callable[[WorldSetup, frozenset[str]], WorldSetup],
+        self, world_id: str, revise: Callable[[WorldSetup, MapPlaces], WorldSetup],
     ) -> WorldSetup:
         """Apply a revision to a world's setup.
 
         Open until the world is confirmed: confirming locks the setup, and nothing is
         materialized before it, so a revision rewrites the setup file alone.
-        ``revise`` gets the setup and the location ids of the world's map. Raises ``ValueError``
+        ``revise`` gets the setup and the world's map. Raises ``ValueError``
         when the setup is closed, and ``SetupRejected`` when ``revise`` refuses the revision;
         either way nothing changes.
         """
@@ -419,7 +419,7 @@ class NarrativeApplication:
             config = await snapshots.load_world_config(world_id)
             if stored is None or config is None:
                 raise ValueError(f"World {world_id!r} has no setup to revise.")
-            places = frozenset(StoredWorldConfig(config).get_places())
+            places = MapPlaces.of(StoredWorldConfig(config))
             try:
                 setup = revise(WorldSetup.from_dict(stored), places)
             except ValueError as exc:
