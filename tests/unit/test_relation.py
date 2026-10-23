@@ -353,11 +353,11 @@ async def test_relation_line_merges_gender_and_deceased_into_one_paren(container
 async def test_perceive_existing_reads_without_bringing_a_relation_into_being(container: object) -> None:
     system = _make_relation_system(container)
 
-    assert await system.perceive_existing("stranger", emotion="neutral") is None
+    assert await system.perceive_existing("stranger", emotion=EmotionState()) is None
     assert await system.load_existing("stranger") is None   # nothing was persisted
 
     await system.apply_interaction("friend", trust_delta=0.2, affection_delta=0.1, step=1)
-    perceived = await system.perceive_existing("friend", emotion="neutral")
+    perceived = await system.perceive_existing("friend", emotion=EmotionState())
     assert perceived is not None and perceived.target_agent_id == "friend"
 
 

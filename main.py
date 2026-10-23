@@ -7,6 +7,7 @@ import sys
 
 from config import Config, load_config, resolve_config_path
 from core.container import Container
+from providers.assembly import build_container
 from core.logging import configure_logging, get_logger
 from interaction.cli import run_cli
 from interaction.examples import seed_examples
@@ -38,7 +39,7 @@ def bootstrap_application(config_path: str | Path | None = None) -> tuple[Config
     )
     # Before the container: the file vector store reads its directory once, at construction.
     seed_examples(config, DEFAULT_CATALOG_PATH)
-    return config, Container.from_config(config)
+    return config, build_container(config)
 
 
 def main() -> int:

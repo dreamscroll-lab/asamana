@@ -49,12 +49,13 @@ from core.interfaces.actor import (
     EmotionAmendment,
     GoalAmendment,
     RelationAmendment,
+    require_intent_target,
 )
 from core.logging import get_logger
 from core.validate import require_in_range
 
 from interaction.api.app import ApiServices
-from interaction.api.serialization import to_jsonable
+from interaction.api.serialization import to_wire_json
 
 logger = get_logger(__name__)
 
@@ -88,11 +89,12 @@ def build_actor_router(services: ApiServices) -> Any:
     async def operations(world_id: str, turn_id: str, target_kind: str, target_id: str) -> dict[str, Any]:
         try:
             target = _decode_target({"kind": target_kind, "id": target_id})
+            require_intent_target(target)
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         await services.ensure_session(world_id)
         try:
-            return to_jsonable(application.actor_operations(world_id, turn_id, target))
+            return to_wire_json(application.actor_operations(world_id, turn_id, target))
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -109,7 +111,7 @@ def build_actor_router(services: ApiServices) -> Any:
             services.require_model_keys()
         await services.ensure_session(world_id)
         try:
-            return to_jsonable(await application.actor_intent(world_id, decoded))
+            return to_wire_json(await application.actor_intent(world_id, decoded))
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -166,7 +168,7 @@ def build_actor_router(services: ApiServices) -> Any:
             mind = await application.actor_mind(world_id)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return to_jsonable(mind)
+        return to_wire_json(mind)
 
     @router.post("/amend")
     async def amend(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
@@ -202,7 +204,7 @@ def build_actor_router(services: ApiServices) -> Any:
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         meta = await manager.get_world(world_id)
-        return {**to_jsonable(meta), "run_state": services.run_state(world_id)}
+        return {**to_wire_json(meta), "run_state": services.run_state(world_id)}
 
     return router
 
@@ -231,12 +233,9 @@ def _decode_answer(data: Any) -> ActorPublicAnswer:
 
 
 def _decode_target(data: Any) -> Ref:
-    from core.validate import require_member, require_text
-
-    target = _build(Ref, data, {"kind": _string, "id": _string})
-    require_member(target.kind, ("agent", "location", "npc", "item", "landmark"), "target.kind")
-    require_text(target.id, "target.id")
-    return target
+    """Decode only: an intent's ``ActorIntent`` validates its target, other routes call
+    ``require_intent_target``."""
+    return _build(Ref, data, {"kind": _string, "id": _string})
 
 
 def _decode_intent(data: Any) -> ActorIntent:

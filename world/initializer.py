@@ -12,13 +12,13 @@ from agent.agent import Agent, snapshot_agent_state
 from agent.decision import DecisionEngine
 from agent.memory import MemorySystem
 from agent.memory_types import importance_level
-from agent.goals import GoalEntity, GoalOrigin, GoalStatus, text_to_long_term_goal_entity
-from agent.need import NeedEngine, NeedType
-from agent.personality import ActionStatus, AgentActivityStatus, EmotionState, PersonalityLayer, StateLayer, parse_emotion_type
+from agent.goals import text_to_long_term_goal_entity
+from agent.need import NeedEngine
+from agent.personality import ActionStatus, AgentActivityStatus, PersonalityLayer, StateLayer
 from agent.relation import RelationSystem
+from agent.state_codec import encode_agent_state
 from core.container import Container
 from core.interfaces.agent_store import AgentRelation, AgentState, relations_snapshot
-from core.interfaces.condition import condition_from_dict, condition_to_dict
 from core.interfaces.snapshot import EngineState, WorldSnapshot, WorldState
 from core.logging import get_logger
 from engine.clock import (
@@ -36,7 +36,8 @@ from worlds.tiled import CAST_ART_FIELDS, CHARACTERS_FILENAME
 
 from core.coerce import coerce_int
 from world.catalog import ActorCasting
-from world.models import AgentDefinition, AgentTier, NpcSeed, World, WorldEntity, WorldEntitySeed, WorldEntityType
+from world.models import AgentDefinition, AgentTier, NpcSeed, World, WorldEntitySeed
+from core.interfaces.entity import Npc, WorldEntity, WorldEntityType
 from world.setup import MapPlaces, SetupHistoricalEvent, WorldLore, WorldSetup
 from world.stored_config import StoredWorldConfig, serialize_world_config
 
@@ -286,35 +287,7 @@ class WorldInitializer:
         )
 
     async def _persist_initial_agent_state(self, agent: Agent) -> None:
-        state = agent.personality.state
-        initial_state = AgentState(
-            world_id=agent.world_id,
-            agent_id=agent.agent_id,
-            updated_step=0,
-            current_emotion=state.emotion.primary,
-            emotion_intensity=state.emotion.intensity,
-            emotion_valence=state.emotion.valence,
-            emotion_triggered_by=state.emotion.triggered_by,
-            active_needs=list(state.active_needs),
-            dominant_need=state.dominant_need,
-            long_term_goals=list(state.long_term_goals),
-            short_term_goals=list(state.short_term_goals),
-            current_location=state.current_location,
-            activity_status=state.activity_status.value,
-            activity_target=state.activity_target,
-            action_status=state.action_status.value,
-            current_action=state.current_action,
-            action_remaining_steps=state.action_remaining_steps,
-            last_action=state.last_action,
-            last_action_result=state.last_action_result,
-            last_action_succeeded=state.last_action_succeeded,
-            need_intensities=dict(state.need_intensities),
-            vitality=state.vitality,
-            condition=condition_to_dict(state.condition),
-            # 0 at world init = "never decided" → the scheduler's cadence gate treats every agent
-            # as starved on step 1, so a fresh world does not open on a step where nobody thought.
-            last_decision_step=state.last_decision_step,
-        )
+        initial_state = encode_agent_state(agent.world_id, agent.agent_id, agent.personality.state)
         await agent.agent_store.save_agent_state(agent.world_id, agent.agent_id, initial_state)
         await agent.agent_store.save_initial_agent_state(agent.world_id, agent.agent_id, initial_state)
 
@@ -479,13 +452,13 @@ class WorldInitializer:
 
             stored = stored_states[agent.agent_id]
             if stored is not None:
-                _apply_stored_state(
-                    agent, stored, in_resumed_execution=agent.agent_id in resumed_participants
+                agent.apply_stored_state(
+                    stored, in_resumed_execution=agent.agent_id in resumed_participants
                 )
                 # Don't place the dead: death handling already removed them from the environment (current_location
                 # isn't cleared, it only records where they fell). Placing them unconditionally would stand the
                 # corpse back up in the room, visible to everyone there forever.
-                # Check liveness with is_active (just derived by _apply_stored_state from vitality, the single source of truth), not a raw vitality comparison.
+                # Check liveness with is_active (just derived by apply_stored_state from vitality, the single source of truth), not a raw vitality comparison.
                 if agent.is_active:
                     environment.place_agent(
                         agent_id=agent.agent_id,
@@ -675,8 +648,8 @@ class WorldInitializer:
         """Copy each named file into the world's own storage, by relative path.
 
         Best-effort per file, and never fatal: a world that builds is worth more
-        than a perfectly frozen one, and a missing frozen asset falls back to the
-        live template (exactly what every pre-freeze world already does).
+        than a perfectly frozen one. A file that fails to freeze is served as missing,
+        so only that image is absent from the map.
         """
         for relative in relative_paths:
             path = source_dir / relative
@@ -727,7 +700,13 @@ class WorldInitializer:
         of the entity seeds. Slots and quotas belong to ``spawn_npc`` (the single point where they
         come into being)."""
         for seed in seeds:
-            environment.spawn_npc(seed, location_id=seed.location)
+            environment.spawn_npc(
+                Npc(
+                    npc_id=seed.npc_id, name=seed.name, gender=seed.gender, age=seed.age,
+                    description=seed.description,
+                ),
+                location_id=seed.location,
+            )
 
     async def _instantiate_entity_seeds(
         self, seeds: Sequence[WorldEntitySeed], environment: EnvironmentSystem,
@@ -742,7 +721,6 @@ class WorldInitializer:
                 state=seed.initial_state,
                 description=seed.description,
                 presence_ref=location_id,   # presence defaults to AT_LOCATION
-                is_takeable=seed.is_takeable,
                 is_public=True,
                 content=seed.content,
             )
@@ -804,47 +782,6 @@ class WorldInitializer:
         )
 
 
-def _goal_entity_from_dict(ent: dict, *, fallback_id: str) -> GoalEntity:
-    """Deserialize a persisted short-term goal dict into a full GoalEntity.
-
-    Mirrors the fields written by ``Agent.persist_state`` so lifecycle metadata
-    survives a restore. ``related_need`` is coerced silently: an unknown/empty
-    value degrades to None rather than raising (field-level coercion).
-    """
-    raw_need = ent.get("related_need")
-    try:
-        related_need = NeedType(raw_need) if raw_need else None
-    except ValueError:
-        related_need = None
-    last_evaluated = ent.get("last_evaluated_step")
-    # origin is coerced silently too: missing (older saves without the field) or an unknown value → COGNITIVE.
-    # COGNITIVE rather than RESIDUE is the conservative choice: misreading an old plan as unfinished business would give it eviction resistance it shouldn't have.
-    try:
-        origin = GoalOrigin(ent["origin"]) if ent.get("origin") else GoalOrigin.COGNITIVE
-    except ValueError:
-        origin = GoalOrigin.COGNITIVE
-    return GoalEntity(
-        id=ent.get("id", fallback_id),
-        text=ent.get("text", ""),
-        goal_type=ent.get("goal_type", "short_term"),
-        status=GoalStatus(ent["status"]) if ent.get("status") else GoalStatus.ACTIVE,
-        related_need=related_need,
-        created_step=int(ent.get("created_step", 0) or 0),
-        due_step=_coerce_due_step(ent.get("due_step")),
-        last_evaluated_step=int(last_evaluated) if last_evaluated is not None else None,
-        progress_summary=str(ent.get("progress_summary", "")),
-        origin=origin,
-    )
-
-
-def _coerce_due_step(raw: object) -> int | None:
-    """The agreed time: missing / null / unrecognized values all become None. No deadline is the normal case, not a parse failure."""
-    try:
-        return int(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-
-
 def _resumable_executions(
     world_id: str, snapshot: WorldSnapshot | None, stored_states: Mapping[str, AgentState | None],
 ) -> list[ActionExecutionState]:
@@ -854,7 +791,7 @@ def _resumable_executions(
     Both are written at the step's commit point, so they agree unless an agent state write
     failed (Rule 6). An act that can't be read, or that someone in it has no record of, is
     dropped whole: half an act would tick a character who isn't in it. Its participants are then
-    left idle by ``_apply_stored_state``, as is anyone whose snapshot saved no act at all.
+    left idle by ``Agent.apply_stored_state``, as is anyone whose snapshot saved no act at all.
     """
     if snapshot is None:
         return []
@@ -902,87 +839,3 @@ def _body_location(
         if where:
             return str(where)
     return stored.current_location
-
-
-def _apply_stored_state(agent: Agent, stored: AgentState, *, in_resumed_execution: bool) -> None:
-    """Sync a loaded AgentState into an Agent's in-memory StateLayer.
-
-    Calls personality.restore_state() to write directly into _state, bypassing
-    the defensive copy returned by personality.state.
-    """
-    # Build goal entities: prefer rich entity dicts (carry lifecycle metadata),
-    # fall back to strings. The dict branch must pass through every persisted field
-    # (related_need / created_step / last_evaluated_step / progress_summary) — dropping
-    # them silently resets fail-retry counts, goal age, and need linkage on every restore.
-    if stored.short_term_goal_entities:
-        goal_entities = [
-            _goal_entity_from_dict(ent, fallback_id=f"restored-stg-{i}")
-            for i, ent in enumerate(stored.short_term_goal_entities)
-        ]
-    elif stored.short_term_goals:
-        goal_entities = [
-            GoalEntity(
-                id=f"restored-stg-{i}",
-                text=g,
-                goal_type="short_term",
-                status=GoalStatus.ACTIVE,
-                related_need=None,
-            )
-            for i, g in enumerate(stored.short_term_goals)
-        ]
-    else:
-        goal_entities = []
-
-    # An act in progress goes on only with the execution that carries it; without one nothing
-    # would ever tick or end it, and the character would stay busy forever.
-    orphaned = stored.action_status == ActionStatus.IN_PROGRESS.value and not in_resumed_execution
-    restored = StateLayer(
-        agent_id=agent.agent_id,
-        step=stored.updated_step,
-        emotion=EmotionState(
-            primary=parse_emotion_type(stored.current_emotion),
-            intensity=stored.emotion_intensity,
-            valence=stored.emotion_valence,
-            triggered_by=stored.emotion_triggered_by,
-        ),
-        active_needs=list(stored.active_needs),
-        dominant_need=stored.dominant_need,
-        long_term_goals=list(stored.long_term_goals),
-        short_term_goals=list(stored.short_term_goals),
-        current_location=stored.current_location,
-        activity_status=(
-            AgentActivityStatus.IDLE if orphaned else AgentActivityStatus(stored.activity_status)
-        ),
-        activity_target=None if orphaned else stored.activity_target,
-        action_status=ActionStatus.IDLE if orphaned else ActionStatus(stored.action_status),
-        current_action=None if orphaned else stored.current_action,
-        action_remaining_steps=0 if orphaned else stored.action_remaining_steps,
-        last_action=stored.last_action,
-        last_action_result=stored.last_action_result,
-        last_action_succeeded=stored.last_action_succeeded,
-        short_term_goal_entities=goal_entities,
-        # Long-term goals persist as text; restore rebuilds the entities from text (related_need left None, as at build).
-        long_term_goal_entities=[
-            text_to_long_term_goal_entity(t) for t in stored.long_term_goals
-        ],
-        need_intensities=dict(stored.need_intensities),
-        vitality=stored.vitality,
-        # Stored as a dict (see the AgentState.condition comment) and rebuilt into a BodyCondition here.
-        # This is the only rehydrate point, like _goal_entity_from_dict.
-        condition=condition_from_dict(stored.condition),
-        # Without restoring it, everyone's starvation resets to zero after restore and they all flood the decision loop next step (the cadence gate is bypassed for a beat).
-        last_decision_step=stored.last_decision_step,
-        acted_upon=list(stored.acted_upon),
-    )
-    agent.personality.restore_state(restored)
-    # vitality is the single source of truth for alive/dead: restore is_active from it, or the dead come
-    # back to life on restart (default True) → decay kills them again next step → duplicate death notices. is_active isn't persisted separately.
-    agent.set_active(stored.vitality > 0.0)
-    if orphaned:
-        logger.info(
-            "in_progress_action_cleared",
-            extra={
-                "agent_id": agent.agent_id,
-                "cleared_action": stored.current_action,
-            },
-        )

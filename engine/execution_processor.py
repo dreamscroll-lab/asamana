@@ -256,7 +256,7 @@ class ExecutionProcessor:
         world_infra: List[ActionExecutionState] = []
         for es in exec_states:
             ex = self._executor_registry.get_executor(es.action_type)
-            mutates = getattr(ex, "mutates_world_during_complete", False)
+            mutates = ex is not None and ex.mutates_world_during_complete
             (world_infra if mutates else readonly).append(es)
 
         results_by_exec: Dict[str, List[ActionResult]] = {}

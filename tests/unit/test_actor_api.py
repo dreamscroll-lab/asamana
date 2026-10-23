@@ -14,8 +14,9 @@ from agent.decision import _ACTION_SPACE
 from core.interfaces.action import ActionType
 from core.interfaces.actor import ActorTurn, TurnKind
 from core.interfaces.llm import LLMScene
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from world import WorldCatalog
+from world.setup import WorldSetup
 
 from interaction.api import create_app
 from interaction.api.actor import _decode_amendments
@@ -25,7 +26,7 @@ async def _unconfirmed_world(container, test_config, catalog: WorldCatalog) -> t
     """A world still under review, and a character to cast."""
     application = NarrativeApplication(container, test_config, catalog=catalog)
     world_id = await application.build_world("玄武门之变", template="changan_iso")
-    return world_id, (await application.world_setup(world_id)).characters[0].agent_id
+    return world_id, (await WorldSetup.load(container.snapshot, world_id)).characters[0].agent_id
 
 
 def _client(container, test_config, catalog: WorldCatalog) -> TestClient:
@@ -467,7 +468,7 @@ async def test_broadcast_skips_interpretation_and_uses_only_session_model_gate(
             "parameters": {"message": "请大家留意这里"}, "description": "只悄悄告诉一个人",
         })
         assert rejected.status_code == 400
-        assert "broadcast.description" in rejected.json()["detail"]
+        assert "broadcast intent takes no description" in rejected.json()["detail"]
         model_gate.assert_not_called()
         parser.assert_not_awaited()
         submitted = client.post(f"{base}/actor/intent", json={

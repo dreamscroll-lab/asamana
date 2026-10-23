@@ -116,7 +116,7 @@ def _build_agent(
             world_id=world_id,
             agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(container.llm_router),
         relation_system=RelationSystem(container.agent_store, world_id=world_id, agent_id=agent_id),
         agent_store=container.agent_store,
     )
@@ -145,6 +145,7 @@ def _narrative_editor(
             broadcast_channel=broadcast_channel or BroadcastChannel(),
             message_system=message_system,
             mutation_channel=_mutation_channel(environment),
+            environment=environment,
             directory=directory,
         ),
         directory=directory,
@@ -157,6 +158,12 @@ def _narrative_editor(
             check_interval=kwargs.get("check_interval", 6),
         ),
     )
+
+
+def _locations_of(agents: dict) -> dict[str, str]:
+    """The ``agent_locations`` the runtime passes, here from each fixture agent's own record (the
+    two agree in these fixtures; tests about them disagreeing pass the mapping explicitly)."""
+    return {aid: a.personality.state.current_location for aid, a in agents.items()}
 
 
 def _messages(system: NarrativeEditor) -> MessageSystem:
@@ -207,6 +214,7 @@ async def _run_check(
     clock: object | None = None,  # unused
     locations: Sequence = (),
     entities: Sequence = (),
+    agent_locations: dict | None = None,
 ) -> dict | None:
     """Drive one full event check synchronously (pacing gate -> gate + plan -> commit).
 
@@ -215,7 +223,11 @@ async def _run_check(
     """
     if not system._passes_rule_check(current_step):
         return None
-    plan = await system._generate_plan(current_step, world_time, world_id, all_agents, locations, entities)
+    plan = await system._generate_plan(
+        current_step, world_time, world_id, all_agents,
+        _locations_of(all_agents) if agent_locations is None else agent_locations,
+        locations, entities,
+    )
     if plan is None:
         return None
     committed = await system._commit_plan(plan, current_step, all_agents)
@@ -302,7 +314,7 @@ async def test_poll_event_empty_returns_none_and_schedules(container) -> None:
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")}
 
     fired = await system.poll_injection(current_step=1, world_time=_world_time(1),
-                                    world_id=world_id, all_agents=agents,
+                                    world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
                                     locations=[], entities=[])
     assert fired is None
     assert system._inflight is not None          # background generation started
@@ -327,13 +339,13 @@ async def test_poll_event_roundtrip_generates_then_commits(container) -> None:
 
     # Step 1: nothing ready -> start in background, non-blocking.
     assert await system.poll_injection(current_step=1, world_time=_world_time(1),
-                                   world_id=world_id, all_agents=agents,
+                                   world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
                                     locations=[], entities=[]) is None
     await system._inflight  # let background generation finish (awaited explicitly in the test)
 
     # Step 2: ready -> commit. deliver_step=2, perceivable this step.
     fired = await system.poll_injection(current_step=2, world_time=_world_time(2),
-                                    world_id=world_id, all_agents=agents,
+                                    world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
                                     locations=[], entities=[])
     assert fired is not None
     assert fired.record.dispatched_to == ["broadcast"]
@@ -355,11 +367,11 @@ async def test_poll_event_single_in_flight(container) -> None:
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")}
 
     await system.poll_injection(current_step=1, world_time=_world_time(1),
-                            world_id=world_id, all_agents=agents,
+                            world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
                                     locations=[], entities=[])
     first = system._inflight
     await system.poll_injection(current_step=1, world_time=_world_time(1),
-                            world_id=world_id, all_agents=agents,
+                            world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
                                     locations=[], entities=[])
     assert system._inflight is first  # not replaced
     await system.aclose()
@@ -376,11 +388,11 @@ async def test_poll_event_gate_no_fires_nothing(container) -> None:
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")}
 
     await system.poll_injection(current_step=1, world_time=_world_time(1),
-                            world_id=world_id, all_agents=agents,
+                            world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
                                     locations=[], entities=[])
     await system._inflight
     fired = await system.poll_injection(current_step=2, world_time=_world_time(2),
-                                    world_id=world_id, all_agents=agents,
+                                    world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
                                     locations=[], entities=[])
     assert fired is None
     assert system.list_injections() == []            # not counted
@@ -399,7 +411,7 @@ async def test_aclose_cancels_in_flight_generation(container) -> None:
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")}
 
     await system.poll_injection(current_step=1, world_time=_world_time(1),
-                            world_id=world_id, all_agents=agents,
+                            world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
                                     locations=[], entities=[])
     assert system._inflight is not None
     await system.aclose()
@@ -962,7 +974,7 @@ async def test_characters_block_excludes_first_person_state(container) -> None:
     system = _narrative_editor(container, world_id=world_id, agents=agents,
                             core_tension="边境危局", narrative_theme="忠义抉择")
 
-    brief = await system._build_narrative_summary(world_id, 5, agents)
+    brief = await system._build_narrative_summary(world_id, 5, agents, _locations_of(agents))
 
     assert "【主要人物】" in brief
     assert "李世民" in brief
@@ -993,7 +1005,7 @@ async def test_characters_block_marks_the_dead_and_drops_their_living_attrs(cont
     agents = {"a1": dead, "a2": alive, "a3": dead_bg}
     system = _narrative_editor(container, world_id=world_id, agents=agents)
 
-    brief = await system._build_narrative_summary(world_id, 5, agents)
+    brief = await system._build_narrative_summary(world_id, 5, agents, {**_locations_of(agents), "a2": "东宫"})
 
     dead_line = next(line for line in brief.splitlines() if "李建成" in line)
     assert "已死亡" in dead_line
@@ -1001,6 +1013,28 @@ async def test_characters_block_marks_the_dead_and_drops_their_living_attrs(cont
     alive_line = next(line for line in brief.splitlines() if "李世民" in line)
     assert "已死亡" not in alive_line and "现位于" in alive_line
     assert "背景人物" not in brief
+
+
+@pytest.mark.asyncio
+async def test_an_unplaced_body_names_no_place(container) -> None:
+    """A body not on the map has no place, so the brief, the background distribution and the
+    injection roster leave the place out instead of naming a fallback. He is still counted."""
+    world_id = "world-1"
+    main = _build_agent(container, world_id=world_id, agent_id="a1", name="李建成")
+    main.is_main_character = True
+    background = _build_agent(container, world_id=world_id, agent_id="a2", name="侍卫")
+    agents = {"a1": main, "a2": background}
+    system = _narrative_editor(container, world_id=world_id, agents=agents)
+    unplaced: dict[str, str] = {}   # as EnvironmentSystem.body_locations leaves them out
+
+    brief = await system._build_narrative_summary(world_id, 5, agents, unplaced)  # noqa: SLF001
+
+    line = next(line for line in brief.splitlines() if "李建成" in line)
+    assert "现位于" not in line and "体力" in line
+    assert "某地" not in brief and "此处" not in brief
+    assert "背景人物:共1人" in brief and "分布于" not in brief
+    roster_line = system._person_line(main, None)  # noqa: SLF001
+    assert roster_line.startswith("李建成") and "在" not in roster_line
 
 
 @pytest.mark.asyncio
@@ -1018,7 +1052,7 @@ async def test_characters_block_puts_where_and_how_they_are_before_the_profile(c
     agents = {"a1": bound}
     system = _narrative_editor(container, world_id=world_id, agents=agents)
 
-    brief = await system._build_narrative_summary(world_id, 5, agents)
+    brief = await system._build_narrative_summary(world_id, 5, agents, {"a1": "东宫"})
 
     line = next(line for line in brief.splitlines() if "李建成" in line)
     for now in ("现位于", "体力", "处境双手被反绑"):
@@ -1452,7 +1486,7 @@ def test_broadcast_channel_collect_dequeues_due_and_defers_future() -> None:
 def _ground_world(container, *, world_id: str = "world-1"):
     """Agent "李世民" stands in "太极殿", with a notice on the floor and a secret letter in his hand;
     in "西市" a knife lies on the ground with nobody there."""
-    from world.models import EntityPresence, WorldEntity, WorldEntityType
+    from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
     from core.interfaces.place import Place
 
     env = EnvironmentSystem()
@@ -1465,11 +1499,11 @@ def _ground_world(container, *, world_id: str = "world-1"):
         presence=EntityPresence.AT_LOCATION, presence_ref="palace",
     ))
     env.register_entity(WorldEntity(
-        entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM, is_takeable=True,
+        entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM,
         presence=EntityPresence.HELD, presence_ref="a1",
     ))
     env.register_entity(WorldEntity(
-        entity_id="knife", name="短刀", entity_type=WorldEntityType.ITEM, is_takeable=True,
+        entity_id="knife", name="短刀", entity_type=WorldEntityType.ITEM,
         presence=EntityPresence.AT_LOCATION, presence_ref="market",
     ))
     agents = {"a1": _build_agent(container, world_id=world_id, agent_id="a1", name="李世民")}
@@ -1524,6 +1558,30 @@ async def test_place_menu_shows_who_is_where(container) -> None:
     assert "#1 李世民（在太极殿）" in user.split("可选人物")[1]
 
 
+@pytest.mark.asyncio
+async def test_place_menu_counts_bodies_where_the_environment_puts_them(container) -> None:
+    """Headcount and the cast line follow where the body is (``agent_locations``, read from
+    ``EnvironmentSystem``), not the agent's own record: a traveler still recorded at the palace
+    doesn't make it an occupied place, since a broadcast there wouldn't reach him."""
+    from engine.environment import IN_TRANSIT
+
+    env, agents, directory = _ground_world(container)
+    env.move_body(body_id="a1", location_id=IN_TRANSIT)     # his own record still says palace
+    router = _EventRouter([_gate(), _plan_json(broadcast={"content": "x", "severity": "low"})])
+    system = _narrative_editor(container, router=router, directory=directory, environment=env,
+                           check_interval=1)
+
+    await _run_check(system, current_step=1, world_time=_world_time(1), world_id="world-1",
+                     all_agents=agents, locations=env.space.all_places(),
+                     entities=env.all_live_entities(),
+                     agent_locations={"a1": env.get_body_location("a1")})
+
+    user = router.calls[-1][1][-1].content
+    places = user.split("可选地点")[1].split("可选人物")[0]
+    assert "太极殿（此刻无人）" in places
+    assert "#1 李世民（在途中）" in user.split("可选人物")[1]
+
+
 def test_menu_places_keeps_occupied_caps_stocked_and_draws_bare() -> None:
     import random
     from collections import Counter
@@ -1568,11 +1626,11 @@ def test_menu_places_rotates_bare_places_across_steps() -> None:
 async def test_entity_menu_hides_what_a_takeable_thing_on_the_ground_says(container) -> None:
     """A portable letter on the ground: those present can't read it, and the editor shouldn't see
     its content either (same rule as readable_by)."""
-    from world.models import EntityPresence, WorldEntity, WorldEntityType
+    from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 
     env, agents, directory = _ground_world(container)
     env.register_entity(WorldEntity(
-        entity_id="dropped", name="遗信", entity_type=WorldEntityType.ITEM, is_takeable=True,
+        entity_id="dropped", name="遗信", entity_type=WorldEntityType.ITEM,
         content="今夜三更动手。", presence=EntityPresence.AT_LOCATION, presence_ref="palace",
     ))
     router = _EventRouter([_gate(), _plan_json(broadcast={"content": "x", "severity": "low"})])
@@ -1648,11 +1706,11 @@ async def test_malformed_entity_slots_are_dropped(container, things) -> None:
 @pytest.mark.asyncio
 async def test_a_thing_picked_up_before_commit_is_spared_but_the_broadcast_still_goes(container) -> None:
     from core.interfaces.action import EntityStateChange
-    from world.models import EntityPresence, WorldEntity, WorldEntityType
+    from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 
     env, agents, directory = _ground_world(container)
     env.register_entity(WorldEntity(
-        entity_id="seal", name="兵符", entity_type=WorldEntityType.ITEM, is_takeable=True,
+        entity_id="seal", name="兵符", entity_type=WorldEntityType.ITEM,
         presence=EntityPresence.AT_LOCATION, presence_ref="palace",
     ))
     bc = BroadcastChannel()
@@ -1664,7 +1722,8 @@ async def test_a_thing_picked_up_before_commit_is_spared_but_the_broadcast_still
                            broadcast_channel=bc, check_interval=1)
 
     plan = await system._generate_plan(
-        1, _world_time(1), "world-1", agents, env.space.all_places(), env.all_live_entities())
+        1, _world_time(1), "world-1", agents, _locations_of(agents),
+        env.space.all_places(), env.all_live_entities())
     env.change_entity_state(EntityStateChange(entity_id="seal", owner_id="a1"))
     fired = await system._commit_plan(plan, 1, agents)
 

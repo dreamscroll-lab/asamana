@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from core.interfaces.llm import LLMScene
 from core.interfaces.snapshot import WorldSnapshot
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from engine.run_control import RunState
 from world import WorldCatalog
 

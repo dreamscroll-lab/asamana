@@ -130,7 +130,7 @@ def test_the_runtime_clock_keeps_the_world_s_whole_clock_config(container, test_
     import dataclasses
     from types import SimpleNamespace
 
-    from engine.application import NarrativeApplication
+    from interaction.application import NarrativeApplication
     from engine.directory import LiveWorldDirectory
     from engine.environment import EnvironmentSystem
 

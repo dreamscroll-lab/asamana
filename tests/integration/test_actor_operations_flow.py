@@ -13,9 +13,10 @@ import pytest
 from config.models import Config
 from core.container import Container
 from core.interfaces.llm import LLMScene
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from interaction.api import create_app
 from world import WorldCatalog
+from world.setup import WorldSetup
 
 
 def _until(probe: Callable[[], Any]) -> Any:
@@ -51,7 +52,7 @@ async def test_explicit_move_executes_without_parsing_and_persists_public_thread
     catalog = WorldCatalog(None)
     application = NarrativeApplication(container, test_config, catalog=catalog)
     world_id = await application.build_world("玄武门之变", template="changan_iso")
-    character_id = (await application.world_setup(world_id)).characters[0].agent_id
+    character_id = (await WorldSetup.load(container.snapshot, world_id)).characters[0].agent_id
     parser = AsyncMock(side_effect=AssertionError("Explicit operations must not parse intent"))
     monkeypatch.setattr(container.llm_router.get(LLMScene.ACTOR_INTENT), "complete", parser)
     base = f"/api/worlds/{world_id}"

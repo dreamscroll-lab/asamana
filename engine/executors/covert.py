@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, List
 
 from core.action_duration import action_duration_steps
-from core.interfaces.action import ActionTarget, ActionResult, ActionType, AgentAction
+from core.interfaces.action import ActionResult, ActionType, AgentAction
 from core.interfaces.directory import WorldDirectory
-from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, coerce_bool, extract_json, output_budget
+from core.interfaces.llm import LLMRouter, coerce_bool, output_budget
 from core.interfaces.action import Observed
 from core.logging import get_logger
 from core.prompts import (
@@ -15,11 +15,13 @@ from core.prompts import (
 )
 from engine.environment import SALIENT_AMBIENT_STRENGTH
 from core.duration import describe_duration
-from core.context import GivenFacts, annotate_call, note_active_call_adoption
+from core.context import GivenFacts, annotate_call
 from core.interfaces.execution import TickResult
 from engine.executors.base import (
     ActionExecutionState,
     ActionExecutor,
+    adjudication_failed_result,
+    complete_json,
 )
 from engine.narration import (
     SAME_PLACE_VERDICT_RULE, ensure_doer_named, format_interrupt_reason_3p,
@@ -140,11 +142,10 @@ class CovertExecutor(ActionExecutor):
             now_step=step,
         )
         if verdict is None:
-            return [self._adjudication_failed_result(
-                purpose=state.purpose, step=step, agent_id=state.initiator_id,
-                estimated_steps=state.estimated_steps, expected_outcome=state.expected_outcome,
-                location=location, target=state.target,
-            )]
+            return [adjudication_failed_result(state, step, outcome=scene_line(location, (
+                f"{self._directory.agent_name(state.initiator_id)}悄悄着手做「{state.purpose}」，"
+                "一时未能确知是否办成、有无被人察觉。"
+            )))]
         achieved, detected, outcome, fact, why = verdict
         # Also the exposure observation's text, so one fix covers both channels.
         named_outcome = ensure_doer_named(outcome, self._directory.agent_name(state.initiator_id))
@@ -173,14 +174,14 @@ class CovertExecutor(ActionExecutor):
         step: int,
         *,
         agents: dict[str, "Agent"],
-        environment: "EnvironmentSystem | None" = None,
+        environment: "EnvironmentSystem",
         interrupted_agent_id: str | None = None,
         thought: str = "",
         cause: str = "",
     ) -> List[ActionResult]:
         elapsed = state.estimated_steps - state.remaining_steps
         agent = agents.get(state.initiator_id)
-        location = observe_location(environment, state.initiator_id) if environment is not None else "此处"
+        location = observe_location(environment, state.initiator_id)
         thought_part = format_interrupt_thought(thought)
         elapsed_label = describe_duration(elapsed, self._seconds_per_step)
         planned_label = describe_duration(state.estimated_steps, self._seconds_per_step)
@@ -199,17 +200,13 @@ class CovertExecutor(ActionExecutor):
                 if elapsed > 0
                 else f"\n- 中途变故：行动刚开始就{cut}{thought_part}"
             )
-            scene = (
-                assemble_scene_context(
-                    state.initiator_id, environment=environment, directory=self._directory,
-                    agents=agents, with_background=True, visibility=SceneVisibility.GOD,  # functional judge
+            scene = assemble_scene_context(
+                state.initiator_id, environment=environment, directory=self._directory,
+                agents=agents, with_background=True, visibility=SceneVisibility.GOD,  # functional judge
                 # Content would be passed into fact as something that happened.
                 reveal_intents=False,
-                    reveal_all_content=True,
-                ).text
-                if environment is not None
-                else ""
-            )
+                reveal_all_content=True,
+            ).text
             # achieved is fixed to False by code; only detected/fact are used. Still pass the
             # material: what he caught before being pulled away is real.
             verdict = await self._judge(
@@ -269,7 +266,7 @@ class CovertExecutor(ActionExecutor):
 
     @staticmethod
     def _happenings(
-        environment: "EnvironmentSystem | None", state: ActionExecutionState,
+        environment: "EnvironmentSystem", state: ActionExecutionState,
     ) -> list[tuple[int, str]]:
         """What happened here while he lurked: COVERT's only source of intelligence (without it
         the judge can only invent findings).
@@ -277,8 +274,6 @@ class CovertExecutor(ActionExecutor):
         The window starts at ``started_step - 1`` because all perception lags one beat; reading
         "what is happening right now" would be cheating.
         """
-        if environment is None:
-            return []
         return environment.recent_happenings(
             # The id, not observe_location's narrative name.
             environment.get_body_location(state.initiator_id),
@@ -407,65 +402,28 @@ class CovertExecutor(ActionExecutor):
             # Omitting it would make the audit flag well-sourced findings as invented.
             .add("他秘密行动时落到眼里耳里的事", happenings_block)
         )
-        try:
-            with annotate_call(given_facts=facts):
-                response = await self._llm.complete(
-                    LLMScene.AGENT_ACTION_NARRATION,
-                    [
-                        LLMMessage(role="system", content=system),
-                        LLMMessage(role="user", content=user),
-                    ],
-                    # reason ≤100 chars ≈150 + outcome ≤40 chars ≈60 + fact ≤120 chars ≈180
-                    # + why ≤20 chars ≈30 + 2 bools ≈6 + 6-field JSON structure ≈30 → ≈456 tok.
-                    temperature=0.7,
-                    max_tokens=output_budget(456),
-                    json_mode=True,
-                )
-            data = extract_json(response.content)
-            if not isinstance(data, dict):
-                note_active_call_adoption(False, "response_not_an_object")
-        except Exception as exc:
-            note_active_call_adoption(False, "unusable_payload")
-            logger.warning(
-                "covert_judge_llm_failed",
-                extra={"agent_id": agent.agent_id, "error": str(exc)},
+        with annotate_call(given_facts=facts):
+            data = await complete_json(
+                self._llm.complete, system, user,
+                # reason ≤100 chars ≈150 + outcome ≤40 chars ≈60 + fact ≤120 chars ≈180
+                # + why ≤20 chars ≈30 + 2 bools ≈6 + 6-field JSON structure ≈30 → ≈456 tok.
+                temperature=0.7,
+                max_tokens=output_budget(456),
+                failure_event="covert_judge_llm_failed",
+                log_extra={"agent_id": agent.agent_id, "step": now_step},
+                # Without the verdict and both narrations nothing was ruled: a stand-in memory
+                # would contradict a success, and a stand-in outcome would quote the private intent.
+                required=("achieved", "fact", "outcome"),
             )
+        if data is None:
             return None
 
-        # Missing fields claim the least (Rule 1).
         achieved = coerce_bool(data.get("achieved"), False)
+        # A missing detection claims the least.
         detected = coerce_bool(data.get("detected"), False)
-        doer_name = self._directory.agent_name(agent.agent_id)
-        # Default "found nothing": coming away empty-handed is still a real experience.
-        fact = str(data.get("fact", "")).strip() or f"我暗中留意「{purpose}」，什么也没探到。"
+        fact = str(data["fact"]).strip()
         # Third person, never first: it leaks to onlookers on exposure.
-        outcome = str(data.get("outcome", "")).strip() or f"{doer_name}悄悄进行了「{purpose}」。"
+        outcome = str(data["outcome"]).strip()
         # The judge sometimes fills why on success too. Unsliced: the prompt caps it.
         why = str(data.get("why", "")).strip() if not achieved else ""
         return achieved, detected, outcome, fact, why
-
-    def _adjudication_failed_result(
-        self, *, purpose: str, step: int, agent_id: str, estimated_steps: int,
-        expected_outcome: str, location: str, target: "ActionTarget",
-    ) -> ActionResult:
-        """Null step when adjudication can't happen: no memory, no claimed success or exposure."""
-        stub = AgentAction(
-            agent_id=agent_id,
-            step=step,
-            action_type=ActionType.COVERT,
-            action_description=purpose,
-            target=target,
-            estimated_steps=estimated_steps,
-        )
-
-        return ActionResult(
-            action=stub,
-            expected_outcome=expected_outcome or purpose,
-            # Never perceived; only a trace/snapshot marker.
-            outcome=scene_line(location, f"{self._directory.agent_name(agent_id)}悄悄着手做「{purpose}」，一时未能确知是否办成、有无被人察觉。"),
-            succeeded=False,
-            detected=False,
-            adjudication_failed=True,
-        )
-
-

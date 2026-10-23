@@ -53,7 +53,7 @@ def _agent(container, router, *, world_id, agent_id, name, main) -> Agent:
             router, container.embedding, container.vector_store,
             world_id=world_id, agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(router),
         relation_system=RelationSystem(container.agent_store, world_id=world_id, agent_id=agent_id),
         agent_store=container.agent_store,
         is_main_character=main,

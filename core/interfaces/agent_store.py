@@ -36,7 +36,7 @@ class AgentState:
     need_intensities: dict[str, float] = field(default_factory=dict)
     vitality: float = 1.0
     # A dict, not a BodyCondition, so the file and in-memory stores agree (see
-    # condition_to_dict); _apply_stored_state rebuilds it.
+    # condition_to_dict); agent.state_codec.decode_agent_state rebuilds it.
     condition: dict[str, object] | None = None
     # 0 = never decided; the scheduler's cadence gate reads that as starved and admits it, so a
     # fresh world's step 1 isn't empty. Must keep a default: the file store rehydrates by keyword,

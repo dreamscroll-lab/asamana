@@ -171,6 +171,9 @@ def _agent(agent_id: str = "a2", name: str = "长孙无忌"):
             )
             self.relation_system = _Rel()
 
+        async def relation_context(self, agent_ids) -> str:  # noqa: ANN001
+            return ""  # nobody present this agent has a substantive relation with
+
     return _A()
 
 
@@ -382,7 +385,7 @@ async def test_social_memory_summary_carries_the_rule_and_the_clock() -> None:
     ex = SocialExecutor(llm, _directory(), seconds_per_step=3600)
     await ex._memory_summary(  # noqa: SLF001
         agent=_agent(), other_id="a3", other_name="李世民", transcript="……",
-        purpose="约定面谈", fallback_fact="谈了一场。", is_initiator=True, now_step=0,
+        purpose="约定面谈", is_initiator=True, now_step=0,
         environment=_environment_at(agent_ids=("a2", "a3")),
     )
     text = llm.text()

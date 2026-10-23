@@ -54,7 +54,7 @@ def _make_agent(container, agent_id: str = "a2") -> Agent:
         memory_system=MemorySystem(
             router, container.embedding, container.vector_store, world_id="w", agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(router),
         relation_system=RelationSystem(container.agent_store, world_id="w", agent_id=agent_id),
         agent_store=container.agent_store,
         is_main_character=False,
@@ -113,6 +113,15 @@ def test_serialized_form_is_json_native() -> None:
     assert condition_from_dict(revived) == BOUND
 
 
+def test_confined_survives_a_round_trip() -> None:
+    confined = BodyCondition(description="被锁在地牢", since_step=3, confined=True)
+    assert condition_from_dict(json.loads(json.dumps(condition_to_dict(confined)))) == confined
+
+
+def test_a_save_without_the_confined_key_reads_as_not_confined() -> None:
+    assert condition_from_dict({"description": "双手被反绑"}).confined is False
+
+
 @pytest.mark.parametrize("bad", [None, {}, {"description": "   "}, "双手被反绑", 42, []])
 def test_unreadable_input_reads_as_no_condition(bad: object) -> None:
     """No readable condition with a description = no condition. This is the normal path, not
@@ -130,6 +139,15 @@ def test_roster_form_is_bare_and_profile_form_carries_duration() -> None:
     assert render_condition(
         BOUND, now_step=34, seconds_per_step=3600, with_duration=True,
     ) == "双手被反绑（已持续约1天）"
+
+
+def test_a_confined_condition_states_it_beside_the_description() -> None:
+    """Both forms carry it, so every reader (rosters, decision, judges) sees the restriction."""
+    confined = BodyCondition(description="被锁在地牢", since_step=10, confined=True)
+    assert render_condition(confined) == "被锁在地牢，行动自由受限制"
+    assert render_condition(
+        confined, now_step=34, seconds_per_step=3600, with_duration=True,
+    ) == "被锁在地牢，行动自由受限制（已持续约1天）"
 
 
 def test_duration_never_renders_a_step_count() -> None:

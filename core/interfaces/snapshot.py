@@ -178,4 +178,4 @@ class SnapshotProvider(ABC):
 
     @abstractmethod
     async def load_world_asset(self, world_id: str, rel_path: str) -> bytes | None:
-        """Read one frozen image, or None if this world has none (pre-freeze worlds)."""
+        """Read one frozen image, or None if this world has none."""

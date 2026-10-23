@@ -99,13 +99,13 @@ def test_event_brief_and_director_line_carry_the_secret() -> None:
     from engine.narrative_editor import NarrativeEditor
 
     brief = NarrativeEditor._brief_characters(  # noqa: SLF001
-        SimpleNamespace(directory=_directory()), {"a1": _agent()},
+        SimpleNamespace(directory=_directory()), {"a1": _agent()}, {},
     )
     assert SECRET in brief
 
     channel = DirectorChannel.__new__(DirectorChannel)
     channel._directory = _directory()  # noqa: SLF001
-    assert SECRET in channel._agent_line(1, _agent())  # noqa: SLF001
+    assert SECRET in channel._agent_line(1, _agent(), "")  # noqa: SLF001
 
 
 # --- views of the person from outside ----------------------------------------

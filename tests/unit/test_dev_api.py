@@ -458,7 +458,9 @@ def test_stage_scenarios_keeps_perception_knob_sets(container, test_config) -> N
 # --------------------------------------------------------------------------- #
 
 def _scenario_file(stage: str) -> Path:
-    return Path(__file__).resolve().parents[2] / "tuning" / "scenarios" / f"{stage}.json"
+    from tuning.scenario_store import scenario_path
+
+    return scenario_path(stage)
 
 
 @pytest.fixture
@@ -572,7 +574,7 @@ def test_stage_report_404_before_any_run(container, test_config) -> None:
 
 async def _built_world(container, test_config, catalog: WorldCatalog) -> str:
     """A built world with persisted state — the dev routes rehydrate it like /direct does."""
-    from engine.application import NarrativeApplication
+    from interaction.application import NarrativeApplication
 
     app = NarrativeApplication(container, test_config, catalog=catalog)
     world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
@@ -645,7 +647,7 @@ async def test_director_console_never_reaches_the_paths_that_change_the_world(
     console went through them, a world that should only be observed would advance a step and get a
     memory injected that can never be removed.
     """
-    from engine.application import NarrativeApplication
+    from interaction.application import NarrativeApplication
 
     def _boom(*args, **kwargs):
         raise AssertionError("dev console must not touch the world")

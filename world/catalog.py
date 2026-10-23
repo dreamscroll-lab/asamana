@@ -112,7 +112,7 @@ class WorldCatalog:
             "created_at": created_at,
             # A freshly built world starts unconfirmed: the user reviews the cast
             # and relationships, then confirms to lock initialization and unlock
-            # the narrative run. Set via set_confirmed, read back in build_world_meta.
+            # the narrative run. Set via set_confirmed, read via is_confirmed.
             "confirmed": False,
         }
         self._flush()
@@ -141,6 +141,11 @@ class WorldCatalog:
             return
         entry["confirmed"] = bool(value)
         self._flush()
+
+    def is_confirmed(self, world_id: str) -> bool:
+        """Whether the world's setup is locked; False for a world not cataloged."""
+        entry = self._entries.get(world_id)
+        return bool(entry.get("confirmed", False)) if entry is not None else False
 
     def set_actor_casting(self, world_id: str, casting: ActorCasting) -> None:
         """Record which character the world's actor plays, and whether the actor has exited.

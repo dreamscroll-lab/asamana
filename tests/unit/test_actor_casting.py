@@ -8,8 +8,9 @@ import asyncio
 import pytest
 
 from core.container import Container
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from world import ActorCasting, WorldCatalog
+from world.setup import WorldSetup
 
 
 @pytest.fixture()
@@ -21,7 +22,7 @@ async def _built(container: Container, test_config, catalog: WorldCatalog):
     """A world built and not yet confirmed, and a background character to cast."""
     application = NarrativeApplication(container, test_config, catalog=catalog)
     world_id = await application.build_world("玄武门之变", template="changan_iso")
-    setup = await application.world_setup(world_id)
+    setup = await WorldSetup.load(container.snapshot, world_id)
     character_id = next(d.agent_id for d in setup.characters if not d.is_main_character)
     return application, world_id, character_id
 

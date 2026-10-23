@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any, Mapping, Sequence, TypeVar
 
+from agent.memory_types import IMPORTANCE_RANGE
 from agent.personality import SECRET_LABEL
 from agent.relation import NEUTRAL_AFFECTION, NEUTRAL_TRUST
-from core.context import note_active_call_adoption
-from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json_object, output_budget
+from core.interfaces.llm import (
+    LLMMessage, LLMResponse, LLMRouter, LLMScene, extract_json_object, output_budget,
+)
 from core.interfaces.perception import DEFAULT_ENTITY_STATE
 from core.logging import get_logger
-from core.prompts import MEMORY_IMPORTANCE_SCORE_DEFINITION, RELATION_LABEL_FORMAT
+from core.prompts import (
+    AFFECTION_RANGE, MEMORY_IMPORTANCE_SCORE_DEFINITION, RELATION_LABEL_FORMAT, TRUST_RANGE,
+)
 from core.coerce import (
     coerce_float, coerce_int, coerce_mapping_list, coerce_optional_float, coerce_str,
     coerce_str_list,
@@ -20,10 +23,18 @@ from core.coerce import (
 from engine.clock import SECONDS_PER_HOUR, resolve_step_seconds
 
 from world.models import (
-    AgentTier, HistoricalEventSeed, LocationSeed, NpcSeed, RelationSeed, ThemeAnalysis,
-    ThemeFigure, WorldEntitySeed, WorldEntityType, name_key,
+    AgentTier,
+    HistoricalEventSeed,
+    LocationSeed,
+    NpcSeed,
+    RelationSeed,
+    ThemeAnalysis,
+    ThemeFigure,
+    WorldEntitySeed,
+    name_key,
 )
-from world.builders import BUILD_ATTEMPTS
+from core.interfaces.entity import WorldEntityType
+from world.builders import BuildReplyRejected, complete_with_build_retry
 
 logger = get_logger(__name__)
 
@@ -391,75 +402,60 @@ class ThemeAnalyzer:
             LLMMessage(role="system", content=system_prompt),
             LLMMessage(role="user", content=user_prompt),
         ]
-        last_exc: BaseException | None = None
-        for attempt in range(BUILD_ATTEMPTS):
-            try:
-                response = await self._llm_router.complete(
-                    # Everything comes out in one call. The budget varies with cast size, so _theme_max_tokens computes it (see its derivation).
-                    # (Truncation → invalid JSON → futile retry → Rule 2 raise, so give it enough. max_tokens is a cap, not billed.)
-                    LLMScene.WORLD_BUILDING, messages,
-                    max_tokens=_theme_max_tokens(max_agents, max_npcs),
-                    json_mode=True,
+        async def call() -> LLMResponse:
+            return await self._llm_router.complete(
+                # Everything comes out in one call. The budget varies with cast size, so _theme_max_tokens computes it (see its derivation).
+                # (Truncation → invalid JSON → futile retry → Rule 2 raise, so give it enough. max_tokens is a cap, not billed.)
+                LLMScene.WORLD_BUILDING, messages,
+                max_tokens=_theme_max_tokens(max_agents, max_npcs),
+                json_mode=True,
+            )
+
+        def parse(content: str) -> ThemeAnalysis:
+            payload = extract_json_object(content)
+            if payload is None:
+                raise BuildReplyRejected(
+                    f"LLM returned no parseable JSON for theme '{theme}': {content[:200]}",
+                    "no_json_object",
                 )
-                payload = extract_json_object(response.content)
-                if payload is not None:
-                    analysis = self._analysis_from_payload(
-                        theme, payload, runtime_context, response.content
-                    )
-                    figure_count = len(analysis.key_figures)
-                    if required <= figure_count and (ceiling is None or figure_count <= ceiling):
-                        logger.info(
-                            "world_theme_analyzed",
-                            extra={
-                                "theme": theme,
-                                "world_name": analysis.world_name,
-                                "figure_count": len(analysis.key_figures),
-                                "location_count": len(analysis.key_locations),
-                            },
-                        )
-                        return analysis
-                    # A dedicated event name + structured counts so cast-size mismatches can be aggregated (the
-                    # attempt_failed below is shared by every failure mode and only has the numbers in free text).
-                    # world_id is set into the log context by build(), so it needn't be passed here.
-                    note_active_call_adoption(False, "cast_size_out_of_range")
-                    logger.warning(
-                        "cast_size_rejected",
-                        extra={
-                            "theme": theme,
-                            "attempt": attempt + 1,
-                            "figure_count": figure_count,
-                            "min_agents": required,
-                            "max_agents": ceiling,
-                        },
-                    )
-                    last_exc = ValueError(
-                        f"LLM returned {figure_count} key_figures for theme '{theme}', "
-                        f"outside the required {required}-{ceiling if ceiling else '∞'}"
-                    )
-                else:
-                    note_active_call_adoption(False, "no_json_object")
-                    last_exc = ValueError(
-                        f"LLM returned no parseable JSON for theme '{theme}' "
-                        f"(attempt {attempt + 1}): {response.content[:200]}"
-                    )
+            analysis = self._analysis_from_payload(theme, payload, runtime_context, content)
+            figure_count = len(analysis.key_figures)
+            if not (required <= figure_count and (ceiling is None or figure_count <= ceiling)):
+                # A dedicated event name + structured counts so cast-size mismatches can be aggregated (the
+                # attempt_failed event is shared by every failure mode and only has the numbers in free text).
+                # world_id is set into the log context by build(), so it needn't be passed here.
                 logger.warning(
-                    "theme_analysis_attempt_failed",
-                    extra={"theme": theme, "attempt": attempt + 1, "reason": str(last_exc)},
+                    "cast_size_rejected",
+                    extra={
+                        "theme": theme,
+                        "figure_count": figure_count,
+                        "min_agents": required,
+                        "max_agents": ceiling,
+                    },
                 )
-                if attempt < BUILD_ATTEMPTS - 1:
-                    await asyncio.sleep(1.0)
-            except Exception as exc:
-                note_active_call_adoption(False, "unusable_payload")
-                last_exc = exc
-                logger.warning(
-                    "theme_analysis_attempt_failed",
-                    extra={"theme": theme, "attempt": attempt + 1, "error": str(exc)},
+                raise BuildReplyRejected(
+                    f"LLM returned {figure_count} key_figures for theme '{theme}', "
+                    f"outside the required {required}-{ceiling if ceiling else '∞'}",
+                    "cast_size_out_of_range",
                 )
-                if attempt < BUILD_ATTEMPTS - 1:
-                    await asyncio.sleep(1.0)
-        raise ValueError(
-            f"ThemeAnalyzer failed for theme '{theme}' after {BUILD_ATTEMPTS} attempts"
-        ) from last_exc
+            logger.info(
+                "world_theme_analyzed",
+                extra={
+                    "theme": theme,
+                    "world_name": analysis.world_name,
+                    "figure_count": figure_count,
+                    "location_count": len(analysis.key_locations),
+                },
+            )
+            return analysis
+
+        return await complete_with_build_retry(
+            call,
+            parse,
+            attempt_failed_event="theme_analysis_attempt_failed",
+            log_extra={"theme": theme},
+            failure=f"ThemeAnalyzer failed for theme '{theme}'",
+        )
 
     def _build_prompt(
         self,
@@ -675,11 +671,22 @@ class ThemeAnalyzer:
             RelationSeed(
                 source_name=coerce_str(item.get("from")),
                 target_name=coerce_str(item.get("to")),
-                trust=coerce_float(item.get("trust"), default=NEUTRAL_TRUST, minimum=0.0, maximum=1.0),
-                affection=coerce_float(item.get("affection"), default=NEUTRAL_AFFECTION, minimum=-1.0, maximum=1.0),
+                trust=coerce_float(
+                    item.get("trust"), default=NEUTRAL_TRUST,
+                    minimum=TRUST_RANGE[0], maximum=TRUST_RANGE[1],
+                ),
+                affection=coerce_float(
+                    item.get("affection"), default=NEUTRAL_AFFECTION,
+                    minimum=AFFECTION_RANGE[0], maximum=AFFECTION_RANGE[1],
+                ),
                 labels=coerce_str_list(item.get("labels")),
-                reverse_trust=coerce_optional_float(item.get("reverse_trust"), minimum=0.0, maximum=1.0),
-                reverse_affection=coerce_optional_float(item.get("reverse_affection"), minimum=-1.0, maximum=1.0),
+                reverse_trust=coerce_optional_float(
+                    item.get("reverse_trust"), minimum=TRUST_RANGE[0], maximum=TRUST_RANGE[1],
+                ),
+                reverse_affection=coerce_optional_float(
+                    item.get("reverse_affection"),
+                    minimum=AFFECTION_RANGE[0], maximum=AFFECTION_RANGE[1],
+                ),
                 reverse_labels=coerce_str_list(item.get("reverse_labels")),
             )
             for item in coerce_mapping_list(payload.get("initial_relations"))
@@ -691,7 +698,8 @@ class ThemeAnalyzer:
                 hours_before_start=coerce_int(item.get("hours_before_start"), default=6, minimum=1),
                 related_figures=coerce_str_list(item.get("related_figures")),
                 importance=coerce_float(
-                    item.get("importance"), default=0.5, minimum=0.0, maximum=1.0
+                    item.get("importance"), default=0.5,
+                    minimum=IMPORTANCE_RANGE[0], maximum=IMPORTANCE_RANGE[1],
                 ),
             )
             for item in coerce_mapping_list(payload.get("historical_events"))

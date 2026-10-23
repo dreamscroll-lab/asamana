@@ -35,7 +35,7 @@ from agent.personality import (
 )
 from agent.relation import RelationSystem
 from core.interfaces.action import ActionTarget, ActionType, EntityStateChange, ErrandOrder
-from core.interfaces.llm import LLMRouter, LLMScene
+from core.interfaces.llm import IndexedRef, LLMRouter, LLMScene
 from engine.directory import LiveWorldDirectory
 from engine.environment import EnvironmentSystem
 from engine.execution_processor import ExecutionProcessor
@@ -52,11 +52,12 @@ from engine.world_mutation import (
     RelocateMutation,
     VitalityMutation,
     WorldMutationChannel,
+    parse_entity_mutation,
 )
 from providers.llm.mock import MockLLMProvider
-from world.models import EntityPresence, WorldEntity, WorldEntityType
+from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
-from tests.unit.world_setups import npc_seed
+from tests.unit.world_setups import make_npc
 
 WORLD_ID = "world-1"
 
@@ -80,7 +81,7 @@ def _make_agent(container, *, agent_id: str, name: str, location: str, vitality:
             router, container.embedding, container.vector_store,
             world_id=WORLD_ID, agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(router),
         relation_system=RelationSystem(container.agent_store, world_id=WORLD_ID, agent_id=agent_id),
         agent_store=container.agent_store,
         is_main_character=False,
@@ -197,8 +198,7 @@ async def test_no_mutation_kind_can_change_the_world_unnoticed(container, kind) 
     """
     environment = _env_with_two_rooms()
     environment.register_entity(WorldEntity(
-        entity_id="seal", name="兵符", entity_type=WorldEntityType.ITEM,
-        is_takeable=True, state="intact",
+        entity_id="seal", name="兵符", entity_type=WorldEntityType.ITEM, state="intact",
         presence=EntityPresence.AT_LOCATION, presence_ref="palace",
     ))
     agent = _make_agent(container, agent_id="a1", name="李世民", location="palace")
@@ -272,7 +272,6 @@ async def test_entity_mutation_can_destroy_and_removes_it_from_perception(contai
     environment = _env_with_two_rooms()
     environment.register_entity(WorldEntity(
         entity_id="seal", name="兵符", entity_type=WorldEntityType.ITEM,
-        is_takeable=True,
         presence=EntityPresence.AT_LOCATION, presence_ref="palace",
     ))
     channel, _ = _channel(environment, container)
@@ -297,8 +296,7 @@ async def test_entity_mutation_on_a_held_item_is_perceived_where_its_holder_stan
     """
     environment = _env_with_two_rooms()
     environment.register_entity(WorldEntity(
-        entity_id="sword", name="佩剑", entity_type=WorldEntityType.ITEM,
-        is_takeable=True, state="intact",
+        entity_id="sword", name="佩剑", entity_type=WorldEntityType.ITEM, state="intact",
         presence=EntityPresence.HELD, presence_ref="a1",
     ))
     environment.place_agent(agent_id="a1", location_id="market")
@@ -767,7 +765,7 @@ def _env_with_ground_and_held_items() -> EnvironmentSystem:
         presence=EntityPresence.AT_LOCATION, presence_ref="palace",
     ))
     environment.register_entity(WorldEntity(
-        entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM, is_takeable=True,
+        entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM,
         state="sealed", presence=EntityPresence.HELD, presence_ref="a1",
     ))
     return environment
@@ -836,7 +834,7 @@ async def test_system_author_is_refused_a_thing_picked_up_after_the_plan_was_mad
     environment = _env_with_ground_and_held_items()
     channel, _ = _channel(environment, container)
     environment.register_entity(WorldEntity(
-        entity_id="knife", name="短刀", entity_type=WorldEntityType.ITEM, is_takeable=True,
+        entity_id="knife", name="短刀", entity_type=WorldEntityType.ITEM,
         presence=EntityPresence.AT_LOCATION, presence_ref="palace",
     ))
     environment.change_entity_state(EntityStateChange(entity_id="knife", owner_id="a1"))
@@ -896,6 +894,24 @@ async def test_condition_lands_on_an_agent_and_he_remembers_it(container) -> Non
 
 
 @pytest.mark.asyncio
+async def test_a_confined_condition_lands_confined(container) -> None:
+    environment = _env_with_two_rooms()
+    agent = _make_agent(container, agent_id="a1", name="李建成", location="palace")
+    environment.place_agent(agent_id="a1", location_id="palace")
+    channel, _ = _channel(environment, container)
+
+    await channel.apply(
+        ConditionMutation(
+            observation="李建成被锁进了地牢。", body_id="a1", description="被锁在地牢", confined=True,
+        ),
+        step=3, agents={"a1": agent}, author=Author.DIRECTOR,
+    )
+
+    condition = agent.personality.state.condition
+    assert condition is not None and condition.confined is True
+
+
+@pytest.mark.asyncio
 async def test_clearing_an_agent_condition_frees_him(container) -> None:
     environment = _env_with_two_rooms()
     agent = _make_agent(container, agent_id="a1", name="李建成", location="palace")
@@ -938,7 +954,7 @@ async def test_clearing_a_condition_nobody_has_is_nothing_happening(container) -
 
 def _npc(environment: EnvironmentSystem, at: str = "palace") -> str:
     environment.spawn_npc(
-        npc_seed("王二", gender="男", age=34, description="跑得快、认得路"), location_id=at,
+        make_npc("王二", gender="男", age=34, description="跑得快、认得路"), location_id=at,
     )
     return environment.all_npcs()[-1].npc_id
 
@@ -1051,3 +1067,33 @@ async def test_system_author_cannot_touch_an_npc(container, make) -> None:
     assert outcome is None
     assert npc is not None and npc.condition is None
     assert environment.get_body_location(npc_id) == "palace"
+
+
+# ---------------------------------------------------------------------------
+# parse_entity_mutation: the one entity parser both authors use
+# ---------------------------------------------------------------------------
+
+
+def test_parse_entity_mutation_drops_an_alter_that_changes_nothing() -> None:
+    ref = IndexedRef(["gate"])
+    empty = {"entity": 1, "state": "", "description": " ", "content": "", "observation": "门变了。"}
+    assert parse_entity_mutation(empty, ref, destroyed=False) is None
+    assert parse_entity_mutation(
+        {**empty, "state": "破损"}, ref, destroyed=False,
+    ) == EntityMutation(observation="门变了。", entity_id="gate", new_state="破损")
+
+
+def test_parse_entity_mutation_destroy_reads_no_change_fields() -> None:
+    raw = {"entity": 1, "state": "破损", "observation": "门塌了。"}
+    assert parse_entity_mutation(raw, IndexedRef(["gate"]), destroyed=True) == EntityMutation(
+        observation="门塌了。", entity_id="gate", destroyed=True,
+    )
+
+
+@pytest.mark.parametrize("raw", [
+    {"entity": 2, "state": "破损", "observation": "门塌了。"},     # out of range
+    {"entity": 1, "state": "破损", "observation": ""},            # no observation
+    "not a dict",
+])
+def test_parse_entity_mutation_drops_what_cannot_land(raw) -> None:
+    assert parse_entity_mutation(raw, IndexedRef(["gate"]), destroyed=True) is None

@@ -43,6 +43,10 @@ def _llm_call_sites() -> list[tuple[str, int, str, bool, bool]]:
             if not isinstance(node, ast.Call):
                 continue
             fn = node.func
+            # The executors' shared narration call always asks for JSON and parses it.
+            if isinstance(fn, ast.Name) and fn.id == "complete_json":
+                sites.append((f, node.lineno, "AGENT_ACTION_NARRATION", True, True))
+                continue
             if not isinstance(fn, ast.Attribute) or fn.attr not in ("complete", "complete_with_retry"):
                 continue
             if not node.args:

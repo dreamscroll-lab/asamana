@@ -36,7 +36,7 @@ const at = (step: number, locations: LocationScope[]): StepView => ({
 });
 
 const agent = (agent_id: string): AgentView => ({
-  agent_id, name: agent_id, gender: "", age: null, is_main_character: false, is_active: true,
+  agent_id, is_main_character: false, is_active: true,
   public: { activity_status: "", activity_label: "", condition: "", displaced: false, carrying: {} },
   private: {
     emotion: "", emotion_label: "", emotion_intensity: null, emotion_valence: null, dominant_need: null,

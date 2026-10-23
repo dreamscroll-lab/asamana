@@ -7,6 +7,8 @@ multi-participant action, and concurrent execution of the decide pass.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import asyncio
 import logging
 
@@ -76,7 +78,7 @@ def _build_agent(container, *, world_id: str, agent_id: str, is_main: bool) -> A
             world_id=world_id,
             agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(container.llm_router),
         relation_system=RelationSystem(container.agent_store, world_id=world_id, agent_id=agent_id),
         agent_store=container.agent_store,
         is_main_character=is_main,
@@ -226,6 +228,36 @@ async def test_signals_aggregate_into_single_decision(container) -> None:
     # No id leaks: neither sender_id="sender" nor source_id="scout" may appear in the reason fed to
     # the LLM.
     assert "sender" not in reason and "scout" not in reason
+
+
+@pytest.mark.asyncio
+async def test_an_urgent_message_names_the_sender_it_carries(container) -> None:
+    """The reason names the sender as the message carries it: an Npc or the narrator is no agent
+    the directory knows, and resolving its id would turn every such sender into 「某人」. A
+    message carrying no name is looked up."""
+    runtime, registry = _build_runtime(container, "world-sender")
+    agent = _build_agent(container, world_id="world-sender", agent_id="mc", is_main=True)
+    sender = _build_agent(container, world_id="world-sender", agent_id="li", is_main=False)
+    runtime._interrupts._directory = LiveWorldDirectory.from_agents(
+        {"mc": agent, "li": sender}, runtime._environment)
+    _start_rest([agent], registry)
+    spy = _DecisionSpy((False, ""))
+    agent.evaluate_interrupt = spy  # type: ignore[method-assign]
+    unsigned = replace(_urgent_message("mc", "阶前拾得铜符"), sender_id="narrator",
+                       sender_name="不知来源", sender_is_agent=False)
+    errand = replace(_urgent_message("mc", "承天门无人"), sender_id="npc_1",
+                     sender_name="宫娥", sender_is_agent=False)
+
+    unnamed = replace(_urgent_message("mc", "速来布政坊"), sender_id="li")
+
+    await runtime._interrupts.evaluate_interrupts(
+        _delivery(2, unsigned, errand, unnamed), [], {"mc": agent}, step=2)
+
+    reason = spy.reasons[0]
+    assert "收到不知来源的急讯：阶前拾得铜符" in reason
+    assert "收到宫娥的急讯：承天门无人" in reason
+    assert "收到li的急讯：速来布政坊" in reason   # soul.name == agent_id in these fixtures
+    assert "某人" not in reason and "narrator" not in reason and "npc_1" not in reason
 
 
 @pytest.mark.asyncio
@@ -1049,12 +1081,16 @@ async def test_a_refusal_never_cites_an_admission_that_was_revoked(container, se
 @pytest.mark.asyncio
 async def test_commit_releases_a_body_whose_execution_is_already_gone(container, caplog) -> None:
     """Invariant guard: arbitration gave him an execution, but registry has no such execution at
-    commit → don't attach him; reset and log an error."""
+    commit → don't attach him; reset, tell his actor the act ended, and log an error."""
+    from unittest.mock import MagicMock
+
     from agent.personality import ActionStatus
     from engine.arbiter import ArbitratedAction
     from core.interfaces.action import ActionResult
 
     runtime, registry, env, agents = _same_step_compel_world(container)
+    actor = MagicMock()
+    agents["talker"].actor = actor
     plan = _plan_for(agents["talker"], env, step=2, action=_talk("talker", "listener"))
     dangling = ArbitratedAction(
         agent_id="talker", location_id="n0", ongoing_execution_id="talk_gone",
@@ -1064,6 +1100,8 @@ async def test_commit_releases_a_body_whose_execution_is_already_gone(container,
 
     assert agents["talker"].personality.state.action_status == ActionStatus.IDLE
     assert any(r.message == "stranded_participant_released" for r in caplog.records)
+    actor.began.assert_called_once()
+    actor.ended.assert_called_once_with(step=2, fact="", succeeded=False, happened=True)
 
 
 @pytest.mark.asyncio

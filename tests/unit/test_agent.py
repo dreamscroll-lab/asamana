@@ -64,7 +64,7 @@ def _make_agent(container: object, *, agent_id: str = "agent-1") -> Agent:
             world_id="world-1",
             agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(router),
         relation_system=RelationSystem(
             container.agent_store,  # type: ignore[attr-defined]
             world_id="world-1",
@@ -1025,7 +1025,7 @@ async def test_llm_emotion_returns_emotion_state_for_main_character(container: o
             world_id="world-1",
             agent_id="agent-mc",
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(router),
         relation_system=RelationSystem(
             container.agent_store,  # type: ignore[attr-defined]
             world_id="world-1",
@@ -1065,7 +1065,7 @@ async def test_llm_emotion_injects_situation_header(container: object) -> None:
             router, container.embedding, container.vector_store,  # type: ignore[attr-defined]
             world_id="world-1", agent_id="agent-mc",
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(router),
         relation_system=RelationSystem(
             container.agent_store, world_id="world-1", agent_id="agent-mc",  # type: ignore[attr-defined]
         ),
@@ -1112,7 +1112,7 @@ async def test_llm_emotion_injects_agent_specific_need_label(container: object) 
             router, container.embedding, container.vector_store,  # type: ignore[attr-defined]
             world_id="world-1", agent_id="agent-mc",
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(router),
         relation_system=RelationSystem(
             container.agent_store, world_id="world-1", agent_id="agent-mc",  # type: ignore[attr-defined]
         ),
@@ -1147,7 +1147,7 @@ async def test_llm_emotion_returns_none_on_parse_failure(container: object) -> N
             world_id="world-1",
             agent_id="agent-mc",
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(router),
         relation_system=RelationSystem(
             container.agent_store,  # type: ignore[attr-defined]
             world_id="world-1",
@@ -1182,7 +1182,7 @@ def _make_bg_emotion_agent(container: object) -> "Agent":
             world_id="world-1",
             agent_id="agent-bg",
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(router),
         relation_system=RelationSystem(
             container.agent_store,  # type: ignore[attr-defined]
             world_id="world-1",
@@ -1471,7 +1471,7 @@ async def test_llm_emotion_injects_standing_condition_as_backdrop(container: obj
             router, container.embedding, container.vector_store,  # type: ignore[attr-defined]
             world_id="world-1", agent_id="agent-mc",
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(router),
         relation_system=RelationSystem(
             container.agent_store, world_id="world-1", agent_id="agent-mc",  # type: ignore[attr-defined]
         ),

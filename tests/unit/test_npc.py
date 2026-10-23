@@ -18,10 +18,10 @@ from engine.directory import LiveWorldDirectory
 from engine.environment import EnvironmentSystem
 from agent.personality import SoulLayer
 from engine.presence import attach_presence
-from world.models import ActiveErrand, EntityPresence, NpcSeed, WorldEntity, WorldEntityType
+from core.interfaces.entity import ActiveErrand, EntityPresence, Npc, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
 from tests.unit.env_state import restore, saved
-from tests.unit.world_setups import npc_seed
+from tests.unit.world_setups import make_npc
 
 
 def _location(entity_id: str, name: str, **connections: int) -> Place:
@@ -37,8 +37,8 @@ def _world(*, max_npcs: int = 6) -> EnvironmentSystem:
     return env
 
 
-def _seed(name: str, **kw) -> NpcSeed:
-    return npc_seed(name, gender=kw.get("gender", "男"), age=kw.get("age", 34),
+def _seed(name: str, **kw) -> Npc:
+    return make_npc(name, gender=kw.get("gender", "男"), age=kw.get("age", 34),
                    description=kw.get("description", "跑得快"))
 
 
@@ -66,7 +66,7 @@ def test_what_it_carries_is_here_like_anything_else_here() -> None:
     npc_id = env.all_npcs()[0].npc_id
     env.register_entity(WorldEntity(
         entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref=npc_id,
     ))
     env.place_agent(agent_id="a1", location_id="hall")
 
@@ -377,7 +377,7 @@ def test_what_he_is_up_to_reads_off_which_axes_were_filled() -> None:
     env = _world()
     env.register_entity(WorldEntity(
         entity_id="e1", name="书信", entity_type=WorldEntityType.ITEM,
-        presence_ref="hall", is_takeable=True,
+        presence_ref="hall",
     ))
     runner = _runner(env, souls={"a2": SoulLayer(name="阿石", gender="男", age=27)})
 

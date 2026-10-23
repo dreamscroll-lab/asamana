@@ -8,7 +8,6 @@ from core.interfaces.action import ActionResult, ActionType, AgentAction
 from core.action_duration import action_duration_steps
 from core.interfaces.directory import WorldDirectory
 from core.duration import describe_duration
-from core.prompts import strip_end_punct
 from core.interfaces.execution import TickResult
 from engine.executors.base import ActionExecutionState, ActionExecutor
 from engine.narration import (
@@ -28,8 +27,12 @@ _REST_RECOVERY_PER_STEP: float = 0.025
 
 
 class SimpleExecutor(ActionExecutor):
-    """Handles single-agent, content-free actions. SEND_MESSAGE dispatches in start() and
-    fixes its result into extra["completed_result"] for complete() to return."""
+    """REST and SEND_MESSAGE: single-agent acts no one adjudicates.
+
+    SEND_MESSAGE dispatches in start() and fixes its result into extra["completed_result"] for
+    complete() to return, so it completes in its start step and never ticks or is interrupted;
+    everything multi-step here is REST.
+    """
 
     def __init__(self, directory: WorldDirectory, seconds_per_step: int = 3600) -> None:
         self._directory = directory
@@ -67,10 +70,7 @@ class SimpleExecutor(ActionExecutor):
         duration_label = describe_duration(duration, self._seconds_per_step)
         doer_name = self._directory.agent_name(action.agent_id)
         location = observe_location(environment, action.agent_id)
-        if action.action_type == ActionType.REST:
-            opening = scene_line(location, f"{doer_name}休息，打算歇{duration_label}。")
-        else:
-            opening = scene_line(location, f"{doer_name}开始着手做「{strip_end_punct(purpose)}」。")
+        opening = scene_line(location, f"{doer_name}休息，打算歇{duration_label}。")
         return ActionExecutionState.create(
             action_type=action.action_type,
             initiator_id=action.agent_id,
@@ -99,17 +99,13 @@ class SimpleExecutor(ActionExecutor):
         elapsed = state.estimated_steps - state.remaining_steps
         elapsed_label = describe_duration(elapsed, self._seconds_per_step)
         remaining_label = describe_duration(state.remaining_steps, self._seconds_per_step)
-        if state.action_type == ActionType.REST:
-            if elapsed <= 0:
-                planned = describe_duration(state.estimated_steps, self._seconds_per_step)
-                body = f"{doer_name}正在休息，刚歇下，打算歇{planned}。"
-            elif state.remaining_steps > 0:
-                body = f"{doer_name}正在休息，已歇{elapsed_label}，打算再歇{remaining_label}。"
-            else:
-                body = f"{doer_name}正在休息，已歇{elapsed_label}。"
+        if elapsed <= 0:
+            planned = describe_duration(state.estimated_steps, self._seconds_per_step)
+            body = f"{doer_name}正在休息，刚歇下，打算歇{planned}。"
+        elif state.remaining_steps > 0:
+            body = f"{doer_name}正在休息，已歇{elapsed_label}，打算再歇{remaining_label}。"
         else:
-            tail = f"，预计还需{remaining_label}" if state.remaining_steps > 0 else ""
-            body = f"{doer_name}「{state.purpose}」仍在进行，已持续{elapsed_label}{tail}。"
+            body = f"{doer_name}正在休息，已歇{elapsed_label}。"
         narrative = scene_line(location, body)
         return [TickResult(
             agent_id=state.initiator_id, outcome=narrative,
@@ -128,19 +124,15 @@ class SimpleExecutor(ActionExecutor):
         stored = self._stored_result(state)
         if stored is not None:
             return [stored]  # SEND_MESSAGE dispatch result (fixed at start)
-        factual = self._completed_factual(
-            action_type=state.action_type,
-            purpose=state.purpose,
-            duration=state.estimated_steps,
-            environment=environment,
-            initiator_id=state.initiator_id,
-        )
-        outcome = self._completed_outcome(
-            action_type=state.action_type,
-            purpose=state.purpose,
-            duration=state.estimated_steps,
-            environment=environment,
-            initiator_id=state.initiator_id,
+        location = observe_location(environment, state.initiator_id)
+        duration_label = describe_duration(state.estimated_steps, self._seconds_per_step)
+        intent = format_intent_clause(self._rest_activity(state.purpose) or "")
+        factual = f"{intent}在{location}休息了{duration_label}，精力和状态都有所恢复。"
+        # Also the onlooker observation, so only the observable half: recovery and his reason
+        # go only into 1p memory. Don't append the purpose: it's a first-person sentence and
+        # after his name reads as if he said it aloud.
+        outcome = scene_line(
+            location, f"{self._directory.agent_name(state.initiator_id)}歇息，前后歇了{duration_label}。",
         )
         stub = AgentAction(
             agent_id=state.initiator_id,
@@ -150,7 +142,7 @@ class SimpleExecutor(ActionExecutor):
             target=state.target,
             estimated_steps=state.estimated_steps,
         )
-        rest_recovery = -_REST_RECOVERY_PER_STEP * state.estimated_steps if state.action_type == ActionType.REST else 0.0
+        rest_recovery = -_REST_RECOVERY_PER_STEP * state.estimated_steps
         return [ActionResult(
             action=stub,
             expected_outcome=state.expected_outcome or state.purpose,
@@ -272,7 +264,7 @@ class SimpleExecutor(ActionExecutor):
         step: int,
         *,
         agents: dict[str, "Agent"],
-        environment: "EnvironmentSystem | None" = None,
+        environment: "EnvironmentSystem",
         interrupted_agent_id: str | None = None,
         thought: str = "",
         cause: str = "",
@@ -281,7 +273,7 @@ class SimpleExecutor(ActionExecutor):
         elapsed_label = describe_duration(elapsed, self._seconds_per_step)
         # Only third-person cause may name what interrupted it (see base.interrupt).
         cut = f"因{cause}而中断" if cause else "被打断"
-        rest_recovery = -_REST_RECOVERY_PER_STEP * elapsed if state.action_type == ActionType.REST and elapsed > 0 else 0.0
+        rest_recovery = -_REST_RECOVERY_PER_STEP * elapsed if elapsed > 0 else 0.0
         thought_part = format_interrupt_thought(thought)
         results: List[ActionResult] = []
         for agent_id in state.participant_ids:
@@ -295,32 +287,20 @@ class SimpleExecutor(ActionExecutor):
                 target=state.target,
             )
             doer_name = self._directory.agent_name(agent_id)
-            location = observe_location(environment, agent_id) if environment is not None else "此处"
+            location = observe_location(environment, agent_id)
             reason_3p = format_interrupt_reason_3p(doer_name, thought)
-            if state.action_type == ActionType.REST:
-                # Intent only in 1p (see _completed_outcome).
-                intent = format_intent_clause(self._rest_activity(state.purpose) or "")
-                factual = intent + (
-                    f"休息了{elapsed_label}便{cut}，勉强恢复了些体力{thought_part}"
-                    if elapsed > 0
-                    else f"刚要休息就{cut}{thought_part}"
-                )
-                gist = scene_line(location, (
-                    f"{doer_name}休息了{elapsed_label}，{cut}。"
-                    if elapsed > 0
-                    else f"{doer_name}刚要休息就{cut}。"
-                ))
-            else:
-                factual = (
-                    f"「{state.purpose}」进行了{elapsed_label}便{cut}{thought_part}"
-                    if elapsed > 0
-                    else f"刚着手「{state.purpose}」就{cut}{thought_part}"
-                )
-                gist = scene_line(location, (
-                    f"{doer_name}的「{state.purpose}」进行了{elapsed_label}便{cut}。"
-                    if elapsed > 0
-                    else f"{doer_name}刚着手「{state.purpose}」就{cut}。"
-                ))
+            # Intent only in 1p (see complete()).
+            intent = format_intent_clause(self._rest_activity(state.purpose) or "")
+            factual = intent + (
+                f"休息了{elapsed_label}便{cut}，勉强恢复了些体力{thought_part}"
+                if elapsed > 0
+                else f"刚要休息就{cut}{thought_part}"
+            )
+            gist = scene_line(location, (
+                f"{doer_name}休息了{elapsed_label}，{cut}。"
+                if elapsed > 0
+                else f"{doer_name}刚要休息就{cut}。"
+            ))
             results.append(ActionResult(
                 action=stub,
                 expected_outcome=state.purpose,
@@ -331,45 +311,6 @@ class SimpleExecutor(ActionExecutor):
                 vitality_damage=rest_recovery,
             ))
         return results
-
-    def _completed_outcome(
-        self,
-        *,
-        action_type: ActionType,
-        purpose: str,
-        duration: int,
-        environment: "EnvironmentSystem",
-        initiator_id: str,
-    ) -> str:
-        """3p outcome for a completed action; also the onlooker observation.
-
-        Only the observable half of the result: recovery and his reason go only into 1p memory.
-        Don't append ``action_description``: it's a first-person sentence and after his name
-        reads as if he said it aloud.
-        """
-        doer_name = self._directory.agent_name(initiator_id)
-        location = observe_location(environment, initiator_id)
-        if action_type == ActionType.REST:
-            label = describe_duration(duration, self._seconds_per_step)
-            return scene_line(location, f"{doer_name}歇息，前后歇了{label}。")
-        return scene_line(location, f"{doer_name}做完了：「{strip_end_punct(purpose)}」。")
-
-    def _completed_factual(
-        self,
-        *,
-        action_type: ActionType,
-        purpose: str,
-        duration: int,
-        environment: "EnvironmentSystem",
-        initiator_id: str,
-    ) -> str:
-        """factual_memory for a completed multi-step action (natural duration, no step ids)."""
-        if action_type == ActionType.REST:
-            location = observe_location(environment, initiator_id)
-            duration_label = describe_duration(duration, self._seconds_per_step)
-            intent = format_intent_clause(self._rest_activity(purpose) or "")
-            return f"{intent}在{location}休息了{duration_label}，精力和状态都有所恢复。"
-        return f"完成了：{purpose}。"
 
     @staticmethod
     def _rest_activity(purpose: str | None) -> str | None:

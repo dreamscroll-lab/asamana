@@ -15,7 +15,7 @@ from agent.agent import Agent, AgentStepPlan
 from core.interfaces.action import (
     KIND_AGENT, KIND_LOCATION, KIND_NPC, KIND_OBJECT, ActionTarget, Ref,
 )
-from world.models import WorldEntityType
+from core.interfaces.entity import WorldEntityType
 from agent.decision import _entity_owner_name
 
 

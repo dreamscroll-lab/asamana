@@ -280,13 +280,10 @@ export function buildWorldScenes({ se: SE, far: FAR, open: OPEN, tight: TIGHT }:
               is_positive: false,
               directive_text: "让禁军封锁市口",
               receipt: {
-                delivered_to: [
-                  { agent_id: MO.id, name: MO.name },
-                  { agent_id: SHI.id, name: SHI.name },
-                ],
-                pressure: [{ agent_id: MO.id, name: MO.name, urgency: "high" }],
-                decided: [{ agent_id: MO.id, name: MO.name }],
-                interrupted: [{ agent_id: MO.id, name: MO.name }],
+                delivered_to: [MO.id, SHI.id],
+                pressure: [{ agent_id: MO.id, urgency: "high" }],
+                decided: [MO.id],
+                interrupted: [MO.id],
               },
               seq: nextSeq(),
             },
@@ -328,10 +325,7 @@ export function buildWorldScenes({ se: SE, far: FAR, open: OPEN, tight: TIGHT }:
               is_positive: null,
               directive_text: "让他们听见有人在哭",
               receipt: {
-                delivered_to: [
-                  { agent_id: MO.id, name: MO.name },
-                  { agent_id: SHI.id, name: SHI.name },
-                ],
+                delivered_to: [MO.id, SHI.id],
                 pressure: [],
                 decided: [],
                 interrupted: [],

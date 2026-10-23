@@ -175,7 +175,7 @@ def test_one_config_can_route_two_scenes_to_two_providers(monkeypatch) -> None:
     """End to end: one config routes two scenes to two providers, each with its own endpoint, key,
     and rate-limit gate."""
     from config.models import Config
-    from core.container import _build_llm_router, _build_rate_gates
+    from providers.assembly import _build_llm_router, _build_rate_gates
     from core.interfaces.llm import LLMScene
 
     monkeypatch.setenv("DASHSCOPE_API_KEY", "qwen-key")

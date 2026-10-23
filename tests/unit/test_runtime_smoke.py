@@ -32,7 +32,7 @@ from core.interfaces.place import Place
 from worlds.tiled import TiledWorldConfig
 from tests.unit.bus_tap import tap
 from tests.unit.step_view import beats
-from tests.unit.world_setups import npc_seed
+from tests.unit.world_setups import make_npc
 
 
 def _build_agent(container, *, world_id: str, agent_id: str, name: str, is_main_character: bool) -> Agent:
@@ -61,7 +61,7 @@ def _build_agent(container, *, world_id: str, agent_id: str, name: str, is_main_
             world_id=world_id,
             agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(container.llm_router),
         relation_system=RelationSystem(container.agent_store, world_id=world_id, agent_id=agent_id),
         agent_store=container.agent_store,
         is_main_character=is_main_character,
@@ -168,7 +168,7 @@ async def test_a_step_hands_agents_a_named_body_not_a_bare_id(container) -> None
     where = environment.space.all_place_ids()[0]
     environment.place_agent(agent_id="agent-1", location_id=where)
     assert environment.spawn_npc(
-        npc_seed("Wang Er", gender="male", age=34, description="fast on foot; cannot read"),
+        make_npc("Wang Er", gender="male", age=34, description="fast on foot; cannot read"),
         location_id=where,
     )
     npc_id = environment.all_npcs()[0].npc_id
@@ -2336,6 +2336,8 @@ async def test_executor_complete_failure_releases_participants(container) -> Non
     rt = _arb_runtime(container, world_id, agents, env)
 
     class _FailingExecutor:
+        mutates_world_during_complete = False
+
         async def complete(self, *args, **kwargs):
             raise RuntimeError("adjudication infra down")
 

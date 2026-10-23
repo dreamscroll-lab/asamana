@@ -11,10 +11,13 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, List
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, List
 
+from core.context import note_active_call_adoption
 from core.interfaces.action import ActionResult, ActionTarget, ActionType, AgentAction, Observed, Ref
 from core.interfaces.execution import TickResult
+from core.interfaces.llm import LLMMessage, LLMResponse, LLMScene, extract_json
+from core.logging import get_logger
 from engine.narration import (
     format_intent_clause, format_interrupt_reason_3p, format_interrupt_thought, scene_line,
 )
@@ -25,6 +28,72 @@ if TYPE_CHECKING:
     from core.interfaces.directory import WorldDirectory
     from engine.environment import EnvironmentSystem
     from engine.message_system import MessageSystem
+
+logger = get_logger(__name__)
+
+
+async def complete_json(
+    call: Callable[..., Awaitable[LLMResponse]],
+    system: str,
+    user: str,
+    *,
+    max_tokens: int,
+    temperature: float,
+    failure_event: str,
+    log_extra: dict[str, Any],
+    required: tuple[str, ...] = (),
+) -> dict[str, Any] | None:
+    """One executor narration call: the JSON object it answered, or ``None`` when it is unusable.
+
+    ``call`` is ``LLMRouter.complete`` or ``complete_with_retry``; the caller wraps this in its own
+    ``annotate_call``. Unusable means the call raised, the answer holds no JSON object, or one of
+    the ``required`` keys is missing or blank. A payload without the verdict or the narrative it
+    must carry is not a smaller answer: filling it with a default or a template would invent the
+    result (Rule 1), so the caller takes its no-op path.
+    """
+    try:
+        response = await call(
+            LLMScene.AGENT_ACTION_NARRATION,
+            [LLMMessage(role="system", content=system), LLMMessage(role="user", content=user)],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=True,
+        )
+        data = extract_json(response.content)
+    except Exception as exc:
+        note_active_call_adoption(False, "unusable_payload")
+        logger.warning(failure_event, extra={**log_extra, "error": str(exc)})
+        return None
+    missing = [
+        key for key in required
+        if data.get(key) is None or (isinstance(data[key], str) and not data[key].strip())
+    ]
+    if missing:
+        note_active_call_adoption(False, f"missing_{missing[0]}")
+        logger.warning(failure_event, extra={**log_extra, "error": "missing_fields", "fields": missing})
+        return None
+    return data
+
+
+def adjudication_failed_result(
+    state: "ActionExecutionState", step: int, *, outcome: str,
+) -> ActionResult:
+    """The null step when adjudication never happened (Rule 5): no memory, no claimed result.
+    ``outcome`` is never perceived; it is only the trace/snapshot marker."""
+    return ActionResult(
+        action=AgentAction(
+            agent_id=state.initiator_id,
+            step=step,
+            action_type=state.action_type,
+            action_description=state.purpose,
+            target=state.target,
+            estimated_steps=state.estimated_steps,
+        ),
+        expected_outcome=state.expected_outcome or state.purpose,
+        outcome=outcome,
+        succeeded=False,
+        adjudication_failed=True,
+    )
 
 
 def participant_action_desc(
@@ -410,7 +479,7 @@ class ActionExecutor(ABC):
         step: int,
         *,
         agents: dict[str, "Agent"],
-        environment: "EnvironmentSystem | None" = None,
+        environment: "EnvironmentSystem",
         interrupted_agent_id: str | None = None,
         thought: str = "",
         cause: str = "",
@@ -449,7 +518,7 @@ class ActionExecutor(ABC):
                 target=state.target,
             )
             name = agent.personality.soul.name
-            location = observe_location(environment, agent_id) if environment is not None else "此处"
+            location = observe_location(environment, agent_id)
             cut = f"因{cause}而中断" if cause else "被打断"
             gist = scene_line(location, f"{name}的「{state.purpose}」{cut}。")
             results.append(ActionResult(

@@ -9,7 +9,7 @@ import pytest
 
 from agent.memory_types import MemoryStream
 from core.container import Container
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from world.initializer import WorldInitializer
 from tests.unit.confirmed_world import confirmed_world
 

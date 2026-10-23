@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Sequence
 
-from agent.personality import EmotionState, EmotionType, parse_emotion_type
+from agent.personality import EmotionState
 from core.interfaces.agent_store import AgentRelation, AgentStoreProvider
 from core.interfaces.perception import PerceivedIdentity
 from core.numeric import clamp
@@ -141,15 +141,18 @@ def format_relation_block(
     return head
 
 
-def render_relation_context(named_relations: Sequence[tuple[str, AgentRelation]]) -> str:
+def render_relation_context(
+    named_relations: Sequence[tuple[str, AgentRelation]], *, include_legend: bool = True,
+) -> str:
     """The "my relations with the people involved" block for memory-write paths; "" if empty.
 
     Objective values, not perceived: the prompt injects current emotion separately, so perceived
     values would count emotion twice. Callers pass only substantive relations, with names.
+    ``include_legend=False`` when the caller's system prompt already carries ``relation_legend()``.
     """
     if not named_relations:
         return ""
-    lines = [relation_legend()]
+    lines = [relation_legend()] if include_legend else []
     for name, rel in named_relations:
         lines.append(
             "  - "
@@ -183,23 +186,22 @@ def describe_relations(relations: Sequence[PerceivedRelation]) -> str:
 def _perceived(
     relation: AgentRelation,
     *,
-    emotion: str | EmotionState,
+    emotion: EmotionState,
     recent_memory_bias: float = 0.0,
     agent_name: str = "",
     agent_gender: str = "",
 ) -> PerceivedRelation:
     """The perceived view of an objective relation: trust/affection tinted by mood and memory."""
-    emotion_state = _coerce_emotion(emotion)
     trust = _compute_perceived(
         objective=relation.trust_objective,
         recent_memory_bias=recent_memory_bias,
-        emotion=emotion_state,
+        emotion=emotion,
         value_range=TRUST_RANGE,
     )
     affection = _compute_perceived(
         objective=relation.affection_objective,
         recent_memory_bias=recent_memory_bias,
-        emotion=emotion_state,
+        emotion=emotion,
         value_range=AFFECTION_RANGE,
     )
     return PerceivedRelation(
@@ -253,7 +255,7 @@ class RelationSystem:
     async def perceive(
         self,
         target_agent_id: str,
-        emotion: str | EmotionState,
+        emotion: EmotionState,
         recent_memory_bias: float = 0.0,
         agent_name: str = "",
         agent_gender: str = "",
@@ -275,7 +277,7 @@ class RelationSystem:
         )
 
     async def perceive_existing(
-        self, target_agent_id: str, emotion: str | EmotionState,
+        self, target_agent_id: str, emotion: EmotionState,
     ) -> PerceivedRelation | None:
         """``perceive`` read-only: None when no relation exists, and nothing is persisted. For
         reads that must not bring a relation into being (an executor's ``complete``)."""
@@ -424,17 +426,6 @@ def _compute_perceived(
     memory_pull = recent_memory_bias * K_MEMORY_PULL
     low, high = value_range
     return max(low, min(high, objective + memory_pull + emotion_pull))
-
-
-def _coerce_emotion(emotion: str | EmotionState) -> EmotionState:
-    if isinstance(emotion, EmotionState):
-        return emotion
-    emotion_type = parse_emotion_type(str(emotion))
-    if emotion_type in {EmotionType.FRUSTRATION, EmotionType.ANGER, EmotionType.FEAR, EmotionType.DISGUST, EmotionType.SHAME, EmotionType.CONTEMPT, EmotionType.SADNESS, EmotionType.JEALOUSY}:
-        return EmotionState(primary=emotion_type, intensity=0.6, valence=-0.5)
-    if emotion_type in {EmotionType.JOY, EmotionType.ANTICIPATION, EmotionType.TRUST, EmotionType.PRIDE}:
-        return EmotionState(primary=emotion_type, intensity=0.5, valence=0.3)
-    return EmotionState(primary=emotion_type, intensity=0.2, valence=0.0)
 
 
 def _clamp_trust(value: float) -> float:

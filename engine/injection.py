@@ -43,6 +43,7 @@ from core.interfaces.severity import Severity, parse_severity
 from core.interfaces.urgency import Urgency, parse_urgency
 from core.logging import get_logger
 from engine.broadcast import BroadcastChannel
+from engine.environment import EnvironmentSystem
 from engine.message_system import MessageSystem
 
 if TYPE_CHECKING:
@@ -319,11 +320,14 @@ class InjectionDispatcher:
         broadcast_channel: BroadcastChannel,
         message_system: MessageSystem,
         mutation_channel: "WorldMutationChannel",
+        environment: EnvironmentSystem,
         directory: WorldDirectory,
     ) -> None:
         self._broadcast_channel = broadcast_channel
         self._message_system = message_system
         self._mutations = mutation_channel
+        # Read-only: where bodies stand, for the broadcast audience.
+        self._environment = environment
         self._directory = directory
 
     async def dispatch(
@@ -376,9 +380,10 @@ class InjectionDispatcher:
             self._broadcast_channel.publish(published)
             dispatched.add("broadcast")
             # Count the audience, or a pure broadcast reports "affected nobody". Reachability is
-            # the channel's call; the dead don't count.
+            # the channel's call; the dead don't count. Locations come from the environment, the
+            # table perception delivers by: the agent's own record lags while he travels.
             touched.extend(BroadcastChannel.audience(published, {
-                aid: agent.personality.state.current_location
+                aid: self._environment.get_body_location(aid)
                 for aid, agent in live.items() if agent.is_active
             }))
 

@@ -67,6 +67,7 @@ async def _submit(runtime, environment, agents, text: str):
     return await runtime.director.submit(
         text,
         all_agents={a.agent_id: a for a in agents},
+        agent_locations={a.agent_id: environment.get_body_location(a.agent_id) for a in agents},
         npcs=_npc_menu(environment),
         locations=environment.space.all_places(),
         entities=environment.all_live_entities(),
@@ -78,7 +79,7 @@ def _runtime(container, *, trace_sink=None):
     """A runtime with a human author and a cast the directory knows.
 
     Build the cast before the directory: a directory built from an empty map answers 「某人」 for
-    everyone, so the receipt assertions would pass without testing name resolution.
+    everyone, so nothing here would test name resolution.
     """
     environment = EnvironmentSystem(TiledWorldConfig(template="changan_iso"))
     agents = [
@@ -201,7 +202,7 @@ async def test_receipt_is_attached_at_step_end_with_real_signals(container) -> N
     snapshot = await container.snapshot.load(WORLD_ID, 1)
     receipt = snapshot.events_of("injection")[0]["receipt"]
     assert receipt is not None
-    assert receipt["delivered_to"] == [{"agent_id": "a2", "name": "李建成"}]
+    assert receipt["delivered_to"] == ["a2"]
     # Delivered, and the pressure evaluator did put him under pressure. That is what separates an
     # effective intervention from one that went nowhere.
     assert [p["agent_id"] for p in receipt["pressure"]] == ["a2"]

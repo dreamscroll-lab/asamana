@@ -146,12 +146,9 @@ def test_short_term_goals_are_one_typed_queue() -> None:
 
 def test_what_shows_of_an_agent_is_not_what_he_is_doing() -> None:
     step = StepView.from_snapshot(snapshot_of(
-        agents={"a": {"agent_id": "a", "location_id": "loc-hall", "activity_status": "covert",
-                            "gender": "男", "age": 30}},
+        agents={"a": {"agent_id": "a", "location_id": "loc-hall", "activity_status": "covert"}},
     ))
     seen = agent(step, "a")
-    # Visible at a glance.
-    assert (seen.gender, seen.age) == ("男", 30)
     # Someone acting covertly doesn't look like it; what he is doing is his own.
     assert seen.public.activity_status == ""
     assert seen.private.activity_status == "covert"

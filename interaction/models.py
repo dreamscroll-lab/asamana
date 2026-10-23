@@ -24,7 +24,9 @@ from core.interfaces.actor import ActorPace
 from core.interfaces.agent_store import relation_has_substance
 from core.interfaces.snapshot import WorldSnapshot
 from engine.environment import IN_TRANSIT
-from world.models import AgentDefinition, EntityPresence
+from world.catalog import WorldCatalog
+from world.models import AgentDefinition
+from core.interfaces.entity import EntityPresence
 from world.setup import WorldSetup
 from world.identity_color import MINDLESS_BODY_COLOR
 
@@ -117,11 +119,9 @@ class PlaceIdentity:
 
 @dataclass(frozen=True)
 class GraphNode:
-    """One agent in the relationship graph (GET /worlds/{id}/graph)."""
+    """One agent in the relationship graph (GET /worlds/{id}/graph); its identity is in the cast table."""
 
     id: str
-    name: str
-    role: str
     # None: not known to this viewer (the actor's view, ``interaction.actor_view``).
     is_main_character: bool | None
 
@@ -292,6 +292,25 @@ class SetupView:
 
 
 @dataclass(frozen=True)
+class ReceiptPressure:
+    """Someone an intervention pressed, and how hard: the ``Urgency`` value of the heaviest
+    goal it raised in them."""
+
+    agent_id: str
+    urgency: str
+
+
+@dataclass(frozen=True)
+class InjectionReceipt:
+    """What a director's intervention did by the end of its step (``engine.intervention_receipt``)."""
+
+    delivered_to: list[str] = field(default_factory=list)
+    pressure: list[ReceiptPressure] = field(default_factory=list)
+    decided: list[str] = field(default_factory=list)
+    interrupted: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class InjectionSummary:
     """User-facing summary of an injection — something put INTO the world from outside it.
 
@@ -313,7 +332,7 @@ class InjectionSummary:
     # who re-decided because of it, who dropped what they were doing. Without it an
     # intervention that was correctly delivered but judged unimportant is indistinguishable
     # from one that silently failed.
-    receipt: dict[str, Any] | None = None
+    receipt: InjectionReceipt | None = None
     # See ActionSummary.seq — same monotonic ordinal, same channel semantics.
     seq: int = 0
 
@@ -715,13 +734,10 @@ class AgentPrivateView:
 
 @dataclass(frozen=True)
 class AgentView:
-    """One agent at the end of the step, in the scope their body is in."""
+    """One agent at the end of the step, in the scope their body is in. Who they are (name,
+    gender, age) is in the world's character identity table, keyed by ``agent_id``."""
 
     agent_id: str
-    name: str
-    # Visible at a glance, like the name. "" / None when the world never fixed them.
-    gender: str = ""
-    age: int | None = None
     # None: not known to this viewer (the actor's view, ``interaction.actor_view``).
     is_main_character: bool | None = False
     is_active: bool = True
@@ -1115,9 +1131,6 @@ class _StepAssembler:
         need = coerce_optional_str(record.get("dominant_need"))
         return AgentView(
             agent_id=agent_id,
-            name=str(record.get("agent_name") or "某人"),
-            gender=str(record.get("gender") or ""),
-            age=record.get("age") if isinstance(record.get("age"), int) and record.get("age") else None,
             is_main_character=bool(record.get("is_main_character", False)),
             is_active=bool(record.get("is_active", True)),
             public=AgentPublicView(
@@ -1214,8 +1227,21 @@ def _injection_from_record(record: Mapping[str, Any]) -> InjectionSummary:
         location_label=coerce_optional_str(record.get("location_label")),
         is_positive=coerce_optional_bool(record.get("is_positive")),
         directive_text=str(record.get("directive_text", "")),
-        receipt=dict(receipt) if isinstance(receipt, Mapping) else None,
+        receipt=_receipt(receipt) if isinstance(receipt, Mapping) else None,
         seq=int(coerce_optional_int(record.get("seq")) or 0),
+    )
+
+
+def _receipt(record: Mapping[str, Any]) -> InjectionReceipt:
+    """Key-for-key with ``engine.intervention_receipt.build_receipt``, its only producer."""
+    return InjectionReceipt(
+        delivered_to=[str(i) for i in coerce_list(record.get("delivered_to"))],
+        pressure=[
+            ReceiptPressure(agent_id=str(p.get("agent_id") or ""), urgency=str(p.get("urgency") or ""))
+            for p in (coerce_dict(item) for item in coerce_list(record.get("pressure")))
+        ],
+        decided=[str(i) for i in coerce_list(record.get("decided"))],
+        interrupted=[str(i) for i in coerce_list(record.get("interrupted"))],
     )
 
 
@@ -1224,7 +1250,7 @@ def build_world_meta(
     world_id: str,
     latest_snapshot: WorldSnapshot | None,
     setup: WorldSetup | None,
-    catalog_entry: Mapping[str, Any] | None = None,
+    catalog: WorldCatalog,
 ) -> WorldMeta:
     """Derive world metadata: identity from the world's setup, progress from its latest snapshot,
     and the rest from the catalog."""
@@ -1248,23 +1274,24 @@ def build_world_meta(
 
     current_step = latest_snapshot.step if latest_snapshot else 0
     status = WorldStatus.IN_PROGRESS if latest_snapshot is not None else WorldStatus.UNKNOWN
+    entry = catalog.get(world_id) or {}
+    casting = catalog.actor_casting(world_id)
 
     return WorldMeta(
         world_id=world_id,
-        theme=str(catalog_entry.get("theme", "")) if catalog_entry else "",
-        world_name=str(catalog_entry.get("world_name", world_id)) if catalog_entry else world_id,
+        theme=str(entry.get("theme", "")),
+        world_name=str(entry.get("world_name", world_id)),
         description=description,
         status=status,
-        created_at=coerce_datetime(catalog_entry.get("created_at")) if catalog_entry else None,
+        created_at=coerce_datetime(entry.get("created_at")),
         current_step=current_step,
         main_agent_names=main_agent_names,
         seconds_per_step=seconds_per_step,
-        confirmed=bool(catalog_entry.get("confirmed", False)) if catalog_entry else False,
-        actor_character_id=(catalog_entry.get("actor_character_id") or None) if catalog_entry else None,
-        actor_exited=bool(catalog_entry.get("actor_exited", False)) if catalog_entry else False,
-        actor_pace=ActorPace(catalog_entry.get("actor_pace", ActorPace.EVERY_STEP.value))
-        if catalog_entry else ActorPace.EVERY_STEP,
-        director_reviewed=bool(catalog_entry.get("director_reviewed", False)) if catalog_entry else False,
+        confirmed=catalog.is_confirmed(world_id),
+        actor_character_id=casting.character_id if casting is not None else None,
+        actor_exited=casting.exited if casting is not None else False,
+        actor_pace=casting.pace if casting is not None else ActorPace.EVERY_STEP,
+        director_reviewed=catalog.director_reviewed(world_id),
     )
 
 

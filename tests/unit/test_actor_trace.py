@@ -13,7 +13,7 @@ from core.context import get_log_context, set_log_context
 from core.interfaces.actor import ActorIdleAnswer, ActorIntent, ActorConfirmation
 from core.interfaces.llm import LLMScene
 from core.interfaces.trace import Stage
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from providers.trace.in_memory import InMemoryTraceSink
 from tests.unit.test_actor_runtime import HERO, _next_turn, _setup, _TALK_INDEX, _WORK_INDEX
 

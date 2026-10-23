@@ -28,9 +28,9 @@ from engine.executors.simple import SimpleExecutor
 from engine.executors.social import SocialExecutor
 from engine.executors.work import WorkExecutor
 from engine.message_system import MessageSystem
-from world.models import EntityPresence, WorldEntity, WorldEntityType
+from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
-from tests.unit.world_setups import npc_seed
+from tests.unit.world_setups import make_npc
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +67,7 @@ def _make_agent(
             world_id=world_id,
             agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(container.llm_router),
         relation_system=RelationSystem(container.agent_store, world_id=world_id, agent_id=agent_id),
         agent_store=container.agent_store,
         is_main_character=is_main,
@@ -1212,7 +1212,7 @@ class TestSocialExecutor:
         state.remaining_steps = 3
         # The TARGET (b) is the one who broke off (received the triggering signal).
         results = await executor.interrupt(
-            state, 2, agents=agents, interrupted_agent_id="agent-b", thought="宫里等不得",
+            state, 2, agents=agents, environment=env, interrupted_agent_id="agent-b", thought="宫里等不得",
         )
         result_a = next(r for r in results if r.action.agent_id == "agent-a")
         result_b = next(r for r in results if r.action.agent_id == "agent-b")
@@ -1242,7 +1242,7 @@ class TestSocialExecutor:
         )
         state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
         state.remaining_steps = 3  # elapsed = 1, progress_ratio = 0.25 < 0.5
-        results = await executor.interrupt(state, 2, agents=agents)
+        results = await executor.interrupt(state, 2, agents=agents, environment=env)
         for result in results:
             assert result.relation_updates == []
 
@@ -1415,8 +1415,10 @@ class TestSocialExecutor:
         """
         from core.interfaces.llm import LLMResponse
 
+        # Also serves both sides' records, which need their own fact and verdict.
         good = ('{"dialogue": [{"speaker": 1, "line": "近来可好？"}, '
-                '{"speaker": 2, "line": "尚可。"}], "observation": ""}')
+                '{"speaker": 2, "line": "尚可。"}], "observation": "", '
+                '"fact": "彼此问候了几句。", "success": true}')
 
         class _FlakyOnce:
             def __init__(self) -> None:
@@ -2036,6 +2038,29 @@ class TestWorkExecutor:
         # ensure_doer_named adds the doer's name in code.
         assert result.outcome == "在hall，A：他把这桩事做完了。"
 
+    @pytest.mark.parametrize("payload", [
+        '{"fact": "我把账本理了一遍。", "outcome": "A理了账本。"}',   # no verdict
+        '{"success": true, "outcome": "A理了账本。"}',                # no record of it
+    ])
+    @pytest.mark.asyncio
+    async def test_a_self_assessment_missing_its_verdict_or_record_is_a_null_step(
+        self, container, payload,
+    ) -> None:
+        """Defaulting the verdict to success, or writing "…，做成了。" as his memory, would invent
+        a result; the step is null instead (Rule 1)."""
+        container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = payload
+        agents = {"agent-a": _make_agent(container, world_id="w", agent_id="agent-a", name="A")}
+        executor = WorkExecutor(container.llm_router, _directory(agents))
+        env = _make_environment()
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.WORK, description="整理账本", estimated_steps=1,
+        )
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        [result] = await executor.complete(state, 1, agents=agents, environment=env, message_system=None)
+        assert result.adjudication_failed is True and result.succeeded is False
+        assert result.factual_memory == "" and result.observations == []
+        assert result.entity_spawns == [] and result.entity_state_changes == []
+
     @pytest.mark.asyncio
     async def test_multi_step_work_creates_state(self, container) -> None:
         executor = WorkExecutor(container.llm_router, _directory())
@@ -2218,8 +2243,7 @@ class TestWorkExecutor:
         env = _make_environment()
         env.register_entity(WorldEntity(
             entity_id="draft", name="誊清的说辞", entity_type=WorldEntityType.ITEM,
-            presence=EntityPresence.HELD, presence_ref="agent-a",
-            is_takeable=True, state="已选定一套", is_public=False,
+            presence=EntityPresence.HELD, presence_ref="agent-a", state="已选定一套", is_public=False,
         ))
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我添了几处转圜的余地。", "success": true,'
@@ -2279,7 +2303,7 @@ class TestWorkExecutor:
         env = _make_environment()
         env.register_entity(WorldEntity(
             entity_id="draft", name="奏章", entity_type=WorldEntityType.ITEM,
-            presence=EntityPresence.HELD, presence_ref="agent-a", is_takeable=True,
+            presence=EntityPresence.HELD, presence_ref="agent-a",
             is_public=False, content="臣请削秦王兵权",
         ))
         llm = container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION)
@@ -2316,8 +2340,7 @@ class TestWorkExecutor:
         env = _make_environment()
         env.register_entity(WorldEntity(
             entity_id="timber", name="一段木料", entity_type=WorldEntityType.ITEM,
-            presence=EntityPresence.HELD, presence_ref="agent-a",
-            is_takeable=True, state="完整",
+            presence=EntityPresence.HELD, presence_ref="agent-a", state="完整",
         ))
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我把木料削成了一把椅子。", "success": true,'
@@ -2350,8 +2373,7 @@ class TestWorkExecutor:
         env = _make_environment()
         env.register_entity(WorldEntity(
             entity_id="scroll", name="一卷旧册", entity_type=WorldEntityType.ITEM,
-            presence=EntityPresence.HELD, presence_ref="agent-a",
-            is_takeable=True, state="完好",
+            presence=EntityPresence.HELD, presence_ref="agent-a", state="完好",
         ))
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我翻看了一遍,什么也没改。", "success": true,'
@@ -2382,11 +2404,10 @@ class TestWorkExecutor:
         env.register_entity(WorldEntity(
             entity_id="scroll", name="一卷旧册", entity_type=WorldEntityType.ITEM,
             presence=EntityPresence.HELD, presence_ref="agent-a",
-            is_takeable=True,
         ))
         env.register_entity(WorldEntity(
             entity_id="lamp", name="一盏灯", entity_type=WorldEntityType.ITEM,
-            presence_ref="hall", is_takeable=True,
+            presence_ref="hall",
         ))
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我读了一阵。", "success": true, "updated_index": 0,'
@@ -2428,7 +2449,7 @@ class TestWorkExecutor:
         env = _make_environment()
         env.register_entity(WorldEntity(
             entity_id="onfloor", name="案上的旧稿", entity_type=WorldEntityType.ITEM,
-            presence_ref="hall", is_takeable=True,
+            presence_ref="hall",
         ))
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我另写了一份。", "success": true,'
@@ -2645,7 +2666,7 @@ class TestWorkExecutor:
         env = _make_environment()
         env.register_entity(WorldEntity(
             entity_id="dossier", name="毒酒案卷", entity_type=WorldEntityType.ITEM,
-            presence_ref="hall", is_takeable=True,
+            presence_ref="hall",
             description="记录了详细的证词与证据",
         ))
         action = _make_action(
@@ -2726,7 +2747,7 @@ class TestWorkExecutor:
         env = _make_environment()
         env.register_entity(WorldEntity(
             entity_id="ledger-7", name="账册", entity_type=WorldEntityType.ITEM,
-            presence_ref="hall", is_takeable=True,
+            presence_ref="hall",
         ))
         action = _make_action(
             agent_id="agent-a", action_type=ActionType.WORK,
@@ -2908,7 +2929,7 @@ class TestWorkExecutor:
         )
         state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
         state.remaining_steps = 2  # elapsed = 2
-        results = await executor.interrupt(state, 3, agents=agents, thought="我先去看看")
+        results = await executor.interrupt(state, 3, agents=agents, environment=env, thought="我先去看看")
         assert len(results) == 1
         result = results[0]
         assert not result.succeeded
@@ -2939,7 +2960,7 @@ class TestInterruptDefault:
         )
         state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
         assert state is not None
-        results = await executor.interrupt(state, 2, agents=agents)
+        results = await executor.interrupt(state, 2, agents=agents, environment=env)
         assert len(results) == 2
         for result in results:
             assert not result.succeeded
@@ -2961,11 +2982,11 @@ class TestPhysicalExecutor:
 
         env = _make_environment()
         env.place_agent(agent_id="observer", location_id="hall")
-        assert env.spawn_npc(npc_seed("信使", gender="男"), location_id="hall")
+        assert env.spawn_npc(make_npc("信使", gender="男"), location_id="hall")
         npc_id = env.all_npcs()[0].npc_id
         item = WorldEntity(
             entity_id="parcel", name="包裹", entity_type=WorldEntityType.ITEM,
-            presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True, is_public=True,
+            presence=EntityPresence.HELD, presence_ref=npc_id, is_public=True,
         )
         env.register_entity(item)
         directory = LiveWorldDirectory.from_agents({}, env)
@@ -2987,7 +3008,7 @@ class TestPhysicalExecutor:
         executor = PhysicalExecutor(container.llm_router, _directory({"owner-1": owner}))
         held = WorldEntity(
             entity_id="sword", name="天子剑", entity_type=WorldEntityType.ITEM,
-            state="intact", description="一柄宝剑", is_takeable=True,
+            state="intact", description="一柄宝剑",
             presence=EntityPresence.HELD, presence_ref="owner-1",
         )
         block = executor._entity_target_block(held, doer_id="other")
@@ -2998,7 +3019,7 @@ class TestPhysicalExecutor:
         assert "owner-1" not in block  # membrane: no ids in the prompt
         unowned = WorldEntity(
             entity_id="vase", name="花瓶", entity_type=WorldEntityType.ITEM,
-            state="intact", is_takeable=True,
+            state="intact",
         )
         assert "持有" not in executor._entity_target_block(unowned, doer_id="other")
         # In the doer's own hands, all he can do is hand it over, matching the deed options that
@@ -3152,7 +3173,7 @@ class TestPhysicalExecutor:
                 failure_reason="", success=True, outcome="甲把乙按住了", fact="我把乙按住了",
                 relation_dir="negative", doer_damage=0.0, target_damage=0.0, target_relief=0.0,
                 new_entity_state="", deed=Deed.RESTRAIN, target_condition_desc="双手被反绑",
-                target_condition_steps=0,
+                target_condition_steps=0, target_condition_confined=True,
             )
 
         monkeypatch.setattr(PhysicalExecutor, "_judge", _judge)
@@ -3174,6 +3195,7 @@ class TestPhysicalExecutor:
         [effect] = results[0].target_effects
         assert effect.condition_set.description == "双手被反绑"
         assert effect.condition_set.until_step is None
+        assert effect.condition_set.confined is True
 
     @pytest.mark.asyncio
     async def test_item_pickup_succeeds_and_declares_entity_change(self, container) -> None:
@@ -3182,7 +3204,7 @@ class TestPhysicalExecutor:
         # This case tests SEIZE (taking changes ownership), so it overrides the verdict's deed
         # explicitly; conftest defaults to operate.
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = json.dumps(
-            {"success": True, "fact": "我拿起了灯笼。", "relation": "neutral",
+            {"success": True, "outcome": "甲拿起了灯笼。", "fact": "我拿起了灯笼。", "relation": "neutral",
              "new_entity_state": "在手中", "deed": "seize"},
             ensure_ascii=False,
         )
@@ -3192,7 +3214,7 @@ class TestPhysicalExecutor:
         env = _make_environment()
         item = WorldEntity(
             entity_id="lantern", name="lantern", entity_type=WorldEntityType.ITEM,
-            presence_ref="hall", is_takeable=True, state="ready",
+            presence_ref="hall", state="ready",
         )
         env.register_entity(item)
         action = AgentAction(
@@ -3239,7 +3261,7 @@ class TestPhysicalExecutor:
         env.register_entity(WorldEntity(
             entity_id="tally", name="虎符", entity_type=WorldEntityType.ITEM,
             presence=EntityPresence.HELD,
-            presence_ref="agent-b", is_takeable=True, state="intact",
+            presence_ref="agent-b", state="intact",
         ))
         action = AgentAction(
             agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL,
@@ -3283,8 +3305,7 @@ class TestPhysicalExecutor:
         env.register_entity(WorldEntity(
             entity_id="tally", name="虎符", entity_type=WorldEntityType.ITEM,
             presence=EntityPresence.HELD if holder else EntityPresence.AT_LOCATION,
-            presence_ref=holder or env.get_body_location("agent-a"),
-            is_takeable=True, state="intact",
+            presence_ref=holder or env.get_body_location("agent-a"), state="intact",
         ))
         action = AgentAction(
             agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL,
@@ -3332,7 +3353,7 @@ class TestPhysicalExecutor:
         env.register_entity(WorldEntity(
             entity_id="tally", name="虎符", entity_type=WorldEntityType.ITEM,
             presence=EntityPresence.HELD,
-            presence_ref="agent-b", is_takeable=True, state="intact",
+            presence_ref="agent-b", state="intact",
         ))
         action = AgentAction(
             agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL,
@@ -3414,7 +3435,7 @@ class TestPhysicalExecutor:
         env.register_entity(WorldEntity(
             entity_id="tally", name="虎符", entity_type=WorldEntityType.ITEM,
             presence=EntityPresence.HELD,
-            presence_ref="agent-b", is_takeable=True, state="intact",
+            presence_ref="agent-b", state="intact",
         ))
         action = AgentAction(
             agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL,
@@ -3454,8 +3475,7 @@ class TestPhysicalExecutor:
         env = _make_environment()                      # agent-a is in hall
         env.register_entity(WorldEntity(
             entity_id="far_gate", name="城门", entity_type=WorldEntityType.ITEM,
-            presence=EntityPresence.AT_LOCATION, presence_ref="garden",
-            is_takeable=True, state="intact",
+            presence=EntityPresence.AT_LOCATION, presence_ref="garden", state="intact",
         ))
         action = AgentAction(
             agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL,
@@ -3499,8 +3519,7 @@ class TestPhysicalExecutor:
         env = _make_environment()
         env.register_entity(WorldEntity(
             entity_id="letter_7", name="密信", entity_type=WorldEntityType.ITEM,
-            presence=EntityPresence.AT_LOCATION, presence_ref="hall",
-            is_takeable=True, state="intact",
+            presence=EntityPresence.AT_LOCATION, presence_ref="hall", state="intact",
         ))
         action = AgentAction(
             agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL,
@@ -3519,16 +3538,20 @@ class TestPhysicalExecutor:
         assert env.find_item("letter_7").owner_id == "agent-a", "世界必须真的变了"
 
 
+    @pytest.mark.parametrize("payload", [
+        '{"success": true, "fact": "我按住了他。"}',                    # no outcome
+        '{"success": true, "outcome": "甲按住了乙。"}',                  # no fact
+        '{"outcome": "甲按住了乙。", "fact": "我按住了他。"}',           # no verdict
+        '{"success": "", "outcome": "甲按住了乙。", "fact": "我按住了他。"}',  # blank verdict
+    ])
     @pytest.mark.asyncio
-    async def test_judge_outcome_fallback_quotes_the_first_person_intent(self, container) -> None:
-        """The fallback used when the judge gives no outcome must also be clean third person.
+    async def test_a_verdict_missing_what_it_must_say_is_a_null_step(self, container, payload) -> None:
+        """A ruling without its verdict or either narration is unusable, not a smaller answer.
 
-        Splicing his words in bare renders "甲我伸手去夺…". This fallback is both the bystander
-        observation and the sentence the person acted on reads, so one bad render spoils both. The
-        words are quoted in 「」 with attribution, and no final "。" is added because the quote usually
-        has one.
+        Defaulting the verdict to success, or filling a narration from the doer's intent, would
+        invent a result that lands in memory and in onlookers' perception (Rule 1). It takes the
+        adjudication_failed path instead: nothing is remembered, seen or applied.
         """
-        from core.interfaces.action import ActionResult
         from core.interfaces.llm import LLMScene
         from engine.executors.physical import PhysicalExecutor
         agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="甲")
@@ -3536,9 +3559,7 @@ class TestPhysicalExecutor:
         agents = {"agent-a": agent_a, "agent-b": agent_b}
         executor = PhysicalExecutor(container.llm_router, _directory(agents))
         env = _make_environment()
-        container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
-            '{"success": true, "fact": "我按住了他。"}'   # the judge left out the outcome
-        )
+        container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = payload
         action = AgentAction(
             agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL,
             action_description="我猛地扑上去按住他",
@@ -3546,9 +3567,11 @@ class TestPhysicalExecutor:
         )
         state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
         result = (await executor.complete(state, 1, agents=agents, environment=env, message_system=None))[0]
-        assert isinstance(result, ActionResult)
-        assert "甲着手做「我猛地扑上去按住他」" in result.outcome
-        assert "甲我猛地扑上去" not in result.outcome
+        assert result.adjudication_failed is True
+        assert result.succeeded is False
+        assert result.factual_memory == ""
+        assert result.observations == []
+        assert result.target_effects == [] and result.relation_updates == []
 
     @pytest.mark.asyncio
     async def test_seizing_a_thing_off_the_ground_has_no_victim(self, container, monkeypatch) -> None:
@@ -3570,7 +3593,7 @@ class TestPhysicalExecutor:
         env = _make_environment()
         env.register_entity(WorldEntity(
             entity_id="lantern", name="灯笼", entity_type=WorldEntityType.ITEM,
-            presence_ref="hall", is_takeable=True, state="intact",
+            presence_ref="hall", state="intact",
         ))
         action = AgentAction(
             agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL,
@@ -3611,7 +3634,7 @@ class TestPhysicalExecutor:
             env.register_entity(WorldEntity(
                 entity_id="tally", name="虎符", entity_type=WorldEntityType.ITEM,
                 presence=EntityPresence.HELD,
-                presence_ref="agent-a", is_takeable=True, state="intact",
+                presence_ref="agent-a", state="intact",
             ))
             return env
 
@@ -3672,7 +3695,7 @@ class TestPhysicalExecutor:
         env.register_entity(WorldEntity(
             entity_id="tally", name="虎符", entity_type=WorldEntityType.ITEM,
             presence=EntityPresence.HELD,
-            presence_ref="agent-a", is_takeable=True, state="intact",
+            presence_ref="agent-a", state="intact",
         ))
         action = AgentAction(
             agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL,
@@ -3705,7 +3728,7 @@ class TestPhysicalExecutor:
         env.register_entity(WorldEntity(
             entity_id="tally", name="虎符", entity_type=WorldEntityType.ITEM,
             presence=EntityPresence.HELD,
-            presence_ref="agent-a", is_takeable=True, state="intact",
+            presence_ref="agent-a", state="intact",
         ))
         action = AgentAction(
             agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL,
@@ -3737,7 +3760,7 @@ class TestPhysicalExecutor:
         env = _make_environment()
         env.register_entity(WorldEntity(
             entity_id="lantern", name="lantern", entity_type=WorldEntityType.ITEM,
-            presence_ref="hall", is_takeable=True, state="intact",
+            presence_ref="hall", state="intact",
         ))
         action = AgentAction(
             agent_id="agent-a", step=1,
@@ -3839,10 +3862,82 @@ class TestPhysicalExecutor:
         assert "乙" in judge_prompt                         # target persona (name)
         assert "体力状况" in judge_prompt                   # both sides' vitality
         assert "目标对行动者的关系" in judge_prompt          # relation in both directions
-        assert "关系数值含义" in judge_prompt               # relation_legend is present
+        # The legend is static: once, in system, not beside the per-call relation lines.
+        from core.prompts import relation_legend
+        judge_system, judge_user = (m.content for m in provider.call_history[0])
+        assert judge_system.count(relation_legend()) == 1 and "【输入说明】" in judge_system
+        assert relation_legend() not in judge_user and "关系数值含义" not in judge_user
         assert "生命力损耗" in judge_prompt                 # VITALITY_DAMAGE_DEFINITION scale
         assert "梁柱森然" in judge_prompt                   # scene (location description)
         assert "agent-b" not in judge_prompt                # no id leak
+
+    @pytest.mark.asyncio
+    async def test_judge_relation_legend_follows_the_shape(self, container) -> None:
+        """The relation legend sits once in the judge's system exactly when 【目标】 carries
+        relation lines, and never beside them in user. A thing with both a holder and a recipient
+        shows two people's relations and still one legend; a thing nobody holds shows none."""
+        from core.prompts import relation_legend
+        from engine.executors.physical import PhysicalExecutor
+
+        class _Capture:
+            def __init__(self) -> None:
+                self.messages: list = []
+
+            async def complete(self, scene, messages, **kwargs):  # noqa: ANN001
+                self.messages.append([m.content for m in messages])
+
+                class _R:
+                    content = '{"reason":"r","success":true,"outcome":"o","fact":"f","doer_damage":0.0}'
+                return _R()
+
+        env = _make_environment()
+        env.place_agent(agent_id="agent-c", location_id="hall")
+        env.register_entity(WorldEntity(
+            entity_id="seal", name="印信", entity_type=WorldEntityType.ITEM, state="intact",
+            presence=EntityPresence.HELD, presence_ref="agent-b",
+        ))
+        env.register_entity(WorldEntity(
+            entity_id="stone", name="石墩", entity_type=WorldEntityType.ITEM, state="intact",
+            presence=EntityPresence.AT_LOCATION, presence_ref="hall",
+        ))
+        agents = {aid: _make_agent(container, world_id="w", agent_id=aid, name=name, is_main=True)
+                  for aid, name in (("agent-a", "甲"), ("agent-b", "乙"), ("agent-c", "丙"))}
+        llm = _Capture()
+        executor = PhysicalExecutor(llm, _directory(agents))  # type: ignore[arg-type]
+
+        async def judge(target: Ref, recipient_id: str = "") -> tuple[str, str]:
+            state = ActionExecutionState.create(
+                action_type=ActionType.PHYSICAL, initiator_id="agent-a", participant_ids=["agent-a"],
+                purpose="做点什么", started_step=1, estimated_steps=1, opening_outcome="",
+                target=ActionTarget(acts_on=[target]),
+            )
+            if recipient_id:
+                state.extra["recipient_id"] = recipient_id
+            subject = await executor._resolve_subject(  # noqa: SLF001
+                state, agents=agents, environment=env, step=1)
+            await executor._judge(  # noqa: SLF001
+                agents["agent-a"], description="做点什么", expected_outcome="", scene="",
+                target_block=subject.target_block, shows_relations=subject.shows_relations,
+                is_person=subject.is_person, has_entity=subject.item is not None,
+                seize_available=subject.seize_available, doer_holds=subject.doer_holds,
+                needs_relation=subject.needs_relation, recipient_line="", step=1,
+            )
+            system, user = llm.messages[-1]
+            return system, user
+
+        legend = relation_legend()
+        held_system, held_user = await judge(Ref.entity("seal"), recipient_id="agent-c")
+        assert "【持有者】" in held_user and "【接收人】" in held_user
+        assert held_user.count("对行动者的关系") == 2
+        assert held_system.count(legend) == 1 and legend not in held_user
+
+        ground_system, ground_user = await judge(Ref.entity("stone"))
+        assert "关系" not in ground_user and legend not in ground_system
+
+        # Same shape, different people: one cacheable system.
+        to_b, _ = await judge(Ref.agent("agent-b"))
+        to_c, _ = await judge(Ref.agent("agent-c"))
+        assert to_b == to_c and to_b.count(legend) == 1
 
     def test_same_place_rule_names_no_particular_kind_of_world(self) -> None:
         """The same-place invariant talks only about moving itself, with no genre-specific wording
@@ -3950,7 +4045,7 @@ class TestPhysicalExecutor:
         from engine.executors.physical import PhysicalExecutor
 
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
-            '{"success": true, "fact": "一掌击中", "relation": "negative", '
+            '{"success": true, "outcome": "甲一掌击中乙", "fact": "一掌击中", "relation": "negative", '
             '"doer_damage": 0.05, "target_damage": 0.4}'
         )
         env = _make_environment()
@@ -3983,7 +4078,7 @@ class TestPhysicalExecutor:
         came from the judge, which already succeeded, and has nothing to do with this failure.
 
         A memory like "某某对我做了一件事。" carries nothing useful on recall, yet it takes a retrieval slot
-        and crowds out memories with real content (Rule 1, tier 1, like _adjudication_failed_result
+        and crowds out memories with real content (Rule 1, tier 1, like adjudication_failed_result
         and _listener_memory).
         """
         from core.interfaces.llm import LLMScene
@@ -4020,6 +4115,45 @@ class TestPhysicalExecutor:
         effect = results[0].target_effects[0]
         assert effect.vitality_damage == pytest.approx(0.4)   # the judge's part still lands
         assert effect.factual_memory == ""                    # the cognition part writes nothing
+
+    @pytest.mark.asyncio
+    async def test_a_reaction_without_its_fact_is_treated_like_a_failed_one(
+        self, container, monkeypatch
+    ) -> None:
+        """No fact, no stand-in memory ("某某对我做了一件事。"): the same no-op as a failed call.
+        The judge's harm still lands."""
+        from core.interfaces.llm import LLMScene
+        from engine.executors.physical import PhysicalExecutor, _Verdict
+
+        async def _judge(self_inner, agent, **kwargs):
+            return _Verdict(
+                failure_reason="", success=True, outcome="甲一掌击中乙", fact="一掌击中",
+                relation_dir="negative", doer_damage=0.0, target_damage=0.4,
+                target_relief=0.0, new_entity_state="", deed=Deed.STRIKE,
+            )
+
+        monkeypatch.setattr(PhysicalExecutor, "_judge", _judge)
+        container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
+            '{"emotion_type": "anger", "emotion_intensity": 0.8, "emotion_valence": -0.7, '
+            '"relation": "negative"}'
+        )
+        env = _make_environment()
+        agents = {
+            "agent-a": _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True),
+            "agent-b": _make_agent(container, world_id="w", agent_id="agent-b", name="乙", is_main=True),
+        }
+        executor = PhysicalExecutor(container.llm_router, _directory(agents))
+        action = AgentAction(
+            agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL,
+            action_description="攻击对方", target=ActionTarget(acts_on=[Ref.agent("agent-b")]),
+        )
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        results = await executor.complete(state, 1, agents=agents, environment=env, message_system=None)
+
+        effect = results[0].target_effects[0]
+        assert effect.vitality_damage == pytest.approx(0.4)
+        assert effect.factual_memory == ""
+        assert effect.relation_toward_doer is None
 
     @pytest.mark.asyncio
     async def test_reaction_is_subjective_and_damage_comes_from_judge(
@@ -4076,7 +4210,16 @@ class TestPhysicalExecutor:
         assert "【你是谁】" in reaction_prompt
         assert "你身上的变化：生命力大损" in reaction_prompt   # 0.3 ≤ 0.4 < 0.7; the line states how bad it is, not what caused it
         assert "伤" not in _damage_label(0.4)                # depletion labels don't assume a cause (exhaustion and hunger fall in the same band)
-        assert "关系数值含义" in reaction_prompt              # legend present (reaction side)
+        from core.prompts import relation_legend
+
+        # The relation legend is static: once, in system, ahead of the line it explains in user.
+        reaction_system, reaction_user = (
+            m.content
+            for m in container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).call_history[-1]
+        )
+        assert reaction_system.count(relation_legend()) == 1
+        assert relation_legend() not in reaction_user and "关系数值含义" not in reaction_user
+        assert "你与甲的关系：[未明确]，信任度" in reaction_user
         assert "情绪强度" in reaction_prompt                  # emotion_legend scale
         assert "情绪基调" in reaction_prompt
 
@@ -4456,8 +4599,7 @@ class TestPhysicalExecutor:
         provider.call_history.clear()
         env.register_entity(WorldEntity(
             entity_id="door", name="木门", entity_type=WorldEntityType.ITEM,
-            presence=EntityPresence.AT_LOCATION, presence_ref="hall",
-            is_takeable=False, state="closed",
+            presence=EntityPresence.AT_LOCATION, presence_ref="hall", state="closed",
         ))
         entity = AgentAction(
             agent_id="agent-a", step=2, action_type=ActionType.PHYSICAL,
@@ -4510,6 +4652,28 @@ class TestPhysicalExecutor:
         assert "后花园" not in result.outcome   # doesn't reveal where the other person actually is
 
     @pytest.mark.asyncio
+    async def test_infeasible_never_shows_onlookers_the_private_intent(self, container) -> None:
+        """The failure line is also the onlookers' observation, so it says who tried and why it
+        couldn't be done, never the doer's own first-person description."""
+        from engine.executors.physical import PhysicalExecutor
+
+        env = _make_environment()
+        env.place_agent(agent_id="agent-c", location_id="hall")
+        env.move_body(body_id="agent-b", location_id="garden")
+        agent_b = _make_agent(container, world_id="w", agent_id="agent-b", name="乙", is_main=False)
+        executor = PhysicalExecutor(container.llm_router, _directory({"agent-b": agent_b}))
+        action = AgentAction(
+            agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL,
+            action_description="我趁他不备扑上去夺下他的佩刀",
+            target=ActionTarget(acts_on=[Ref.agent("agent-b")]),
+        )
+        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
+        [result] = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
+        assert result.observations
+        for text in (result.outcome, *(o.text for o in result.observations)):
+            assert "佩刀" not in text and "我" not in text
+
+    @pytest.mark.asyncio
     async def test_untracked_object_has_no_target_effects(self) -> None:
         from core.interfaces.action import ActionResult
         from engine.executors.physical import PhysicalExecutor
@@ -4542,7 +4706,6 @@ class TestPhysicalExecutor:
             name="城门告示",
             entity_type=WorldEntityType.LANDMARK,
             presence_ref="hall",
-            is_takeable=False,
             state="intact",
             description="悬挂于城门上的官方告示",
         )
@@ -4682,7 +4845,8 @@ class TestCovertExecutor:
         # The fact says what he found, not what he did: achieved means something was gained, not
         # that the action finished.
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = json.dumps(
-            {"achieved": achieved, "detected": detected, "fact": "我看清密信上写着三日后动手"},
+            {"achieved": achieved, "detected": detected, "fact": "我看清密信上写着三日后动手",
+             "outcome": "甲在案边停留了片刻。"},
             ensure_ascii=False,
         )
         env = _make_environment()
@@ -4987,10 +5151,9 @@ class TestCovertExecutor:
         assert "探到了什么" in prompt, "裁决任务问的是所得,不是动作完成度"
 
     @pytest.mark.asyncio
-    async def test_covert_missing_field_claims_nothing_gained(self, container) -> None:
-        """achieved defaults to False. Assuming he found something when the field is missing would
-        grant a success out of nothing, advancing goals and feeding need feedback while he has
-        nothing (Rule 1 fallback: pick the option that claims the least)."""
+    async def test_covert_missing_verdict_is_a_null_step(self, container) -> None:
+        """No verdict and no fact means nothing was ruled. Defaulting either would write a memory
+        of an outcome nobody adjudicated (Rule 1 tier 1), so it is a null step."""
         from core.interfaces.action import ActionResult
         from core.interfaces.llm import LLMScene
         from engine.executors.covert import CovertExecutor
@@ -5013,8 +5176,8 @@ class TestCovertExecutor:
         result = results[0]
         assert isinstance(result, ActionResult)
         assert result.succeeded is False
-        assert "什么也没探到" in result.factual_memory
-        assert result.adjudication_failed is False, "裁决发生了,只是没探到 —— 不是空步"
+        assert result.adjudication_failed is True
+        assert result.factual_memory == ""
 
     @pytest.mark.asyncio
     async def test_covert_judge_prompt_has_scene_no_ids_no_steps(self, container) -> None:
@@ -5033,7 +5196,7 @@ class TestCovertExecutor:
         dagger = WorldEntity(
             entity_id="dagger-1", name="短匕", entity_type=WorldEntityType.ITEM,
             state="intact", description="",
-            presence_ref="garden-loc", is_takeable=True,
+            presence_ref="garden-loc",
         )
         env = EnvironmentSystem()
         env.space.register_place(loc)
@@ -5182,12 +5345,12 @@ class TestCovertExecutor:
 
         env.register_entity(WorldEntity(
             entity_id="lamp", name="灯笼", entity_type=WorldEntityType.ITEM,
-            presence_ref="hall", is_takeable=True, state="intact",
+            presence_ref="hall", state="intact",
         ))
         env.register_entity(WorldEntity(
             entity_id="tally", name="虎符", entity_type=WorldEntityType.ITEM,
             presence=EntityPresence.HELD,
-            presence_ref="agent-b", is_takeable=True, state="intact",
+            presence_ref="agent-b", state="intact",
         ))
         scene = assemble_scene_context(
             "agent-a", environment=env, directory=directory, agents=agents,
@@ -5222,7 +5385,7 @@ class TestCovertExecutor:
 
         env.register_entity(WorldEntity(
             entity_id="lamp", name="灯笼", entity_type=WorldEntityType.ITEM,
-            presence_ref="hall", is_takeable=True, state="intact",
+            presence_ref="hall", state="intact",
         ))
         stocked = render(visibility=SceneVisibility.GOD).text
         assert "灯笼" in stocked
@@ -5257,12 +5420,12 @@ class TestCovertExecutor:
         mine = WorldEntity(
             entity_id="blade", name="短刀", entity_type=WorldEntityType.ITEM,
             presence=EntityPresence.HELD,
-            presence_ref="agent-a", is_takeable=True, state="intact",
+            presence_ref="agent-a", state="intact",
         )
         hidden = WorldEntity(
             entity_id="token", name="暗记", entity_type=WorldEntityType.ITEM,
             presence=EntityPresence.HELD,
-            presence_ref="agent-b", is_takeable=True, state="intact",
+            presence_ref="agent-b", state="intact",
         )
         hidden.is_public = False
         env.register_entity(mine)
@@ -5298,7 +5461,8 @@ class TestCovertExecutor:
         from engine.executors.covert import CovertExecutor
 
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
-            '{"achieved": true, "detected": true, "fact": "仓促间撞翻烛台，被人看见了"}'
+            '{"achieved": true, "detected": true, "fact": "仓促间撞翻烛台，被人看见了",'
+            ' "outcome": "甲撞翻了烛台。"}'
         )
         env = _make_environment()  # agent-a and agent-b are both in hall
         agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="A", is_main=True)
@@ -5435,7 +5599,7 @@ class TestExecutorLLMFailureFallback:
             assert result.adjudication_failed is True
             # Null steps write no memory: adjudication_failed makes the feedback layer return before
             # reading it, so a line here would only suggest null steps get recorded (same as
-            # physical._adjudication_failed_result).
+            # engine.executors.base.adjudication_failed_result).
             assert result.factual_memory == ""
 
 
@@ -5571,7 +5735,7 @@ class TestNarrativePrinciple:
     def test_narrative_location_name_in_transit_and_miss(self) -> None:
         env = _make_environment()
         assert env.narrative_location_name(IN_TRANSIT) == "途中"   # the in-transit pseudo-location renders as a natural phrase
-        assert env.narrative_location_name("nowhere") == "此处"     # a miss renders descriptively, never as a bare id
+        assert env.narrative_location_name("nowhere") == "某地"     # a miss renders descriptively, never as a bare id
         assert env.narrative_location_name("hall") == "hall"
 
     def _state(self, action_type: ActionType, purpose: str, *, steps: int = 4) -> ActionExecutionState:

@@ -31,7 +31,7 @@ from core.prompts import (
     NEED_INTENSITY_DEFINITION,
     NEED_TYPE_DEFINITION,
     NEED_WEIGHT_DEFINITION,
-    PHYSICAL_DEEDS,
+    PHYSICAL_DEED_DESCRIPTIONS,
     urgency_label,
 )
 from core.logging import get_logger
@@ -437,7 +437,7 @@ def _deed_block() -> list[str]:
     """``deed`` in PHYSICAL adjudication output: what the hands-on beat is actually doing. Only sass lays
     out raw output, so only it encounters the word; taken from core.prompts, the same source as the adjudication prompt."""
     return ["  动手的名目（PHYSICAL 裁决 deed 字段的取值）：",
-            _bullets([f"{k}：{v}" for k, v in PHYSICAL_DEEDS.items()])]
+            _bullets([f"{k.value}：{v}" for k, v in PHYSICAL_DEED_DESCRIPTIONS.items()])]
 
 
 def _cell_legend_lines(sps: Any) -> list[str]:

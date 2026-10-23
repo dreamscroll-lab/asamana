@@ -16,7 +16,7 @@ from core.container import Container
 from core.interfaces.action import (
     KIND_ITEM, KIND_LOCATION, ActionTarget, ActionType, AgentAction, Observed, Ref,
 )
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from engine.environment import IN_TRANSIT
 from engine.executors.base import ActionExecutionState
 from tests.unit.confirmed_world import confirmed_world

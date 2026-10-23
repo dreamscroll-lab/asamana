@@ -22,8 +22,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 class _Job:
     """One backgrounded `python -m tuning …` subprocess.
 
-    Production never imports tuning; the `interaction → tuning` boundary stays a subprocess
-    call. ``kind`` is also the concurrency key: at most one job per (kind, world) runs at a time.
+    The dev routes (mounted only behind ``dev_tools_enabled``) may import tuning's
+    standard-library data and file modules (``scenario_store``, ``cli_terms``); a run always
+    stays a subprocess. ``kind`` is also the concurrency key: at most one job per (kind, world)
+    runs at a time.
     """
 
     job_id: str

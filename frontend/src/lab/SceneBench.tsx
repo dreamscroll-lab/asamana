@@ -98,7 +98,7 @@ export default function SceneBench({
       const index = indexStep(st);
       for (const s of Object.values(index.agents)) {
         if (!seen.has(s.agent_id)) {
-          seen.set(s.agent_id, { id: s.agent_id, name: s.name, color: toHex(identityColor(identityOf(s.agent_id, fixtureCast())?.color, s.agent_id)) });
+          seen.set(s.agent_id, { id: s.agent_id, name: identityOf(s.agent_id, fixtureCast())?.name || "无名", color: toHex(identityColor(identityOf(s.agent_id, fixtureCast())?.color, s.agent_id)) });
         }
       }
       for (const n of index.npcs) {

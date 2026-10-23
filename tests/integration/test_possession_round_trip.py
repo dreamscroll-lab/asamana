@@ -14,7 +14,7 @@ import pytest
 
 from core.interfaces.action import Deed, EntityStateChange
 from engine.environment import EnvironmentSystem
-from world.models import EntityPresence, WorldEntity, WorldEntityType
+from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
 
 
@@ -35,7 +35,7 @@ def env() -> EnvironmentSystem:
     system.register_entity(WorldEntity(
         entity_id="tally", name="虎符", entity_type=WorldEntityType.ITEM,
         presence=EntityPresence.AT_LOCATION,
-        presence_ref="hall", is_takeable=True, state="intact",
+        presence_ref="hall", state="intact",
     ))
     return system
 
@@ -97,5 +97,5 @@ def test_relinquish_is_a_physical_deed_the_contract_can_carry() -> None:
     Don't fold handing-over into restrain: that deed mutates nothing, so every hand-over in the
     narrative layer would be a no-op in world state.
     """
-    from core.interfaces.action import PHYSICAL_DEEDS
-    assert Deed.RELINQUISH in PHYSICAL_DEEDS
+    from core.prompts import PHYSICAL_DEED_DESCRIPTIONS
+    assert Deed.RELINQUISH in PHYSICAL_DEED_DESCRIPTIONS

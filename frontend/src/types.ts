@@ -348,12 +348,9 @@ export interface AgentPrivateView {
   carrying: Record<string, EntityView>;
 }
 
+// Who the agent is (name, gender, age) is in the world's cast table (lib/cast).
 export interface AgentView {
   agent_id: string;
-  name: string;
-  // Visible at a glance, like the name.
-  gender: string;
-  age: number | null;
   // null: not known to this viewer (the actor's view).
   is_main_character: boolean | null;
   is_active: boolean;
@@ -442,15 +439,16 @@ export type InjectionAuthor = "system" | "director";
 // What a director's intervention actually did, once the step it landed on finished.
 // Absent on system-authored events. Without it, an intervention that was delivered
 // correctly but judged unimportant looks exactly like one that silently failed.
+// People are agent ids, resolved through the cast table; urgency is an Urgency value (lib/urgency).
 export interface InjectionReceipt {
   // It reached these people's senses.
-  delivered_to: { agent_id: string; name: string }[];
+  delivered_to: string[];
   // …and the pressure evaluator judged it actually bore on these, this hard.
-  pressure: { agent_id: string; name: string; urgency: string }[];
+  pressure: { agent_id: string; urgency: string }[];
   // …so these were admitted to a decision loop because of it,
-  decided: { agent_id: string; name: string }[];
+  decided: string[];
   // …and these dropped what they were doing.
-  interrupted: { agent_id: string; name: string }[];
+  interrupted: string[];
 }
 
 export interface InjectionSummary {
@@ -491,10 +489,9 @@ export interface StepView {
 
 // Relationship graph (GET /api/worlds/{id}/graph). Nodes are agents; edges are
 // directed relations (A→B and B→A are separate). Render-neutral: no geometry.
+// Who the node is is in the world's cast table (lib/cast).
 export interface GraphNode {
   id: string;
-  name: string;
-  role: string;
   // null: not known to this viewer (the actor's view).
   is_main_character: boolean | null;
 }

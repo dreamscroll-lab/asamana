@@ -17,7 +17,8 @@ from core.interfaces.urgency import Urgency, parse_urgency
 from core.interfaces.condition import BodyCondition
 from engine.presence import attach_presence
 from world import World
-from world.models import EntityPresence, NpcSeed, WorldEntity, WorldEntityType, unique_npc_id
+from world.models import unique_npc_id
+from core.interfaces.entity import EntityPresence, Npc, WorldEntity, WorldEntityType
 
 
 def spatials_for(world: World, run_step: int, world_time_label: str) -> dict:
@@ -205,14 +206,13 @@ async def apply_action_scene(scenario: dict, world: World, run_step: int, id_by_
             description=str(it.get("desc", "")),
             presence=EntityPresence.HELD if holder else EntityPresence.AT_LOCATION,
             presence_ref=holder or base_loc,
-            is_takeable=bool(it.get("takeable", False)),
         ))
 
     # The no-cognition tier: a scenario that sends someone on an errand needs that person to exist first. Name order, so action.bearer can refer to them by name.
     npc_ids: set[str] = set()
     for spec in scene.get("npcs", []) or []:
         env.spawn_npc(
-            NpcSeed(
+            Npc(
                 name=str(spec.get("name", "")),
                 npc_id=unique_npc_id(str(spec.get("name", "")), npc_ids),
                 gender=str(spec.get("gender", "")),

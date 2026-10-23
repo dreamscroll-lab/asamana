@@ -11,7 +11,7 @@ import pytest
 from core.container import Container
 from core.event_bus import NarrativeEventBus
 from core.serialization import dump_json
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from providers.message.in_memory import InMemoryMessageProvider
 from providers.snapshot.file import FileSnapshotProvider
 from providers.snapshot.in_memory import InMemorySnapshotProvider

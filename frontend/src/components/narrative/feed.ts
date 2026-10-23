@@ -86,7 +86,7 @@ function itemCast(item: FeedItem): string[] {
   if (item.kind === "message") return [item.data.sender_id, ...item.data.receiver_ids];
   // An injection's only id-level cast is a closed director injection's receipt (who it was
   // delivered to); affected_names is narrative-layer, not ids.
-  if (item.kind === "injection") return item.data.receipt?.delivered_to.map((d) => d.agent_id) ?? [];
+  if (item.kind === "injection") return item.data.receipt?.delivered_to ?? [];
   return []; // broadcast — senderless by construction; see `involves`.
 }
 

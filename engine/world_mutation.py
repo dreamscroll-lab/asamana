@@ -56,7 +56,7 @@ from engine.injection import Author
 if TYPE_CHECKING:
     # Type-only: no runtime engine→world dependency.
     from agent.agent import Agent
-    from world.models import WorldEntity
+    from core.interfaces.entity import WorldEntity
 
 logger = get_logger(__name__)
 
@@ -138,6 +138,7 @@ class ConditionMutation(_MutationBase):
 
     body_id: str
     description: str = ""
+    confined: bool = False   # see BodyCondition.confined; ignored when lifting
 
 
 Mutation = (
@@ -165,6 +166,38 @@ def parse_spawn(raw: Any, location_ref: IndexedRef) -> SpawnMutation | None:
         entity_type=str(raw.get("entity_type", "")).strip().lower(),
         description=str(raw.get("description", "")).strip(),
         content=str(raw.get("content", "")).strip(),
+    )
+
+
+def parse_entity_mutation(
+    raw: Any, entity_ref: IndexedRef, *, destroyed: bool,
+) -> EntityMutation | None:
+    """LLM output → ``EntityMutation``; one parser for both authors, whose prompts choose the
+    branch differently (the editor by key, the director by a flag), so the caller passes it.
+
+    Dropped: no entity or no observation (a mutation invariant), and an alter that changes
+    nothing (state, description and content all empty), which would land as an observation of
+    a change that never happened. A destroy reads none of the change fields.
+    """
+    if not isinstance(raw, dict):
+        return None
+    which = entity_ref.resolve([raw.get("entity")])
+    observation = str(raw.get("observation", "")).strip()
+    if not which or not observation:
+        return None
+    if destroyed:
+        return EntityMutation(observation=observation, entity_id=which[0], destroyed=True)
+    state = str(raw.get("state", "")).strip()
+    description = str(raw.get("description", "")).strip()
+    content = str(raw.get("content", "")).strip()
+    if not (state or description or content):
+        return None
+    return EntityMutation(
+        observation=observation,
+        entity_id=which[0],
+        new_state=state,
+        new_description=description,
+        new_content=content,
     )
 
 
@@ -426,7 +459,7 @@ class WorldMutationChannel:
         changed = self._environment.change_entity_state(
             EntityStateChange(
                 entity_id=mutation.entity_id,
-                new_state=mutation.new_state,   # empty = unchanged (destroy / perceive only)
+                new_state=mutation.new_state,   # empty = unchanged (a destroy, or a field this alter leaves)
                 new_description=mutation.new_description,
                 new_content=mutation.new_content,
                 destroyed=mutation.destroyed,
@@ -501,7 +534,8 @@ class WorldMutationChannel:
         self, mutation: RelocateMutation, *, step: int, agents: Dict[str, "Agent"]
     ) -> Audience | None:
         """Move someone directly. Both location records must be written: the world side
-        (``EnvironmentSystem``) and ``personality.state.current_location``.
+        (``EnvironmentSystem``, the one world-side code reads) and the agent's own record
+        (``personality.state.current_location``).
 
         Tear down in-flight execution first, or on completion it treats him as still at the old
         place. Three audiences: arrival, departure, and his own memory. ``displaced`` tells the
@@ -586,6 +620,7 @@ class WorldMutationChannel:
                     description=description,
                     since_step=step,
                     until_step=step + npc_condition_fallback_steps(self._seconds_per_step),
+                    confined=mutation.confined,
                 ) if description else None,
                 condition_cleared=not description,
             ))
@@ -602,8 +637,9 @@ class WorldMutationChannel:
             effect=TargetAgentEffect(
                 agent_id=mutation.body_id,
                 factual_memory=mutation.observation,
-                condition_set=BodyCondition(description=description, since_step=step)
-                if description else None,
+                condition_set=BodyCondition(
+                    description=description, since_step=step, confined=mutation.confined,
+                ) if description else None,
                 condition_cleared=not description,
             ),
             # Like vitality: carried entirely in the effect.

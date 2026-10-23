@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.container import Container
+from providers.assembly import build_container
 from core.interfaces.llm import LLMMessage, LLMScene
 from core.interfaces.message import Message
 from tests.unit.bus_tap import tap
@@ -42,8 +42,8 @@ async def test_container_llm_router_routes_all_scenes_to_mock_provider(container
 
 @pytest.mark.asyncio
 async def test_containers_do_not_share_provider_state(test_config) -> None:
-    first = Container.from_config(test_config)
-    second = Container.from_config(test_config)
+    first = build_container(test_config)
+    second = build_container(test_config)
 
     await first.message_provider.enqueue(
         Message(

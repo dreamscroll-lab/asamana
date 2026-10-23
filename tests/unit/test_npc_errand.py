@@ -24,10 +24,10 @@ from engine.message_system import MessageSystem
 from agent.personality import SoulLayer
 from engine.npc_runner import NpcRunner
 from providers.message.in_memory import InMemoryMessageProvider
-from world.models import EntityPresence, WorldEntity, WorldEntityType
+from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
 from tests.unit.env_state import npc_outcomes, restore, saved
-from tests.unit.world_setups import npc_seed
+from tests.unit.world_setups import make_npc
 
 
 class _FixedLLM:
@@ -77,7 +77,7 @@ def _runner(
 
 def _bearer(env: EnvironmentSystem, at: str = "hall") -> str:
     env.spawn_npc(
-        npc_seed("王二", gender="男", age=34, description="跑得快、认得路"),
+        make_npc("王二", gender="男", age=34, description="跑得快、认得路"),
         location_id=at,
     )
     return env.all_npcs()[-1].npc_id
@@ -333,7 +333,7 @@ async def test_a_bare_look_brings_back_both_what_is_there_and_what_just_happened
     env.place_agent(agent_id="a2", location_id="gate")
     env.register_entity(WorldEntity(
         entity_id="banner", name="旌旗", entity_type=WorldEntityType.ITEM,
-        presence_ref="gate", is_takeable=True,
+        presence_ref="gate",
     ))
     runner, messages = _runner(env)
     env.assign_errand(ErrandOrder(npc_id, "gate"), requester_id="a1")
@@ -362,11 +362,11 @@ async def test_it_brings_back_what_it_could_see_and_nothing_more() -> None:
     env.place_agent(agent_id="a2", location_id="gate")
     env.register_entity(WorldEntity(
         entity_id="banner", name="旌旗", entity_type=WorldEntityType.ITEM,
-        presence_ref="gate", is_takeable=True,
+        presence_ref="gate",
     ))
     hidden = WorldEntity(
         entity_id="token", name="暗记", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref="a2", is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref="a2",
     )
     hidden.is_public = False
     env.register_entity(hidden)
@@ -392,7 +392,7 @@ async def test_one_addressing_axis_carries_both_the_thing_and_the_word() -> None
     env.place_agent(agent_id="a2", location_id="gate")
     env.register_entity(WorldEntity(
         entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref=npc_id,
     ))
     runner, messages = _runner(env)
     env.assign_errand(
@@ -424,7 +424,7 @@ async def test_with_nobody_named_both_fall_to_the_place() -> None:
     env.place_agent(agent_id="a2", location_id="gate")
     env.register_entity(WorldEntity(
         entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref=npc_id,
     ))
     runner, messages = _runner(env, souls={"a2": SoulLayer(name="阿石", gender="男", age=27)})
     env.assign_errand(
@@ -545,7 +545,7 @@ async def test_a_thing_meant_for_someone_absent_comes_back_rather_than_being_lef
     env.place_agent(agent_id="a3", location_id="gate")   # a2 isn't at the gate
     env.register_entity(WorldEntity(
         entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref=npc_id,
     ))
     runner, messages = _runner(env)
     env.assign_errand(
@@ -637,7 +637,7 @@ async def test_the_thing_changes_hands_when_he_is_sent_off_with_it() -> None:
     env.place_agent(agent_id="a2", location_id="gate")
     env.register_entity(WorldEntity(
         entity_id="box", name="木匣", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref="a1", is_takeable=True,   # requester holds it
+        presence=EntityPresence.HELD, presence_ref="a1",   # requester holds it
     ))
     order = ErrandOrder(npc_id, "gate", item_id="box", recipient_id="a2")
     result = (await _run_errand(env, order, doer_id="a1"))[0]
@@ -674,7 +674,6 @@ async def test_he_cannot_send_off_a_thing_that_is_not_in_his_own_hands() -> None
     env.register_entity(WorldEntity(
         entity_id="box", name="木匣", entity_type=WorldEntityType.ITEM,
         presence=EntityPresence.HELD, presence_ref="a2",   # held by someone at the gate
-        is_takeable=True,
     ))
     results = await _run_errand(
         env, ErrandOrder(npc_id, "gate", item_id="box"), doer_id="a1",
@@ -777,7 +776,7 @@ async def test_every_cell_of_the_space_reads_as_its_own_errand() -> None:
         if carry:
             env.register_entity(WorldEntity(
                 entity_id="thing", name="木匣", entity_type=WorldEntityType.ITEM,
-                presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True,
+                presence=EntityPresence.HELD, presence_ref=npc_id,
             ))
         runner, messages = _runner(env)
         env.assign_errand(ErrandOrder(
@@ -806,7 +805,7 @@ def test_the_judge_and_the_runner_read_the_same_errand_the_same_way() -> None:
     npc_id = _bearer(env)
     env.register_entity(WorldEntity(
         entity_id="thing", name="木匣", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref=npc_id,
     ))
     directory = LiveWorldDirectory.from_agents({}, env)
 
@@ -1141,7 +1140,7 @@ async def test_one_visit_can_get_two_things_done() -> None:
     env.place_agent(agent_id="a2", location_id="gate")
     letter = WorldEntity(
         entity_id="e1", name="书信", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref=npc_id,
     )
     env.register_entity(letter)
     runner, _ = _runner(env, souls={

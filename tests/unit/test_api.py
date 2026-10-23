@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from core.interfaces.snapshot import WorldSnapshot, WorldState
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from engine.clock import WorldTime, WorldTimeConfig
 from world import WorldCatalog
 from world.catalog import MAX_WORLD_NAME_LEN
@@ -114,16 +114,17 @@ async def test_map_endpoint_serves_frozen_per_world_copy(container, test_config)
 
 
 @pytest.mark.asyncio
-async def test_map_endpoint_falls_back_to_template_for_legacy_worlds(container, test_config) -> None:
-    # A world with no per-world map copy falls back to the live template named
-    # in its config, so its map still renders.
-    world_id = "world-legacy"
+async def test_map_routes_serve_nothing_a_world_never_froze(container, test_config) -> None:
+    # Only the copies frozen at build are served; a world's config naming a template doesn't
+    # bring the live template back.
+    world_id = "world-unfrozen"
     await container.snapshot.save_world_config(world_id, {"runtime_context": {"template": "changan_iso"}})
 
     client = _client(container, test_config)
-    resp = client.get(f"/api/worlds/{world_id}/map")
-    assert resp.status_code == 200
-    assert "layers" in resp.json()  # a real tmj document
+    assert client.get(f"/api/worlds/{world_id}/map").status_code == 404
+    assert client.get(f"/api/worlds/{world_id}/map/ground").status_code == 404
+    assert client.get(f"/api/worlds/{world_id}/characters").status_code == 404
+    assert client.get(f"/api/worlds/{world_id}/map/assets/tilesets/base/ground/ground.png").status_code == 404
 
 
 @pytest.mark.asyncio
@@ -493,7 +494,7 @@ async def test_run_without_steps_advances_exactly_one_step(container, test_confi
     missing field push the bill arbitrarily high without the caller seeing anything. 0 / negative
     / non-integer are all rejected and never silently become some other number.
     """
-    from engine.application import NarrativeApplication
+    from interaction.application import NarrativeApplication
 
     world_id = "world-api"
     await container.snapshot.save(world_id, 0, _snapshot(world_id, 0, {}))
@@ -549,19 +550,18 @@ async def test_list_worlds_comes_oldest_first(container, test_config) -> None:
     assert [w["world_id"] for w in worlds] == ["c-oldest", "d-middle", "a-newest", "b-undated"]
 
 
+async def _built_on_changan(mock_build_container, test_config) -> str:
+    """A world built on the shipped Chang'an map: the build freezes its map, art and cast art."""
+    application = NarrativeApplication(mock_build_container, test_config, catalog=WorldCatalog(None))
+    return await application.build_world("宫廷", template="changan_iso")
+
+
 @pytest.mark.asyncio
-async def test_map_endpoint_serves_world_template_tmj(container, test_config) -> None:
+async def test_map_endpoint_serves_the_map_the_world_was_built_on(mock_build_container, test_config) -> None:
     """The map API serves the same .tmj the world was built on, so the renderer
     and the engine share one map artifact (no bundled frontend copy)."""
-    world_id = "world-map"
-    await container.snapshot.save_world_config(world_id, {
-        "entities": {"taiji_palace": {
-            "entity_id": "taiji_palace", "name": "太极宫", "entity_type": "location",
-            "connections": {"donggong": 1}, "capacity": 30,
-        }},
-        "runtime_context": {"template": "changan_iso"},
-    })
-    client = _client(container, test_config)
+    world_id = await _built_on_changan(mock_build_container, test_config)
+    client = _client(mock_build_container, test_config)
     tmj = client.get(f"/api/worlds/{world_id}/map").json()
     assert tmj["width"] == 48 and "layers" in tmj  # a real template document
 
@@ -575,24 +575,20 @@ async def test_map_endpoint_serves_world_template_tmj(container, test_config) ->
         return found
 
     assert len(locations(tmj["layers"])) == 25  # Tang Chang'an, engine-schema'd
+    assert client.get(f"/api/worlds/{world_id}/characters").json()["atlases"]
     # unknown world → 404
-    assert _client(container, test_config).get("/api/worlds/nope/map").status_code == 404
+    assert client.get("/api/worlds/nope/map").status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_map_asset_endpoint_serves_tileset_art_and_refuses_to_escape(container, test_config) -> None:
-    """The backend owns the map AND the art it names, so a template is a drop-in:
-    ONE self-contained `<name>/` directory (map + art). The renderer asks by the relative path
+async def test_map_asset_endpoint_serves_tileset_art_and_refuses_to_escape(mock_build_container, test_config) -> None:
+    """The backend owns the map AND the art it names. The renderer asks by the relative path
     written in the .tmj and never has to know which template a world is on.
 
-    The path arrives from the URL, so the traversal and suffix guards are the
-    security boundary of this route, not a nicety."""
-    world_id = "world-asset"
-    await container.snapshot.save_world_config(world_id, {
-        "entities": {},
-        "runtime_context": {"template": "changan_iso"},
-    })
-    client = _client(container, test_config)
+    The path arrives from the URL, so the suffix guard (and the snapshot provider's
+    confinement to the world's own assets) is the security boundary of this route."""
+    world_id = await _built_on_changan(mock_build_container, test_config)
+    client = _client(mock_build_container, test_config)
 
     # The index says where each image the map NAMES is reachable — the client
     # reads URLs from here instead of composing them, so the art can move.
@@ -619,7 +615,6 @@ async def test_map_asset_endpoint_serves_tileset_art_and_refuses_to_escape(conta
     # A client holding a DIFFERENT version still gets the real bytes.
     assert client.get(url, headers={"If-None-Match": '"stale"'}).status_code == 200
 
-    # …and every way out of the template directory is closed.
     for escape in (
         "../changan_iso/map.tmj",                 # a sibling template's map data
         "../../tiled.py",                     # source, two levels up
@@ -628,41 +623,24 @@ async def test_map_asset_endpoint_serves_tileset_art_and_refuses_to_escape(conta
         assert client.get(f"/api/worlds/{world_id}/map/assets/{escape}").status_code == 404
     assert client.get(f"/api/worlds/{world_id}/map/assets/nope.png").status_code == 404
 
+    ground = client.get(f"/api/worlds/{world_id}/map/ground")
+    assert ground.status_code == 200
+
 
 @pytest.mark.asyncio
-async def test_frozen_assets_win_over_the_live_template(container, test_config) -> None:
-    """A world's map is frozen at build, so the art it names must be frozen with it.
-
-    Otherwise the freeze is only half done: the world keeps its own geometry but
-    reads it through whatever the template's tilesets look like TODAY, and a tile
-    that moved within a sheet renders as garbage. Prove the precedence by freezing
-    a sentinel image that no template contains."""
+async def test_frozen_art_is_served_as_immutable(container, test_config) -> None:
+    """A world's art is frozen at build and addressed by world id, so it can never change
+    under its URL: the client should stop asking rather than pay a revalidation round trip
+    per tileset on every visit."""
     world_id = "world-frozen-art"
     sentinel = b"\x89PNG\r\n\x1a\n" + b"FROZEN-AT-BUILD"
-    await container.snapshot.save_world_config(world_id, {
-        "entities": {}, "runtime_context": {"template": "changan_iso"},
-    })
-    await container.snapshot.save_world_asset(
-        world_id, "tilesets/base/ground/ground.png", sentinel
-    )
+    await container.snapshot.save_world_asset(world_id, "tilesets/base/ground/ground.png", sentinel)
 
     client = _client(container, test_config)
     got = client.get(f"/api/worlds/{world_id}/map/assets/tilesets/base/ground/ground.png")
     assert got.status_code == 200
-    assert got.content == sentinel, "served the live template instead of the frozen copy"
-
-    # Frozen art is written once and addressed by world id, so it can never change
-    # under this URL — the client should stop asking entirely rather than pay a
-    # revalidation round trip per tileset on every visit.
+    assert got.content == sentinel
     assert "immutable" in got.headers["cache-control"]
-    # Live template art is still edited by hand, so it only earns revalidation.
-    live = client.get(f"/api/worlds/{world_id}/map/assets/tilesets/base/roads/roads.png")
-    assert live.headers["cache-control"] == "no-cache"
-
-    # An asset this world never froze still falls back to the template, so a world
-    # without frozen art keeps rendering.
-    fallback = client.get(f"/api/worlds/{world_id}/map/assets/tilesets/base/roads/roads.png")
-    assert fallback.status_code == 200 and fallback.content[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 # ---- map template catalog + per-world template selection -------------------
@@ -729,7 +707,7 @@ async def test_build_world_offers_the_right_maps_to_choose_between(container, te
     build rather than per config. With nothing named, the whole catalog goes to the
     builder, which picks from the theme.
     """
-    from engine.application import NarrativeApplication
+    from interaction.application import NarrativeApplication
 
     application = NarrativeApplication(container, test_config, catalog=WorldCatalog(None))
     seen: list[list] = []
@@ -765,7 +743,7 @@ async def test_build_world_with_no_map_available_fails(container, test_config) -
     installed ones — and both are config errors. Falling back to a default map would build the
     world on a base nobody chose, and the base underlies every later step.
     """
-    from engine.application import NarrativeApplication
+    from interaction.application import NarrativeApplication
 
     application = NarrativeApplication(container, test_config, catalog=WorldCatalog(None))
     with pytest.raises(ValueError, match="No world templates"):
@@ -858,7 +836,7 @@ def test_server_shutdown_lets_running_worlds_finish_their_step(
 ) -> None:
     """The app's shutdown hands control to NarrativeApplication.shutdown, which stops runs at a
     step boundary instead of leaving them to be cancelled mid-step."""
-    from engine.application import NarrativeApplication
+    from interaction.application import NarrativeApplication
 
     called: list[bool] = []
 

@@ -20,7 +20,7 @@ from world.setup import (
 )
 
 from interaction.api.app import ApiServices
-from interaction.api.serialization import to_jsonable
+from interaction.api.serialization import to_wire_json
 from interaction.models import (
     CharacterSetupView,
     EntitySetupView,
@@ -193,10 +193,10 @@ def build_setup_router(services: ApiServices) -> Any:
         # the world is seen through one character, who knows none of that.
         if application.performing_character(world_id) is not None:
             raise HTTPException(status_code=403, detail="The setup is closed while an actor performs")
-        try:
-            return await application.world_setup(world_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        setup = await manager.world_setup(world_id)
+        if setup is None:
+            raise HTTPException(status_code=404, detail=f"World {world_id!r} has no setup.")
+        return setup
 
     async def _revise(world_id: str, revise: Any) -> WorldSetup:
         await _readable_setup(world_id)
@@ -216,7 +216,7 @@ def build_setup_router(services: ApiServices) -> Any:
 
     @router.get("")
     async def get_setup(world_id: str) -> dict[str, Any]:
-        return to_jsonable(setup_view(await _readable_setup(world_id)))
+        return to_wire_json(setup_view(await _readable_setup(world_id)))
 
     @router.post("/characters")
     async def add_character(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
@@ -235,7 +235,7 @@ def build_setup_router(services: ApiServices) -> Any:
             return setup
 
         setup = await _revise(world_id, add)
-        return {"agent_id": added[0], "setup": to_jsonable(setup_view(setup))}
+        return {"agent_id": added[0], "setup": to_wire_json(setup_view(setup))}
 
     @router.patch("/characters/{agent_id}")
     async def revise_character(
@@ -245,12 +245,12 @@ def build_setup_router(services: ApiServices) -> Any:
         setup = await _revise(
             world_id, lambda s, places: s.with_character(agent_id, revision, places=places),
         )
-        return to_jsonable(setup_view(setup))
+        return to_wire_json(setup_view(setup))
 
     @router.delete("/characters/{agent_id}")
     async def remove_character(world_id: str, agent_id: str) -> dict[str, Any]:
         setup = await _revise(world_id, lambda s, places: s.without_character(agent_id, places=places))
-        return to_jsonable(setup_view(setup))
+        return to_wire_json(setup_view(setup))
 
     @router.post("/entities")
     async def add_entity(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
@@ -265,12 +265,12 @@ def build_setup_router(services: ApiServices) -> Any:
             return setup
 
         setup = await _revise(world_id, add)
-        return {"entity_id": added[0], "setup": to_jsonable(setup_view(setup))}
+        return {"entity_id": added[0], "setup": to_wire_json(setup_view(setup))}
 
     @router.delete("/entities/{entity_id}")
     async def remove_entity(world_id: str, entity_id: str) -> dict[str, Any]:
         setup = await _revise(world_id, lambda s, places: s.without_entity(entity_id, places=places))
-        return to_jsonable(setup_view(setup))
+        return to_wire_json(setup_view(setup))
 
     @router.post("/npcs")
     async def add_npc(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
@@ -285,30 +285,30 @@ def build_setup_router(services: ApiServices) -> Any:
             return setup
 
         setup = await _revise(world_id, add)
-        return {"npc_id": added[0], "setup": to_jsonable(setup_view(setup))}
+        return {"npc_id": added[0], "setup": to_wire_json(setup_view(setup))}
 
     @router.delete("/npcs/{npc_id}")
     async def remove_npc(world_id: str, npc_id: str) -> dict[str, Any]:
         setup = await _revise(world_id, lambda s, places: s.without_npc(npc_id, places=places))
-        return to_jsonable(setup_view(setup))
+        return to_wire_json(setup_view(setup))
 
     @router.patch("/entities/{entity_id}")
     async def revise_entity(world_id: str, entity_id: str, payload: dict = Body(...)) -> dict[str, Any]:
         revision = _parsed(entity_revision, payload)
         setup = await _revise(world_id, lambda s, places: s.with_entity(entity_id, revision, places=places))
-        return to_jsonable(setup_view(setup))
+        return to_wire_json(setup_view(setup))
 
     @router.patch("/npcs/{npc_id}")
     async def revise_npc(world_id: str, npc_id: str, payload: dict = Body(...)) -> dict[str, Any]:
         revision = _parsed(npc_revision, payload)
         setup = await _revise(world_id, lambda s, places: s.with_npc(npc_id, revision, places=places))
-        return to_jsonable(setup_view(setup))
+        return to_wire_json(setup_view(setup))
 
     @router.put("/history")
     async def replace_history(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
         events = _parsed(historical_events, payload)
         setup = await _revise(world_id, lambda s, places: s.with_history(events, places=places))
-        return to_jsonable(setup_view(setup))
+        return to_wire_json(setup_view(setup))
 
     @router.put("/seconds-per-step")
     async def revise_seconds_per_step(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
@@ -316,13 +316,13 @@ def build_setup_router(services: ApiServices) -> Any:
         setup = await _revise(
             world_id, lambda s, places: s.with_seconds_per_step(seconds, places=places),
         )
-        return to_jsonable(setup_view(setup))
+        return to_wire_json(setup_view(setup))
 
     @router.put("/relations")
     async def replace_relations(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
         seeds = _parsed(relations, payload)
         setup = await _revise(world_id, lambda s, places: s.with_relations(seeds, places=places))
-        return to_jsonable(setup_view(setup))
+        return to_wire_json(setup_view(setup))
 
     return router
 

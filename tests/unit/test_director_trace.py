@@ -16,7 +16,7 @@ import pytest
 
 from core.interfaces.llm import LLMScene
 from core.interfaces.trace import COGNITION_ORDER, Stage
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from providers.trace.in_memory import InMemoryTraceSink
 from world import WorldCatalog
 from tests.unit.confirmed_world import confirmed_world

@@ -437,8 +437,6 @@ async def test_being_named_to_listen_is_not_being_acted_upon(container) -> None:
 async def test_what_landed_on_the_character_survives_a_restore(container) -> None:
     """It lands as one step commits and reaches the character the next: kept with its state,
     a restore in between must not lose it."""
-    from world.initializer import _apply_stored_state
-
     _runtime, _ms, agents = _setup(container, "world-actor-acted-upon-restore")
     hero = agents[0]
     await hero.apply_target_effect(
@@ -448,7 +446,7 @@ async def test_what_landed_on_the_character_survives_a_restore(container) -> Non
     stored = await hero.agent_store.load_agent_state(hero.world_id, HERO)
     hero.personality.clear_acted_upon()
 
-    _apply_stored_state(hero, stored, in_resumed_execution=False)
+    hero.apply_stored_state(stored, in_resumed_execution=False)
 
     assert hero.personality.state.acted_upon == ["李建成一把将我推开"]
 

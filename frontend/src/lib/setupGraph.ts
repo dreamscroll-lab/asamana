@@ -9,8 +9,6 @@ export function setupGraph(setup: SetupView): WorldGraph {
   return {
     nodes: setup.characters.map((c) => ({
       id: c.agent_id,
-      name: c.name,
-      role: c.role,
       is_main_character: c.is_main_character,
     })),
     edges: setup.relations.flatMap((r) => [

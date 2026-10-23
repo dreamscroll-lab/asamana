@@ -16,6 +16,12 @@ from agent.need import (
 )
 from agent.personality import EmotionState, PersonalityLayer, SoulLayer, StateLayer
 from core.interfaces.urgency import Urgency
+from core.interfaces.llm import LLMRouter, LLMScene
+from providers.llm.mock import MockLLMProvider
+
+
+def _router() -> LLMRouter:
+    return LLMRouter({scene: MockLLMProvider() for scene in LLMScene})
 
 
 # Default innate needs (intensity = weight = w) for run tests that only need one populated agent.
@@ -146,7 +152,7 @@ def test_need_engine_to_prompt_context_renders_dominant_and_competing() -> None:
         NeedState(type=NeedType.ESTEEM, label="维护地位", intensity=0.5, weight=1.0),
         NeedState(type=NeedType.SOCIAL, label="维系盟友", intensity=0.3, weight=1.0),
     ])
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     visible = [
         NeedState(type=NeedType.SAFETY, label="减少不确定性", intensity=0.9, weight=1.0),
         NeedState(type=NeedType.ESTEEM, label="维护地位", intensity=0.5, weight=1.0),
@@ -180,7 +186,7 @@ def test_to_prompt_context_competing_keeps_only_strongest_rival() -> None:
         NeedState(type=NeedType.ESTEEM, label="护尊严", intensity=0.5, weight=1.0),
         NeedState(type=NeedType.SOCIAL, label="求归属", intensity=0.7, weight=1.0),
     ]
-    text = NeedEngine().to_prompt_context(personality, NeedType.SAFETY, visible, [], now_step=0)
+    text = NeedEngine(_router()).to_prompt_context(personality, NeedType.SAFETY, visible, [], now_step=0)
     # social (0.7) is the strongest rival → listed; esteem (0.5) is >0.4 but not the strongest →
     # not listed.
     assert "同时也在意（仍在牵扯注意力）：social（求归属）" in text
@@ -190,7 +196,7 @@ def test_to_prompt_context_competing_keeps_only_strongest_rival() -> None:
 
 @pytest.mark.asyncio
 async def test_need_engine_run_returns_dominant_need() -> None:
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
 
     result = await engine.run(
         current_step=0,
@@ -207,7 +213,7 @@ async def test_need_engine_run_returns_dominant_need() -> None:
 async def test_run_reads_long_term_goals_from_personality() -> None:
     """personality.state is the source of truth for long-term goals; run() renders straight from
     it; the engine keeps no local copy."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     personality = _make_personality(long_term=["演化后的新目标"])
 
     result = await engine.run(current_step=12, personality=personality)
@@ -217,7 +223,7 @@ async def test_run_reads_long_term_goals_from_personality() -> None:
 
 @pytest.mark.asyncio
 async def test_need_engine_social_need_boosted_when_agents_visible() -> None:
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
 
     result = await engine.run(
         current_step=0,
@@ -232,7 +238,7 @@ async def test_need_engine_social_need_boosted_when_agents_visible() -> None:
 
 @pytest.mark.asyncio
 async def test_need_engine_safety_need_boosted_in_dangerous_context() -> None:
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     personality = _make_personality()
 
     result = await engine.run(
@@ -260,12 +266,12 @@ async def test_run_external_pressure_is_additive_and_dominant_is_argmax() -> Non
     scores, then dominant = argmax. esteem sits slightly below safety; one HIGH external pressure
     (boost≈1.33) lifts esteem to the top → dominant=esteem, the goals follow that dominant, and
     external_goals stays on the evaluation (feeding goal generation/prompt)."""
-    base = await NeedEngine().run(
+    base = await NeedEngine(_router()).run(
         current_step=0, personality=_two_need_personality((0.6, 1.0), (0.5, 1.0)),
         visible_agents=[], pending_messages=0)
     goal = ExternalGoal(text="奉命即刻执行", source_id="s1", urgency=Urgency.HIGH,
                         drive_type=ExternalDriveType.AUTHORITY, related_need=NeedType.ESTEEM)
-    res = await NeedEngine().run(
+    res = await NeedEngine(_router()).run(
         current_step=0, personality=_two_need_personality((0.6, 1.0), (0.5, 1.0)),
         visible_agents=[], pending_messages=0, external_goals=[goal])
 
@@ -285,7 +291,7 @@ async def test_run_external_pressure_does_not_blindly_override_overwhelming_scor
     overwhelming safety (I×W=2.0) → dominant stays safety, and == argmax."""
     goal = ExternalGoal(text="奉召入宫", source_id="s1", urgency=Urgency.HIGH,
                         drive_type=ExternalDriveType.AUTHORITY, related_need=NeedType.ESTEEM)
-    res = await NeedEngine().run(
+    res = await NeedEngine(_router()).run(
         current_step=0, personality=_two_need_personality((1.0, 2.0), (0.3, 1.0)),
         visible_agents=[], pending_messages=0, external_goals=[goal])
 
@@ -295,14 +301,14 @@ async def test_run_external_pressure_does_not_blindly_override_overwhelming_scor
 
 
 def test_evolve_intensities_reduces_dominant_need_on_success() -> None:
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     current = {NeedType.SOCIAL.value: 0.6, NeedType.SAFETY.value: 0.5}
     updated = engine.evolve_intensities(current, dominant_need=NeedType.SOCIAL, succeeded=True)
     assert updated[NeedType.SOCIAL.value] < current[NeedType.SOCIAL.value]
 
 
 def test_evolve_intensities_increases_dominant_need_on_failure() -> None:
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     current = {NeedType.SAFETY.value: 0.5}
     updated = engine.evolve_intensities(current, dominant_need=NeedType.SAFETY, succeeded=False)
     assert updated[NeedType.SAFETY.value] > current[NeedType.SAFETY.value]
@@ -310,7 +316,7 @@ def test_evolve_intensities_increases_dominant_need_on_failure() -> None:
 
 def test_evolve_intensities_no_dominant_still_relaxes() -> None:
     """No dominant need → no outcome shock, but homeostasis still relaxes every need toward B."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     current = {nt.value: 0.50 for nt in NeedType}
     updated = engine.evolve_intensities(current, dominant_need=None, succeeded=True)
     # 0.50 + 0.25×(0.30 − 0.50) = 0.45 for every need (no shock)
@@ -320,7 +326,7 @@ def test_evolve_intensities_no_dominant_still_relaxes() -> None:
 
 def test_evolve_intensities_is_pure_does_not_mutate_input() -> None:
     """evolve_intensities returns a new dict; the caller (feedback layer) owns the write-back."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     current = {NeedType.SOCIAL.value: 0.6, NeedType.SAFETY.value: 0.5}
     snapshot = dict(current)
     engine.evolve_intensities(current, dominant_need=NeedType.SOCIAL, succeeded=True)
@@ -328,7 +334,7 @@ def test_evolve_intensities_is_pure_does_not_mutate_input() -> None:
 
 
 def test_score_needs_selects_highest_scoring_visible_need() -> None:
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     needs = [
         NeedState(type=NeedType.SAFETY, label="Stay safe", intensity=0.7, weight=1.0),
         NeedState(type=NeedType.ESTEEM, label="Gain respect", intensity=0.75, weight=1.0),
@@ -343,7 +349,7 @@ def test_score_needs_selects_highest_scoring_visible_need() -> None:
 def test_score_needs_relevance_override_flips_winner() -> None:
     """An LLM need_relevance entry replaces keyword relevance for that need and can flip
     the ranking — here a strong safety activation beats a higher-intensity ESTEEM."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     needs = [
         NeedState(type=NeedType.SAFETY, label="Stay safe", intensity=0.7, weight=1.0),
         NeedState(type=NeedType.ESTEEM, label="Gain respect", intensity=0.75, weight=1.0),
@@ -361,7 +367,7 @@ def test_score_needs_relevance_override_flips_winner() -> None:
 def test_score_needs_nonempty_relevance_zeros_omitted_needs() -> None:
     """Non-empty need_relevance is authoritative: a need it omits scores at the neutral
     baseline (I×W), NOT boosted — the LLM deliberately judged it un-activated."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     needs = [
         NeedState(type=NeedType.SAFETY, label="safe", intensity=0.6, weight=1.0),
         NeedState(type=NeedType.SOCIAL, label="belong", intensity=0.6, weight=1.0),
@@ -376,7 +382,7 @@ def test_score_needs_nonempty_relevance_zeros_omitted_needs() -> None:
 def test_score_needs_none_and_empty_relevance_are_equivalent() -> None:
     """Omitting need_relevance and passing {} both take the rule path
     (disposition I×W + runtime adjustments), producing identical scores."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     needs = [
         NeedState(type=NeedType.SAFETY, label="Stay safe", intensity=0.6, weight=1.0),
         NeedState(type=NeedType.SOCIAL, label="Belong", intensity=0.6, weight=1.0),
@@ -392,7 +398,7 @@ def test_score_needs_hidden_need_loses_to_visible_under_quarter_weight() -> None
     """Hidden needs participate at 25% effective weight — a moderately strong
     visible need should still beat a much louder hidden one.
     """
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     needs = [
         NeedState(type=NeedType.SOCIAL, label="Hidden longing", intensity=0.99, weight=2.0, is_hidden=True),
         NeedState(type=NeedType.SAFETY, label="Stay safe", intensity=0.5, weight=1.0, is_hidden=False),
@@ -410,7 +416,7 @@ def test_score_needs_hidden_need_can_surface_when_visible_needs_are_weak() -> No
     With no visible competition, a strong hidden pressure becomes the dominant
     motive even though the agent does not consciously voice it.
     """
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     needs = [
         NeedState(type=NeedType.SOCIAL, label="Hidden longing", intensity=0.9, weight=1.0, is_hidden=True),
     ]
@@ -673,7 +679,7 @@ async def test_run_preserves_existing_goals_when_dominant_need_unchanged() -> No
     Between the two run() calls the first evaluation is written into personality, as
     Agent.begin_ongoing_step does; otherwise the second run() sees the init state and regenerates.
     """
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     personality = _make_personality()
     # Run once to establish dominant need
     first = await engine.run(
@@ -707,7 +713,7 @@ def _personality_with_long_term(*goals: str) -> PersonalityLayer:
 @pytest.mark.asyncio
 async def test_revise_long_term_goals_none_without_llm_router() -> None:
     """Without an LLM router → return None (no update)."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     personality = _personality_with_long_term("Achieve harmony.", "Protect the realm.")
 
     result = await engine.revise_long_term_goals(
@@ -901,7 +907,7 @@ async def test_goal_entity_created_with_active_status_on_first_run() -> None:
 
 @pytest.mark.asyncio
 async def test_active_goal_entities_preserved_across_runs() -> None:
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     personality = _make_personality()
 
     first = await engine.run(
@@ -925,7 +931,7 @@ async def test_active_goal_entities_preserved_across_runs() -> None:
 async def test_evaluate_goal_progress_without_router_rules_nothing() -> None:
     """No router is handled like a judge failure: no ruling, no progress written, goals stay in the
     live queue as they are."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     personality = _make_personality(short_term_entities=[_seeded_goal()])
     updated = await engine.evaluate_goal_progress(
         step=1,
@@ -938,12 +944,12 @@ async def test_evaluate_goal_progress_without_router_rules_nothing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_evaluate_goal_progress_without_router_still_runs_backstop() -> None:
-    """The time-limit fallback doesn't depend on the judge: with no router, goals at the threshold
-    are still shelved."""
+async def test_evaluate_goal_progress_backstop_runs_without_a_usable_verdict() -> None:
+    """The time-limit fallback doesn't depend on the judge: with an unparseable verdict, goals at
+    the threshold are still shelved."""
     from agent.goals import _SHORT_TERM_GOAL_STALL_STEPS
 
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     personality = _make_personality(short_term_entities=[
         GoalEntity(id="stg-stall", text="安抚某人情绪", goal_type="short_term",
                    related_need=NeedType.SOCIAL, created_step=1),
@@ -989,7 +995,7 @@ async def test_completed_goals_trigger_regeneration_on_next_run() -> None:
 
 
 def test_goal_need_bias_boosts_related_need() -> None:
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     long_term = [
         GoalEntity(id="ltg-0", text="称霸天下", goal_type="long_term",
                    related_need=NeedType.SELF_ACTUALIZATION, created_step=0)
@@ -1002,7 +1008,7 @@ def test_goal_need_bias_boosts_related_need() -> None:
 
 
 def test_goal_need_bias_capped_at_015() -> None:
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     long_term = [
         GoalEntity(id=f"ltg-{i}", text=f"目标{i}", goal_type="long_term",
                    related_need=NeedType.SAFETY, created_step=0)
@@ -1061,7 +1067,7 @@ def test_should_update_goals_when_dominant_need_not_in_active_goal_needs() -> No
     Seed >= _SHORT_TERM_GOAL_LOW_WATER active goals so the low-water branch does not
     short-circuit — this isolates the need-mismatch trigger.
     """
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     entities = [
         GoalEntity(
             id=f"stg-1-{i}", text=text, goal_type="short_term",
@@ -1080,7 +1086,7 @@ def test_should_update_goals_preserves_goals_when_dominant_need_matches() -> Non
     Seed >= _SHORT_TERM_GOAL_LOW_WATER active goals so the low-water branch does not
     short-circuit — this isolates the need-match (no-regen) path.
     """
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     entities = [
         GoalEntity(
             id=f"stg-1-{i}", text=text, goal_type="short_term",
@@ -1101,7 +1107,7 @@ def test_runtime_adjustment_night_boosts_physiological() -> None:
     from agent.need import NeedType
     from agent.personality import EmotionState
 
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     adj = engine._runtime_adjustment(  # noqa: SLF001
         need_type=NeedType.PHYSIOLOGICAL,
         visible_agents=0,
@@ -1116,7 +1122,7 @@ def test_runtime_adjustment_night_suppresses_social() -> None:
     from agent.need import NeedType
     from agent.personality import EmotionState
 
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     day_adj = engine._runtime_adjustment(  # noqa: SLF001
         need_type=NeedType.SOCIAL,
         visible_agents=0,
@@ -1138,7 +1144,7 @@ def test_runtime_adjustment_dawn_gives_small_physiological_boost() -> None:
     from agent.need import NeedType
     from agent.personality import EmotionState
 
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     adj = engine._runtime_adjustment(  # noqa: SLF001
         need_type=NeedType.PHYSIOLOGICAL,
         visible_agents=0,
@@ -1153,7 +1159,7 @@ def test_runtime_adjustment_daytime_has_no_time_bias() -> None:
     from agent.need import NeedType
     from agent.personality import EmotionState
 
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     adj = engine._runtime_adjustment(  # noqa: SLF001
         need_type=NeedType.PHYSIOLOGICAL,
         visible_agents=0,
@@ -1186,7 +1192,7 @@ def test_classify_time_period_by_hour() -> None:
 @pytest.mark.asyncio
 async def test_goal_generation_uses_perceived_signal_texts_not_structural_context() -> None:
     """perceived_signal_texts must reach the goal prompt, not structural location/time tokens."""
-    from core.interfaces.llm import LLMMessage, LLMResponse, LLMScene
+    from core.interfaces.llm import LLMMessage, LLMResponse
 
     captured: list[str] = []
 
@@ -1288,7 +1294,7 @@ async def test_run_scores_track_persisted_drive_single_source_of_truth() -> None
     nt = NeedType.SAFETY
 
     personality.update_need_intensities({n.value: 0.30 for n in NeedType})
-    low_engine = NeedEngine()  # fresh ("restart"): drive comes only from persisted state
+    low_engine = NeedEngine(_router())  # fresh ("restart"): drive comes only from persisted state
     low = await low_engine.run(
         current_step=1, personality=personality,
         visible_agents=[], pending_messages=0,
@@ -1297,7 +1303,7 @@ async def test_run_scores_track_persisted_drive_single_source_of_truth() -> None
     elevated = {n.value: 0.30 for n in NeedType}
     elevated[nt.value] = 0.90
     personality.update_need_intensities(elevated)
-    high_engine = NeedEngine()  # another fresh engine: reflects the new persisted drive directly
+    high_engine = NeedEngine(_router())  # another fresh engine: reflects the new persisted drive directly
     high = await high_engine.run(
         current_step=2, personality=personality,
         visible_agents=[], pending_messages=0,
@@ -1329,7 +1335,7 @@ def test_update_need_intensities_stores_drive_in_state() -> None:
 def test_evolve_intensities_success_dominant_relax_plus_shock() -> None:
     """Success: dominant = homeostatic relaxation + relief shock. @0.5 → 0.45 (relax) − 0.12 (k_s)
     = 0.33."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     current = {nt.value: 0.50 for nt in NeedType}  # away from the clamp bounds
     updated = engine.evolve_intensities(current, dominant_need=NeedType.SAFETY, succeeded=True)
     assert abs(updated[NeedType.SAFETY.value] - 0.33) < 1e-9
@@ -1338,7 +1344,7 @@ def test_evolve_intensities_success_dominant_relax_plus_shock() -> None:
 def test_evolve_intensities_failure_dominant_relax_plus_shock() -> None:
     """Failure: dominant = relaxation + stress shock. @0.5 → 0.45 (relax) + 0.08 (k_f) = 0.53
     (still a net rise)."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     current = {nt.value: 0.50 for nt in NeedType}
     updated = engine.evolve_intensities(current, dominant_need=NeedType.SAFETY, succeeded=False)
     assert abs(updated[NeedType.SAFETY.value] - 0.53) < 1e-9
@@ -1347,7 +1353,7 @@ def test_evolve_intensities_failure_dominant_relax_plus_shock() -> None:
 def test_evolve_intensities_non_dominant_relaxes_toward_baseline() -> None:
     """Non-dominant needs relax toward the resting baseline, so they can't drift upward to
     saturation. @0.5 → 0.45."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     current = {nt.value: 0.50 for nt in NeedType}
     updated = engine.evolve_intensities(current, dominant_need=NeedType.SAFETY, succeeded=True)
     for key, v in updated.items():
@@ -1359,7 +1365,7 @@ def test_evolve_intensities_non_dominant_relaxes_toward_baseline() -> None:
 def test_evolve_intensities_intensity_clamped_at_lower_bound_005() -> None:
     """After dominant success, intensity is clamped at a floor of 0.05 (so the need can't drop to 0
     and vanish)."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     current = {NeedType.SAFETY.value: 0.10}
     updated = engine.evolve_intensities(current, dominant_need=NeedType.SAFETY, succeeded=True)
     assert updated[NeedType.SAFETY.value] == 0.05
@@ -1369,7 +1375,7 @@ def test_evolve_intensities_failure_at_high_intensity_capped_by_homeostasis() ->
     """At high levels homeostasis outweighs the failure shock, so intensity doesn't run away to
     saturation (otherwise repeated failures would climb to 1.0).
     @0.95 failure → 0.95 + 0.25×(0.30−0.95) + 0.08 = 0.8675 (net drop, away from 1.0)."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     current = {NeedType.SAFETY.value: 0.95}
     updated = engine.evolve_intensities(current, dominant_need=NeedType.SAFETY, succeeded=False)
     safety = updated[NeedType.SAFETY.value]
@@ -1378,7 +1384,7 @@ def test_evolve_intensities_failure_at_high_intensity_capped_by_homeostasis() ->
 
 def test_should_update_goals_when_no_active_goal() -> None:
     """No active goal at all (0 < low-water) → triggers an update (a new goal must be generated)."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     entities = [
         GoalEntity(
             id="stg-1-0", text="已完成的目标", goal_type="short_term",
@@ -1392,7 +1398,7 @@ def test_should_update_goals_low_water_triggers_topup_even_when_need_matches() -
     """Active goals below low-water (here 1 < 2) → replenish even if the need matches; don't wait
     for the queue to empty."""
     from agent.need import _SHORT_TERM_GOAL_LOW_WATER
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     assert _SHORT_TERM_GOAL_LOW_WATER == 2
     entities = [
         GoalEntity(
@@ -1412,7 +1418,7 @@ def test_should_update_goals_related_need_none_is_wildcard() -> None:
     because dominant changed. Seed >= low-water goals to avoid the low-water short-circuit and
     isolate the wildcard check.
     """
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     entities = [
         GoalEntity(
             id=f"stg-restored-{i}", text=text, goal_type="short_term",
@@ -1872,7 +1878,7 @@ def _five_need_personality() -> PersonalityLayer:
 async def test_prepotency_physiological_crisis_preempts_high_safety() -> None:
     """Physiological activation ≥0.85 (collapse from exhaustion) → overrides the
     higher-endowed safety as dominant, and dominant==argmax."""
-    res = await NeedEngine().run(
+    res = await NeedEngine(_router()).run(
         current_step=1, personality=_five_need_personality(),
         visible_agents=[], pending_messages=0,
         emotion=EmotionState(primary="frustration", intensity=0.6, valence=-0.7),
@@ -1886,7 +1892,7 @@ async def test_prepotency_physiological_crisis_preempts_high_safety() -> None:
 async def test_prepotency_below_threshold_does_not_fire() -> None:
     """Physiological activation 0.8 (<0.85: dominating thoughts but not a crisis) → no
     trigger; dominant stays the additive argmax (safety)."""
-    res = await NeedEngine().run(
+    res = await NeedEngine(_router()).run(
         current_step=1, personality=_five_need_personality(),
         visible_agents=[], pending_messages=0,
         need_relevance={NeedType.PHYSIOLOGICAL: 0.8, NeedType.SAFETY: 0.7},
@@ -1899,7 +1905,7 @@ async def test_prepotency_below_threshold_does_not_fire() -> None:
 async def test_prepotency_safety_beats_physiological_when_both_in_crisis() -> None:
     """Physiological and safety both in crisis (both ≥0.85) → safety first (get out of danger
     first; don't rest with a killer closing in)."""
-    res = await NeedEngine().run(
+    res = await NeedEngine(_router()).run(
         current_step=1, personality=_five_need_personality(),
         visible_agents=[], pending_messages=0,
         need_relevance={NeedType.PHYSIOLOGICAL: 0.9, NeedType.SAFETY: 0.95},
@@ -1911,7 +1917,7 @@ async def test_prepotency_safety_beats_physiological_when_both_in_crisis() -> No
 async def test_prepotency_non_survival_need_never_preempts() -> None:
     """esteem gets no prepotency even at activation=1.0 (no biological override) → normal
     additive competition."""
-    res = await NeedEngine().run(
+    res = await NeedEngine(_router()).run(
         current_step=1, personality=_five_need_personality(),
         visible_agents=[], pending_messages=0,
         need_relevance={NeedType.ESTEEM: 1.0, NeedType.SAFETY: 0.2},
@@ -2146,7 +2152,7 @@ def _short_term_entity(text: str, *, need: NeedType | None, step: int = 0):
 async def test_run_appends_new_goals_without_dropping_existing_active() -> None:
     """Triggering generation doesn't overwrite the whole list: existing unfinished goals must stay
     and new goals are appended."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     # Put a sentinel goal that generation would never produce straight into the live queue
     # (related_need=None is a wildcard, so it won't be judged misaligned).
     personality = _make_personality(short_term_entities=[
@@ -2430,7 +2436,7 @@ async def test_evaluate_goal_progress_llm_failure_enqueues_no_residue() -> None:
 def test_to_prompt_context_separates_plans_from_owed() -> None:
     """Plans and unresolved matters render as two blocks: flattening them into one list loses the
     distinction of "already on my plate"."""
-    text = NeedEngine().to_prompt_context(
+    text = NeedEngine(_router()).to_prompt_context(
         _make_personality(),
         NeedType.SAFETY,
         [],
@@ -2601,7 +2607,7 @@ def test_enqueued_goal_turns_the_relative_due_into_an_absolute_step() -> None:
 def test_decision_goal_list_shows_the_due_hint_and_leads_with_it() -> None:
     """In the decision list, being due must be an already-rendered fact, not something the agent
     has to infer."""
-    engine = NeedEngine(seconds_per_step=3600)
+    engine = NeedEngine(_router(), seconds_per_step=3600)
     goals = [
         _dated_goal("从太子口中问出实情", due=None, gid="s1"),
         _dated_goal("到玄武门依约行事", due=20, gid="s2"),
@@ -2624,7 +2630,7 @@ def test_decision_goal_list_shows_the_due_hint_and_leads_with_it() -> None:
 def test_goal_due_step_survives_a_persist_restore_round_trip() -> None:
     """Without it, every appointment loses its time after restore and the agent is time-blind
     again."""
-    from world.initializer import _goal_entity_from_dict
+    from agent.state_codec import goal_entity_from_dict
 
     stored = {
         "id": "stg-12-1", "text": "明晨面谈", "goal_type": "short_term",
@@ -2633,10 +2639,10 @@ def test_goal_due_step_survives_a_persist_restore_round_trip() -> None:
         "last_evaluated_step": None, "progress_summary": "", "origin": "cognitive",
     }
 
-    assert _goal_entity_from_dict(stored, fallback_id="x").due_step == 17
-    assert _goal_entity_from_dict({**stored, "due_step": None}, fallback_id="x").due_step is None
-    assert _goal_entity_from_dict({k: v for k, v in stored.items() if k != "due_step"},
-                                  fallback_id="x").due_step is None
+    assert goal_entity_from_dict(stored, fallback_id="x").due_step == 17
+    assert goal_entity_from_dict({**stored, "due_step": None}, fallback_id="x").due_step is None
+    assert goal_entity_from_dict({k: v for k, v in stored.items() if k != "due_step"},
+                                 fallback_id="x").due_step is None
 
 
 def test_both_goal_prompts_show_a_deadline_and_a_null_side_by_side() -> None:
@@ -2682,7 +2688,7 @@ def test_a_goal_without_a_deadline_renders_no_parenthetical_at_all() -> None:
         assert goal.due_step is None
         assert goal_due_hint(goal, 10, 3600) == ""
 
-    engine = NeedEngine(seconds_per_step=3600)
+    engine = NeedEngine(_router(), seconds_per_step=3600)
     text = engine.to_prompt_context(
         _make_personality(), NeedType.SAFETY, [],
         [_dated_goal("联络上房玄龄", due=None, gid="s1")], now_step=10,
@@ -2769,7 +2775,7 @@ def test_completed_goals_carry_when_they_were_finished() -> None:
 
     # 1 hour per step, starting at 8am. now=30 (2pm the next day): the one completed at step 2
     # crossed a day boundary; the one at step 28 was only two hours ago.
-    engine = NeedEngine(seconds_per_step=3600, world_start_second_of_day=8 * 3600)
+    engine = NeedEngine(_router(), seconds_per_step=3600, world_start_second_of_day=8 * 3600)
     yesterday = _goal("请动裴寂出面", created_step=0, status=GoalStatus.COMPLETED)
     yesterday.last_evaluated_step = 2
     recent = _goal("备下六月初四的马", created_step=20, status=GoalStatus.COMPLETED)
@@ -2796,7 +2802,7 @@ def test_a_finished_goal_and_a_memory_of_the_same_moment_read_the_same() -> None
         stored_content = "内容"
         created_step = 4
 
-    engine = NeedEngine(seconds_per_step=3600, world_start_second_of_day=8 * 3600)
+    engine = NeedEngine(_router(), seconds_per_step=3600, world_start_second_of_day=8 * 3600)
     goal = _goal("同一刻了结的事", created_step=0, status=GoalStatus.COMPLETED)
     goal.last_evaluated_step = 4
 

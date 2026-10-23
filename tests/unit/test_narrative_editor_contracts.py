@@ -24,8 +24,7 @@ from engine.world_mutation import WorldMutationChannel
 from providers.message.in_memory import InMemoryMessageProvider
 
 
-def _mutation_channel() -> WorldMutationChannel:
-    environment = EnvironmentSystem()
+def _mutation_channel(environment: EnvironmentSystem) -> WorldMutationChannel:
     return WorldMutationChannel(
         environment=environment,
         seconds_per_step=3600,
@@ -44,14 +43,16 @@ def _make_narrative_editor(
     broadcast_channel: BroadcastChannel | None = None,
     message_system: MessageSystem | None = None,
 ) -> NarrativeEditor:
-    directory = LiveWorldDirectory.from_agents({}, EnvironmentSystem())
+    environment = EnvironmentSystem()
+    directory = LiveWorldDirectory.from_agents({}, environment)
     return NarrativeEditor(
         llm_router=container.llm_router,
         snapshot_provider=container.snapshot,
         dispatcher=InjectionDispatcher(
             broadcast_channel=broadcast_channel or BroadcastChannel(),
             message_system=message_system or MessageSystem(container.message_provider, world_id="w1"),
-            mutation_channel=_mutation_channel(),
+            mutation_channel=_mutation_channel(environment),
+            environment=environment,
             directory=directory,
         ),
         directory=directory,
@@ -287,7 +288,8 @@ def test_e6_private_effect_channel_is_a_separate_module() -> None:
         for alias in node.names
     }
     assert imported <= {
-        "EntityMutation", "Mutation", "SpawnMutation", "WorldMutationChannel", "parse_spawn",
+        "EntityMutation", "Mutation", "SpawnMutation", "WorldMutationChannel",
+        "parse_entity_mutation", "parse_spawn",
     }, (
         f"engine/narrative_editor.py 从世界突变通道导入了 {imported}。私有效果规则:LLM 编辑只能动地上的物件,"
         "人的生死与去向只对导演开放。"

@@ -68,8 +68,7 @@ async def test_a_config_without_art_freezes_nothing_and_does_not_raise(container
 @pytest.mark.asyncio
 async def test_an_unreadable_image_is_skipped_rather_than_failing_the_build(container) -> None:
     """A world that builds is worth more than a perfectly frozen one: a missing
-    image falls back to the live template, which is what every pre-freeze world
-    already does. The rest of the art must still be frozen."""
+    image is only absent from the map. The rest of the art must still be frozen."""
     config = TiledWorldConfig(template="changan_iso")
     render_map = {
         "tilesets": [

@@ -12,7 +12,7 @@ const thing = (is_public = true): EntityView => ({
 });
 
 const agent = (agent_id: string, carrying: { open?: Record<string, EntityView>; hidden?: Record<string, EntityView> } = {}): AgentView => ({
-  agent_id, name: `名-${agent_id}`, gender: "", age: null, is_main_character: false, is_active: true,
+  agent_id, is_main_character: false, is_active: true,
   public: { activity_status: "", activity_label: "", condition: "", displaced: false, carrying: carrying.open ?? {} },
   private: {
     emotion: "", emotion_label: "", emotion_intensity: null, emotion_valence: null, dominant_need: null,
@@ -80,9 +80,11 @@ describe("indexStep", () => {
 
 describe("beatsOf", () => {
   it("一件多人的事,地图上每个参与者各演一拍,共用一个 seq", () => {
-    const beats = beatsOf(indexStep(step));
+    const cast = { b: { agent_id: "b", name: "名-b", gender: "", age: null, role: "", background: "", appearance: "", color: "" } };
+    const beats = beatsOf(indexStep(step), cast);
     expect(beats.map((b) => [b.agent_id, b.seq])).toEqual([["a", 7], ["b", 7]]);
     expect(beats[1].agent_name).toBe("名-b");
+    expect(beats[0].agent_name).toBe("某人");
   });
 
   // One act of one type, done by `doer`, seen by "me" from inside or out.
@@ -97,26 +99,26 @@ describe("beatsOf", () => {
   });
 
   it("自己做的事用自己的说法", () => {
-    const [beat] = beatsOf(indexStep(seen("work", ["me"], "me")), "me");
+    const [beat] = beatsOf(indexStep(seen("work", ["me"], "me")), {}, "me");
     expect([beat.shared !== null, beat.caption]).toEqual([true, "我自己的说法"]);
   });
 
   it("亲历别人做的事只知要旨,不知他的打算", () => {
-    const [beat] = beatsOf(indexStep(seen("work", ["a", "me"])), "me");
+    const [beat] = beatsOf(indexStep(seen("work", ["a", "me"])), {}, "me");
     expect([beat.shared !== null, beat.caption]).toEqual([true, "要旨"]);
   });
 
   it("旁观时动作能说明的事不配字", () => {
-    expect(beatsOf(indexStep(seen("talk", [])), "me")[0].caption).toBe("");
+    expect(beatsOf(indexStep(seen("talk", [])), {}, "me")[0].caption).toBe("");
   });
 
   it("旁观时动作说不清的事用旁人所见兜底", () => {
-    const [beat] = beatsOf(indexStep(seen("work", [])), "me");
+    const [beat] = beatsOf(indexStep(seen("work", [])), {}, "me");
     expect([beat.shared, beat.caption]).toEqual([null, "旁人所见"]);
   });
 
   it("旁观动手不知成败,配上旁人所见", () => {
-    const [beat] = beatsOf(indexStep(seen("physical", [])), "me");
+    const [beat] = beatsOf(indexStep(seen("physical", [])), {}, "me");
     expect([beat.shared, beat.caption]).toEqual([null, "旁人所见"]);
   });
 });
@@ -130,6 +132,8 @@ describe("figuresOf", () => {
     const index = indexStep(step);
     const figures = Object.fromEntries(figuresOf(index, { a: identity }, npcs).map((f) => [f.agent_id, f]));
     expect(figures.a.color).toBe(identity.color);
+    expect(figures.a.agent_name).toBe(identity.name);
+    expect(figures.b.agent_name).toBe("某人");
     expect(figures.b.color).toBe("");
     expect(figures.n1.color).toBe(npcs.n1.color);
     expect(figures.n1.agent_name).toBe(npcs.n1.name);

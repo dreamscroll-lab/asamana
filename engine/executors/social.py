@@ -15,7 +15,7 @@ from core.interfaces.action import (
 from core.interfaces.actor import BriefPerson, Conversation
 from core.action_duration import action_duration_steps
 from core.interfaces.directory import WorldDirectory
-from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, coerce_bool, extract_json, output_budget
+from core.interfaces.llm import LLMRouter, coerce_bool, output_budget
 from core.interfaces.trace import Stage
 from core.logging import get_logger
 from core.prompts import (
@@ -36,6 +36,7 @@ from engine.executors.base import (
     ActionExecutionState,
     ActionExecutor,
     Conscription,
+    complete_json,
     participant_action_desc,
 )
 from engine.narration import (
@@ -46,10 +47,18 @@ from engine.scene import SceneVisibility, assemble_scene_context, observe_locati
 if TYPE_CHECKING:
     from agent.agent import Agent
     from agent.memory_types import Memory
+    from agent.relation import PerceivedRelation
     from engine.environment import EnvironmentSystem
     from engine.message_system import MessageSystem
 
 logger = get_logger(__name__)
+
+# Static, so it lives in system ahead of the rows it explains; after them the model has already
+# read every label by its own prior.
+_PRESENT_RELATIONS_INPUT: str = f"""\
+【输入说明】
+下面【我对在场者的关系】每行是我对一位在场者的关系：我是持有者，那位在场者是对方。各字段含义：{relation_legend()}
+"""
 
 # Each side's LLM-judged direction → (trust_delta, affection_delta): TALK's single source of
 # relation change. One notch below PHYSICAL's _REL_DELTA_* (a deed persuades a little more than
@@ -90,14 +99,6 @@ _EMPTY_CTX: dict[str, Any] = {"relation": None, "about_other": [], "about_topic"
 
 # Recent factual memories injected per side, picked as for the goal judge and interrupt evaluation.
 _TALK_RECENT_FACTUAL_K = 5
-
-# Static, so it lives in system ahead of the rows it explains; after them the model has already
-# read every label by its own prior.
-_PRESENT_RELATIONS_INPUT: str = f"""\
-【输入说明】
-下面【我对在场者的关系】每行是我对一位在场者的关系：我是持有者，那位在场者是对方。各字段含义：{relation_legend()}
-"""
-
 
 def _talk_target(other_id: str | None) -> ActionTarget:
     """A talk's target: the other party is acted on and claimed, filed exactly as the decision
@@ -145,23 +146,6 @@ def _topic_query(state: ActionExecutionState, *, is_initiator: bool, live: bool)
     return state.purpose if is_initiator or not live else state.talk_topic
 
 
-def _known_relation_block(rel, *, include_legend: bool = True) -> str:
-    """format_relation_block only if there's a real relationship; strangers get '' so none is
-    invented."""
-    if rel is None:
-        return ""
-    labels = list(getattr(rel, "labels", []) or [])
-    trust = getattr(rel, "trust", None)
-    if trust is None:
-        trust = getattr(rel, "trust_objective", 0.5)
-    affection = getattr(rel, "affection", None)
-    if affection is None:
-        affection = getattr(rel, "affection_objective", 0.0)
-    if not labels and abs(trust - 0.5) < 0.05 and abs(affection) < 0.05:
-        return ""
-    return format_relation_block(labels=labels, trust=trust, affection=affection, include_legend=include_legend)
-
-
 def _format_context(
     ctx: dict, owner_name: str, other_name: str, *, now_step: int, seconds_per_step: int,
     world_start_second_of_day: int = 0,
@@ -170,21 +154,15 @@ def _format_context(
     recency prefixes."""
     lines: list[str] = []
 
-    rel = ctx.get("relation")
+    rel: "PerceivedRelation | None" = ctx.get("relation")
     if rel is not None:
-        trust = getattr(rel, "trust", None)
-        if trust is None:
-            trust = getattr(rel, "trust_objective", 0.5)
-        affection = getattr(rel, "affection", None)
-        if affection is None:
-            affection = getattr(rel, "affection_objective", 0.0)
-        labels = list(getattr(rel, "labels", []) or [])
         # The legend is in each caller's system prompt.
-        block = format_relation_block(labels=labels, trust=trust, affection=affection, include_legend=False)
+        block = format_relation_block(
+            labels=rel.labels, trust=rel.trust, affection=rel.affection, include_legend=False,
+        )
         lines.append(f"- {owner_name}对{other_name}的关系：{block}")
-        history = getattr(rel, "history_summary", "") or ""
-        if history:
-            lines.append(f"- 与{other_name}的过往：{history}")
+        if rel.history_summary:
+            lines.append(f"- 与{other_name}的过往：{rel.history_summary}")
 
     about_other = [
         c for c in render_memory_lines(
@@ -582,24 +560,18 @@ class SocialExecutor(ActionExecutor):
                 state.listener_ids, environment=environment, agents=agents,
                 anchor_id=initiator_id, exclude={initiator_id, target_id},
             )
-            _fb_i = f"与{target_name}就「{state.purpose}」谈了一场。"
-            # The addressee never learns the purpose; at most the topic stated up front.
-            _fb_t = (
-                f"与{initiator_name}就「{state.talk_topic}」谈了一场。" if state.talk_topic
-                else f"与{initiator_name}谈了一场。"
-            )
             # The transcript as data for review, on every side's record of it: the prompts carry
             # it only as text.
             with annotate_call(dialogue=[{"speaker": t["speaker"], "line": t["line"]} for t in dialogue]):
                 summary_i_r, summary_t_r, *listener_facts = await asyncio.gather(
                     self._memory_summary(
                         agent=initiator, other_id=target_id, other_name=target_name, transcript=transcript,
-                        purpose=state.purpose, fallback_fact=_fb_i, is_initiator=True,
+                        purpose=state.purpose, is_initiator=True,
                         now_step=step, environment=environment, expected_outcome=state.expected_outcome,
                     ),
                     self._memory_summary(
                         agent=target, other_id=initiator_id, other_name=initiator_name, transcript=transcript,
-                        purpose=state.purpose, talk_topic=state.talk_topic, fallback_fact=_fb_t, is_initiator=False,
+                        purpose=state.purpose, talk_topic=state.talk_topic, is_initiator=False,
                         now_step=step, environment=environment, expected_outcome=state.expected_outcome,
                     ),
                     *(
@@ -729,7 +701,7 @@ class SocialExecutor(ActionExecutor):
         step: int,
         *,
         agents: dict[str, "Agent"],
-        environment: "EnvironmentSystem | None" = None,
+        environment: "EnvironmentSystem",
         interrupted_agent_id: str | None = None,
         thought: str = "",
         cause: str = "",
@@ -738,7 +710,7 @@ class SocialExecutor(ActionExecutor):
         target_id = state.extra.get("target_id", "")
         initiator_name = self._directory.agent_name(initiator_id)
         target_name = self._directory.agent_name(target_id)
-        location = observe_location(environment, initiator_id) if environment is not None else "此处"
+        location = observe_location(environment, initiator_id)
         elapsed = state.estimated_steps - state.remaining_steps
         elapsed_label = describe_duration(elapsed, self._seconds_per_step)
         breaker = (
@@ -773,14 +745,11 @@ class SocialExecutor(ActionExecutor):
             # participant, not the trigger source (rarely a participant). Unknown → both know.
             is_triggered = (interrupted_agent_id is None or pid == interrupted_agent_id)
             # Own eyes, first person; _interrupt_summary supplies its own header.
-            scene = (
-                assemble_scene_context(
-                    pid, environment=environment, directory=self._directory, agents=agents,
-                    include_header=False, voice=SituationVoice.FIRST,
-                    visibility=SceneVisibility.OWN_EYES,
-                ).text
-                if environment is not None else ""
-            )
+            scene = assemble_scene_context(
+                pid, environment=environment, directory=self._directory, agents=agents,
+                include_header=False, voice=SituationVoice.FIRST,
+                visibility=SceneVisibility.OWN_EYES,
+            ).text
             relation_block = await self._present_relations_block(agent, environment)
             factual = await self._interrupt_summary(
                 agent=agent, other_id=other_id, other_name=other_name, purpose=state.purpose,
@@ -806,30 +775,19 @@ class SocialExecutor(ActionExecutor):
             ))
         return results
 
-    async def _present_relations_block(self, agent: "Agent", environment: "EnvironmentSystem | None") -> str:
-        """The agent's own relation to each co-present person it knows (strangers omitted)."""
-        if environment is None:
-            return ""
+    async def _present_relations_block(self, agent: "Agent", environment: "EnvironmentSystem") -> str:
+        """The agent's own relations with the people present, as its memory writes render them
+        (``Agent.relation_context``): strangers and empty relations are left out."""
         loc = environment.get_body_location(agent.agent_id)
         # Cognitive tier only: an Npc holds no relation with anyone.
         present = [a for a in environment.agents_at(loc) if a != agent.agent_id]
-        lines: list[str] = []
-        for pid in present:
-            try:
-                rel = await agent.relation_system.perceive_existing(
-                    pid, emotion=agent.personality.state.emotion)
-            except Exception as exc:  # noqa: BLE001 — read failed: skip this relation block
-                logger.warning(
-                    "relation_perceive_failed",
-                    extra={"agent_id": agent.agent_id, "target_id": pid, "error": str(exc)},
-                )
-                continue
-            block = _known_relation_block(rel, include_legend=False)
-            if block:
-                lines.append(f"- 对在场的{self._seen_person(pid)}：{block}")
-        if not lines:
+        try:
+            return await agent.relation_context(present)
+        except Exception as exc:  # noqa: BLE001 — read failed: the record goes without relations (Rule 6)
+            logger.warning(
+                "relation_context_failed", extra={"agent_id": agent.agent_id, "error": str(exc)},
+            )
             return ""
-        return "\n".join(lines)
 
     def _seen_person(self, agent_id: str) -> str:
         """A co-present person as a roster referent: face to face, gender shows at a glance, and a
@@ -853,7 +811,7 @@ class SocialExecutor(ActionExecutor):
         is_triggered: bool,
         is_initiator: bool,
         scene: str,
-        environment: "EnvironmentSystem | None" = None,
+        environment: "EnvironmentSystem",
         now_step: int = 0,
         relation_block: str = "",
     ) -> str:
@@ -879,9 +837,6 @@ class SocialExecutor(ActionExecutor):
             situation = "对方突然中止了交谈"
             fallback = f"{opening}{topic}谈到一半，{situation}"
 
-        if agent is None:
-            return fallback
-
         scene_part = f"\n【现场】\n{scene}" if scene else ""
         relation_part = f"\n【我对在场者的关系】\n{relation_block}" if relation_block else ""
         system = """\
@@ -905,10 +860,8 @@ class SocialExecutor(ActionExecutor):
             now_step=now_step, seconds_per_step=self._seconds_per_step,
         )
         # Without a time/place anchor the model takes place names from purpose.
-        situation_header = (
-            render_situation_header(situation_for(environment, agent.agent_id),
-                                    voice=SituationVoice.FIRST)
-            if environment is not None else ""
+        situation_header = render_situation_header(
+            situation_for(environment, agent.agent_id), voice=SituationVoice.FIRST,
         )
         header_part = f"{situation_header}\n\n" if situation_header else ""
         happened = f"{initiator_line}，正{topic}交谈，已谈了{elapsed_label}，{situation}。"
@@ -920,37 +873,28 @@ class SocialExecutor(ActionExecutor):
 {happened}{relation_part}{scene_part}
 
 依上面说定的 JSON 格式记下这一场，只输出 JSON、不写任何多余内容。"""
-        try:
-            # Attribute the trace to this participant. talk_role lets review exempt the addressee
-            # from the decision↔action consistency check.
-            with observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
-                given_facts=GivenFacts()  # same source as user above
-                .add("此刻何时何地", situation_header)
-                .add("我的处境", doer_condition)
-                .add("刚刚发生的事", happened)
-                .add("我对在场者的关系", relation_block)
-                .add("现场", scene),
-                talk_role="initiator" if is_initiator else "addressee",
-                action_owner=agent.personality.soul.name,
-            ):
-                resp = await self._llm.complete(
-                    LLMScene.AGENT_ACTION_NARRATION,
-                    [
-                        LLMMessage(role="system", content=system),
-                        LLMMessage(role="user", content=user),
-                    ],
-                    temperature=0.7,
-                    max_tokens=output_budget(69),  # fact ≤36 chars; est. ~69 tok
-                json_mode=True,
-                )
-            fact = str(extract_json(resp.content).get("fact", "")).strip()
-            if not fact:
-                note_active_call_adoption(False, "missing_fact")
-            return fact or fallback
-        except Exception as exc:
-            note_active_call_adoption(False, "unusable_payload")
-            logger.warning("talk_interrupt_summary_failed", extra={"agent_id": agent.agent_id, "error": str(exc)})
-            return fallback
+        # Attribute the trace to this participant. talk_role lets review exempt the addressee
+        # from the decision↔action consistency check.
+        with observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
+            given_facts=GivenFacts()  # same source as user above
+            .add("此刻何时何地", situation_header)
+            .add("我的处境", doer_condition)
+            .add("刚刚发生的事", happened)
+            .add("我对在场者的关系", relation_block)
+            .add("现场", scene),
+            talk_role="initiator" if is_initiator else "addressee",
+            action_owner=agent.personality.soul.name,
+        ):
+            data = await complete_json(
+                self._llm.complete, system, user,
+                temperature=0.7,
+                max_tokens=output_budget(69),  # fact ≤36 chars ≈54 + key and braces ~15; est. ~69 tok
+                failure_event="talk_interrupt_summary_failed",
+                log_extra={"agent_id": agent.agent_id, "step": now_step},
+                required=("fact",),
+            )
+        fact = str(data["fact"]).strip() if data is not None else ""
+        return fact or fallback
 
     async def _gather_context(
         self,
@@ -1037,7 +981,7 @@ class SocialExecutor(ActionExecutor):
         target_ctx: dict,
         scene: str,
         now_step: int,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], str]:
         """Generate the full conversation in one functional call.
 
         Returns (turns, observation): turns are ``{"speaker_id", "speaker", "line"}``; ``([], "")``
@@ -1109,45 +1053,40 @@ class SocialExecutor(ActionExecutor):
         # One semantic retry (as DecisionEngine._llm_select) for broken JSON or an
         # unattributable line; same prompt, same bar, never filling in lines.
         for attempt in (1, 2):
-            reason = ""
-            try:
-                with annotate_call(
-                    given_facts=facts,
-                    dialogue_lanes={
-                        "a": {"name": initiator_name, "text": lane_a},
-                        "b": {"name": target_name, "text": lane_b},
-                    },
-                ):
-                    response = await self._llm.complete(
-                        LLMScene.AGENT_ACTION_NARRATION,
-                        [
-                            LLMMessage(role="system", content=system),
-                            LLMMessage(role="user", content=user),
-                        ],
-                        temperature=0.8,
-                        # Per turn {speaker, line ≤60 chars ≈ 90 tok} ≈ 100 tok, plus reason (≤80 chars
-                        # ≈ 120 tok), observation (≤25 chars ≈ 38 tok) and the three fields' structure
-                        # (~15 tok).
-                        max_tokens=output_budget(turns * 100 + 173),
-                        json_mode=True,
-                    )
-                data = extract_json(response.content)
-                parsed = self._parse_dialogue(
-                    data,
-                    (initiator.agent_id, initiator_name),
-                    (target.agent_id, target_name),
+            with annotate_call(
+                given_facts=facts,
+                dialogue_lanes={
+                    "a": {"name": initiator_name, "text": lane_a},
+                    "b": {"name": target_name, "text": lane_b},
+                },
+            ):
+                data = await complete_json(
+                    self._llm.complete, system, user,
+                    temperature=0.8,
+                    # Per turn {speaker, line ≤60 chars ≈ 90 tok} ≈ 100 tok, plus reason (≤80 chars
+                    # ≈ 120 tok), observation (≤25 chars ≈ 38 tok) and the three fields' structure
+                    # (~15 tok).
+                    max_tokens=output_budget(turns * 100 + 173),
+                    failure_event="talk_dialogue_failed",
+                    log_extra={"initiator": initiator.agent_id, "attempt": attempt},
                 )
-                if parsed:
-                    observation = " ".join(str(data.get("observation", "")).split()).strip()
-                    return parsed, observation
-                note_active_call_adoption(False, "transcript_unattributable")
-                reason = "transcript_unattributable"
-            except Exception as exc:
-                note_active_call_adoption(False, "unusable_payload")
-                reason = str(exc)
+            if data is None:
+                continue
+            parsed = self._parse_dialogue(
+                data,
+                (initiator.agent_id, initiator_name),
+                (target.agent_id, target_name),
+            )
+            if parsed:
+                observation = " ".join(str(data.get("observation", "")).split()).strip()
+                return parsed, observation
+            note_active_call_adoption(False, "transcript_unattributable")
             logger.warning(
                 "talk_dialogue_failed",
-                extra={"initiator": initiator.agent_id, "attempt": attempt, "reason": reason},
+                extra={
+                    "initiator": initiator.agent_id, "attempt": attempt,
+                    "error": "transcript_unattributable",
+                },
             )
         return [], ""
 
@@ -1313,30 +1252,20 @@ class SocialExecutor(ActionExecutor):
         call = (
             self._llm.complete_with_retry if agent.is_main_character else self._llm.complete
         )
-        try:
-            # Only a conversation with a performed character is spoken turn by turn.
-            with observe_actor(), observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
-                given_facts=facts, action_owner=agent.personality.soul.name,
-            ):
-                response = await call(
-                    LLMScene.AGENT_ACTION_NARRATION,
-                    [
-                        LLMMessage(role="system", content=_LIVE_TURN_SYSTEM),
-                        LLMMessage(role="user", content=user),
-                    ],
-                    temperature=0.8,
-                    # thought ≤60 chars ≈90 + end ≈3 + line ≤60 chars ≈90 + three fields'
-                    # structure ≈15; est. ~200 tok.
-                    max_tokens=output_budget(200),
-                    json_mode=True,
-                )
-            data = extract_json(response.content)
-        except Exception as exc:
-            note_active_call_adoption(False, "unusable_payload")
-            logger.warning(
-                "talk_live_turn_failed",
-                extra={"agent_id": agent.agent_id, "step": step, "error": str(exc)},
+        # Only a conversation with a performed character is spoken turn by turn.
+        with observe_actor(), observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
+            given_facts=facts, action_owner=agent.personality.soul.name,
+        ):
+            data = await complete_json(
+                call, _LIVE_TURN_SYSTEM, user,
+                temperature=0.8,
+                # thought ≤60 chars ≈90 + end ≈3 + line ≤60 chars ≈90 + three fields'
+                # structure ≈15; est. ~200 tok.
+                max_tokens=output_budget(200),
+                failure_event="talk_live_turn_failed",
+                log_extra={"agent_id": agent.agent_id, "step": step},
             )
+        if data is None:
             return None
         if "line" not in data and "end" not in data:
             note_active_call_adoption(False, "missing_dialogue_turn")
@@ -1379,11 +1308,10 @@ class SocialExecutor(ActionExecutor):
         other_name: str,
         transcript: str,
         purpose: str,
-        fallback_fact: str,
         is_initiator: bool,
+        environment: "EnvironmentSystem",
         talk_topic: str = "",
         now_step: int = 0,
-        environment: "EnvironmentSystem | None" = None,
         expected_outcome: str = "",
     ) -> "tuple[str, bool, str, str] | None":
         """First-person record of the conversation from this participant's view, judged in
@@ -1397,10 +1325,8 @@ class SocialExecutor(ActionExecutor):
         rels = await self._present_relations_block(agent, environment)
         relation_part = f"\n【我对在场者的关系】\n{rels}" if rels else ""
 
-        situation_header = (
-            render_situation_header(situation_for(environment, agent.agent_id),
-                                    voice=SituationVoice.FIRST)
-            if environment is not None else ""
+        situation_header = render_situation_header(
+            situation_for(environment, agent.agent_id), voice=SituationVoice.FIRST,
         )
         header_part = f"{situation_header}\n\n" if situation_header else ""
         other = self._seen_person(other_id)
@@ -1449,49 +1375,44 @@ class SocialExecutor(ActionExecutor):
 {transcript}
 
 依上面说定的 JSON 格式记下这一场（relation 反映我对{other_name}的观感变化），只输出 JSON、不写任何多余内容。"""
-        try:
-            # Attribute to this participant; the addressee also gets conscripted_input for review.
-            call_annotations = {
-                "given_facts": GivenFacts()  # same source as user above
-                .add("此刻何时何地", situation_header)
-                .add("我的处境", doer_condition)
-                .add("刚结束的对话", opening)
-                .add("我对在场者的关系", rels)
-                # The addressee never saw the initiator's expectation; declaring it would blind
-                # the leak review.
-                .add("发起者的期望", expected_outcome if is_initiator else "")
-                .add("对话记录", transcript),
-                "talk_role": "initiator" if is_initiator else "addressee",
-                "action_owner": agent.personality.soul.name,
-            }
-            if not is_initiator:
-                call_annotations["conscripted_input"] = opening
-            with observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
-                **call_annotations
-            ):
-                response = await self._llm.complete(
-                    LLMScene.AGENT_ACTION_NARRATION,
-                    [
-                        LLMMessage(role="system", content=system),
-                        LLMMessage(role="user", content=user),
-                    ],
-                    temperature=0.7,
-                    # fact (≤100 chars ≈ 150 tok, including a possible bracketed date) + success
-                    # + why (≤20 chars ≈ 30) + relation; est. ~211 tok.
-                    max_tokens=output_budget(211),
-                    json_mode=True,
-                )
-            data = extract_json(response.content)
-            fact = str(data.get("fact", "")).strip() or fallback_fact
-            succeeded = coerce_bool(data.get("success"), True)
-            relation_dir = parse_relation_direction(str(data.get("relation", "neutral"))).value
-            # Unsliced: the prompt caps it.
-            why = str(data.get("why", "")).strip() if not succeeded else ""
-            return fact, succeeded, relation_dir, why
-        except Exception as exc:
-            note_active_call_adoption(False, "unusable_payload")
-            logger.warning("talk_memory_summary_failed", extra={"agent_id": agent.agent_id, "error": str(exc)})
+        # Attribute to this participant; the addressee also gets conscripted_input for review.
+        call_annotations = {
+            "given_facts": GivenFacts()  # same source as user above
+            .add("此刻何时何地", situation_header)
+            .add("我的处境", doer_condition)
+            .add("刚结束的对话", opening)
+            .add("我对在场者的关系", rels)
+            # The addressee never saw the initiator's expectation; declaring it would blind
+            # the leak review.
+            .add("发起者的期望", expected_outcome if is_initiator else "")
+            .add("对话记录", transcript),
+            "talk_role": "initiator" if is_initiator else "addressee",
+            "action_owner": agent.personality.soul.name,
+        }
+        if not is_initiator:
+            call_annotations["conscripted_input"] = opening
+        with observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
+            **call_annotations
+        ):
+            data = await complete_json(
+                self._llm.complete, system, user,
+                temperature=0.7,
+                # fact (≤100 chars ≈ 150 tok, including a possible bracketed date) + success
+                # + why (≤20 chars ≈ 30) + relation; est. ~211 tok.
+                max_tokens=output_budget(211),
+                failure_event="talk_memory_summary_failed",
+                log_extra={"agent_id": agent.agent_id, "step": now_step},
+                # The record the verdict is read off; a stand-in would remember a talk nobody
+                # recorded. The talk itself happened, so a missing verdict claims the least.
+                required=("fact",),
+            )
+        if data is None:
             return None
+        succeeded = coerce_bool(data.get("success"), False)
+        relation_dir = parse_relation_direction(str(data.get("relation", "neutral"))).value
+        # Unsliced: the prompt caps it.
+        why = str(data.get("why", "")).strip() if not succeeded else ""
+        return str(data["fact"]).strip(), succeeded, relation_dir, why
 
     async def _listener_memory(
         self,
@@ -1500,9 +1421,9 @@ class SocialExecutor(ActionExecutor):
         initiator_id: str,
         target_id: str,
         transcript: str,
+        environment: "EnvironmentSystem",
         talk_topic: str = "",
         now_step: int = 0,
-        environment: "EnvironmentSystem | None" = None,
     ) -> str | None:
         """A listener's first-person record of what he heard: no success verdict or relation,
         since he said nothing. Not the raw transcript, which would embed the whole dialogue.
@@ -1516,10 +1437,8 @@ class SocialExecutor(ActionExecutor):
             agent.personality.state.condition, voice=SituationVoice.FIRST,
             now_step=now_step, seconds_per_step=self._seconds_per_step,
         )
-        situation_header = (
-            render_situation_header(situation_for(environment, agent.agent_id),
-                                    voice=SituationVoice.FIRST)
-            if environment is not None else ""
+        situation_header = render_situation_header(
+            situation_for(environment, agent.agent_id), voice=SituationVoice.FIRST,
         )
         header_part = f"{situation_header}\n\n" if situation_header else ""
         speakers = f"说话的是{self._seen_person(initiator_id)}与{self._seen_person(target_id)}"
@@ -1557,36 +1476,23 @@ class SocialExecutor(ActionExecutor):
 {transcript}
 
 依上面说定的 JSON 格式记下我听到了什么，只输出 JSON、不写任何多余内容。"""
-        try:
-            # Attribute to the listener, not the initiator.
-            with observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
-                given_facts=GivenFacts()  # same source as user above
-                .add("此刻何时何地", situation_header)
-                .add("我的处境", doer_condition)
-                .add("我在旁边听到的", speakers)
-                .add("说话人点明的来意", talk_topic)
-                .add("对话记录", transcript),
-                talk_role="listener", action_owner=agent.personality.soul.name,
-            ):
-                response = await self._llm.complete(
-                    LLMScene.AGENT_ACTION_NARRATION,
-                    [
-                        LLMMessage(role="system", content=system),
-                        LLMMessage(role="user", content=user),
-                    ],
-                    temperature=0.7,
-                    # fact ≤60 chars ≈ 90 tok + JSON structure ~5; est. ~95 tok.
-                    max_tokens=output_budget(95),
-                    json_mode=True,
-                )
-            fact = str(extract_json(response.content).get("fact", "")).strip()
-            if not fact:
-                note_active_call_adoption(False, "missing_fact")
-            return fact or None
-        except Exception as exc:
-            note_active_call_adoption(False, "unusable_payload")
-            logger.warning(
-                "talk_listener_memory_failed",
-                extra={"agent_id": agent.agent_id, "error": str(exc)},
+        # Attribute to the listener, not the initiator.
+        with observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
+            given_facts=GivenFacts()  # same source as user above
+            .add("此刻何时何地", situation_header)
+            .add("我的处境", doer_condition)
+            .add("我在旁边听到的", speakers)
+            .add("说话人点明的来意", talk_topic)
+            .add("对话记录", transcript),
+            talk_role="listener", action_owner=agent.personality.soul.name,
+        ):
+            data = await complete_json(
+                self._llm.complete, system, user,
+                temperature=0.7,
+                # fact ≤60 chars ≈ 90 tok + JSON structure ~5; est. ~95 tok.
+                max_tokens=output_budget(95),
+                failure_event="talk_listener_memory_failed",
+                log_extra={"agent_id": agent.agent_id, "step": now_step},
+                required=("fact",),
             )
-            return None
+        return str(data["fact"]).strip() if data is not None else None

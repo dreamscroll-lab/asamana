@@ -21,7 +21,7 @@ from typing import Any
 from config.models import Config
 from core.container import Container
 from core.interfaces.action import KIND_AGENT, KIND_NPC, KIND_OBJECT, ActionType
-from world.models import WorldEntityType
+from core.interfaces.entity import WorldEntityType
 from core.interfaces.llm import LLMProvider, LLMScene
 from core.logging import get_logger
 from world.initializer import WorldInitializer

@@ -30,6 +30,7 @@ def to_json(obj: Any) -> str:
     return json.dumps(obj, default=_default, ensure_ascii=False)
 
 
-def to_jsonable(obj: Any) -> Any:
-    """Convert *obj* into plain JSON-safe primitives (dict/list/str/...)."""
+def to_wire_json(obj: Any) -> Any:
+    """Convert *obj* into plain JSON-safe primitives (dict/list/str/...); raises TypeError on a
+    value with no JSON form. Distinct from ``core.interfaces.trace.to_jsonable``, which never raises."""
     return json.loads(to_json(obj))

@@ -110,8 +110,10 @@ class InterruptCoordinator:
                     continue
                 if agent_id == message.sender_id:
                     continue
-                # The sender is always an agent; name it, never the id.
-                sender_name = self._directory.agent_name(message.sender_id)
+                # The name the message carries first, as the inbox renders it: the sender can be
+                # an Npc or the narrator ("不知来源"), which the directory doesn't know. Only a
+                # message without one is looked up (an agent by id, 「某人」 on a miss).
+                sender_name = message.sender_name or self._directory.agent_name(message.sender_id)
                 _note(agent_id, f"收到{sender_name}的急讯：{message.content}")
 
         # Path 2: high-severity broadcasts

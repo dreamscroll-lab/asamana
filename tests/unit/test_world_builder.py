@@ -5,8 +5,8 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from core.container import Container
-from engine.application import NarrativeApplication
+from providers.assembly import build_container
+from interaction.application import NarrativeApplication
 from core.interfaces.llm import LLMMessage, LLMProvider, LLMResponse, LLMRouter, LLMScene
 from providers.llm.mock import MockLLMProvider
 from world.builder import _canonicalize_agent_locations, _canonicalize_seed_locations, _purge_orphan_references
@@ -118,7 +118,7 @@ def _analysis() -> ThemeAnalysis:
 @pytest.fixture()
 def container(test_config):
     """Container with PERSONA_GENERATION returning valid JSON for world-builder tests."""
-    c = Container.from_config(test_config)
+    c = build_container(test_config)
     providers = {scene: c.llm_router.get(scene) for scene in LLMScene}
     providers[LLMScene.PERSONA_GENERATION] = MockLLMProvider(fixed_response="{}")
     c.llm_router = LLMRouter(providers)
@@ -545,7 +545,7 @@ async def test_runtime_decision_prompt_does_not_leak_narrative_pitch(container, 
     providers[LLMScene.AGENT_DECISION_MAIN] = decision_spy_main
     container.llm_router = LLMRouter(providers)
 
-    from engine.application import NarrativeApplication
+    from interaction.application import NarrativeApplication
 
     app = NarrativeApplication(container, test_config)
     world = await confirmed_world(app, "leak-test", template="changan_iso")

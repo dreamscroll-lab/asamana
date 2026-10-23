@@ -6,7 +6,9 @@ import asyncio
 import json
 from typing import Any, Mapping
 
-from agent.need import NeedState, NeedType, build_innate_needs
+from agent.need import (
+    NEED_INTENSITY_RANGE, NEED_WEIGHT_RANGE, NeedState, NeedType, build_innate_needs,
+)
 from agent.personality import (
     SECRET_LABEL,
     EmotionState,
@@ -14,12 +16,22 @@ from agent.personality import (
     SoulLayer,
     parse_emotion_type,
 )
-from core.context import annotate_call, note_active_call_adoption, observe_stage
-from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, coerce_bool, extract_json_object, output_budget
+from core.context import annotate_call, observe_stage
+from core.interfaces.llm import (
+    LLMMessage,
+    LLMResponse,
+    LLMRouter,
+    LLMScene,
+    coerce_bool,
+    extract_json_object,
+    output_budget,
+)
 from core.interfaces.trace import Stage
 from core.logging import get_logger
 from core.prompts import (
     EMOTION_INTENSITY_DEFINITION,
+    EMOTION_INTENSITY_RANGE,
+    EMOTION_VALENCE_RANGE,
     EMOTION_VALENCE_DEFINITION,
     NEED_INTENSITY_DEFINITION, NEED_TYPE_DEFINITION, NEED_WEIGHT_DEFINITION, relation_legend,
 )
@@ -32,7 +44,7 @@ from world.models import (
     AgentDefinition, AgentTier, CastDesign, FigureCastRole, unique_agent_id,
     ThemeAnalysis, ThemeFigure,
 )
-from world.builders import BUILD_ATTEMPTS
+from world.builders import BuildReplyRejected, complete_with_build_retry
 
 logger = get_logger(__name__)
 
@@ -105,46 +117,37 @@ class AgentGenerator:
             LLMMessage(role="system", content=system_prompt),
             LLMMessage(role="user", content=user_prompt),
         ]
-        last_exc: BaseException | None = None
-        for attempt in range(BUILD_ATTEMPTS):
-            try:
-                # Tag the trace with who is being generated: agent_id lets the dev tools identify and filter;
-                # the name is recorded separately because a build that fails at this step has no snapshot yet, so
-                # the dev tools can't look the name up from the id. Set it inside this coroutine, not before
-                # gather, or the characters' ids would get mixed up across each other's calls.
-                with observe_stage(Stage.WORLD_INIT, agent_id=agent_id), \
-                        annotate_call(agent_name=figure.name):
-                    response = await self._llm_router.complete(
-                        # reason ≤80 chars ≈ 125, plus one character's full persona: background (≤140 chars ≈ 210) + self_image/life_goal (≤50 chars each ≈ 75)
-                        # + appearance (≤40 chars ≈ 60) + long_term_goals (3 × ≤40 chars ≈ 180) + hard_constraints (3 × ≤40 chars ≈ 180)
-                        # + 5 × initial_needs (label ≤60 chars ≈ 90 + 3 numbers + structure ≈ 110) + traits/values/location/emotion ≈ 200;
-                        # estimate ~1650 tok.
-                        LLMScene.PERSONA_GENERATION, messages, max_tokens=output_budget(1650),
-                        json_mode=True,
-                    )
-                payload = extract_json_object(response.content)
-                if payload is not None:
-                    return self._definition_from_payload(figure, analysis, payload, agent_id)
-                note_active_call_adoption(False, "no_json_object")
-                last_exc = ValueError(
-                    f"No parseable JSON for figure '{figure.name}' (attempt {attempt + 1})"
+        async def call() -> LLMResponse:
+            # Tag the trace with who is being generated: agent_id lets the dev tools identify and filter;
+            # the name is recorded separately because a build that fails at this step has no snapshot yet, so
+            # the dev tools can't look the name up from the id. Set it inside this coroutine, not before
+            # gather, or the characters' ids would get mixed up across each other's calls.
+            with observe_stage(Stage.WORLD_INIT, agent_id=agent_id), \
+                    annotate_call(agent_name=figure.name):
+                return await self._llm_router.complete(
+                    # reason ≤80 chars ≈ 125, plus one character's full persona: background (≤140 chars ≈ 210) + self_image/life_goal (≤50 chars each ≈ 75)
+                    # + appearance (≤40 chars ≈ 60) + long_term_goals (3 × ≤40 chars ≈ 180) + hard_constraints (3 × ≤40 chars ≈ 180)
+                    # + 5 × initial_needs (label ≤60 chars ≈ 90 + 3 numbers + structure ≈ 110) + traits/values/location/emotion ≈ 200;
+                    # estimate ~1650 tok.
+                    LLMScene.PERSONA_GENERATION, messages, max_tokens=output_budget(1650),
+                    json_mode=True,
                 )
-            except Exception as exc:
-                note_active_call_adoption(False, "unusable_payload")
-                last_exc = exc
-            logger.warning(
-                "agent_definition_attempt_failed",
-                extra={
-                    "figure_name": figure.name,
-                    "attempt": attempt + 1,
-                    "reason": str(last_exc),
-                },
-            )
-            if attempt < BUILD_ATTEMPTS - 1:
-                await asyncio.sleep(1.0)
-        raise ValueError(
-            f"AgentGenerator failed for figure '{figure.name}' after {BUILD_ATTEMPTS} attempts"
-        ) from last_exc
+
+        def parse(content: str) -> AgentDefinition:
+            payload = extract_json_object(content)
+            if payload is None:
+                raise BuildReplyRejected(
+                    f"No parseable JSON for figure '{figure.name}'", "no_json_object"
+                )
+            return self._definition_from_payload(figure, analysis, payload, agent_id)
+
+        return await complete_with_build_retry(
+            call,
+            parse,
+            attempt_failed_event="agent_definition_attempt_failed",
+            log_extra={"figure_name": figure.name},
+            failure=f"AgentGenerator failed for figure '{figure.name}'",
+        )
 
     def _build_prompt(
         self,
@@ -390,8 +393,14 @@ def _emotion_from_payload(value: Any, *, fallback: EmotionState) -> EmotionState
         raw_primary = coerce_str(value.get("primary"), fallback=fallback.primary.value)
         return EmotionState(
             primary=parse_emotion_type(raw_primary),
-            intensity=coerce_float(value.get("intensity"), default=fallback.intensity, minimum=0.0, maximum=1.0),
-            valence=coerce_float(value.get("valence"), default=fallback.valence, minimum=-1.0, maximum=1.0),
+            intensity=coerce_float(
+                value.get("intensity"), default=fallback.intensity,
+                minimum=EMOTION_INTENSITY_RANGE[0], maximum=EMOTION_INTENSITY_RANGE[1],
+            ),
+            valence=coerce_float(
+                value.get("valence"), default=fallback.valence,
+                minimum=EMOTION_VALENCE_RANGE[0], maximum=EMOTION_VALENCE_RANGE[1],
+            ),
             triggered_by=coerce_optional_str(value.get("triggered_by")) or fallback.triggered_by,
         )
     label = coerce_str(value)
@@ -405,6 +414,11 @@ def _emotion_from_payload(value: Any, *, fallback: EmotionState) -> EmotionState
     return EmotionState(primary=emotion_type, intensity=0.3, valence=0.0, triggered_by="人物生成")
 
 
+#: A need the persona names is a live one; at zero intensity it would score zero in need
+#: competition, so a generated need keeps at least this much (stricter than ``NEED_INTENSITY_RANGE``).
+GENERATED_NEED_INTENSITY_FLOOR = 0.05
+
+
 def _need_states_from_payload(value: Any, *, default_hidden: bool = False) -> list[NeedState]:
     states: list[NeedState] = []
     for item in coerce_mapping_list(value):
@@ -415,8 +429,14 @@ def _need_states_from_payload(value: Any, *, default_hidden: bool = False) -> li
             NeedState(
                 type=need_type,
                 label=coerce_str(item.get("label"), fallback=_default_need_label(need_type)),
-                intensity=coerce_float(item.get("intensity"), default=0.4, minimum=0.05, maximum=1.0),
-                weight=coerce_float(item.get("weight"), default=1.0, minimum=0.1, maximum=2.0),
+                intensity=coerce_float(
+                    item.get("intensity"), default=0.4,
+                    minimum=GENERATED_NEED_INTENSITY_FLOOR, maximum=NEED_INTENSITY_RANGE[1],
+                ),
+                weight=coerce_float(
+                    item.get("weight"), default=1.0,
+                    minimum=NEED_WEIGHT_RANGE[0], maximum=NEED_WEIGHT_RANGE[1],
+                ),
                 is_hidden=coerce_bool(item.get("is_hidden"), default_hidden),
             )
         )

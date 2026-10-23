@@ -21,7 +21,6 @@ from __future__ import annotations
 from typing import Any
 
 from core.logging import get_logger
-from world.stored_config import StoredWorldConfig
 
 # WebSocket must be importable at module scope: with `from __future__ import annotations`,
 # FastAPI resolves the `websocket: WebSocket` hint against module globals, so a function-local
@@ -31,12 +30,10 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from interaction.api.app import ApiServices
 from interaction.actor_view import graph_for, profile_for, step_view_for
-from interaction.api.serialization import to_jsonable
+from interaction.api.serialization import to_wire_json
 from interaction.models import (
     AgentProfile,
-    CharacterIdentity,
     GraphNode,
-    PlaceIdentity,
     StepView,
     WorldGraph,
     relations_from_snapshot,
@@ -56,11 +53,11 @@ def build_observe_router(services: ApiServices) -> Any:
 
     def _step(world_id: str, view: StepView) -> dict[str, Any]:
         viewer = application.performing_character(world_id)
-        return to_jsonable(step_view_for(view, viewer) if viewer is not None else view)
+        return to_wire_json(step_view_for(view, viewer) if viewer is not None else view)
 
     def _profile(world_id: str, profile: AgentProfile) -> dict[str, Any]:
         viewer = application.performing_character(world_id)
-        return to_jsonable(profile_for(profile, viewer) if viewer is not None else profile)
+        return to_wire_json(profile_for(profile, viewer) if viewer is not None else profile)
 
     async def _step_payload(world_id: str, step: int) -> dict[str, Any]:
         replayer = manager.create_replayer(world_id)
@@ -89,40 +86,22 @@ def build_observe_router(services: ApiServices) -> Any:
         else:
             snapshot = await manager.latest_snapshot(world_id)
         if snapshot is None:
-            return to_jsonable(WorldGraph())
-        profiles = await manager.character_profiles(world_id)
+            return to_wire_json(WorldGraph())
         nodes = [
-            GraphNode(
-                id=aid,
-                name=s.get("agent_name") or "某人",
-                role=profile.role if (profile := profiles.get(aid)) else "",
-                is_main_character=bool(s.get("is_main_character", False)),
-            )
+            GraphNode(id=aid, is_main_character=bool(s.get("is_main_character", False)))
             for aid, s in snapshot.state.agents.items()
         ]
         graph = WorldGraph(nodes=nodes, edges=relations_from_snapshot(snapshot))
         viewer = application.performing_character(world_id)
-        return to_jsonable(graph_for(graph, viewer) if viewer is not None else graph)
+        return to_wire_json(graph_for(graph, viewer) if viewer is not None else graph)
 
     @router.get("/api/worlds/{world_id}/agents")
     async def list_cast(world_id: str) -> list[dict[str, Any]]:
         """The world's public identities, identical for every viewer."""
         if await manager.get_world(world_id) is None:
             raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
-        profiles = await manager.character_profiles(world_id)
-        return [
-            to_jsonable(CharacterIdentity(
-                agent_id=agent_id,
-                name=profile.name,
-                gender=profile.gender,
-                age=profile.age,
-                role=profile.role,
-                background=profile.background,
-                appearance=profile.appearance,
-                color=profile.color,
-            ))
-            for agent_id, profile in sorted(profiles.items())
-        ]
+        identities = await manager.character_identities(world_id)
+        return [to_wire_json(identity) for _, identity in sorted(identities.items())]
 
     @router.get("/api/worlds/{world_id}/npcs")
     async def list_npcs(world_id: str) -> list[dict[str, Any]]:
@@ -130,21 +109,15 @@ def build_observe_router(services: ApiServices) -> Any:
         identities = await manager.npc_identities(world_id)
         if identities is None:
             raise HTTPException(status_code=404, detail=f"No world setup for: {world_id}")
-        return [to_jsonable(identity) for _, identity in sorted(identities.items())]
+        return [to_wire_json(identity) for _, identity in sorted(identities.items())]
 
     @router.get("/api/worlds/{world_id}/places")
     async def list_places(world_id: str) -> list[dict[str, Any]]:
         """The world's places, fixed at build and identical for every viewer."""
-        data = await manager.snapshot_provider.load_world_config(world_id)
-        if not data:
+        identities = await manager.place_identities(world_id)
+        if identities is None:
             raise HTTPException(status_code=404, detail=f"No world config for: {world_id}")
-        places = StoredWorldConfig(data).get_places()
-        return [
-            to_jsonable(PlaceIdentity(
-                location_id=place_id, name=place.name, description=place.description,
-            ))
-            for place_id, place in sorted(places.items())
-        ]
+        return [to_wire_json(identity) for _, identity in sorted(identities.items())]
 
     @router.get("/api/worlds/{world_id}/agents/{agent_id}/profile")
     async def get_profile(world_id: str, agent_id: str) -> dict[str, Any]:
@@ -200,7 +173,7 @@ def build_observe_router(services: ApiServices) -> Any:
         )
         turn = application.actor_turn(world_id)
         if turn is not None:
-            await websocket.send_json({"type": "actor_turn", "data": to_jsonable(turn)})
+            await websocket.send_json({"type": "actor_turn", "data": to_wire_json(turn)})
         steps = await manager.list_steps(world_id)
         # Skip the step the initial frame already covered (subscribing first causes this overlap).
         sent_step = -1
@@ -213,8 +186,8 @@ def build_observe_router(services: ApiServices) -> Any:
                 pass
 
         async def _pump() -> None:
-            # Guard the whole loop: a payload value to_jsonable can't handle (an enum, set or
-            # dataclass in a dict[str, Any] field) would kill this unawaited task silently,
+            # Guard the whole loop: a payload value to_wire_json can't encode (a set, or any other
+            # non-JSON type in a dict[str, Any] field) would kill this unawaited task silently,
             # leaving the socket open and "connected" while the queue fills.
             try:
                 while True:
@@ -229,7 +202,7 @@ def build_observe_router(services: ApiServices) -> Any:
                         await websocket.send_json({"type": "step", "data": _step(world_id, view)})
                     elif etype == "actor_turn":
                         await websocket.send_json(
-                            {"type": "actor_turn", "data": to_jsonable(event.get("turn"))}
+                            {"type": "actor_turn", "data": to_wire_json(event.get("turn"))}
                         )
                     elif etype == "actor_entry":
                         await websocket.send_json({"type": "actor_entry", "data": event.get("entry")})

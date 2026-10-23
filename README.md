@@ -144,6 +144,8 @@ A 35-step world uses roughly **2.5M–4.2M tokens** in total, mostly input token
 
 Every character, line of dialogue and plot point in a world is generated live by the LLM you connect. It doesn't reflect the views of the project's authors and may be inaccurate or inappropriate. Follow your model vendor's usage policies, and use your own judgment before sharing generated content publicly.
 
+All content in `examples/` is AI-generated fiction and should not be treated as objective fact or historical evidence.
+
 ### Developer tools
 
 Enable the developer tools for local development (see [Development](docs/development.md#developer-tools)), then open the `#/dev` page:

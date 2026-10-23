@@ -75,7 +75,7 @@ async def _judge(payload: str, *, is_person: bool = True, step: int = 34):
     ex, llm = _executor(payload)
     verdict = await ex._judge(
         _Agent("a1", "甲"), description="再捆他的腿", expected_outcome="", scene="",
-        target_block="乙（人）", is_person=is_person, has_entity=False,
+        target_block="乙（人）", shows_relations=False, is_person=is_person, has_entity=False,
         seize_available=False, doer_holds=False,
         needs_relation=is_person, recipient_line="", step=step,
     )
@@ -105,7 +105,7 @@ async def test_the_doer_block_states_the_doer_condition() -> None:
     ex, llm = _executor(_verdict_payload())
     await ex._judge(
         _Agent("a2", "乙", BOUND), description="奋力挣脱绳索", expected_outcome="", scene="",
-        target_block="绳索", is_person=False, has_entity=False, seize_available=False,
+        target_block="绳索", shows_relations=False, is_person=False, has_entity=False, seize_available=False,
         doer_holds=False, needs_relation=False, recipient_line="", step=34,
     )
     user = llm.messages[0][1].content
@@ -119,7 +119,7 @@ async def test_an_unconditioned_party_adds_no_line_at_all() -> None:
     ex, llm = _executor(_verdict_payload())
     await ex._judge(
         _Agent("a1", "甲"), description="推他一把", expected_outcome="", scene="",
-        target_block="乙（人）", is_person=True, has_entity=False, seize_available=False,
+        target_block="乙（人）", shows_relations=False, is_person=True, has_entity=False, seize_available=False,
         doer_holds=False, needs_relation=True, recipient_line="", step=3,
     )
     assert "处境：" not in llm.messages[0][1].content
@@ -154,8 +154,9 @@ async def test_each_condition_field_gets_its_own_line() -> None:
     _, llm = await _judge(_verdict_payload())
     section = llm.messages[0][0].content.split("【输出】")[1].split('{"reason"')[0]
     lines = [ln for ln in section.splitlines() if ln.strip()]
-    for field in ("target_condition", "target_condition_steps", "frees_target",
-                  "doer_condition", "doer_condition_steps", "frees_doer"):
+    for field in ("target_condition", "target_condition_confined", "target_condition_steps",
+                  "frees_target", "doer_condition", "doer_condition_confined",
+                  "doer_condition_steps", "frees_doer"):
         assert sum(ln.startswith(f"- {field}：") for ln in lines) == 1
     assert not any(ln.startswith(("  ", "\t", "·")) or ln.lstrip().startswith("·") for ln in lines), \
         "输出段里出现了续行/子项——这一段每条都该是独立单行"
@@ -202,6 +203,36 @@ async def test_the_doer_axis_survives_an_entity_verdict() -> None:
 
 
 @pytest.mark.asyncio
+async def test_each_side_declares_its_own_confinement() -> None:
+    verdict, _ = await _judge(_verdict_payload(
+        target_condition="被捆在柱上", target_condition_confined=True,
+        doer_condition="右手被门夹伤", doer_condition_confined=False,
+    ))
+    assert verdict.target_condition_confined is True
+    assert verdict.doer_condition_confined is False
+
+
+@pytest.mark.asyncio
+async def test_no_condition_means_no_confinement() -> None:
+    """A stray true beside an empty slot is dropped: confinement only exists on a condition."""
+    verdict, _ = await _judge(_verdict_payload(
+        target_condition="", target_condition_confined=True,
+        doer_condition="", doer_condition_confined=True,
+    ))
+    assert verdict.target_condition_confined is False
+    assert verdict.doer_condition_confined is False
+
+
+@pytest.mark.asyncio
+async def test_an_entity_verdict_never_confines_a_target() -> None:
+    verdict, _ = await _judge(
+        _verdict_payload(target_condition="门被锁死", target_condition_confined=True),
+        is_person=False,
+    )
+    assert verdict.target_condition_confined is False
+
+
+@pytest.mark.asyncio
 async def test_a_silent_verdict_declares_nothing() -> None:
     """Most physical actions leave nothing behind — the default must read as "unchanged", not
     "clear"."""
@@ -210,6 +241,8 @@ async def test_a_silent_verdict_declares_nothing() -> None:
     assert verdict.doer_condition_desc == ""
     assert verdict.frees_target is False
     assert verdict.frees_doer is False
+    assert verdict.target_condition_confined is False
+    assert verdict.doer_condition_confined is False
 
 
 @pytest.mark.asyncio

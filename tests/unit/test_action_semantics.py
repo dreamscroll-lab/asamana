@@ -139,9 +139,11 @@ class TestTargetOnTheWire:
         )["target"]["reaches"] == []
 
     def test_relinquish_is_a_physical_deed(self):
-        """Handing over is PHYSICAL's seventh verb and survives a parse_deed round-trip intact."""
-        from core.interfaces.action import PHYSICAL_DEEDS, parse_deed
-        assert Deed.RELINQUISH in PHYSICAL_DEEDS
+        """Handing over is a PHYSICAL deed the judge can be offered, and survives a parse_deed
+        round-trip intact."""
+        from core.interfaces.action import parse_deed
+        from core.prompts import PHYSICAL_DEED_DESCRIPTIONS
+        assert Deed.RELINQUISH in PHYSICAL_DEED_DESCRIPTIONS
         assert parse_deed("relinquish", default=Deed.OPERATE) is Deed.RELINQUISH
 
     def test_a_physical_target_reaches_the_observer_as_a_directed_id(self):
@@ -299,7 +301,7 @@ async def _judge_with(payload: str, *, agent, is_person: bool, has_entity: bool,
     ex = PhysicalExecutor(llm, LiveWorldDirectory.from_agents({}, EnvironmentSystem()))  # type: ignore[arg-type]
     verdict = await ex._judge(
         agent, description="做点什么", expected_outcome="", scene="",
-        target_block="目标", is_person=is_person, has_entity=has_entity,
+        target_block="目标", shows_relations=False, is_person=is_person, has_entity=has_entity,
         seize_available=takeable, doer_holds=holds, needs_relation=needs_relation,
         recipient_line=recipient_line, step=1,
     )

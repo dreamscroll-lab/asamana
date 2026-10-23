@@ -37,7 +37,7 @@ from engine.broadcast import BroadcastChannel
 from engine.clock import WorldTime, WorldTimeConfig
 from engine.directory import LiveWorldDirectory
 from engine.director import DirectorChannel, NpcOnMenu
-from engine.environment import EnvironmentSystem
+from engine.environment import IN_TRANSIT, EnvironmentSystem
 from engine.execution_processor import ExecutionProcessor
 from engine.executors.registry import ActionExecutorRegistry
 from engine.injection import Author, InjectionDispatcher, serialize_injection
@@ -46,9 +46,9 @@ from engine.world_mutation import (
     ConditionMutation, EntityMutation, RelocateMutation, SpawnMutation, WorldMutationChannel,
 )
 from providers.llm.mock import MockLLMProvider
-from world.models import EntityPresence, WorldEntity, WorldEntityType
+from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
-from tests.unit.world_setups import npc_seed
+from tests.unit.world_setups import make_npc
 
 WORLD_ID = "world-1"
 
@@ -109,7 +109,7 @@ def _make_agent(
             router, container.embedding, container.vector_store,
             world_id=WORLD_ID, agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(router),
         relation_system=RelationSystem(container.agent_store, world_id=WORLD_ID, agent_id=agent_id),
         agent_store=container.agent_store,
         is_main_character=False,
@@ -159,6 +159,7 @@ def _world(container, router):
             broadcast_channel=broadcast_channel,
             message_system=message_system,
             mutation_channel=mutation_channel,
+            environment=environment,
             directory=directory,
         ),
         directory=directory,
@@ -187,12 +188,17 @@ def _npc_menu(environment):
     ]
 
 
+def _agent_locations(agents, environment):
+    """Does what ``_director_inputs`` does in production: where each agent's body is."""
+    return environment.body_locations(agents)
+
+
 async def _submit(channel, text, agents, environment):
     """The channel doesn't hold EnvironmentSystem. The selection menu is passed in by the caller
     (the orchestration layer in production)."""
     return await channel.submit(
         text,
-        all_agents=agents,
+        all_agents=agents, agent_locations=_agent_locations(agents, environment),
         npcs=_npc_menu(environment),
         locations=environment.space.all_places(),
         entities=environment.all_live_entities(),
@@ -601,7 +607,7 @@ async def test_build_prompt_is_the_very_prompt_submit_sends(container) -> None:
 
     prompt = channel.build_prompt(
         "西市起火",
-        all_agents=agents,
+        all_agents=agents, agent_locations=_agent_locations(agents, environment),
         npcs=_npc_menu(environment),
         locations=environment.space.all_places(),
         entities=environment.all_live_entities(),
@@ -698,12 +704,12 @@ async def test_menu_says_who_is_holding_a_thing(container) -> None:
     held = WorldEntity(
         entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM,
         state="sealed", description="火漆未启的一封信",
-        presence=EntityPresence.HELD, presence_ref="a2", is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref="a2",
     )
 
     prompt = channel.build_prompt(
         "把消息放出去",
-        all_agents=agents,
+        all_agents=agents, agent_locations=_agent_locations(agents, environment),
         npcs=_npc_menu(environment),
         locations=environment.space.all_places(),
         entities=[held],
@@ -721,7 +727,7 @@ async def test_menu_says_who_is_holding_a_thing(container) -> None:
 
 def _add_npc(environment: EnvironmentSystem, at: str = "market") -> str:
     environment.spawn_npc(
-        npc_seed("王二", gender="男", age=34, description="东宫的跑腿小厮"), location_id=at,
+        make_npc("王二", gender="男", age=34, description="东宫的跑腿小厮"), location_id=at,
     )
     return environment.all_npcs()[-1].npc_id
 
@@ -734,7 +740,7 @@ async def test_npcs_follow_the_agents_on_the_one_cast_menu(container) -> None:
     environment.assign_errand(ErrandOrder(npc_id, "palace"), requester_id="a2")
 
     prompt = channel.build_prompt(
-        "截住那个跑腿的", all_agents=agents, npcs=_npc_menu(environment),
+        "截住那个跑腿的", all_agents=agents, agent_locations=_agent_locations(agents, environment), npcs=_npc_menu(environment),
         locations=environment.space.all_places(), entities=environment.all_live_entities(),
         world_time=_time(),
     )
@@ -804,12 +810,12 @@ async def test_a_thing_an_npc_holds_is_named_in_its_hands(container) -> None:
     channel, agents, environment, *_ = _world(container, router)
     npc_id = _add_npc(environment)
     environment.register_entity(WorldEntity(
-        entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM, is_takeable=True,
+        entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM,
         presence=EntityPresence.HELD, presence_ref=npc_id,
     ))
 
     prompt = channel.build_prompt(
-        "烧了那封信", all_agents=agents, npcs=_npc_menu(environment),
+        "烧了那封信", all_agents=agents, agent_locations=_agent_locations(agents, environment), npcs=_npc_menu(environment),
         locations=environment.space.all_places(), entities=environment.all_live_entities(),
         world_time=_time(),
     )
@@ -919,12 +925,12 @@ async def test_the_menu_shows_what_every_thing_says_held_or_not(container) -> No
     router = _Router(_plan_json())
     channel, agents, environment, *_ = _world(container, router)
     environment.register_entity(WorldEntity(
-        entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM, is_takeable=True,
+        entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM,
         presence=EntityPresence.HELD, presence_ref="a1", content="明日辰时玄武门见。",
     ))
 
     prompt = channel.build_prompt(
-        "改那封信", all_agents=agents, npcs=_npc_menu(environment),
+        "改那封信", all_agents=agents, agent_locations=_agent_locations(agents, environment), npcs=_npc_menu(environment),
         locations=environment.space.all_places(), entities=environment.all_live_entities(),
         world_time=_time(),
     )
@@ -945,6 +951,57 @@ async def test_a_new_thing_of_no_known_kind_is_refused_at_submit(container) -> N
     )
 
     assert plan is None and result.accepted is False
+
+
+@pytest.mark.asyncio
+async def test_an_entity_change_that_changes_nothing_is_refused(container) -> None:
+    """Same rule as the narrative editor's alter (``parse_entity_mutation``): an entity entry with
+    every change field empty and no destroy would land an observation of a change that never
+    happened."""
+    raw = _plan_json(narrative_desc="玄武门变了", mutations=[{
+        "kind": "entity", "entity": 1, "destroyed": False, "state": "", "description": "",
+        "content": "", "observation": "玄武门看上去有些不同。",
+    }])
+    channel, agents, environment, *_ = _world(container, _Router(raw))
+
+    result, plan = channel.interpret(
+        raw, all_agents=agents, npcs=_npc_menu(environment),
+        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+    )
+
+    assert plan is None and result.accepted is False
+
+
+@pytest.mark.asyncio
+async def test_the_menu_places_people_where_their_bodies_are(container) -> None:
+    """The cast line follows ``EnvironmentSystem`` (``agent_locations``), not the agent's own
+    record, which still names the place he left until he arrives."""
+    channel, agents, environment, *_ = _world(container, _Router(_plan_json()))
+    environment.move_body(body_id="a1", location_id=IN_TRANSIT)
+
+    prompt = channel.build_prompt(
+        "西市起火", all_agents=agents, agent_locations=_agent_locations(agents, environment),
+        npcs=_npc_menu(environment), locations=environment.space.all_places(),
+        entities=environment.all_live_entities(), world_time=_time(),
+    )
+
+    line = next(ln for ln in prompt.user.splitlines() if ln.startswith("#1 "))
+    assert "现于途中" in line and "太极宫" not in line
+
+
+def test_the_menu_names_no_place_for_an_unplaced_body(container) -> None:
+    """A body not on the map has no place: the line leaves it out rather than name a fallback."""
+    channel, agents, environment, *_ = _world(container, _Router(_plan_json()))
+    environment.remove_body("a1")
+
+    prompt = channel.build_prompt(
+        "西市起火", all_agents=agents, agent_locations=_agent_locations(agents, environment),
+        npcs=_npc_menu(environment), locations=environment.space.all_places(),
+        entities=environment.all_live_entities(), world_time=_time(),
+    )
+
+    line = next(ln for ln in prompt.user.splitlines() if ln.startswith("#1 "))
+    assert "现于" not in line and "某地" not in line
 
 
 @pytest.mark.asyncio
@@ -987,3 +1044,41 @@ async def test_the_console_reads_every_mutation_kind_by_name(container) -> None:
         ("EntityMutation", "玄武门", "样子：漆被刮花；写着：此门不通"),
         ("SpawnMutation", "密信", "放在西市"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_condition_carries_whether_it_restricts_freedom_of_action(container) -> None:
+    raw = _plan_json(narrative_desc="王二被捆", mutations=[{
+        "kind": "condition", "person": 3, "condition": "被捆在柱上", "confined": True,
+        "observation": "王二被捆在了柱上。",
+    }])
+    channel, agents, environment, *_ = _world(container, _Router(raw))
+    _add_npc(environment)
+
+    _, plan = channel.interpret(
+        raw, all_agents=agents, npcs=_npc_menu(environment),
+        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+    )
+
+    assert plan is not None
+    [parsed] = plan.mutations
+    assert isinstance(parsed, ConditionMutation) and parsed.confined is True
+
+
+@pytest.mark.asyncio
+async def test_lifting_a_condition_never_confines(container) -> None:
+    raw = _plan_json(narrative_desc="王二被松绑", mutations=[{
+        "kind": "condition", "person": 3, "condition": "", "confined": True,
+        "observation": "王二的绳子被割断了。",
+    }])
+    channel, agents, environment, *_ = _world(container, _Router(raw))
+    _add_npc(environment)
+
+    _, plan = channel.interpret(
+        raw, all_agents=agents, npcs=_npc_menu(environment),
+        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+    )
+
+    assert plan is not None
+    [parsed] = plan.mutations
+    assert isinstance(parsed, ConditionMutation) and parsed.confined is False

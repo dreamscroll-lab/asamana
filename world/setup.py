@@ -37,9 +37,17 @@ from core.validate import require_at_least, require_in_range, require_member, re
 from engine.clock import STEP_SECONDS_RANGE, resolve_step_seconds
 from world.identity_color import free_identity_color
 from world.models import (
-    AgentDefinition, AgentTier, NpcSeed, ThemeAnalysis, WorldEntitySeed, WorldEntityType, name_key,
-    unique_agent_id, unique_entity_id, unique_npc_id,
+    AgentDefinition,
+    AgentTier,
+    NpcSeed,
+    ThemeAnalysis,
+    WorldEntitySeed,
+    name_key,
+    unique_agent_id,
+    unique_entity_id,
+    unique_npc_id,
 )
+from core.interfaces.entity import WorldEntityType
 
 logger = get_logger(__name__)
 

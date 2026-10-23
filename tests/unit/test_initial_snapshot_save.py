@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from tests.unit.confirmed_world import confirmed_world
 
 

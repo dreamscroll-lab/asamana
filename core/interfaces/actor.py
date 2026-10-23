@@ -37,7 +37,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
 
-from core.interfaces.action import ActionType, DialogueTurn, Ref
+from core.interfaces.action import (
+    KIND_AGENT, KIND_ITEM, KIND_LANDMARK, KIND_LOCATION, KIND_NPC, ActionType, DialogueTurn, Ref,
+)
 from core.interfaces.urgency import Urgency
 from core.prompts import AFFECTION_RANGE, EMOTION_INTENSITY_RANGE, EMOTION_VALENCE_RANGE, TRUST_RANGE
 from core.validate import require_at_least, require_in_range, require_member, require_text
@@ -257,6 +259,15 @@ class ActorOperationParameters:
                 require_text(value, name)
 
 
+_INTENT_TARGET_KINDS = (KIND_AGENT, KIND_LOCATION, KIND_NPC, KIND_ITEM, KIND_LANDMARK)
+
+
+def require_intent_target(target: Ref) -> None:
+    """Raise ``ValueError`` unless ``target`` is something an actor intent may name."""
+    require_member(target.kind, _INTENT_TARGET_KINDS, "target.kind")
+    require_text(target.id, "target.id")
+
+
 @dataclass(frozen=True)
 class ActorIntent:
     """User intent; execution slots and parsing policy remain server-owned."""
@@ -277,11 +288,11 @@ class ActorIntent:
         elif self.operation is None or self.target is None:
             raise ValueError("An operation intent requires operation and target")
         if self.target is not None:
-            require_member(self.target.kind, ("agent", "location", "npc", "item", "landmark"), "target.kind")
-            require_text(self.target.id, "target.id")
+            require_intent_target(self.target)
         if self.operation is not None:
             if self.operation is ActorOperation.BROADCAST:
-                require_member(self.description.strip(), ("",), "broadcast.description")
+                if self.description.strip():
+                    raise ValueError("A broadcast intent takes no description; its text is the message")
             allowed = {
                 ActorOperation.ERRAND: {"destination_id", "item_id", "recipient_id", "message", "announce"},
                 ActorOperation.BROADCAST: {"message"},
@@ -542,8 +553,9 @@ class ActorIdleAnswer:
     idle: Literal[True] = True
 
     def __post_init__(self) -> None:
-        require_member(type(self.idle), (bool,), "idle type")
-        require_member(self.idle, (True,), "idle")
+        # ``is``, not equality: ``1 == True`` would let a non-bool through.
+        if self.idle is not True:
+            raise ValueError("An idle answer requires idle to be true")
 
 
 # Resolved internal answers consumed by the runtime channel, including executable decisions.

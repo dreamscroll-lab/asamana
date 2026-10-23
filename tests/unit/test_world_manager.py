@@ -124,3 +124,30 @@ async def test_character_profile_read_during_confirmation_does_not_cache_a_draft
     snapshots.load_world_setup = load
     await snapshots.save_world_setup("draft", setup_dict({"a": {"name": "甲", "role": "定稿"}}))
     assert (await manager.character_profiles("draft"))["a"].role == "定稿"
+
+
+@pytest.mark.asyncio
+async def test_character_and_place_identities_are_kept_only_once_confirmed() -> None:
+    snapshots = InMemorySnapshotProvider()
+    await snapshots.save_world_setup("w", setup_dict({"a": {"name": "甲", "role": "皇子"}}))
+    await snapshots.save_world_config("w", {"places": {
+        "palace": {"place_id": "palace", "name": "太极宫", "description": "正殿"},
+    }})
+    catalog = WorldCatalog(None)
+    catalog.register("w")
+    manager = WorldManager(snapshot_provider=snapshots, catalog=catalog)
+
+    draft = await manager.character_identities("w")
+    assert draft["a"].name == "甲" and draft["a"].role == "皇子"
+    assert await manager.character_identities("w") is not draft
+    places = await manager.place_identities("w")
+    assert places is not None and places["palace"].name == "太极宫"
+    assert await manager.place_identities("w") is not places
+
+    catalog.set_confirmed("w")
+    frozen = await manager.character_identities("w")
+    assert await manager.character_identities("w") is frozen
+    frozen_places = await manager.place_identities("w")
+    assert await manager.place_identities("w") is frozen_places
+    assert await manager.character_identities("none") == {}
+    assert await manager.place_identities("none") is None

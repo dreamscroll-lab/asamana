@@ -11,7 +11,8 @@ from core.prompts import SituationVoice, render_location
 from core.interfaces.perception import SpatialPerception, VisibleEntity
 from engine.clock import WorldTime, WorldTimeConfig
 from engine.environment import IN_TRANSIT, EnvironmentSystem
-from world.models import EntityPresence, WorldEntity, WorldEntitySeed, WorldEntityType
+from world.models import WorldEntitySeed
+from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
 from worlds.tiled import TiledWorldConfig
 from tests.unit.env_state import restore, saved
@@ -32,7 +33,7 @@ def _make_location(entity_id: str, name: str, connections: dict | None = None, c
 
 
 def _make_item(entity_id: str, name: str, location_id: str | None = None, owner_id: str | None = None,
-               is_takeable: bool = True, state: str = "intact") -> WorldEntity:
+               state: str = "intact") -> WorldEntity:
     if owner_id is not None:
         presence = EntityPresence.HELD
         presence_ref: str | None = owner_id
@@ -46,7 +47,6 @@ def _make_item(entity_id: str, name: str, location_id: str | None = None, owner_
         state=state,
         presence=presence,
         presence_ref=presence_ref,
-        is_takeable=is_takeable,
         is_public=True,
     )
 
@@ -181,9 +181,9 @@ def test_visible_entities_filter_by_co_presence() -> None:
     env = EnvironmentSystem()
     env.place_agent(agent_id="a1", location_id="hall")
 
-    on_floor = _make_item("lantern", "lantern", location_id="hall", is_takeable=True, state="ready")
-    held = _make_item("ring", "ring", owner_id="a2", is_takeable=True, state="ready")
-    elsewhere = _make_item("scroll", "scroll", location_id="garden", is_takeable=True, state="ready")
+    on_floor = _make_item("lantern", "lantern", location_id="hall", state="ready")
+    held = _make_item("ring", "ring", owner_id="a2", state="ready")
+    elsewhere = _make_item("scroll", "scroll", location_id="garden", state="ready")
     env.register_entity(on_floor)
     env.register_entity(held)
     env.register_entity(elsewhere)
@@ -203,7 +203,7 @@ def test_visible_entities_in_spatial_perception() -> None:
     env = EnvironmentSystem()
     env.place_agent(agent_id="a1", location_id="hall")
 
-    sword = _make_item("sword", "铁剑", location_id="hall", is_takeable=True, state="intact")
+    sword = _make_item("sword", "铁剑", location_id="hall", state="intact")
     flag = WorldEntity(
         entity_id="flag", name="旌旗", entity_type=WorldEntityType.LANDMARK,
         state="intact", presence_ref="hall", is_public=True,
@@ -228,7 +228,7 @@ def test_visible_entities_includes_items_held_by_a_co_present_agent() -> None:
     env = EnvironmentSystem()
     env.place_agent(agent_id="a1", location_id="hall")
     env.place_agent(agent_id="a2", location_id="hall")
-    env.register_entity(_make_item("pouch", "钱袋", owner_id="a2", is_takeable=True))
+    env.register_entity(_make_item("pouch", "钱袋", owner_id="a2"))
 
     seen = {e.name: e for e in env.spatial_for(agent_id="a1").visible_entities}
     assert "钱袋" in seen
@@ -830,7 +830,6 @@ def test_change_entity_state_ignores_owner_id_for_non_takeable_entity() -> None:
         name="城门告示",
         entity_type=WorldEntityType.LANDMARK,
         presence_ref="hall",
-        is_takeable=False,
         state="intact",
     )
     env.register_entity(landmark)
@@ -856,7 +855,6 @@ def test_check_physical_feasibility_landmark_returns_infeasible_when_not_at_loca
         name="告示牌",
         entity_type=WorldEntityType.LANDMARK,
         presence_ref="hall",
-        is_takeable=False,
         state="active",
     )
     env.register_entity(landmark)
@@ -892,7 +890,6 @@ def test_check_physical_feasibility_landmark_succeeds_when_at_location() -> None
         name="告示牌",
         entity_type=WorldEntityType.LANDMARK,
         presence_ref="hall",
-        is_takeable=False,
         state="active",
     )
     env.register_entity(landmark)

@@ -23,7 +23,7 @@ from world.stored_config import StoredWorldConfig
 from worlds.tiled import TiledWorldConfig, list_templates
 
 from interaction.api.app import ApiServices
-from interaction.api.serialization import to_jsonable
+from interaction.api.serialization import to_wire_json
 
 logger = get_logger(__name__)
 
@@ -110,7 +110,9 @@ def build_lifecycle_router(services: ApiServices) -> Any:
             world_id = await application.build_world(
                 job.theme, template=job.template, available_templates=list_templates()
             )
-            setup = await application.world_setup(world_id)
+            setup = await manager.world_setup(world_id)
+            if setup is None:
+                raise ValueError(f"World {world_id!r} has no setup after its build")
             config = await manager.snapshot_provider.load_world_config(world_id) or {}
             job.world_id = world_id
             job.world_name = setup.lore.world_name
@@ -133,7 +135,7 @@ def build_lifecycle_router(services: ApiServices) -> Any:
         theme = str(payload.get("theme", "")).strip()
         if not theme:
             raise HTTPException(status_code=400, detail="theme is required")
-        # Which map to build on; omitted → the configured default. Validated here so an
+        # Which map to build on; omitted → the build picks one for the theme. Validated here so an
         # unknown template is a request error, not a background job dying minutes later.
         template = payload.get("template")
         template = str(template).strip() if template else None
@@ -293,7 +295,7 @@ def build_lifecycle_router(services: ApiServices) -> Any:
         ``interaction.actor_view``)."""
         if application.performing_character(meta.world_id) is not None:
             meta = replace(meta, main_agent_names=[])
-        return {**to_jsonable(meta), "run_state": services.run_state(meta.world_id)}
+        return {**to_wire_json(meta), "run_state": services.run_state(meta.world_id)}
 
     def _status_payload(world_id: str) -> dict[str, Any]:
         return {"world_id": world_id, "run_state": services.run_state(world_id)}

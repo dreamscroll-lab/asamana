@@ -710,19 +710,6 @@ class MemorySystem:
             elif memory.kind == MemoryKind.SUMMARY:
                 period_summaries.append(memory)
 
-        # memory id → the paired memory id in the other stream
-        stream_links: Dict[str, str] = {}
-        by_group: dict[str, list[Memory]] = {}
-        for memory in events:
-            if memory.event_group_id:
-                by_group.setdefault(memory.event_group_id, []).append(memory)
-        for group_id, members in by_group.items():
-            if len(members) >= 2:
-                for m in members:
-                    other = next((other for other in members if other.id != m.id and other.stream != m.stream), None)
-                    if other is not None:
-                        stream_links[m.id] = other.id
-
         insight_sources: Dict[str, List[Memory]] = {}
         for ins in insights:
             if not ins.source_ids:
@@ -735,7 +722,6 @@ class MemorySystem:
             events=events,
             insights=insights,
             period_summaries=period_summaries,
-            stream_links=stream_links,
             insight_sources=insight_sources,
         )
 
@@ -1357,7 +1343,7 @@ class MemorySystem:
             response = await self._llm_router.complete(
                 LLMScene.MEMORY_SUMMARIZATION, messages, max_tokens=output_budget(490), json_mode=True,
             )
-            if _is_unusable_llm_content(response.content):
+            if not response.content.strip():
                 note_active_call_adoption(False, "empty_summary")
                 return None
             # extract_json raises; uncaught, one bad cluster would abort the whole compression round.
@@ -1653,7 +1639,7 @@ class MemorySystem:
             content = await self._complete_memory_prompt(
                 system_prompt, user_prompt, max_tokens=output_budget(300),
             )
-        if _is_unusable_llm_content(content):
+        if not content:
             # Don't fall back to raw: it would give the same event two slots in recall.
             return ""
         return content
@@ -1678,7 +1664,7 @@ class MemorySystem:
                 max_tokens=max_tokens,
             )
             content = response.content.strip()
-            if _is_unusable_llm_content(content):
+            if not content:
                 note_active_call_adoption(False, "empty_monologue")
             return content
         except Exception as exc:
@@ -1687,11 +1673,6 @@ class MemorySystem:
                 extra={"agent_id": self._agent_id, "error": str(exc)},
             )
             return ""
-
-
-def _is_unusable_llm_content(content: str) -> bool:
-    lowered = content.strip().lower()
-    return not lowered or lowered in {"mock response", "default mock response"}
 
 
 def _loads_dict(value: Any) -> dict[str, Any]:

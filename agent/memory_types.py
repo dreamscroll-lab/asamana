@@ -100,7 +100,7 @@ def importance_level(score: float) -> MemoryImportance:
 class RetrievalResult:
     """Structured retrieval result.
 
-    Memories are split by kind, plus link info, so callers can present them in separate prompt
+    Memories are split by kind, plus each insight's sources, so callers can present them in separate prompt
     sections (recalled experiences, judgments already formed, the overall impression of a
     period) and the LLM can tell the three kinds of recollection apart.
     """
@@ -108,8 +108,6 @@ class RetrievalResult:
     events: List[Memory] = field(default_factory=list)
     insights: List[Memory] = field(default_factory=list)
     period_summaries: List[Memory] = field(default_factory=list)
-    # event_group_id → the other stream's memory id (dual-stream binding only)
-    stream_links: Dict[str, str] = field(default_factory=dict)
     # insight.id → some of its source memories (≤ 3)
     insight_sources: Dict[str, List[Memory]] = field(default_factory=dict)
 

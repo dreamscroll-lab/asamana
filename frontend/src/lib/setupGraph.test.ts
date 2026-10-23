@@ -25,7 +25,6 @@ describe("setupGraph", () => {
     };
     const graph = setupGraph(setup);
     expect(graph.nodes.map((n) => [n.id, n.is_main_character])).toEqual([["a", true], ["b", false]]);
-    expect(graph.nodes.map((n) => [n.name, n.role])).toEqual([["a", "旅人"], ["b", "旅人"]]);
     expect(graph.edges.map((e) => [e.from_id, e.to_id, e.labels[0]])).toEqual([
       ["a", "b", "父子:父亲"], ["b", "a", "父子:儿子"],
     ]);

@@ -6,7 +6,8 @@ from typing import Any
 
 from agent.need import build_innate_needs
 from agent.personality import EmotionState, EmotionType, SoulLayer
-from world.models import AgentDefinition, AgentTier, NpcSeed, unique_npc_id
+from core.interfaces.entity import Npc
+from world.models import AgentDefinition, AgentTier, unique_npc_id
 from world.setup import WorldLore, WorldSetup
 
 
@@ -39,6 +40,6 @@ def setup_dict(profiles: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return setup_of(profiles).as_dict()
 
 
-def npc_seed(name: str, **fields: Any) -> NpcSeed:
-    """An NPC seed with the id its setup would give it, for tests that spawn one directly."""
-    return NpcSeed(name=name, npc_id=unique_npc_id(name, set()), **fields)
+def make_npc(name: str, **fields: Any) -> Npc:
+    """An NPC with the id its setup would give it, for tests that spawn one directly."""
+    return Npc(name=name, npc_id=unique_npc_id(name, set()), **fields)

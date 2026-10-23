@@ -60,11 +60,13 @@ from engine.injection import (
     parse_broadcast_spec,
     parse_message_spec,
 )
-from engine.world_mutation import EntityMutation, Mutation, SpawnMutation, parse_spawn
+from engine.world_mutation import (
+    EntityMutation, Mutation, SpawnMutation, parse_entity_mutation, parse_spawn,
+)
 
 if TYPE_CHECKING:
     from agent.agent import Agent
-    from world.models import WorldEntity
+    from core.interfaces.entity import WorldEntity
     from core.interfaces.place import Place
 
 logger = get_logger(__name__)
@@ -164,40 +166,6 @@ def _menu_places(
     return [loc for loc in locations if headcount.get(loc.place_id) or loc.place_id in chosen]
 
 
-def _observation(raw: Mapping[str, Any]) -> str:
-    return str(raw.get("observation", "")).strip()
-
-
-def _parse_alter(raw: Any, entity_ref: IndexedRef) -> EntityMutation | None:
-    """An alter that changes nothing (all three fields empty) isn't a change; drop it."""
-    if not isinstance(raw, dict):
-        return None
-    which = entity_ref.resolve([raw.get("entity")])
-    observation = _observation(raw)
-    state = str(raw.get("state", "")).strip()
-    description = str(raw.get("description", "")).strip()
-    content = str(raw.get("content", "")).strip()
-    if not which or not observation or not (state or description or content):
-        return None
-    return EntityMutation(
-        observation=observation,
-        entity_id=which[0],
-        new_state=state,
-        new_description=description,
-        new_content=content,
-    )
-
-
-def _parse_destroy(raw: Any, entity_ref: IndexedRef) -> EntityMutation | None:
-    if not isinstance(raw, dict):
-        return None
-    which = entity_ref.resolve([raw.get("entity")])
-    observation = _observation(raw)
-    if not which or not observation:
-        return None
-    return EntityMutation(observation=observation, entity_id=which[0], destroyed=True)
-
-
 class NarrativeEditor:
     """Narrative pacing controller + channel adapter (see the module docstring's charter):
     a rule gate + LLM gate decide whether to inject, the LLM writes the plan, and the shared
@@ -247,18 +215,26 @@ class NarrativeEditor:
         world_time: WorldTime,
         world_id: str,
         all_agents: Mapping[str, "Agent"],
+        agent_locations: Mapping[str, str],
         locations: Sequence["Place"],
         entities: Sequence["WorldEntity"],
     ) -> CommittedInjection | None:
         """The step loop's single injection entry point: commit a finished background generation
         and return it, or start one and return None. Never blocks on the LLM.
 
-        ``locations`` / ``entities`` are read-only (the author layer doesn't hold EnvironmentSystem).
+        ``agent_locations`` (agent id → where his body is; no entry when unplaced), ``locations``
+        and ``entities`` are read-only views from ``EnvironmentSystem`` (the author layer doesn't
+        hold it). Where people
+        are comes from ``agent_locations``, the table broadcasts are delivered by; don't read
+        ``personality.state.current_location``: that is the agent's own record, which lags while
+        he travels.
         """
         ready = await self._consume_ready(current_step, all_agents)
         if ready is not None:
             return ready
-        self._ensure_generation(current_step, world_time, world_id, all_agents, locations, entities)
+        self._ensure_generation(
+            current_step, world_time, world_id, all_agents, agent_locations, locations, entities,
+        )
         return None
 
     def _ensure_generation(
@@ -267,6 +243,7 @@ class NarrativeEditor:
         world_time: WorldTime,
         world_id: str,
         all_agents: Mapping[str, "Agent"],
+        agent_locations: Mapping[str, str],
         locations: Sequence["Place"],
         entities: Sequence["WorldEntity"],
     ) -> None:
@@ -277,7 +254,9 @@ class NarrativeEditor:
         if not self._passes_rule_check(current_step):
             return
         self._inflight = asyncio.create_task(
-            self._generate_plan(current_step, world_time, world_id, all_agents, locations, entities)
+            self._generate_plan(
+                current_step, world_time, world_id, all_agents, agent_locations, locations, entities,
+            )
         )
 
     async def _consume_ready(
@@ -308,13 +287,14 @@ class NarrativeEditor:
         world_time: WorldTime,
         world_id: str,
         all_agents: Mapping[str, "Agent"],
+        agent_locations: Mapping[str, str],
         locations: Sequence["Place"],
         entities: Sequence["WorldEntity"],
     ) -> "_InjectionPlan | None":
         """Gate + generation, returning a plan or None. No side effects: committing lives in
         _commit_plan, keeping background execution apart from deterministic consumption."""
         narrative_summary = await self._build_narrative_summary(
-            world_id, current_step, all_agents
+            world_id, current_step, all_agents, agent_locations,
         )
         should_inject = await self._passes_llm_check(world_time, narrative_summary)
         if not should_inject:
@@ -324,6 +304,7 @@ class NarrativeEditor:
             world_time=world_time,
             narrative_summary=narrative_summary,
             all_agents=all_agents,
+            agent_locations=agent_locations,
             locations=locations,
             entities=entities,
         )
@@ -433,6 +414,7 @@ class NarrativeEditor:
         world_id: str,
         current_step: int,
         all_agents: Mapping[str, "Agent"],
+        agent_locations: Mapping[str, str],
     ) -> str:
         """The narrative briefing the editor decides from. Characters and relations use the
         latest frame; recent events and injections are a step sequence, because pacing momentum
@@ -447,7 +429,7 @@ class NarrativeEditor:
         latest = recent_snapshots[-1] if recent_snapshots else None
         blocks = [
             self._brief_premise(),
-            self._brief_characters(all_agents),
+            self._brief_characters(all_agents, agent_locations),
             self._brief_relations(latest, main_ids),
             self._brief_recent(recent_snapshots, main_ids),
             self._brief_prior_injections(),
@@ -464,13 +446,16 @@ class NarrativeEditor:
             return ""
         return "【故事前提】\n" + "\n".join(lines)
 
-    def _brief_characters(self, all_agents: Mapping[str, "Agent"]) -> str:
+    def _brief_characters(
+        self, all_agents: Mapping[str, "Agent"], agent_locations: Mapping[str, str],
+    ) -> str:
         """Main-character profiles: externally observable identity and situation only. No
         emotion / needs / goals: the editor applies pressure from outside without reading
         anyone's inner life."""
         main_lines: list[str] = []
         bg_locations: list[str] = []
-        for agent in all_agents.values():
+        bg_count = 0
+        for aid, agent in all_agents.items():
             soul = agent.personality.soul
             state = agent.personality.state
             if agent.is_main_character:
@@ -479,8 +464,9 @@ class NarrativeEditor:
                     head += f"（{soul.role}）"
                 # Situation before the profile, so a long background doesn't push it into the
                 # weak-attention middle. The dead get no location / vitality / condition.
+                location_id = agent_locations.get(aid)
                 now: list[str] = [DECEASED_MARK] if not agent.is_active else [
-                    f"现位于{self.directory.location_name(state.current_location)}",
+                    *([f"现位于{self.directory.location_name(location_id)}"] if location_id else []),
                     f"体力{vitality_label(state.vitality)}",
                 ]
                 # Without it the editor might broadcast a bound man bursting out of the gate.
@@ -503,14 +489,17 @@ class NarrativeEditor:
                 profile = f"{'；'.join(strip_end_punct(a) for a in attrs)}。" if attrs else ""
                 main_lines.append(f"- {head}：{'；'.join(now)}。{profile}")
             elif agent.is_active:
-                bg_locations.append(self.directory.location_name(state.current_location))
+                bg_count += 1
+                # Counted but not placed when unplaced: he is alive, only nowhere to name.
+                if where := agent_locations.get(aid):
+                    bg_locations.append(self.directory.location_name(where))
 
         parts: list[str] = []
         if main_lines:
             parts.append("主要人物:\n" + "\n".join(main_lines))
-        if bg_locations:
+        if bg_count:
             dist = "、".join(f"{loc}{n}人" for loc, n in Counter(bg_locations).items())
-            parts.append(f"背景人物:共{len(bg_locations)}人，分布于 {dist}")
+            parts.append(f"背景人物:共{bg_count}人" + (f"，分布于 {dist}" if dist else ""))
         if not parts:
             return ""
         return "【主要人物】\n" + "\n".join(parts)
@@ -616,6 +605,7 @@ class NarrativeEditor:
         world_time: WorldTime,
         narrative_summary: str,
         all_agents: Mapping[str, "Agent"],
+        agent_locations: Mapping[str, str],
         locations: Sequence["Place"],
         entities: Sequence["WorldEntity"],
     ) -> _InjectionPlan | None:
@@ -636,9 +626,10 @@ class NarrativeEditor:
         # Location: the plan must keep who-is-where straight, and the briefing has it only for
         # main characters.
         agent_lines = "\n".join(
-            f"#{i + 1} {self._person_line(a)}" for i, a in enumerate(living.values())
+            f"#{i + 1} {self._person_line(a, agent_locations.get(aid))}"
+            for i, (aid, a) in enumerate(living.items())
         )
-        headcount = Counter(a.personality.state.current_location for a in living.values())
+        headcount = Counter(agent_locations.get(aid) for aid in living)
         on_ground = [e for e in entities if e.location_id is not None]
         places = _menu_places(
             locations, headcount, Counter(e.location_id for e in on_ground),
@@ -817,16 +808,15 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
             broadcast=broadcast,
             message=message,
             spawn=parse_spawn(data.get("spawn"), location_ref),
-            alter=_parse_alter(data.get("alter"), entity_ref),
-            destroy=_parse_destroy(data.get("destroy"), entity_ref),
+            alter=parse_entity_mutation(data.get("alter"), entity_ref, destroyed=False),
+            destroy=parse_entity_mutation(data.get("destroy"), entity_ref, destroyed=True),
         )
 
-    def _person_line(self, agent: "Agent") -> str:
+    def _person_line(self, agent: "Agent", location_id: str | None) -> str:
         soul = agent.personality.soul
-        where = agent.personality.state.current_location
-        return person_referent(
-            soul.name, soul.gender, f"在{self.directory.location_name(where)}" if where else "",
-        )
+        # An unplaced body has no place to name (see EnvironmentSystem.body_locations).
+        where = f"在{self.directory.location_name(location_id)}" if location_id else ""
+        return person_referent(soul.name, soul.gender, where)
 
     def _entity_line(self, index: int, entity: "WorldEntity") -> str:
         """One thing on the ground in the menu. Written content is shown only for fixed things

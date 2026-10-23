@@ -20,7 +20,7 @@ from pathlib import Path
 from core.interfaces.action import EntitySpawn, EntityStateChange
 from engine.clock import WorldTime, WorldTimeConfig
 from engine.environment import EnvironmentSystem
-from world.models import EntityPresence, WorldEntity, WorldEntityType
+from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
 from core.text import slugify
 from tests.unit.env_state import restore, saved
@@ -34,7 +34,7 @@ def _location(entity_id: str, name: str) -> Place:
 def _item(entity_id: str, name: str, location_id: str, *, takeable: bool = True) -> WorldEntity:
     return WorldEntity(
         entity_id=entity_id, name=name, entity_type=WorldEntityType.ITEM,
-        presence_ref=location_id, is_takeable=takeable,
+        presence_ref=location_id,
     )
 
 

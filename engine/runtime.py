@@ -205,6 +205,7 @@ class NarrativeRuntime:
             broadcast_channel=self._broadcast_channel,
             message_system=self._message_system,
             mutation_channel=mutations,
+            environment=self._environment,
             directory=self._directory,
         )
         self._narrative_editor = NarrativeEditor(
@@ -415,6 +416,7 @@ class NarrativeRuntime:
                 world_time=world_time,
                 world_id=self._world_id,
                 all_agents=agents_dict,
+                agent_locations=self._environment.body_locations(agents_dict),
                 locations=self._environment.space.all_places(),
                 entities=self._environment.all_live_entities(),
             )
@@ -698,7 +700,6 @@ class NarrativeRuntime:
                 payload["receipt"] = build_receipt(
                     injection.target_ids,
                     agents=agents_dict,
-                    directory=self._directory,
                     decided_ids=decided_ids,
                     interrupted_ids=interrupted_ids,
                 )
@@ -1508,9 +1509,7 @@ class NarrativeRuntime:
                     "passive_join": resolved.is_passive_join,
                 },
             )
-            agent.personality.update_action_status(
-                status=ActionStatus.IDLE, current_action=None, remaining_steps=0,
-            )
+            agent.release_action(step=plan.step)
 
         return {
             "agent_id": agent.agent_id,

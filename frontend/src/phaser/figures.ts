@@ -78,7 +78,7 @@ export function figuresOf(index: StepIndex, cast: Cast, identities: Npcs): Figur
   }
   const agents = Object.values(index.agents).map((a): Figure => ({
     agent_id: a.agent_id,
-    agent_name: a.name,
+    agent_name: identityOf(a.agent_id, cast)?.name ?? "某人",
     location_id: a.location_id,
     color: identityOf(a.agent_id, cast)?.color ?? "",
     is_main_character: a.is_main_character ?? false,
@@ -109,8 +109,8 @@ export function figuresOf(index: StepIndex, cast: Cast, identities: Npcs): Figur
   return [...agents, ...npcs];
 }
 
-export function beatsOf(index: StepIndex, viewer: Viewer = null): Beat[] {
-  const nameOf = (id: string) => index.agents[id]?.name ?? "某人";
+export function beatsOf(index: StepIndex, cast: Cast, viewer: Viewer = null): Beat[] {
+  const nameOf = (id: string) => identityOf(id, cast)?.name ?? "某人";
   return index.actions.flatMap((act) => {
     const shared = sharedOf(act, viewer);
     const caption = shared

@@ -74,27 +74,10 @@ def _target_name(target: Ref, packet: "PerceptionPacket") -> str:
     raise ActorAnswerRejected("target_not_perceived")
 
 
-# ActorAction's target fields → the decision output slot each fills, so a review reads an
-# actor's decision in the same slots as an AI character's (agent/decision.py's output schema).
-_BEAT_TARGET_SLOTS: tuple[tuple[str, str, str], ...] = (
-    ("person_ids", "person_indices", "person"),
-    ("destination_id", "destination_index", "place"),
-    ("physical_person_id", "physical_person_index", "person"),
-    ("physical_npc_id", "physical_npc_index", "npc"),
-    ("physical_entity_id", "physical_entity_index", "entity"),
-    ("physical_recipient_id", "physical_recipient_index", "person"),
-    ("move_carry_ids", "move_carry_indices", "person"),
-    ("errand_npc_id", "errand_npc_index", "npc"),
-    ("errand_destination_id", "errand_destination_index", "place"),
-    ("errand_item_id", "errand_item_index", "entity"),
-    ("errand_recipient_id", "errand_recipient_index", "person"),
-)
-
-
 def actor_decision_beat(decision: ActorDecision, packet: "PerceptionPacket") -> dict[str, Any]:
     """The decision as a trace beat records it: the act, with each target slot holding names
     (as the character knows them) where an AI decision's holds indices. Code-layer only."""
-    from agent.decision import candidate_lists
+    from agent.decision import ACTOR_TARGET_SLOTS, candidate_lists
 
     action = decision.action
     if action is None:
@@ -108,7 +91,7 @@ def actor_decision_beat(decision: ActorDecision, packet: "PerceptionPacket") -> 
     }
     fallback = {"person": "某人", "place": "某处", "npc": "某人", "entity": "某物"}
     targets: dict[str, list[str]] = {}
-    for field_name, slot, kind in _BEAT_TARGET_SLOTS:
+    for field_name, slot, kind in ACTOR_TARGET_SLOTS:
         value = getattr(action, field_name)
         ids = list(value) if isinstance(value, tuple) else ([value] if value else [])
         if ids:

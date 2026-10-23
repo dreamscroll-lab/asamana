@@ -18,13 +18,20 @@ drift, and asserts the capped multiplier `1+a` too weak to let a maximal signal 
 from __future__ import annotations
 
 from agent.need import NeedEngine, NeedState, NeedType, LLM_RELEVANCE_WEIGHT
+from core.interfaces.llm import LLMRouter, LLMScene
+from providers.llm.mock import MockLLMProvider
+
+
+def _router() -> LLMRouter:
+    return LLMRouter({scene: MockLLMProvider() for scene in LLMScene})
+
 
 _A, _B = NeedType.SAFETY, NeedType.SOCIAL  # A=disposition-favored, B=situation-favored
 
 
 def _dominant(iw_a: float, a_a: float, iw_b: float, a_b: float) -> NeedType:
     """Dominant need under the production formula, isolated (vis=1, no adj, no keyword)."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     needs = [
         NeedState(type=_A, label="A", intensity=iw_a, weight=1.0),
         NeedState(type=_B, label="B", intensity=iw_b, weight=1.0),

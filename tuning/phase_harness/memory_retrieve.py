@@ -51,7 +51,6 @@ async def _retrieve_view(ms, query, step: int, top_k: int) -> dict[str, Any]:
         "events": [_recalled_mem_view(m) for m in result.events],
         "insights": [_recalled_mem_view(m) for m in result.insights],
         "summaries": [_recalled_mem_view(m) for m in result.period_summaries],
-        "stream_links": len(result.stream_links),
         "insight_sources": len(result.insight_sources),
     }
 

@@ -34,13 +34,13 @@ from core.prompts import SituationVoice
 from engine.environment import IN_TRANSIT, UNPLACED
 from engine.narration import scene_line
 from engine.scene import SceneVisibility, assemble_scene_context
-from world.models import ActiveErrand
+from core.interfaces.entity import ActiveErrand
 
 if TYPE_CHECKING:
     from agent.agent import Agent
     from engine.environment import EnvironmentSystem
     from engine.message_system import MessageSystem
-    from world.models import Npc
+    from core.interfaces.entity import Npc
 
 logger = get_logger(__name__)
 

@@ -39,7 +39,7 @@ ME = "agent-me"
 
 def _body(agent_id: str, **private: object) -> AgentView:
     return AgentView(
-        agent_id=agent_id, name=agent_id, gender="女", age=30, is_main_character=True,
+        agent_id=agent_id, is_main_character=True,
         public=AgentPublicView(
             activity_status="站着", condition="手臂带伤",
             carrying={"seal": EntityView(name="印", entity_type="item", state="", private=EntityPrivateView("密文"))},
@@ -83,7 +83,7 @@ def test_in_the_place_it_ends_in_the_character_sees_bodies_and_things_as_they_sh
 
     [me, other] = view.locations["hall"].agents
     assert me == _body(ME)
-    assert (other.name, other.gender, other.age, other.public.condition) == ("agent-b", "女", 30, "手臂带伤")
+    assert (other.agent_id, other.public.condition) == ("agent-b", "手臂带伤")
     assert other.is_main_character is None
     assert other.private == AgentPrivateView(emotion="")
     assert other.public.carrying["seal"].private.content == ""
@@ -187,7 +187,7 @@ def test_profiles_show_others_only_who_they_are() -> None:
 
 def test_the_graph_is_the_characters_own_relations() -> None:
     graph = WorldGraph(
-        nodes=[GraphNode(id=i, name=i, role="r", is_main_character=True) for i in (ME, "b", "c")],
+        nodes=[GraphNode(id=i, is_main_character=True) for i in (ME, "b", "c")],
         edges=[
             GraphEdge(from_id=ME, to_id="b", trust=0.1, affection=0.2),
             GraphEdge(from_id="b", to_id=ME, trust=0.3, affection=0.4),
@@ -198,7 +198,7 @@ def test_the_graph_is_the_characters_own_relations() -> None:
     view = graph_for(graph, ME)
 
     assert [(e.from_id, e.to_id) for e in view.edges] == [(ME, "b")]
-    assert [(n.id, n.role, n.is_main_character) for n in view.nodes] == [(ME, "r", True), ("b", "r", None)]
+    assert [(n.id, n.is_main_character) for n in view.nodes] == [(ME, True), ("b", None)]
 
 
 def test_what_arrived_as_the_step_began_follows_who_received_it() -> None:

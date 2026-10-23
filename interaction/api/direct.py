@@ -1,7 +1,8 @@
 """Director routes: how a human author reaches into the world.
 
-The only routes in ``interaction/`` that change the world (besides lifecycle). Not gated by
-``dev_tools_enabled``: a product feature, not a developer tool. While an actor performs a
+The routes where the director changes a running world; lifecycle, setup and actor routes are
+the other surfaces that change a world. Not gated by ``dev_tools_enabled``: a product feature,
+not a developer tool. While an actor performs a
 character, the directive routes are closed (``ApiServices.require_director``); ``/step`` stays
 open, since advancing the world is run control, which the actor has too.
 
@@ -22,7 +23,7 @@ from typing import Any
 from core.logging import get_logger
 
 from interaction.api.app import ApiServices
-from interaction.api.serialization import to_jsonable
+from interaction.api.serialization import to_wire_json
 
 logger = get_logger(__name__)
 
@@ -103,7 +104,7 @@ def build_direct_router(services: ApiServices) -> Any:
         recorded_steps = {r["step"] for r in records}
         fresh = await replayer.list_interventions(after=scanned)
         records = records + [
-            to_jsonable(r) for r in fresh if r.step not in recorded_steps
+            to_wire_json(r) for r in fresh if r.step not in recorded_steps
         ]
         history[world_id] = (latest, records)
         return records

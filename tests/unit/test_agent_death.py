@@ -40,8 +40,7 @@ from engine.message_system import MessageSystem
 from engine.runtime import NarrativeRuntime
 from engine.scheduler import AgentScheduler
 from providers.llm.mock import MockLLMProvider
-from world.initializer import _apply_stored_state
-from world.models import EntityPresence, WorldEntity, WorldEntityType
+from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 from worlds.tiled import TiledWorldConfig
 
 WORLD_ID = "world-1"
@@ -66,7 +65,7 @@ def _make_agent(container, *, agent_id: str = "agent-target", name: str = "李�
             router, container.embedding, container.vector_store,
             world_id=WORLD_ID, agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(router),
         relation_system=RelationSystem(container.agent_store, world_id=WORLD_ID, agent_id=agent_id),
         agent_store=container.agent_store,
         is_main_character=False,
@@ -174,8 +173,7 @@ async def test_process_new_deaths_full_convergence(container) -> None:
     environment.register_entity(WorldEntity(
         entity_id="seal", name="太子印", entity_type=WorldEntityType.ITEM,
         state="intact",
-        presence=EntityPresence.HELD, presence_ref=agent.agent_id,
-        is_takeable=True, is_public=True,
+        presence=EntityPresence.HELD, presence_ref=agent.agent_id, is_public=True,
     ))
 
     # Alive at step start; then some lethal source kills him (simulated directly as the final
@@ -220,7 +218,7 @@ async def test_death_broadcast_says_en_route_while_items_fall_at_the_origin(cont
     environment.move_body(body_id=agent.agent_id, location_id=IN_TRANSIT)  # departed, origin=donggong
     environment.register_entity(WorldEntity(
         entity_id="seal", name="太子印", entity_type=WorldEntityType.ITEM, state="intact",
-        presence=EntityPresence.HELD, presence_ref=agent.agent_id, is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref=agent.agent_id,
     ))
     agent.personality.apply_vitality_damage(1.0)
     agent._trigger_death(7, cause="油尽灯枯。")
@@ -333,7 +331,7 @@ async def test_restore_derives_inactive_from_zero_vitality(container) -> None:
 
     fresh = _make_agent(container, agent_id="agent-dead", vitality=1.0)
     assert fresh.is_active is True  # active by default
-    _apply_stored_state(fresh, stored, in_resumed_execution=False)
+    fresh.apply_stored_state(stored, in_resumed_execution=False)
     assert fresh.is_active is False  # derived from vitality=0: no resurrection
 
 
@@ -362,8 +360,7 @@ async def test_death_tears_down_move_and_never_resurrects_corpse(container) -> N
     environment.register_entity(WorldEntity(
         entity_id="seal", name="太子印", entity_type=WorldEntityType.ITEM,
         state="intact",
-        presence=EntityPresence.HELD, presence_ref=agent.agent_id,
-        is_takeable=True, is_public=True,
+        presence=EntityPresence.HELD, presence_ref=agent.agent_id, is_public=True,
     ))
     agents_dict = {agent.agent_id: agent}
     registry = build_default_registry(

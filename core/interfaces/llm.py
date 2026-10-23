@@ -135,25 +135,16 @@ def coerce_bool(value: object, default: bool) -> bool:
 
 
 def extract_json(text: str) -> dict:
-    """Extract the first JSON object from an LLM response, tolerating markdown fences.
+    """The first JSON object in an LLM response (see :func:`extract_json_object`); raises
+    ``ValueError`` when there is none, so callers' try/except fallbacks apply.
 
-    Records a parse-outcome event (for the parse-failure rate) and re-raises on
-    failure so existing callers' try/except fallbacks are unaffected.
+    Records one parse-outcome event (for the parse-failure rate).
     """
-    try:
-        result = _extract_json_impl(text)
-    except Exception:
-        _note_parse(False)
-        raise
-    _note_parse(True)
+    result = _extract_json_object_impl(text)
+    _note_parse(result is not None)
+    if result is None:
+        raise ValueError("LLM response contains no parseable JSON object")
     return result
-
-
-def _extract_json_impl(text: str) -> dict:
-    """The first bracket-balanced object in the response, parsed; the whole text when there is
-    none. Raises when that candidate is not valid JSON, repair included."""
-    candidate = next(_top_level_objects(text), None)
-    return _loads_or_repair(candidate if candidate is not None else text.strip())
 
 
 _STRING_TERMINATORS = frozenset(",}]:")
@@ -213,7 +204,7 @@ _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def extract_json_object(text: str) -> dict | None:
-    """Extract the first JSON *object* from an LLM response, never raising.
+    """The first JSON *object* in an LLM response, or ``None``; never raises.
 
     Records a parse-outcome event (None result ⇒ parse failure) for the
     parse-failure rate.
@@ -224,8 +215,8 @@ def extract_json_object(text: str) -> dict | None:
 
 
 def _extract_json_object_impl(text: str) -> dict | None:
-    """Unlike :func:`extract_json` (which raises and may return any JSON value), skips balanced
-    spans that don't parse, accepts only ``dict`` payloads, and returns ``None`` on failure.
+    """The one scanner behind both extractors: tolerates markdown fences, skips balanced spans
+    that don't parse, accepts only ``dict`` payloads, and returns ``None`` on failure.
     """
     if not text:
         return None
@@ -255,7 +246,7 @@ def _extract_json_object_impl(text: str) -> dict | None:
 
 
 def _top_level_objects(text: str) -> Iterator[str]:
-    """Each bracket-balanced ``{...}`` span, in order — the one scanner both extractors share.
+    """Each bracket-balanced ``{...}`` span, in order.
 
     Braces inside JSON strings (escapes included) do not count, so trailing prose containing
     ``}`` cannot corrupt a span.
@@ -402,7 +393,7 @@ class LLMRouter:
         self._semaphore: asyncio.Semaphore | None = (
             asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
         )
-        # One gate per endpoint (see core.container._build_rate_gates), looked up by scene.
+        # One gate per endpoint (see providers.assembly._build_rate_gates), looked up by scene.
         # Acquired *before* the semaphore so a call under cooldown doesn't hold an in-flight slot.
         self._rate_gates = dict(rate_gates or {})
         # None → no recording. The router is the single LLM chokepoint, so this sees every call.

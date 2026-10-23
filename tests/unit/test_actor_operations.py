@@ -25,7 +25,7 @@ from interaction.api.actor import _decode_answer, _decode_intent
 from tests.unit.test_actor_action import AWAY, HERE, _index_of, _packet
 from tests.unit.test_actor_runtime import _next_turn, _setup, _work
 from tests.unit.test_decision_m4_gaps import _make_personality
-from tests.unit.world_setups import npc_seed
+from tests.unit.world_setups import make_npc
 
 
 def _intent(operation: str, target: Ref, *, description: str = "", **parameters) -> ActorIntent:
@@ -48,8 +48,23 @@ def test_interpretation_policy_follows_operation_semantics(intent: ActorIntent, 
 
 
 def test_broadcast_intent_rejects_description() -> None:
-    with pytest.raises(ValueError, match="broadcast.description"):
+    with pytest.raises(ValueError, match="broadcast intent takes no description"):
         _intent("broadcast", Ref.place("palace"), message="请留步", description="悄悄告诉他")
+
+
+def test_an_intent_target_outside_the_intent_kinds_is_rejected() -> None:
+    with pytest.raises(ValueError, match="target.kind"):
+        _intent("move", Ref("object", "the ground"))
+    with pytest.raises(ValueError, match="target.kind"):
+        _decode_intent({
+            "turn_id": "turn", "operation": "move", "target": {"kind": "spaceship", "id": "x"},
+            "parameters": {},
+        })
+
+
+def test_an_idle_answer_requires_a_true_bool() -> None:
+    with pytest.raises(ValueError, match="idle to be true"):
+        ActorIdleAnswer(idle=1)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("operation", ["attack", "restrain"])
@@ -93,7 +108,7 @@ async def test_description_only_errand_reaches_confirmation_after_full_binding(c
     location_id = environment.space.all_place_ids()[0]
     for agent in agents:
         environment.place_agent(agent_id=agent.agent_id, location_id=location_id)
-    assert environment.spawn_npc(npc_seed("Runner", gender="male", age=30, description="Runs errands"), location_id=location_id)
+    assert environment.spawn_npc(make_npc("Runner", gender="male", age=30, description="Runs errands"), location_id=location_id)
     npc_id = environment.all_npcs()[0].npc_id
     task = asyncio.create_task(runtime.run_step(agents))
     turn = await _next_turn(runtime, task)

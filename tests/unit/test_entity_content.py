@@ -15,7 +15,8 @@ from engine.directory import LiveWorldDirectory
 from engine.environment import EnvironmentSystem
 from engine.scene import SceneVisibility, SituationVoice, assemble_scene_context
 from providers.llm.mock import MockLLMProvider
-from world.models import EntityPresence, WorldEntity, WorldEntitySeed, WorldEntityType
+from world.models import WorldEntitySeed
+from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
 from tests.unit.env_state import restore, saved
 
@@ -26,7 +27,7 @@ CARVED = "敢有擅入者斩"
 def _letter(**over) -> WorldEntity:
     kw = dict(
         entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM,
-        presence_ref="hall", is_takeable=True, content=SECRET,
+        presence_ref="hall", content=SECRET,
     )
     kw.update(over)
     return WorldEntity(**kw)
@@ -35,7 +36,7 @@ def _letter(**over) -> WorldEntity:
 def _stele() -> WorldEntity:
     return WorldEntity(
         entity_id="stele", name="石碑", entity_type=WorldEntityType.LANDMARK,
-        presence_ref="hall", is_takeable=False, content=CARVED,
+        presence_ref="hall", content=CARVED,
     )
 
 

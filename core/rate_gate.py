@@ -2,7 +2,7 @@
 
 Rate limits belong to an *endpoint*, not a world or scene: many worlds share one process and
 must not each retry independently. One gate per ``llm.providers`` entry in use (see
-``core.container._build_rate_gates``), plus the embedding's own (``_embedding_gate``).
+``providers.assembly._build_rate_gates``), plus the embedding's own (``_embedding_gate``).
 
 Two layers, both checked in :meth:`acquire`:
 

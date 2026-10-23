@@ -4,7 +4,7 @@ Covers code paths test_decision.py doesn't:
 - _build_decision_prompt 9-section structure
 - _step_duration_hint's 4 time branches
 - _extract_json_object with markdown fences + nested objects
-- _expected_outcome's 5 action_type branches
+- a missing expected_outcome stays empty
 - decide()/_llm_select failure → None (no decision, Rule 1 fallback tier-1)
 - person_index / destination_index resolution
 """
@@ -532,55 +532,23 @@ def test_extract_json_object_skips_a_span_that_does_not_parse() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _expected_outcome's 5 action_type branches
+# A missing expected_outcome stays empty: no intent is guessed for the model
 # ---------------------------------------------------------------------------
 
 
-def test_expected_outcome_talk(container) -> None:
+@pytest.mark.asyncio
+async def test_decide_leaves_a_missing_expected_outcome_empty(container) -> None:
+    """MOVE writes the intent into memory as "我打算「…」"; a guessed template would be fabricated
+    first-person narrative, so an omitted field stays empty."""
     engine = DecisionEngine(container.llm_router)
-    out = engine._expected_outcome(ActionType.TALK, _make_need_eval())
-    assert "交谈" in out
+    payload = json.loads(_OBJECTLESS_REST_COMPLETE)
+    del payload["expected_outcome"]
+    _stub_responses(engine, [json.dumps(payload, ensure_ascii=False)])
 
+    result = await engine.decide(personality=_make_personality(), packet=_make_packet())
 
-def test_expected_outcome_rest(container) -> None:
-    engine = DecisionEngine(container.llm_router)
-    out = engine._expected_outcome(ActionType.REST, _make_need_eval())
-    assert "恢复" in out or "平静" in out
-
-
-def test_expected_outcome_physical(container) -> None:
-    engine = DecisionEngine(container.llm_router)
-    out = engine._expected_outcome(ActionType.PHYSICAL, _make_need_eval())
-    assert "物理" in out or "影响" in out
-
-
-def test_expected_outcome_covert(container) -> None:
-    """COVERT's expected outcome needs both parts: acting unnoticed, and learning something not
-    known before.
-
-    "Achieve the goal without drawing attention" alone describes covert action as quietly getting
-    something done, but it gets nothing done. It doesn't change the world, only the doer's model
-    of it. Without the "what was learned" part, the gap would measure whether it was done quietly
-    instead of what was gained.
-    """
-    engine = DecisionEngine(container.llm_router)
-    out = engine._expected_outcome(ActionType.COVERT, _make_need_eval())
-    assert any(w in out for w in ("不被察觉", "不引人注意", "暗中")), "缺「不被察觉」这一维"
-    assert any(w in out for w in ("探到", "得知", "知道")), "缺「探到什么」这一维"
-
-
-def test_expected_outcome_work_default_uses_dominant_need(container) -> None:
-    engine = DecisionEngine(container.llm_router)
-    need_eval = _make_need_eval(dominant=NeedType.ESTEEM)
-    out = engine._expected_outcome(ActionType.WORK, need_eval)
-    assert "推进" in out
-
-
-def test_expected_outcome_work_no_dominant_need(container) -> None:
-    engine = DecisionEngine(container.llm_router)
-    need_eval = _make_need_eval(dominant=None)
-    out = engine._expected_outcome(ActionType.WORK, need_eval)
-    assert "稳定" in out
+    assert result.action is not None
+    assert result.action.expected_outcome == ""
 
 
 # ---------------------------------------------------------------------------

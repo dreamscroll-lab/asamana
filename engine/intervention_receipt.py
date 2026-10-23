@@ -22,41 +22,25 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
-from core.interfaces.directory import WorldDirectory
-from core.interfaces.urgency import Urgency
-
 if TYPE_CHECKING:
     from agent.agent import Agent
-
-
-# urgency is a code-layer scale and the receipt is read by people: translate it on the way out.
-_URGENCY_WORDS: dict[Urgency, str] = {
-    Urgency.LOW: "轻微",
-    Urgency.NORMAL: "一般",
-    Urgency.HIGH: "紧急",
-    Urgency.CRITICAL: "危急",
-}
 
 
 def build_receipt(
     target_ids: Sequence[str],
     *,
     agents: Mapping[str, "Agent"],
-    directory: WorldDirectory,
     decided_ids: set[str],
     interrupted_ids: set[str],
 ) -> dict[str, Any]:
-    """Condense the people an intervention touched plus this step's three signals into a
-    human-readable receipt.
+    """Condense the people an intervention touched plus this step's three signals into a receipt.
 
     ``target_ids`` are the people the intervention touched (direct recipients, broadcast
     audience, those a mutation acted on). The other three columns are filtered to this set:
     the receipt answers "who did this push move", not "who moved anywhere this step".
+    People are ids and urgency is the ``Urgency`` value: a reader resolves names and words itself.
     """
-    def named(agent_id: str) -> dict[str, str]:
-        return {"agent_id": agent_id, "name": directory.agent_name(agent_id)}
-
-    pressure: list[dict[str, Any]] = []
+    pressure: list[dict[str, str]] = []
     for agent_id in target_ids:
         agent = agents.get(agent_id)
         if agent is None:
@@ -67,11 +51,11 @@ def build_receipt(
         if not goals:
             continue
         top = max(goals, key=lambda g: g.urgency.level)
-        pressure.append({**named(agent_id), "urgency": _URGENCY_WORDS.get(top.urgency, "一般")})
+        pressure.append({"agent_id": agent_id, "urgency": top.urgency.value})
 
     return {
-        "delivered_to": [named(aid) for aid in target_ids],
+        "delivered_to": list(target_ids),
         "pressure": pressure,
-        "decided": [named(aid) for aid in target_ids if aid in decided_ids],
-        "interrupted": [named(aid) for aid in target_ids if aid in interrupted_ids],
+        "decided": [aid for aid in target_ids if aid in decided_ids],
+        "interrupted": [aid for aid in target_ids if aid in interrupted_ids],
     }

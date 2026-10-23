@@ -902,7 +902,7 @@ export class TiledWorldScene
     this.entering = new Set(localContinuity ? states.filter((s) =>
       !this.tokens.has(s.agent_id) && !s.displaced && !reportedDead(s.is_active, s.vitality),
     ).map((s) => s.agent_id) : []);
-    const actions = beatsOf(index, this.viewer);
+    const actions = beatsOf(index, this.castById, this.viewer);
     const entities = index.entities;
     // `step.observer.injections` is deliberately not read: an injection's record summarizes a
     // broadcast or message this same step already carries, with no place or cast by contract.

@@ -35,12 +35,13 @@ def test_confirmed_defaults_false_and_persists(tmp_path: Path) -> None:
     path = str(tmp_path / "worlds.json")
     cat = WorldCatalog(path)
     cat.register("w1", theme="宫变")
-    assert cat.get("w1")["confirmed"] is False
+    assert cat.is_confirmed("w1") is False
 
     cat.set_confirmed("w1", True)
-    assert cat.get("w1")["confirmed"] is True
+    assert cat.is_confirmed("w1") is True
     # Survives a fresh instance (reads back from disk).
-    assert WorldCatalog(path).get("w1")["confirmed"] is True
+    assert WorldCatalog(path).is_confirmed("w1") is True
+    assert cat.is_confirmed("nope") is False
     # No-op for unknown worlds.
     cat.set_confirmed("nope", True)
     assert cat.get("nope") is None

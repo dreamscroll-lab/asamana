@@ -466,7 +466,7 @@ class NeedEngine:
     never mutates personality. Single source of truth = personality.
     """
 
-    def __init__(self, llm_router: LLMRouter | None = None, *, seconds_per_step: int = 3600,
+    def __init__(self, llm_router: LLMRouter, *, seconds_per_step: int = 3600,
                  world_start_second_of_day: int = 0) -> None:
         from agent.motivation import MotivationBlender
 
@@ -736,48 +736,47 @@ class NeedEngine:
             goals_numbered=goals_numbered,
         )
         residue_goals: List[tuple[str, int | None]] = []
-        if self._llm_router is not None:
-            try:
-                with annotate_call(
-                    # Same sources as user_prompt above: every fact this verdict can see.
-                    given_facts=GivenFacts()
-                    .add("此刻何时何地", situation_header)
-                    .add("我刚做了", action_description)
-                    .add("我原本期望", expected_outcome or "（无）")
-                    .add("实际结果", action_result)
-                    .add("近来的经历", recent_block.splitlines()),
-                    goal_texts=goal_texts_by_index,
-                    location=situation_location(situation),
-                ):
-                    response = await self._llm_router.complete(
-                        LLMScene.NEED_GOAL_GENERATION,
-                        [
-                            LLMMessage(role="system", content=system_prompt),
-                            LLMMessage(role="user", content=user_prompt),
-                        ],
-                        temperature=0.3,
-                        # goals: up to _SHORT_TERM_GOAL_CAP (6) items × (reason ≤100 chars ≈150 tok +
-                        # index/status ≈6 + structure ≈15) ≈171 → ~1026; residue_reason (≤60 chars ≈90)
-                        # + residue (2 × ≤28 chars ≈84) + structure ≈189; wrapper ≈10. Estimate ~1225.
-                        # A budget short of a full queue truncates into unparseable JSON and loses the
-                        # whole verdict.
-                        max_tokens=output_budget(1225),
-                        json_mode=True,
-                    )
-                verdict_used = parse_goal_evaluation(response.content, active, step)
-                residue_goals, residue_reason = parse_residue(response.content)
-                if not verdict_used and not residue_goals:
-                    note_active_call_adoption(False, "no_usable_goal_evaluation")
-                # Both go into the trace: audits need to see why the judge ruled, not just what.
-                annotate_active_call(
-                    residue=[t for t, _ in residue_goals], residue_reason=residue_reason,
+        try:
+            with annotate_call(
+                # Same sources as user_prompt above: every fact this verdict can see.
+                given_facts=GivenFacts()
+                .add("此刻何时何地", situation_header)
+                .add("我刚做了", action_description)
+                .add("我原本期望", expected_outcome or "（无）")
+                .add("实际结果", action_result)
+                .add("近来的经历", recent_block.splitlines()),
+                goal_texts=goal_texts_by_index,
+                location=situation_location(situation),
+            ):
+                response = await self._llm_router.complete(
+                    LLMScene.NEED_GOAL_GENERATION,
+                    [
+                        LLMMessage(role="system", content=system_prompt),
+                        LLMMessage(role="user", content=user_prompt),
+                    ],
+                    temperature=0.3,
+                    # goals: up to _SHORT_TERM_GOAL_CAP (6) items × (reason ≤100 chars ≈150 tok +
+                    # index/status ≈6 + structure ≈15) ≈171 → ~1026; residue_reason (≤60 chars ≈90)
+                    # + residue (2 × ≤28 chars ≈84) + structure ≈189; wrapper ≈10. Estimate ~1225.
+                    # A budget short of a full queue truncates into unparseable JSON and loses the
+                    # whole verdict.
+                    max_tokens=output_budget(1225),
+                    json_mode=True,
                 )
-            except Exception as exc:
-                note_active_call_adoption(False, "unusable_payload")
-                _logger.warning(
-                    "llm_call_failed",
-                    extra={"method": "evaluate_goal_progress", "error": str(exc)},
-                )
+            verdict_used = parse_goal_evaluation(response.content, active, step)
+            residue_goals, residue_reason = parse_residue(response.content)
+            if not verdict_used and not residue_goals:
+                note_active_call_adoption(False, "no_usable_goal_evaluation")
+            # Both go into the trace: audits need to see why the judge ruled, not just what.
+            annotate_active_call(
+                residue=[t for t, _ in residue_goals], residue_reason=residue_reason,
+            )
+        except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
+            _logger.warning(
+                "llm_call_failed",
+                extra={"method": "evaluate_goal_progress", "error": str(exc)},
+            )
 
         # Deadline fallback (also runs on LLM failure): any non-terminal goal past its allowance is
         # shelved as FAILED. It caps a stuck goal the judge keeps ruling active, and is the only way
@@ -827,13 +826,11 @@ class NeedEngine:
         ``recent_memory_texts`` covers both factual and experiential streams: a goal achieved or
         invalidated is an objective fact, so this doesn't depend on reflection insight.
 
-        Returns None for no update (no router, ``[]``, unchanged, or error), else the new goal texts
+        Returns None for no update (``[]``, unchanged, or error), else the new goal texts
         for the caller to write via ``personality.set_long_term_goals``. Writes nothing.
         """
         state = personality.state
         current = [e.text for e in state.long_term_goal_entities]
-        if self._llm_router is None:
-            return None
 
         current_long_term = "\n".join(f"  · {g}" for g in current) or "  · （暂无）"
         # ACTIVE only: INTERRUPTED goals are offered only at decision time, to be picked back up.
@@ -866,22 +863,25 @@ class NeedEngine:
         # thought (≤250 chars ≈375) + goals (the prompt's cap of 5 × (25 chars ≈38 + structure 5)); estimate
         # ~605 tok.
         try:
-            if is_main_character:
-                response = await self._llm_router.complete_with_retry(
-                    LLMScene.NEED_GOAL_GENERATION, messages, temperature=0.6,
-                    max_tokens=output_budget(605), json_mode=True,
-                )
-            else:
-                response = await self._llm_router.complete(
-                    LLMScene.NEED_GOAL_GENERATION, messages, temperature=0.6,
-                    max_tokens=output_budget(605), json_mode=True,
-                )
+            router = self._llm_router
+            complete = router.complete_with_retry if is_main_character else router.complete
+            response = await complete(
+                LLMScene.NEED_GOAL_GENERATION, messages, temperature=0.6,
+                max_tokens=output_budget(605), json_mode=True,
+            )
             # thought is lite-CoT only and isn't parsed.
             data = extract_json(response.content)
+            raw_goals = data.get("goals")
+            if not isinstance(raw_goals, list):
+                note_active_call_adoption(False, "no_usable_goals")
+                return None
+            # An explicit empty list is the prompt's valid verdict to keep the current direction.
+            if not raw_goals:
+                return None
             revised = [
                 text
-                for raw in data.get("goals", [])
-                if (text := str(raw).strip()) and len(text) <= 50
+                for raw in raw_goals
+                if isinstance(raw, str) and (text := raw.strip()) and len(text) <= 50
             ]
             if not revised:
                 note_active_call_adoption(False, "no_usable_goals")
@@ -1009,7 +1009,7 @@ class NeedEngine:
         perceived_relations: "List[PerceivedRelation] | None" = None,
         now_step: int = 0,
     ) -> List[tuple[str, int | None]]:
-        if self._llm_router is not None and personality is not None and dominant_need is not None:
+        if personality is not None and dominant_need is not None:
             from agent.relation import render_relation_lines
             dominant_label = f"{dominant_need.value}（{personality.need_label(dominant_need)}）"
             core_traits = personality.soul.traits_text()

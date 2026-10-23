@@ -11,13 +11,14 @@ import pytest
 from agent.importance_evaluator import ImportanceEvaluator
 from agent.memory import MemorySystem
 from agent.memory_types import MemoryStream
+from agent.need import NeedEngine
 from agent.perception_emotion import parse_perception_emotion_response
 from agent.reflection import ReflectionEngine
 from agent.relation_evolution import RelationEvolution
 from core.context import get_log_context, note_active_call_adoption, set_active_call, set_log_context
 from core.interfaces.llm import IndexedRef, LLMScene, extract_json
 from core.interfaces.trace import Stage
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from engine.world_pressure import WorldPressureEvaluator
 from providers.trace import BufferedJsonlTraceSink, InMemoryTraceSink
 from tests.unit.test_decision_m4_gaps import _make_personality, _mem
@@ -46,6 +47,38 @@ def traced(container):
 
 def _reply(container, scene: LLMScene, payload: object) -> None:
     container.llm_router.get(scene).fixed_response = json.dumps(payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload, expected, adopted",
+    [
+        ({"goals": []}, None, True),
+        ({"goals": ["守护家国"]}, None, True),
+        ({"goals": ["重整朝纲"]}, ["重整朝纲"], True),
+        ({}, None, False),
+        ({"goals": None}, None, False),
+        ({"goals": "重整朝纲"}, None, False),
+        ({"goals": {}}, None, False),
+        ({"goals": [None, 123, {}, " ", "长" * 51]}, None, False),
+    ],
+)
+async def test_long_term_goal_review_adoption(traced, payload, expected, adopted) -> None:
+    container, sink = traced
+    personality = _make_personality()
+    personality.set_long_term_goals(["守护家国"])
+    _reply(container, LLMScene.NEED_GOAL_GENERATION, payload)
+
+    result = await NeedEngine(llm_router=container.llm_router).revise_long_term_goals(
+        personality=personality, recent_memory_texts=["寻常的一天"], is_main_character=False,
+    )
+
+    assert result == expected
+    assert personality.state.long_term_goals == ["守护家国"]
+    call = sink.read_calls("trace-world")[-1]
+    assert call.parse_ok is True
+    assert call.adopted is adopted
+    assert call.reject_reason == ("" if adopted else "no_usable_goals")
 
 
 @pytest.mark.asyncio

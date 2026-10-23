@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from agent.agent import Agent
     from core.interfaces.directory import WorldDirectory
     from engine.environment import EnvironmentSystem
-    from world.models import Npc, WorldEntity
+    from core.interfaces.entity import Npc, WorldEntity
 
 
 def situation_for(environment: "EnvironmentSystem", agent_id: str) -> Situation:
@@ -306,7 +306,7 @@ def observe_location(environment: "EnvironmentSystem", agent_id: str) -> str:
     """The narrative name of the doer's current location; the single entry point for every
     executor resolving "where".
 
-    Room name; in transit → "途中" (on the way); unknown → "此处" (here); never a bare id.
+    Room name; in transit → "途中" (on the way); unknown → "某地" (somewhere); never a bare id.
     """
     return environment.narrative_location_name(environment.get_body_location(agent_id))
 

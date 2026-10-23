@@ -398,7 +398,7 @@ class WorldPressureEvaluator:
     ) -> list[ExternalGoal]:
         try:
             data: Any = extract_json(raw)
-        except (ValueError, Exception):  # noqa: BLE001 — extract_json may raise JSONDecodeError
+        except ValueError:
             note_active_call_adoption(False, "invalid_json")
             logger.warning(
                 "world_pressure_parse_failed",

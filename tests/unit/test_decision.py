@@ -1135,26 +1135,6 @@ def test_parse_llm_selection_accepts_steps_within_bounds(container: object) -> N
 
 
 # ---------------------------------------------------------------------------
-# _expected_outcome returns Chinese
-# ---------------------------------------------------------------------------
-
-
-def test_expected_outcome_returns_chinese(container: object) -> None:
-    """_expected_outcome must return Chinese for all action types."""
-    engine = _make_engine(container)
-    need_eval = _make_need_evaluation(NeedType.SOCIAL)
-
-    for action_type in ActionType:
-        outcome = engine._expected_outcome(action_type, need_eval)  # noqa: SLF001
-        # Basic check: no pure-ASCII sentences (English). Allow mixed content.
-        assert outcome, f"{action_type} returned empty outcome"
-        # Must contain at least one CJK character
-        assert any("一" <= ch <= "鿿" for ch in outcome), (
-            f"{action_type} outcome is not Chinese: {outcome!r}"
-        )
-
-
-# ---------------------------------------------------------------------------
 # MOVE forcibly takes people present along (separate field move_carry_indices)
 # ---------------------------------------------------------------------------
 

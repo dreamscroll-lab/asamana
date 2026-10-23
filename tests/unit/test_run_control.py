@@ -7,7 +7,7 @@ import contextlib
 
 import pytest
 
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from engine.run_control import RunController, RunState
 from tests.unit.confirmed_world import confirmed_world
 

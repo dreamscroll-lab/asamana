@@ -157,6 +157,8 @@ class TestSocialExecutorListeners:
         # models the listener-memory LLM coming back with nothing usable.
         payload = {
             "deed": "operate",
+            # A talk's own records need their verdict; without it they are null steps.
+            "success": True,
             "dialogue": [
                 {"speaker": 1, "line": "近来可好？"},
                 {"speaker": 2, "line": "尚可，你呢？"},

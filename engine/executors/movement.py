@@ -525,15 +525,15 @@ class MovementExecutor(ActionExecutor):
         step: int,
         *,
         agents: dict[str, "Agent"],
-        environment: "EnvironmentSystem | None" = None,
+        environment: "EnvironmentSystem",
         interrupted_agent_id: str | None = None,
         thought: str = "",
         cause: str = "",
     ) -> List[ActionResult]:
         dest_id = state.extra.get(_DESTINATION_KEY, "")
         origin_id = state.extra.get(_ORIGIN_KEY, "")
-        dest_name = environment.narrative_location_name(dest_id) if environment is not None else "此处"
-        origin_name = environment.narrative_location_name(origin_id) if environment is not None else "此处"
+        dest_name = environment.narrative_location_name(dest_id)
+        origin_name = environment.narrative_location_name(origin_id)
         path = list(state.extra.get(_PATH_KEY, []))
         arrivals = list(state.extra.get(_ARRIVALS_KEY, []))
         elapsed = state.estimated_steps - state.remaining_steps
@@ -548,7 +548,7 @@ class MovementExecutor(ActionExecutor):
 
         # Land at a real place: the nearer end of the current leg (see _reached_node_at).
         land_at = _reached_node_at(path, arrivals, elapsed) if path else origin_id
-        land_name = environment.narrative_location_name(land_at) if environment is not None else "此处"
+        land_name = environment.narrative_location_name(land_at)
 
         carried = _carried_of(state)
         party = f"{doer_name}{self._company_clause(carried)}"
@@ -573,19 +573,13 @@ class MovementExecutor(ActionExecutor):
         breaker_outcome = base + format_interrupt_reason_3p(breaker_name, thought)
 
         doer = agents.get(state.initiator_id)
-        if environment is not None and land_at and (doer is None or doer.is_active):
+        if land_at and (doer is None or doer.is_active):
             # Death teardown also comes through here; a removed body must not be put back.
             environment.move_body(body_id=state.initiator_id, location_id=land_at)
-        if environment is not None and land_at:
+        if land_at:
             # Same landing as the doer, even if the doer is dead: otherwise the captive is
             # left on IN_TRANSIT forever.
             self._carry_along(carried, land_at, environment)
-        if environment is None:
-            # API misuse: without environment a body in transit stays stranded.
-            logger.error(
-                "movement_interrupt_without_environment",
-                extra={"agent_id": state.initiator_id, "stranded_at": IN_TRANSIT},
-            )
 
         stub = AgentAction(
             agent_id=state.initiator_id,

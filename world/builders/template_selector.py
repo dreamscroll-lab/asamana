@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Sequence
 
-from core.context import note_active_call_adoption
 from core.interfaces.llm import (
     IndexedRef,
     LLMMessage,
+    LLMResponse,
     LLMRouter,
     LLMScene,
     extract_json_object,
@@ -18,7 +17,7 @@ from core.logging import get_logger
 from core.coerce import coerce_str
 from core.interfaces.world_config import WorldConfig
 
-from world.builders import BUILD_ATTEMPTS
+from world.builders import BuildReplyRejected, complete_with_build_retry
 
 logger = get_logger(__name__)
 
@@ -90,50 +89,41 @@ class TemplateSelector:
         # it was shown, resolved back here (CLAUDE.md "LLM Indexed Reference").
         ref = IndexedRef(str(i) for i in range(len(candidates)))
 
-        last_exc: BaseException | None = None
-        for attempt in range(BUILD_ATTEMPTS):
-            try:
-                response = await self._llm_router.complete(
-                    # reason ≤60 chars (~90 tok) + index (~3) + JSON structure (~10);
-                    # estimate ~105 tok.
-                    LLMScene.WORLD_TEMPLATE_SELECTION, messages,
-                    max_tokens=output_budget(105), json_mode=True,
+        async def call() -> LLMResponse:
+            return await self._llm_router.complete(
+                # reason ≤60 chars (~90 tok) + index (~3) + JSON structure (~10);
+                # estimate ~105 tok.
+                LLMScene.WORLD_TEMPLATE_SELECTION, messages,
+                max_tokens=output_budget(105), json_mode=True,
+            )
+
+        def parse(content: str) -> WorldConfig:
+            payload = extract_json_object(content) or {}
+            resolved = ref.resolve([payload.get("index")])
+            if not resolved:
+                raise BuildReplyRejected(
+                    f"LLM returned no usable template index: {content[:200]}",
+                    "invalid_template_index",
                 )
-                payload = extract_json_object(response.content)
-                resolved = ref.resolve([payload.get("index")]) if payload else []
-                if resolved:
-                    chosen = candidates[int(resolved[0])]
-                    logger.info(
-                        "world_template_selected",
-                        extra={
-                            "theme": theme,
-                            "template": chosen.to_runtime_context().get("template"),
-                            "reason": coerce_str(payload.get("reason"), fallback=""),
-                            "candidates": len(candidates),
-                        },
-                    )
-                    return chosen
-                note_active_call_adoption(False, "invalid_template_index")
-                last_exc = ValueError(
-                    f"LLM returned no usable template index (attempt {attempt + 1}): "
-                    f"{response.content[:200]}"
-                )
-                logger.warning(
-                    "template_selection_attempt_failed",
-                    extra={"theme": theme, "attempt": attempt + 1, "reason": str(last_exc)},
-                )
-            except Exception as exc:
-                note_active_call_adoption(False, "unusable_payload")
-                last_exc = exc
-                logger.warning(
-                    "template_selection_attempt_failed",
-                    extra={"theme": theme, "attempt": attempt + 1, "error": str(exc)},
-                )
-            if attempt < BUILD_ATTEMPTS - 1:
-                await asyncio.sleep(1.0)
-        raise ValueError(
-            f"TemplateSelector failed for theme '{theme}' after {BUILD_ATTEMPTS} attempts"
-        ) from last_exc
+            chosen = candidates[int(resolved[0])]
+            logger.info(
+                "world_template_selected",
+                extra={
+                    "theme": theme,
+                    "template": chosen.to_runtime_context().get("template"),
+                    "reason": coerce_str(payload.get("reason"), fallback=""),
+                    "candidates": len(candidates),
+                },
+            )
+            return chosen
+
+        return await complete_with_build_retry(
+            call,
+            parse,
+            attempt_failed_event="template_selection_attempt_failed",
+            log_extra={"theme": theme},
+            failure=f"TemplateSelector failed for theme '{theme}'",
+        )
 
     def _build_user_prompt(self, theme: str, candidates: Sequence[WorldConfig]) -> str:
         """Volatile half of the prompt: the map menu, then this call's theme.

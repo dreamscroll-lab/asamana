@@ -236,6 +236,7 @@ async def run_narrative_editor(
                 ),
                 seconds_per_step=world.clock_config.seconds_per_step,
             ),
+            environment=world.environment,
             directory=world.directory,
         ),
         directory=world.directory,
@@ -249,8 +250,9 @@ async def run_narrative_editor(
 
     world_time = GlobalClock(world.clock_config, start_step=current_step).current
     set_log_context(world_id=world_id, agent_id=None, step=str(current_step))
+    agent_locations = world.environment.body_locations(world.agents)
     brief = await narrative_editor._build_narrative_summary(  # noqa: SLF001
-        world_id, current_step, world.agents)
+        world_id, current_step, world.agents, agent_locations)
 
     error = None
     inject = None
@@ -262,6 +264,7 @@ async def run_narrative_editor(
             plan = await narrative_editor._generate_injection_plan(  # noqa: SLF001
                 current_step=current_step, world_time=world_time,
                 narrative_summary=brief, all_agents=world.agents,
+                agent_locations=agent_locations,
                 locations=world.environment.space.all_places(),
                 entities=world.environment.all_live_entities())
             plan_view = _injection_plan_view(plan, world.directory)

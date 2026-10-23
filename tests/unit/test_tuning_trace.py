@@ -164,7 +164,7 @@ def test_tuning_bootstrap_disables_production_tracing() -> None:
     """
     import providers.trace  # noqa: F401 — importing registers the trace provider
     from config.loader import load_config
-    from core.container import _build_trace_sink
+    from providers.assembly import _build_trace_sink
 
     production = load_config()
     assert production.observability.enabled, "生产默认开着,否则这条测试什么也没证明"
@@ -187,10 +187,10 @@ def test_tuning_cli_bootstrap_turns_observability_off() -> None:
     src = inspect.getsource(cli.bootstrap_application)
     body = src.rsplit('"""', 1)[-1]
     assert "config.observability.enabled = False" in body
-    assert "Container.from_config(config)" in body
+    assert "build_container(config)" in body
     # Order matters: it must be turned off before building the container, or the router already
     # holds the production sink.
-    assert body.index("enabled = False") < body.index("Container.from_config")
+    assert body.index("enabled = False") < body.index("build_container")
 
 
 def test_traced_router_does_not_carry_a_production_sink() -> None:

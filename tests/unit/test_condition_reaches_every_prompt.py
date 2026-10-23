@@ -15,6 +15,7 @@ import pytest
 
 from agent.personality import PersonalityLayer, SoulLayer
 from core.interfaces.condition import BodyCondition
+from engine.environment import EnvironmentSystem
 
 BOUND = BodyCondition(description="双手被反绑", source_agent_id="a1", since_step=0)
 MARK = "双手被反绑"
@@ -62,6 +63,9 @@ def _agent(agent_id: str = "a2", name: str = "李元吉", *, condition=BOUND):
             if condition is not None:
                 self.personality.set_condition(condition)
             self.relation_system = _Rel()
+
+        async def relation_context(self, agent_ids) -> str:  # noqa: ANN001
+            return ""  # nobody present this agent has a substantive relation with
 
     return _A()
 
@@ -120,7 +124,8 @@ async def test_social_memory_summary_knows_the_speaker_is_bound() -> None:
     ex = SocialExecutor(llm, _directory(), seconds_per_step=3600)
     await ex._memory_summary(  # noqa: SLF001
         agent=_agent(), other_id="a1", other_name="李世民", transcript="……",
-        purpose="求他放我一条生路", fallback_fact="谈了一场。", is_initiator=False, now_step=24,
+        purpose="求他放我一条生路", is_initiator=False, now_step=24,
+        environment=EnvironmentSystem(),
     )
     assert MARK in llm.text()
 
@@ -190,7 +195,7 @@ def test_event_brief_lists_condition_beside_vitality() -> None:
     main = _agent("a2", "李元吉")
     main.is_main_character = True
     brief = NarrativeEditor._brief_characters(  # noqa: SLF001
-        type("S", (), {"directory": _directory()})(), {"a2": main},
+        type("S", (), {"directory": _directory()})(), {"a2": main}, {},
     )
     assert MARK in brief
     assert "体力" in brief  # alongside it, same granularity
@@ -202,7 +207,7 @@ def test_event_brief_omits_condition_when_unencumbered() -> None:
     main = _agent("a2", "李元吉", condition=None)
     main.is_main_character = True
     brief = NarrativeEditor._brief_characters(  # noqa: SLF001
-        type("S", (), {"directory": _directory()})(), {"a2": main},
+        type("S", (), {"directory": _directory()})(), {"a2": main}, {},
     )
     assert "处境" not in brief
 
@@ -218,7 +223,7 @@ async def test_social_interrupt_summary_knows_the_speaker_is_bound() -> None:
     await ex._interrupt_summary(  # noqa: SLF001
         agent=_agent(), other_id="a3", other_name="李世民", purpose="替自己分辩", thought="我说不下去了",
         cause="", elapsed_label="约1小时", is_triggered=True, is_initiator=False, scene="",
-        now_step=24,
+        environment=EnvironmentSystem(), now_step=24,
     )
     assert MARK in llm.text()
 
@@ -232,7 +237,7 @@ async def test_dialogue_transcript_knows_which_speaker_is_bound() -> None:
 
     llm = _Capture('{"dialogue":[{"speaker":1,"line":"…"}],"observation":"两人谈了一场。"}')
     ex = SocialExecutor(llm, _directory(), seconds_per_step=3600)
-    empty = {"relation": "", "about_other": "", "about_topic": ""}
+    empty = {"relation": None, "about_other": [], "about_topic": []}
     # Each person has a different condition: checking only one stays green even if the other's
     # interpolation slot is deleted.
     limping = BodyCondition(description="右腿有伤", since_step=0)
@@ -255,7 +260,7 @@ async def test_dialogue_leaves_a_free_speaker_unmarked() -> None:
 
     llm = _Capture('{"dialogue":[{"speaker":1,"line":"…"}],"observation":"两人谈了一场。"}')
     ex = SocialExecutor(llm, _directory(), seconds_per_step=3600)
-    empty = {"relation": "", "about_other": "", "about_topic": ""}
+    empty = {"relation": None, "about_other": [], "about_topic": []}
     await ex._llm_full_dialogue(  # noqa: SLF001
         initiator=_agent("a1", "李世民", condition=None),
         target=_agent("a2", "李元吉", condition=None),
@@ -281,5 +286,8 @@ async def test_work_interrupt_memory_knows_the_worker_is_bound() -> None:
         participant_ids=["a2"], started_step=20, estimated_steps=4, remaining_steps=2,
         purpose="誊抄名册",
     )
-    await ex.interrupt(state, 24, agents={"a2": _agent()}, thought="我停下了", cause="外头喧哗")
+    await ex.interrupt(
+        state, 24, agents={"a2": _agent()}, environment=EnvironmentSystem(),
+        thought="我停下了", cause="外头喧哗",
+    )
     assert MARK in llm.text()

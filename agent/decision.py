@@ -22,10 +22,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, List, Sequence
+from typing import Callable, List, NamedTuple, Sequence
 
 from agent.memory_types import Memory
-from agent.need import NeedEvaluation
 from agent.perception import PerceptionPacket
 from agent.relation import describe_relations, render_relation_lines
 from agent.personality import ActionStatus, PersonalityLayer
@@ -854,12 +853,6 @@ class DecisionEngine:
         if selection is None:  # _parse_llm_selection already recorded the reason on the trace
             logger.warning("decision_unparseable", extra={"agent_id": agent_id, "step": step})
             return DecisionResult.failed()
-        # Only for the model, which may leave it out. Not for an actor: this guesses an intent
-        # they never stated, and MOVE writes it into the character's memory as "我打算「…」".
-        if not selection.expected_outcome:
-            selection.expected_outcome = self._expected_outcome(
-                selection.action_type, packet.internal_context.need_evaluation,
-            )
         action = self._build_action(selection, personality, packet)
         target = action.target
         target_ref = ",".join(target.acted_on_ids)
@@ -1393,20 +1386,6 @@ class DecisionEngine:
         payload = {key: value for key, value in payload.items() if key in applicable}
         return _select(payload, chosen.action_type, _slots_for(payload, packet))
 
-    def _expected_outcome(self, action_type: ActionType, needs: NeedEvaluation) -> str:
-        if action_type == ActionType.TALK:
-            return "通过交谈更清晰地了解对方意图，减少不确定性。"
-        if action_type == ActionType.REST:
-            return "恢复平静，消除内心噪音。"
-        if action_type == ActionType.ERRAND:
-            return "把这个行动指派出去，等他回来带话。"
-        if action_type == ActionType.PHYSICAL:
-            return "通过直接的物理行为改变环境状态或影响他人。"
-        if action_type == ActionType.COVERT:
-            return "在不被察觉的情况下，探到我本来无从得知的事情。"
-        dominant_label = _dominant_need_label(needs) if needs.dominant_need is not None else "稳定"
-        return f"推进「{dominant_label}」需求。"
-
 
 # ----------------------------------------------------------------------
 # Module-level helpers
@@ -1449,20 +1428,6 @@ def _insights_with_sources(
             line += f"（依据：{snippets}）"
         rendered.append(line)
     return "\n".join(rendered)
-
-
-def _dominant_need_label(awareness: object) -> str:
-    """Return a human-readable label for the dominant need, if any."""
-
-    dominant = getattr(awareness, "dominant_need", None)
-    if dominant is None:
-        return "维持稳定"
-    active_needs = getattr(awareness, "active_needs", []) or []
-    for need in active_needs:
-        if getattr(need, "type", None) == dominant:
-            label = getattr(need, "label", "") or getattr(dominant, "value", str(dominant))
-            return str(label)
-    return getattr(dominant, "value", str(dominant))
 
 
 def _message_roster(packet: PerceptionPacket) -> List[tuple[str, PerceivedIdentity]]:
@@ -1624,21 +1589,35 @@ def _render_candidate_lists(
         facts.add("我够得着的东西", "无（此处没有，别人手上也没有）")
 
 
-# The actor's form names targets by id; the decision slots take list indices. Each pair below is
-# one slot in both shapes and the list it indexes, so the form is bound by the same binders.
-_ACTOR_ID_SLOTS: tuple[tuple[str, str, Callable[[CandidateLists], List[str]]], ...] = (
-    ("person_ids", "person_indices", lambda c: c.roster_ids),
-    ("move_carry_ids", "move_carry_indices", lambda c: c.roster_ids),
-    ("destination_id", "destination_index", lambda c: c.reachable_ids),
-    ("physical_person_id", "physical_person_index", lambda c: c.roster_ids),
-    ("physical_npc_id", "physical_npc_index", lambda c: c.npc_ids),
-    ("physical_entity_id", "physical_entity_index", lambda c: c.entity_ids),
-    ("physical_recipient_id", "physical_recipient_index", lambda c: c.roster_ids),
-    ("errand_npc_id", "errand_npc_index", lambda c: c.npc_ids),
-    ("errand_destination_id", "errand_destination_index", lambda c: c.reachable_ids),
-    ("errand_item_id", "errand_item_index", lambda c: c.entity_ids),
-    ("errand_recipient_id", "errand_recipient_index", lambda c: c.roster_ids),
+class ActorTargetSlot(NamedTuple):
+    """One target slot in both shapes: the actor's form names targets by id (``field``), the
+    decision output indexes a list (``slot``). ``kind`` says which list, so the form is bound by
+    the same binders and a review reads an actor's decision in the AI's slots."""
+
+    field: str
+    slot: str
+    kind: str   # "person" | "place" | "npc" | "entity"; see _KIND_IDS
+
+
+ACTOR_TARGET_SLOTS: tuple[ActorTargetSlot, ...] = (
+    ActorTargetSlot("person_ids", "person_indices", "person"),
+    ActorTargetSlot("move_carry_ids", "move_carry_indices", "person"),
+    ActorTargetSlot("destination_id", "destination_index", "place"),
+    ActorTargetSlot("physical_person_id", "physical_person_index", "person"),
+    ActorTargetSlot("physical_npc_id", "physical_npc_index", "npc"),
+    ActorTargetSlot("physical_entity_id", "physical_entity_index", "entity"),
+    ActorTargetSlot("physical_recipient_id", "physical_recipient_index", "person"),
+    ActorTargetSlot("errand_npc_id", "errand_npc_index", "npc"),
+    ActorTargetSlot("errand_destination_id", "errand_destination_index", "place"),
+    ActorTargetSlot("errand_item_id", "errand_item_index", "entity"),
+    ActorTargetSlot("errand_recipient_id", "errand_recipient_index", "person"),
 )
+_KIND_IDS: dict[str, Callable[[CandidateLists], List[str]]] = {
+    "person": lambda c: c.roster_ids,
+    "place": lambda c: c.reachable_ids,
+    "npc": lambda c: c.npc_ids,
+    "entity": lambda c: c.entity_ids,
+}
 # Slots with no list: same meaning in both shapes, and only ``item_name`` is named differently.
 _ACTOR_TEXT_SLOTS: tuple[tuple[str, str], ...] = (
     ("action_description", "action_description"),
@@ -1664,11 +1643,11 @@ def _actor_payload(action: ActorAction, lists: CandidateLists) -> dict:
     for key in _ACTOR_FLAG_SLOTS:
         if getattr(action, key):
             payload[key] = True
-    for field_name, key, list_of in _ACTOR_ID_SLOTS:
+    for field_name, key, kind in ACTOR_TARGET_SLOTS:
         value = getattr(action, field_name)
         if not value:
             continue
-        ids = list_of(lists)
+        ids = _KIND_IDS[kind](lists)
         wanted = list(value) if isinstance(value, tuple) else [value]
         if any(v not in ids for v in wanted):
             raise ActorAnswerRejected(f"{field_name}_not_perceived")
@@ -1708,7 +1687,8 @@ def _actor_action_from_payload(payload: dict, lists: CandidateLists) -> ActorAct
         fields[field_name] = _text(payload, key)
     for key in _ACTOR_FLAG_SLOTS:
         fields[key] = payload.get(key) is True
-    for field_name, key, list_of in _ACTOR_ID_SLOTS:
+    for field_name, key, kind in ACTOR_TARGET_SLOTS:
+        list_of = _KIND_IDS[kind]
         raw = payload.get(key)
         if field_name.endswith("_ids"):
             indices = raw if isinstance(raw, list) else [raw] if isinstance(raw, int) else []

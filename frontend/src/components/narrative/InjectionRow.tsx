@@ -2,6 +2,7 @@ import { Fragment } from "react";
 
 import { URGENCY_LABEL } from "../../lib/urgency";
 import type { InjectionReceipt, InjectionSummary } from "../../types";
+import type { StepCast } from "./cast";
 
 // What a director's intervention actually DID. An injection can be delivered to the right
 // inbox and still move nobody (the pressure evaluator judges it irrelevant), which from
@@ -11,7 +12,7 @@ import type { InjectionReceipt, InjectionSummary } from "../../types";
 // One row per column, not one sentence: the four readings are independent and each can hold
 // a whole cast. As a label column and a name column, 「打断」 is found at a glance and a name
 // in "送达" but not in "压力" shows as a gap.
-function ReceiptLine({ receipt }: { receipt: InjectionReceipt }) {
+function ReceiptLine({ receipt, cast }: { receipt: InjectionReceipt; cast: StepCast }) {
   const { delivered_to, pressure, decided, interrupted } = receipt;
   if (!delivered_to.length && !pressure.length) {
     return (
@@ -20,13 +21,14 @@ function ReceiptLine({ receipt }: { receipt: InjectionReceipt }) {
       </div>
     );
   }
-  const names = (xs: { name: string }[]) => xs.map((x) => x.name).join("、");
+  const nameOf = (id: string) => cast.nameOf(id) || "某人";
+  const names = (ids: string[]) => ids.map(nameOf).join("、");
   const rows: [string, string][] = [];
   if (delivered_to.length) rows.push(["送达", names(delivered_to)]);
   if (pressure.length) {
     rows.push([
       "压力",
-      pressure.map((p: { name: string; urgency: string }) => `${p.name}（${URGENCY_LABEL[p.urgency] ?? p.urgency}）`).join("、"),
+      pressure.map((p) => `${nameOf(p.agent_id)}（${URGENCY_LABEL[p.urgency] ?? p.urgency}）`).join("、"),
     ]);
   }
   if (decided.length) rows.push(["因此决策", names(decided)]);
@@ -48,7 +50,7 @@ function ReceiptLine({ receipt }: { receipt: InjectionReceipt }) {
   );
 }
 
-export default function InjectionRow({ injection }: { injection: InjectionSummary }) {
+export default function InjectionRow({ injection, cast }: { injection: InjectionSummary; cast: StepCast }) {
   // The editor's injections and the director's share this card but must never look alike.
   const byDirector = injection.authored_by === "director";
   return (
@@ -73,7 +75,7 @@ export default function InjectionRow({ injection }: { injection: InjectionSummar
           导演说：{injection.directive_text}
         </div>
       )}
-      {injection.receipt && <ReceiptLine receipt={injection.receipt} />}
+      {injection.receipt && <ReceiptLine receipt={injection.receipt} cast={cast} />}
     </div>
   );
 }

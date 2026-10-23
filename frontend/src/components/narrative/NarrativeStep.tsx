@@ -122,7 +122,7 @@ export default function NarrativeStep({
             );
           }
 
-          if (item.kind === "injection") return <InjectionRow key={key} injection={item.data} />;
+          if (item.kind === "injection") return <InjectionRow key={key} injection={item.data} cast={cast} />;
           if (item.kind === "message") return <MessageRow key={key} m={item.data} cast={cast} />;
           if (item.kind === "observation") return <ObservationRow key={key} o={item.data} cast={cast} />;
           if (item.kind === "broadcast") {

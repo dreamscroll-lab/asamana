@@ -25,7 +25,7 @@ from core.interfaces.directory import WorldDirectory
 from core.action_duration import action_duration_steps
 from core.logging import get_logger
 from core.interfaces.execution import TickResult
-from engine.executors.base import ActionExecutionState, ActionExecutor
+from engine.executors.base import ActionExecutionState, ActionExecutor, adjudication_failed_result
 from engine.narration import observed_here, scene_line
 from engine.scene import observe_location
 
@@ -170,7 +170,11 @@ class ErrandExecutor(ActionExecutor):
                 "errand_bearer_vanished",
                 extra={"agent_id": state.initiator_id, "step": step},
             )
-            return [self._null_step(state, step=step, location=location)]
+            # Asserts neither that it was sent nor that it wasn't.
+            return [adjudication_failed_result(state, step, outcome=scene_line(location, (
+                f"{self._directory.agent_name(state.initiator_id)}想派人办一件事，"
+                "一时未能确知派没派出去。"
+            )))]
 
         doer_name = self._directory.agent_name(state.initiator_id)
         bearer = npc.name or "那人"
@@ -241,20 +245,4 @@ class ErrandExecutor(ActionExecutor):
             ),
             started_step=step,
             purpose=action.action_description or "派人办事",
-        )
-
-    def _null_step(
-        self, state: ActionExecutionState, *, step: int, location: str,
-    ) -> ActionResult:
-        """The honest product when the bearer vanished: asserts neither that it was sent nor
-        that it wasn't."""
-        return ActionResult(
-            action=self._stub(state, step),
-            expected_outcome=state.expected_outcome or state.purpose,
-            outcome=scene_line(location, (
-                f"{self._directory.agent_name(state.initiator_id)}想派人办一件事，"
-                f"一时未能确知派没派出去。"
-            )),
-            succeeded=False,
-            adjudication_failed=True,
         )

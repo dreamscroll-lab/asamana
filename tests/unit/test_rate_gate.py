@@ -398,7 +398,7 @@ def _config_with(**scene_providers: str):
 
 
 def _gates(config):
-    from core.container import _build_rate_gates
+    from providers.assembly import _build_rate_gates
 
     return _build_rate_gates(config)
 
@@ -433,7 +433,7 @@ def test_the_embedding_never_shares_an_llm_gate() -> None:
     It doesn't even enter this table: the keys are ``llm.providers`` entry names, so an LLM
     endpoint named embedding would compete for the slot and a collision would silently drop rpm/tpm.
     """
-    from core.container import _embedding_gate
+    from providers.assembly import _embedding_gate
 
     config = _config_with(agent_decision_main="qwen")
     gates = _gates(config)
@@ -456,7 +456,7 @@ def test_whether_an_embedding_needs_a_gate_is_self_reported(monkeypatch) -> None
     """Whether a provider is networked is self-reported by whether it reads credentials. No
     provider→networked table here: switching embedding vendors would require remembering to update
     it, and missing that silently loses backpressure."""
-    from core.container import _is_networked
+    from providers.assembly import _is_networked
     from providers.embedding.dashscope import DashScopeEmbeddingProvider
     from providers.embedding.in_memory import InMemoryEmbeddingProvider
 
@@ -534,7 +534,7 @@ def test_scenes_on_one_endpoint_share_its_gate(monkeypatch) -> None:
 
 
 def _build_scene_gates(config):
-    from core.container import _build_llm_router, _build_rate_gates
+    from providers.assembly import _build_llm_router, _build_rate_gates
     from providers.llm.catalog import resolve_catalog
 
     gates = _build_rate_gates(config)

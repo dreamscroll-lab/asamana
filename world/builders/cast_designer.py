@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 
-from core.context import note_active_call_adoption
-from core.interfaces.llm import IndexedRef, LLMMessage, LLMRouter, LLMScene, extract_json_object, output_budget
+from core.interfaces.llm import (
+    IndexedRef, LLMMessage, LLMResponse, LLMRouter, LLMScene, extract_json_object, output_budget,
+)
 from core.logging import get_logger
 from core.prompts import relation_legend
 from core.coerce import coerce_list, coerce_mapping_list, coerce_str
 
 from world.models import CastDesign, FigureCastRole, ThemeAnalysis
-from world.builders import BUILD_ATTEMPTS
+from world.builders import BuildReplyRejected, complete_with_build_retry
 
 logger = get_logger(__name__)
 
@@ -31,39 +31,21 @@ class CastDesigner:
             LLMMessage(role="system", content=system_prompt),
             LLMMessage(role="user", content=user_prompt),
         ]
-        last_exc: BaseException | None = None
-        for attempt in range(BUILD_ATTEMPTS):
-            try:
-                response = await self._llm_router.complete(
-                    # reason ≤120 chars ≈ 185 tok, plus per character = arc_summary (≤90 chars ≈ 135)
-                    # + narrative_role (~6) + index (~3) + key_relationships (≤6 indices × 3) + structure (20)
-                    # ≈ 182 tok; realistic max 8 characters ≈ 1456 + 185 = 1641.
-                    LLMScene.CAST_DESIGN, messages, max_tokens=output_budget(1641), json_mode=True,
-                )
-                cast_design = self._parse(response.content, analysis)
-                if cast_design is not None:
-                    return cast_design
-                note_active_call_adoption(False, "incomplete_cast_roles")
-                last_exc = ValueError(
-                    f"CastDesigner returned incomplete roles for world '{analysis.world_name}' "
-                    f"(attempt {attempt + 1})"
-                )
-            except Exception as exc:
-                note_active_call_adoption(False, "unusable_payload")
-                last_exc = exc
-            logger.warning(
-                "cast_design_attempt_failed",
-                extra={
-                    "world_name": analysis.world_name,
-                    "attempt": attempt + 1,
-                    "reason": str(last_exc),
-                },
+        async def call() -> LLMResponse:
+            return await self._llm_router.complete(
+                # reason ≤120 chars ≈ 185 tok, plus per character = arc_summary (≤90 chars ≈ 135)
+                # + narrative_role (~6) + index (~3) + key_relationships (≤6 indices × 3) + structure (20)
+                # ≈ 182 tok; realistic max 8 characters ≈ 1456 + 185 = 1641.
+                LLMScene.CAST_DESIGN, messages, max_tokens=output_budget(1641), json_mode=True,
             )
-            if attempt < BUILD_ATTEMPTS - 1:
-                await asyncio.sleep(1.0)
-        raise ValueError(
-            f"CastDesigner failed for world '{analysis.world_name}' after {BUILD_ATTEMPTS} attempts"
-        ) from last_exc
+
+        return await complete_with_build_retry(
+            call,
+            lambda content: self._parse(content, analysis),
+            attempt_failed_event="cast_design_attempt_failed",
+            log_extra={"world_name": analysis.world_name},
+            failure=f"CastDesigner failed for world '{analysis.world_name}'",
+        )
 
     def _build_prompt(self, analysis: ThemeAnalysis) -> tuple[str, str]:
         """Return ``(system, user)`` split so the invariant scaffolding
@@ -138,10 +120,13 @@ class CastDesigner:
         user_prompt = "\n\n".join([input_block, "严格按上述 JSON 输出，不写多余内容。"])
         return system_prompt, user_prompt
 
-    def _parse(self, raw: str, analysis: ThemeAnalysis) -> CastDesign | None:
+    def _parse(self, raw: str, analysis: ThemeAnalysis) -> CastDesign:
         payload = extract_json_object(raw)
         if payload is None:
-            return None
+            raise BuildReplyRejected(
+                f"CastDesigner returned no parseable JSON for world '{analysis.world_name}'",
+                "no_json_object",
+            )
         names = IndexedRef([f.name for f in analysis.key_figures])
         required: dict[str, set[str]] = {}
         for rel in analysis.initial_relations:
@@ -162,5 +147,8 @@ class CastDesigner:
                 key_relationships=augmented,
             )
         if len(by_name) < len(analysis.key_figures):
-            return None
+            raise BuildReplyRejected(
+                f"CastDesigner returned incomplete roles for world '{analysis.world_name}'",
+                "incomplete_cast_roles",
+            )
         return CastDesign(roles=list(by_name.values()))

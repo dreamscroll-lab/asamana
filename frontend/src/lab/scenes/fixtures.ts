@@ -535,9 +535,6 @@ export function step({
   for (const s of states) {
     scopeOf(s.location_id).agents.push({
       agent_id: s.agent_id,
-      name: s.agent_name,
-      gender: s.gender,
-      age: s.age,
       is_main_character: s.is_main_character,
       is_active: s.is_active,
       public: {

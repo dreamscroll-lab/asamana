@@ -20,7 +20,7 @@ from config.models import Config
 from core.container import Container
 from core.logging import get_logger
 from core.model_keys import ModelKeysMissing
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from world import DEFAULT_CATALOG_PATH, WorldCatalog
 
 from interaction.models import WorldMeta

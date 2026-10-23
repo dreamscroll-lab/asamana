@@ -19,9 +19,6 @@ from typing import Any, Awaitable, Callable
 
 from tuning import scenario_store
 
-SCENARIO_DIR = Path(__file__).parent / "scenarios"
-
-
 @dataclass(frozen=True)
 class StageSpec:
     """One stage suite. Empty ``criteria`` = a purely deterministic suite (no LLM judge, e.g. perception)."""
@@ -33,7 +30,7 @@ class StageSpec:
 
     @property
     def scenarios_path(self) -> Path:
-        return SCENARIO_DIR / f"{self.key}.json"
+        return scenario_store.scenario_path(self.key)
 
     @property
     def judged(self) -> bool:

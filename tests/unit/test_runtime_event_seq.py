@@ -24,7 +24,7 @@ import pytest
 from engine.scheduler import DEFAULT_MAIN_MAX_IDLE_STEPS
 
 from core.interfaces.message import Message
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from interaction.models import StepView
 from tests.unit.step_view import events
 from tests.unit.test_runtime_smoke import (

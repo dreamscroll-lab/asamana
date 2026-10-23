@@ -1,8 +1,8 @@
 """A built world's map artifact: the .tmj, the ground derived from its art, the art, and the cast's art.
 
-Each route serves the world's copy frozen at build, and the live template only for a world built
-before the freeze. ``ASSET_SUFFIXES`` and ``image_response`` are the terms art is served on, shared
-with ``template_preview``.
+Each route serves only the world's copy frozen at build (``world.initializer``), never the live
+template, and answers 404 for anything the world didn't freeze. ``ASSET_SUFFIXES`` and
+``image_response`` are the terms art is served on, shared with ``template_preview``.
 """
 
 from __future__ import annotations
@@ -11,9 +11,7 @@ import hashlib
 import json
 import mimetypes
 from pathlib import Path
-from typing import Any, Mapping
-
-from core.logging import get_logger
+from typing import Any
 
 # Request must be importable at module scope: with `from __future__ import annotations`, FastAPI
 # resolves the `request: Request` hint against module globals, so a function-local import leaves it
@@ -50,7 +48,7 @@ def image_response(
 
     * A world's frozen art never changes (written once at build, URL carries the world id):
       `max-age` + `immutable`, so the client stops asking — one round trip saved per tileset.
-    * Live template art (pre-freeze worlds) is edited by hand between runs: `no-cache`
+    * Live template art (``template_preview``) is edited by hand between runs: `no-cache`
       ("revalidate first"), so an unchanged file costs a 304 and an edit shows up at once.
     """
     cache_control = "public, max-age=31536000, immutable" if immutable else "no-cache"
@@ -60,16 +58,6 @@ def image_response(
     if isinstance(body, Path):
         return FileResponse(body, headers=headers)
     return Response(content=body, media_type=media_type, headers=headers)
-
-
-logger = get_logger(__name__)
-
-# The map a world renders on when its config names none.
-_DEFAULT_TEMPLATE = "changan_iso"
-
-
-def _template_name(config: Mapping[str, Any] | None) -> str:
-    return str((config or {}).get("runtime_context", {}).get("template") or _DEFAULT_TEMPLATE)
 
 
 def build_maps_router(services: ApiServices) -> Any:
@@ -89,51 +77,28 @@ def build_maps_router(services: ApiServices) -> Any:
         engine share one map artifact.
 
         Served from the per-world copy frozen at build (``save_world_map``), so template edits
-        never drift a built world's map away from what its engine simulates. Worlds built before
-        the freeze fall back to the live template named in their config's runtime_context.
+        never drift a built world's map away from what its engine simulates.
         """
-        from worlds.tiled import MAP_FILENAME, template_dir
-
         frozen = await manager.snapshot_provider.load_world_map(world_id)
-        if frozen is not None:
-            return frozen
-
-        config = await manager.snapshot_provider.load_world_config(world_id)
-        if not config:
-            raise HTTPException(status_code=404, detail=f"No world config for: {world_id}")
-        template = _template_name(config)
-        logger.debug("world_map_fallback_to_template", extra={"world_id": world_id, "template": template})
-        tmj_path = template_dir(template) / MAP_FILENAME
-        if not tmj_path.exists():
-            raise HTTPException(status_code=404, detail=f"No map template: {template}")
-        try:
-            return json.loads(tmj_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise HTTPException(status_code=500, detail=f"Map unreadable: {exc}") from exc
+        if frozen is None:
+            raise HTTPException(status_code=404, detail=f"No map for: {world_id}")
+        return frozen
 
     @router.get("/api/worlds/{world_id}/map/ground")
     async def get_map_ground(world_id: str) -> dict[str, Any]:
         """Which cells of this world's map a body may stand on, and which carry a route,
         derived from the map's own art (server-side: see ``map_artifact.ground_payload``).
 
-        Read through the world's own copy of the art, the same precedence ``/map`` uses, and
-        cached per world since those inputs are frozen at build.
+        Read through the world's own copy of the art and cached per world, since both inputs
+        are frozen at build.
         """
-        from worlds.tiled import read_template_asset, template_dir
-
         if world_id in _ground_cache:
             return _ground_cache[world_id]
 
         doc = await get_map(world_id)
-        config = await manager.snapshot_provider.load_world_config(world_id)
-        template = _template_name(config)
-        root = template_dir(template)
 
         async def read_asset(image: str) -> bytes | None:
-            frozen = await manager.snapshot_provider.load_world_asset(world_id, image)
-            if frozen is not None:
-                return frozen
-            return read_template_asset(root, image)
+            return await manager.snapshot_provider.load_world_asset(world_id, image)
 
         payload = await map_artifact.ground_payload(doc, read_asset)
         _ground_cache[world_id] = payload
@@ -157,38 +122,17 @@ def build_maps_router(services: ApiServices) -> Any:
 
         Character art belongs to the map (a body is dressed for the map's period), so it is
         authored beside the map, frozen at build, and served with URLs resolved here, as
-        ``/map/assets`` does. The frozen copy wins over the live template, so cast and ground
-        never come from two points in time.
+        ``/map/assets`` does.
         """
-        from worlds.tiled import CHARACTERS_FILENAME, template_dir
+        from worlds.tiled import CHARACTERS_FILENAME
 
-        manifest: dict[str, Any] | None = None
-        frozen = await manager.snapshot_provider.load_world_asset(
-            world_id, CHARACTERS_FILENAME
-        )
-        if frozen is not None:
-            try:
-                manifest = json.loads(frozen.decode("utf-8"))
-            except (UnicodeDecodeError, ValueError) as exc:
-                logger.warning(
-                    "frozen_character_manifest_unreadable",
-                    extra={"world_id": world_id, "error": str(exc)},
-                )
-        if manifest is None:
-            config = await manager.snapshot_provider.load_world_config(world_id)
-            if not config:
-                raise HTTPException(status_code=404, detail=f"No world config for: {world_id}")
-            template = _template_name(config)
-            path = template_dir(template) / CHARACTERS_FILENAME
-            if not path.is_file():
-                raise HTTPException(status_code=404, detail=f"No cast art for: {template}")
-            try:
-                manifest = json.loads(path.read_text(encoding="utf-8"))
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=500, detail=f"Cast manifest unreadable: {exc}"
-                ) from exc
-
+        frozen = await manager.snapshot_provider.load_world_asset(world_id, CHARACTERS_FILENAME)
+        if frozen is None:
+            raise HTTPException(status_code=404, detail=f"No cast art for: {world_id}")
+        try:
+            manifest = json.loads(frozen.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=500, detail=f"Cast manifest unreadable: {exc}") from exc
         return map_artifact.with_asset_urls(manifest, f"/api/worlds/{world_id}/map/assets")
 
     @router.get("/api/worlds/{world_id}/map/assets/{asset_path:path}")
@@ -196,39 +140,17 @@ def build_maps_router(services: ApiServices) -> Any:
         """A tileset image the world's .tmj references, by the RELATIVE path written
         in the map itself (``tilesets/base/ground/ground.png``).
 
-        Map and art are one artifact, so the backend serves the pixels too and a template stays
-        one self-contained drop-in directory. Also serves the cast manifest's sheets, which sit
-        in the same directory. The frozen copy wins over the live template, as for the map.
-
-        The path comes off the URL, so it is confined to that directory and to known asset
-        suffixes before anything touches the filesystem.
+        Map and art are one artifact, so the backend serves the pixels too. Also serves the cast
+        manifest's sheets, frozen beside them. Only known asset suffixes are served: the map
+        document and the cast manifest have their own routes.
         """
-        from worlds.tiled import template_asset_path, template_dir
-
         if Path(asset_path).suffix.lower() not in ASSET_SUFFIXES:
             raise HTTPException(status_code=404, detail="No such map asset")
-
         frozen = await manager.snapshot_provider.load_world_asset(world_id, asset_path)
-        if frozen is not None:
-            media_type = mimetypes.guess_type(asset_path)[0] or "application/octet-stream"
-            # Frozen art can never change under this address, so the client should stop asking.
-            return image_response(
-                request, frozen, _weak_etag(frozen), media_type, immutable=True
-            )
-
-        config = await manager.snapshot_provider.load_world_config(world_id)
-        if not config:
-            raise HTTPException(status_code=404, detail=f"No world config for: {world_id}")
-        template = _template_name(config)
-
-        root = template_dir(template)
-        # The suffix allowlist keeps the route from reading a template's own map.tmj.
-        target = template_asset_path(root, asset_path)
-        if target is None:
+        if frozen is None:
             raise HTTPException(status_code=404, detail=f"No such map asset: {asset_path}")
-        stat = target.stat()
-        return image_response(
-            request, target, f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
-        )
+        media_type = mimetypes.guess_type(asset_path)[0] or "application/octet-stream"
+        # Frozen art can never change under this address, so the client should stop asking.
+        return image_response(request, frozen, _weak_etag(frozen), media_type, immutable=True)
 
     return router

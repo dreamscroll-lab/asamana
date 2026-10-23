@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, List
 
 from core.action_duration import action_duration_steps
-from core.context import GivenFacts, annotate_call, note_active_call_adoption
+from core.context import GivenFacts, annotate_call
 from core.interfaces.action import (
-    ActionTarget, ActionResult, ActionType, AgentAction, EntitySpawn, EntityStateChange,
+    ActionResult, ActionType, AgentAction, EntitySpawn, EntityStateChange,
 )
 from core.interfaces.directory import WorldDirectory
 from core.interfaces.llm import (
-    IndexedRef, LLMMessage, LLMRouter, LLMScene, coerce_bool, extract_json, output_budget,
+    IndexedRef, LLMRouter, coerce_bool, output_budget,
 )
 from core.logging import get_logger
 from core.prompts import (
@@ -25,7 +25,9 @@ from core.prompts import (
 )
 from core.duration import describe_duration
 from core.interfaces.execution import TickResult
-from engine.executors.base import ActionExecutionState, ActionExecutor
+from engine.executors.base import (
+    ActionExecutionState, ActionExecutor, adjudication_failed_result, complete_json,
+)
 from engine.narration import (
     ensure_doer_named, format_interrupt_reason_3p, format_interrupt_thought, observed_here,
     scene_line,
@@ -36,7 +38,7 @@ if TYPE_CHECKING:
     from agent.agent import Agent
     from engine.environment import EnvironmentSystem
     from engine.message_system import MessageSystem
-    from world.models import WorldEntity
+    from core.interfaces.entity import WorldEntity
 
 logger = get_logger(__name__)
 
@@ -92,8 +94,8 @@ class WorkExecutor(ActionExecutor):
         self._directory = directory
         self._seconds_per_step = seconds_per_step
 
-    def _outcome(self, agent_id: str, purpose: str, location: str, *, succeeded: bool) -> str:
-        """Fallback 3p outcome when the judge gives none. Never quotes ``purpose``: it's a
+    def _outcome(self, agent_id: str, location: str, *, succeeded: bool) -> str:
+        """Fallback 3p outcome when the judge gives none. Never quotes the purpose: it's a
         first-person sentence and breaks a third-person line."""
         doer_name = self._directory.agent_name(agent_id)
         body = (
@@ -187,17 +189,15 @@ class WorkExecutor(ActionExecutor):
             in_hand=scene.own_entities,
             now_step=step,
             duration_label=describe_duration(state.estimated_steps, self._seconds_per_step),
-            location=location,
             situation_header=situation_header,
             scene=scene.text,
             expected_outcome=state.expected_outcome,
         )
         if gen_result is None:
-            return [self._adjudication_failed_result(
-                purpose=state.purpose, step=step, agent_id=state.initiator_id,
-                estimated_steps=state.estimated_steps, expected_outcome=state.expected_outcome,
-                location=location, target=state.target,
-            )]
+            return [adjudication_failed_result(state, step, outcome=scene_line(
+                location,
+                f"{self._directory.agent_name(state.initiator_id)}着手做手上的事，一时未能确知是否做成。",
+            ))]
         stub = AgentAction(
             agent_id=state.initiator_id,
             step=step,
@@ -208,9 +208,7 @@ class WorkExecutor(ActionExecutor):
         )
         # A missing observation falls back to the template, never to outcome (it has the product).
         doer_name = self._directory.agent_name(state.initiator_id)
-        fallback_3p = self._outcome(
-            state.initiator_id, state.purpose, location, succeeded=gen_result.succeeded,
-        )
+        fallback_3p = self._outcome(state.initiator_id, location, succeeded=gen_result.succeeded)
         outcome = (
             scene_line(location, ensure_doer_named(gen_result.outcome, doer_name))
             if gen_result.outcome else fallback_3p
@@ -263,40 +261,16 @@ class WorkExecutor(ActionExecutor):
             entity_state_changes=changes,
         )]
 
-    async def interrupt(
-        self,
-        state: ActionExecutionState,
-        step: int,
-        *,
-        agents: dict[str, "Agent"],
-        environment: "EnvironmentSystem | None" = None,
-        interrupted_agent_id: str | None = None,
-        thought: str = "",
-        cause: str = "",
-    ) -> List[ActionResult]:
-        elapsed = state.estimated_steps - state.remaining_steps
-        elapsed_label = describe_duration(elapsed, self._seconds_per_step)
-        agent = agents.get(state.initiator_id)
-        thought_part = format_interrupt_thought(thought)
-        location = observe_location(environment, state.initiator_id) if environment is not None else "此处"
-        place = f"在{location}"
-        # Only third-person cause may name what interrupted it (see base.interrupt).
-        cut = f"因{cause}而中断" if cause else "被打断"
-
-        fallback = (
-            f"{place}做「{state.purpose}」做了{elapsed_label}便{cut}，没能收尾{thought_part}"
-            if elapsed > 0
-            else f"刚着手「{state.purpose}」就{cut}{thought_part}"
+    async def _interrupt_memory(
+        self, agent: "Agent", environment: "EnvironmentSystem", *, happened: str, now_step: int,
+    ) -> str:
+        """The worker's own one-line record of the work that was cut off, or "" when no usable one
+        came back (the caller then keeps the record code built: being interrupted is a fact)."""
+        situation_header = render_situation_header(
+            situation_for(environment, agent.agent_id), voice=SituationVoice.FIRST,
         )
-        factual = fallback
-        if agent is not None:
-            situation_header = (
-                render_situation_header(situation_for(environment, state.initiator_id),
-                                        voice=SituationVoice.FIRST)
-                if environment is not None else ""
-            )
-            header_part = f"{situation_header}\n\n" if situation_header else ""
-            system = """\
+        header_part = f"{situation_header}\n\n" if situation_header else ""
+        system = """\
 我此刻代入这个角色,以第一人称「我」记下这场被打断的事——这是我一贯的记事方式,与处境无关。
 
 【我要说的】
@@ -307,49 +281,72 @@ class WorkExecutor(ActionExecutor):
 严格输出以下 JSON,不要任何多余内容:
 {"fact": "一句话（不超过36字）"}
 """
-            doer_condition = condition_line(
-                agent.personality.state.condition, voice=SituationVoice.FIRST,
-                now_step=step, seconds_per_step=self._seconds_per_step,
+        doer_condition = condition_line(
+            agent.personality.state.condition, voice=SituationVoice.FIRST,
+            now_step=now_step, seconds_per_step=self._seconds_per_step,
         )
-            doer_vitality = vitality_line(
-                agent.personality.state.vitality, voice=SituationVoice.FIRST, lead="",
-            )
-            user = f"""\
+        doer_vitality = vitality_line(
+            agent.personality.state.vitality, voice=SituationVoice.FIRST, lead="",
+        )
+        user = f"""\
 {header_part}【我是谁】
 {agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{doer_condition}
 {doer_vitality}
 
 【刚刚发生的事】
-我做「{state.purpose}」，已投入{elapsed_label}，突然{cut}{thought_part}（时间地点见开头）。
+{happened}（时间地点见开头）。
 
 依上面说定的 JSON 格式记下这一场，只输出 JSON、不写任何多余内容。"""
-            try:
-                with annotate_call(
-                    given_facts=GivenFacts()  # same source as user above
-                    .add("此刻何时何地", situation_header)
-                    .add("我的处境", doer_condition)
-                    .add("我的体力", doer_vitality)
-                    .add("刚刚发生的事",
-                         f"我做「{state.purpose}」，已投入{elapsed_label}，突然{cut}{thought_part}"),
-                    action_owner=agent.personality.soul.name,
-                ):
-                    resp = await self._llm.complete(
-                        LLMScene.AGENT_ACTION_NARRATION,
-                        [
-                            LLMMessage(role="system", content=system),
-                            LLMMessage(role="user", content=user),
-                        ],
-                        temperature=0.7,
-                        max_tokens=output_budget(69),  # fact ≤36 chars; est. ~69 tok
-                    json_mode=True,
-                    )
-                fact = str(extract_json(resp.content).get("fact", "")).strip()
-                if not fact:
-                    note_active_call_adoption(False, "missing_fact")
-                factual = fact or fallback
-            except Exception as exc:
-                note_active_call_adoption(False, "unusable_payload")
-                logger.warning("work_interrupt_failed", extra={"agent_id": agent.agent_id, "error": str(exc)})
+        with annotate_call(
+            given_facts=GivenFacts()  # same source as user above
+            .add("此刻何时何地", situation_header)
+            .add("我的处境", doer_condition)
+            .add("我的体力", doer_vitality)
+            .add("刚刚发生的事", happened),
+            action_owner=agent.personality.soul.name,
+        ):
+            data = await complete_json(
+                self._llm.complete, system, user,
+                temperature=0.7,
+                max_tokens=output_budget(69),  # fact ≤36 chars ≈54 + key and braces ~15; est. ~69 tok
+                failure_event="work_interrupt_failed",
+                log_extra={"agent_id": agent.agent_id, "step": now_step},
+                required=("fact",),
+            )
+        return str(data["fact"]).strip() if data is not None else ""
+
+    async def interrupt(
+        self,
+        state: ActionExecutionState,
+        step: int,
+        *,
+        agents: dict[str, "Agent"],
+        environment: "EnvironmentSystem",
+        interrupted_agent_id: str | None = None,
+        thought: str = "",
+        cause: str = "",
+    ) -> List[ActionResult]:
+        elapsed = state.estimated_steps - state.remaining_steps
+        elapsed_label = describe_duration(elapsed, self._seconds_per_step)
+        agent = agents.get(state.initiator_id)
+        thought_part = format_interrupt_thought(thought)
+        location = observe_location(environment, state.initiator_id)
+        # Only third-person cause may name what interrupted it (see base.interrupt).
+        cut = f"因{cause}而中断" if cause else "被打断"
+
+        factual = ""
+        if agent is not None:
+            factual = await self._interrupt_memory(
+                agent, environment,
+                happened=f"我做「{state.purpose}」，已投入{elapsed_label}，突然{cut}{thought_part}",
+                now_step=step,
+            )
+        if not factual:
+            factual = (
+                f"在{location}做「{state.purpose}」做了{elapsed_label}便{cut}，没能收尾{thought_part}"
+                if elapsed > 0
+                else f"刚着手「{state.purpose}」就{cut}{thought_part}"
+            )
 
         doer_name = self._directory.agent_name(state.initiator_id)
         gist = scene_line(location, (
@@ -374,28 +371,6 @@ class WorkExecutor(ActionExecutor):
             factual_memory=factual,     # 1p self-assessed memory
         )]
 
-    def _adjudication_failed_result(
-        self, *, purpose: str, step: int, agent_id: str, estimated_steps: int,
-        expected_outcome: str, location: str, target: "ActionTarget",
-    ) -> ActionResult:
-        """Null step when adjudication can't happen: no memory, no claimed result."""
-        stub = AgentAction(
-            agent_id=agent_id,
-            step=step,
-            action_type=ActionType.WORK,
-            action_description=purpose,
-            target=target,
-            estimated_steps=estimated_steps,
-        )
-        return ActionResult(
-            action=stub,
-            expected_outcome=expected_outcome or purpose,
-            # Never perceived; only a trace/snapshot marker.
-            outcome=scene_line(location, f"{self._directory.agent_name(agent_id)}着手做手上的事，一时未能确知是否做成。"),
-            succeeded=False,
-            adjudication_failed=True,
-        )
-
     async def _generate_outcome(
         self,
         *,
@@ -403,7 +378,6 @@ class WorkExecutor(ActionExecutor):
         purpose: str,
         duration_label: str,
         now_step: int = 0,
-        location: str = "",
         situation_header: str = "",
         scene: str = "",
         expected_outcome: str = "",
@@ -518,71 +492,62 @@ class WorkExecutor(ActionExecutor):
 {duration_label}（时间地点见开头，不必复述）
 {expected_part}
 依上面说定的 JSON 格式给出判断，只输出 JSON、不写任何多余内容。"""
-        try:
-            with annotate_call(
-                given_facts=GivenFacts()  # same source as user above
-                .add("此刻何时何地", situation_header)
-                .add("我的处境", doer_condition)
-                .add("我的体力", doer_vitality)
-                .add("现场", scene)
-                .add("我动手前打算做的", purpose)
-                .add("花掉的时间", duration_label)
-                .add("我出发时想要的", expected_outcome),
-                # So review can tell what updated_index pointed at.
-                item_candidates={
-                    str(i): (item.name or "某物") for i, item in enumerate(in_hand, 1)
-                },
-                action_owner=agent.personality.soul.name,
-            ):
-                response = await self._llm.complete(
-                    LLMScene.AGENT_ACTION_NARRATION,
-                    [
-                        LLMMessage(role="system", content=system),
-                        LLMMessage(role="user", content=user),
-                    ],
-                    temperature=0.7,
-                    # fact (≤68 chars ≈ 102 tok) + success (~3) + updated_index (~3)
-                    # + updated_name (≤14 ≈ 21) + updated_state (≤12 ≈ 18) + updated_desc (≤24 ≈ 36)
-                    # + updated_content (≤80 ≈ 120) + product_name (≤14 ≈ 21)
-                    # + product_desc (≤24 ≈ 36) + product_content (≤80 ≈ 120)
-                    # + product_carried (~3) + outcome (≤40 ≈ 60) + observation (≤30 ≈ 45)
-                    # + why (≤20 ≈ 30) + structure for 14 fields (~70); est. ~688 tok.
-                    max_tokens=output_budget(688),
-                json_mode=True,
-                )
-            data = extract_json(response.content)
-            succeeded = coerce_bool(data.get("success"), True)
-            place = f"在{location}" if location else ""
-            fact = str(data.get("fact", "")).strip() or (
-                f"{place}花了{duration_label}做「{purpose}」，做成了。"
-                if succeeded
-                else f"{place}花了{duration_label}做「{purpose}」，终究没能做成。"
+        with annotate_call(
+            given_facts=GivenFacts()  # same source as user above
+            .add("此刻何时何地", situation_header)
+            .add("我的处境", doer_condition)
+            .add("我的体力", doer_vitality)
+            .add("现场", scene)
+            .add("我动手前打算做的", purpose)
+            .add("花掉的时间", duration_label)
+            .add("我出发时想要的", expected_outcome),
+            # So review can tell what updated_index pointed at.
+            item_candidates={
+                str(i): (item.name or "某物") for i, item in enumerate(in_hand, 1)
+            },
+            action_owner=agent.personality.soul.name,
+        ):
+            data = await complete_json(
+                self._llm.complete, system, user,
+                temperature=0.7,
+                # fact (≤68 chars ≈ 102 tok) + success (~3) + updated_index (~3)
+                # + updated_name (≤14 ≈ 21) + updated_state (≤12 ≈ 18) + updated_desc (≤24 ≈ 36)
+                # + updated_content (≤80 ≈ 120) + product_name (≤14 ≈ 21)
+                # + product_desc (≤24 ≈ 36) + product_content (≤80 ≈ 120)
+                # + product_carried (~3) + outcome (≤40 ≈ 60) + observation (≤30 ≈ 45)
+                # + why (≤20 ≈ 30) + structure for 14 fields (~70); est. ~688 tok.
+                max_tokens=output_budget(688),
+                failure_event="work_outcome_failed",
+                log_extra={"agent_id": agent.agent_id, "step": now_step},
+                # The verdict and the doer's own record of it; outcome and observation have
+                # neutral stand-ins that claim no more than the verdict.
+                required=("success", "fact"),
             )
-            # One line: the renderer treats a newline as a transcript separator and cuts there.
-            outcome = " ".join(str(data.get("outcome", "")).split()).strip()
-            # Never fall back to outcome here (it has the product).
-            observation = " ".join(str(data.get("observation", "")).split()).strip()
-            why = str(data.get("why", "")).strip() if not succeeded else ""
-            return _WorkVerdict(
-                succeeded=succeeded, fact=fact, outcome=outcome,
-                # Unsliced: the prompt caps it.
-                observation=observation, failure_reason=why,
-                # Independent of succeeded (see _WorkVerdict).
-                product_name=str(data.get("product_name", "")).strip(),
-                product_desc=str(data.get("product_desc", "")).strip(),
-                product_content=str(data.get("product_content", "")).strip(),
-                # Default carried: the private tier.
-                product_carried=coerce_bool(data.get("product_carried"), True),
-                # The only place the index is mapped back to an id.
-                updated_id=next(iter(IndexedRef(
-                    [item.entity_id for item in in_hand]
-                ).resolve([data.get("updated_index")])), ""),
-                updated_name=str(data.get("updated_name", "")).strip(),
-                updated_state=str(data.get("updated_state", "")).strip(),
-                updated_desc=str(data.get("updated_desc", "")).strip(),
-                updated_content=str(data.get("updated_content", "")).strip(),
-            )
-        except Exception as exc:
-            note_active_call_adoption(False, "unusable_payload")
-            logger.warning("work_outcome_failed", extra={"agent_id": agent.agent_id, "error": str(exc)})
+        if data is None:
             return None
+        succeeded = coerce_bool(data.get("success"), False)
+        fact = str(data["fact"]).strip()
+        # One line: the renderer treats a newline as a transcript separator and cuts there.
+        outcome = " ".join(str(data.get("outcome", "")).split()).strip()
+        # Never fall back to outcome here (it has the product).
+        observation = " ".join(str(data.get("observation", "")).split()).strip()
+        why = str(data.get("why", "")).strip() if not succeeded else ""
+        return _WorkVerdict(
+            succeeded=succeeded, fact=fact, outcome=outcome,
+            # Unsliced: the prompt caps it.
+            observation=observation, failure_reason=why,
+            # Independent of succeeded (see _WorkVerdict).
+            product_name=str(data.get("product_name", "")).strip(),
+            product_desc=str(data.get("product_desc", "")).strip(),
+            product_content=str(data.get("product_content", "")).strip(),
+            # Default carried: the private tier.
+            product_carried=coerce_bool(data.get("product_carried"), True),
+            # The only place the index is mapped back to an id.
+            updated_id=next(iter(IndexedRef(
+                [item.entity_id for item in in_hand]
+            ).resolve([data.get("updated_index")])), ""),
+            updated_name=str(data.get("updated_name", "")).strip(),
+            updated_state=str(data.get("updated_state", "")).strip(),
+            updated_desc=str(data.get("updated_desc", "")).strip(),
+            updated_content=str(data.get("updated_content", "")).strip(),
+        )

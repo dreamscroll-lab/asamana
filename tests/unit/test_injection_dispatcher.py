@@ -15,7 +15,7 @@ from core.interfaces.action import Observed
 from core.interfaces.urgency import Urgency
 from engine.broadcast import BroadcastChannel
 from engine.directory import LiveWorldDirectory
-from engine.environment import EnvironmentSystem
+from engine.environment import IN_TRANSIT, EnvironmentSystem
 from engine.execution_processor import ExecutionProcessor
 from engine.executors.registry import ActionExecutorRegistry
 from engine.injection import Author, BroadcastSpec, InjectionDispatcher, MessageSpec
@@ -64,6 +64,7 @@ def _setup():
                 directory=directory,
             ),
         ),
+        environment=environment,
         directory=directory,
     )
     return dispatcher, agents, environment, message_system, broadcast_channel
@@ -87,6 +88,25 @@ async def test_a_broadcast_touches_the_living_who_hear_it_whoever_wrote_it(autho
     assert committed.record.affected_names == ["李世民"]
     assert committed.record.location_label == "太极宫"
     assert committed.record.authored_by is author
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_broadcast_reaches_bodies_where_the_environment_puts_them() -> None:
+    """The audience follows ``EnvironmentSystem``, the table perception delivers by, not the
+    agent's own record, which changes only on arrival: someone who set out from the palace isn't
+    reached there, and someone already standing in it is."""
+    dispatcher, agents, environment, *_ = _setup()
+    environment.move_body(body_id="a1", location_id=IN_TRANSIT)   # his record still says palace
+    environment.move_body(body_id="a2", location_id="palace")     # his record still says market
+
+    committed = await dispatcher.dispatch(
+        author=Author.SYSTEM, step=3, agents=agents, narrative_desc="宫中起火",
+        broadcast=BroadcastSpec(content="宫中火起。", severity=Severity.HIGH, location_scope="palace"),
+        message=None,
+    )
+
+    assert committed is not None
+    assert committed.target_ids == ("a2",)
 
 
 @pytest.mark.asyncio

@@ -17,9 +17,14 @@ No ``ConditionKind`` enum: the space of states is open-ended, and a closed taxon
 the judge to cram "knocked out" into "restrained".
 
 No capability consequences ("which ActionTypes this blocks") either: whether a bound person can
-still eavesdrop is situational interpretation (CLAUDE.md §5), and every reader of a condition
-has an LLM present. A consequence set frozen at write time would keep applying after the guard
-has walked off.
+still eavesdrop is situational interpretation (CLAUDE.md §5), and every adjudicated reader of a
+condition has an LLM present. A consequence set frozen at write time would keep applying after
+the guard has walked off.
+
+The one structural flag is ``confined``: whether the condition restricts freedom of action.
+Whoever writes the condition (the physical judge, the director) decides it with the LLM, and
+``render_condition`` states it beside the description. It can't go stale: a condition is
+replaced or cleared whole, the flag with it.
 
 No free ``dict[str, str]`` state bag either: the engine would end up string-matching a
 schemaless field. The narrative axis is open; the structural axis is not.
@@ -60,6 +65,7 @@ class BodyCondition:
     source_agent_id: str = ""       # code layer; empty = not caused by anyone (poison / blizzard / illness)
     since_step: int = 0             # code layer; rendered as a natural duration, never as a step count
     until_step: int | None = None   # None = needs outside help to end; set = self-limiting (drug wears off, sleeper wakes)
+    confined: bool = False          # the condition restricts his freedom of action
 
 
 def condition_to_dict(condition: BodyCondition | None) -> dict[str, object] | None:
@@ -75,6 +81,7 @@ def condition_to_dict(condition: BodyCondition | None) -> dict[str, object] | No
         "source_agent_id": condition.source_agent_id,
         "since_step": condition.since_step,
         "until_step": condition.until_step,
+        "confined": condition.confined,
     }
 
 
@@ -92,6 +99,7 @@ def condition_from_dict(data: object) -> BodyCondition | None:
         source_agent_id=str(data.get("source_agent_id", "") or ""),
         since_step=_as_int(data.get("since_step"), 0),
         until_step=None if until is None else _as_int(until, 0),
+        confined=data.get("confined") is True,
     )
 
 

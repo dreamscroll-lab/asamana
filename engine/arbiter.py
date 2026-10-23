@@ -194,7 +194,7 @@ class ExecutionArbiter:
         if exec_state is None:
             return None
         executor = self._executor_registry.get_executor(exec_state.action_type)
-        return getattr(executor, "conscription", None)
+        return executor.conscription if executor is not None else None
 
     def _conscription_of(self, action: "AgentAction | None") -> "Conscription | None":
         """The mode by which this act takes others' bodies; ``None`` = it takes nobody this time.
@@ -205,7 +205,7 @@ class ExecutionArbiter:
         if action is None or not action.target.claims:
             return None
         executor = self._executor_registry.get_executor(action.action_type)
-        return getattr(executor, "conscription", None)
+        return executor.conscription if executor is not None else None
 
     async def arbitrate(
         self,

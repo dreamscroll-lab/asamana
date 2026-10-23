@@ -61,7 +61,7 @@ def _make_agent(container, agent_id: str, name: str) -> Agent:
             container.llm_router, container.embedding, container.vector_store,
             world_id="w", agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
+        need_engine=NeedEngine(container.llm_router),
         relation_system=RelationSystem(container.agent_store, world_id="w", agent_id=agent_id),
         agent_store=container.agent_store,
         is_main_character=False,

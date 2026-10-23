@@ -222,13 +222,6 @@ COVERTABLE_ACTION_TYPES: "frozenset[ActionType]" = frozenset({
 })
 
 
-#: The deeds PHYSICAL may resolve to — the closed set the adjudicator chooses from.
-PHYSICAL_DEEDS: tuple[Deed, ...] = (
-    Deed.STRIKE, Deed.RESTRAIN, Deed.SEIZE, Deed.RELINQUISH,
-    Deed.OPERATE, Deed.DESTROY, Deed.EXERT,
-)
-
-
 def parse_deed(label: str, *, default: Deed) -> Deed:
     """Coerce an adjudicator's deed label to the enum; anything unknown → ``default``, silently
     (a field-level coercion, like ``parse_emotion_type``)."""

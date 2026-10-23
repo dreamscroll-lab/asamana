@@ -171,7 +171,9 @@ async def test_record_event_creates_dual_streams_with_event_group_id(container: 
 async def test_record_event_skips_experiential_when_rewrite_fails(container: object) -> None:
     """If the rewrite LLM fails, keep only factual. Don't store the raw text as the inner stream,
     or the same event takes two slots in recall."""
-    system = _make_memory_system(container, is_main_character=True)  # default mock reply is unusable
+    system = _make_memory_system(
+        container, provider=MockLLMProvider(fixed_response=""), is_main_character=True,
+    )
     personality = _make_personality(
         emotion=EmotionState(primary="fear", intensity=0.6, valence=-0.4),
     )
@@ -1321,7 +1323,6 @@ async def test_retrieve_both_returns_retrieval_result(container: object) -> None
     assert isinstance(result.events, list)
     assert isinstance(result.insights, list)
     assert isinstance(result.period_summaries, list)
-    assert isinstance(result.stream_links, dict)
     assert isinstance(result.insight_sources, dict)
 
 

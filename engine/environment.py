@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List, Mapping
+from dataclasses import dataclass, replace
+from typing import Dict, Iterable, List, Mapping
 
 from core.interfaces.action import (
     EntitySpawn, EntityStateChange, ErrandOrder, NpcEffect,
@@ -18,12 +18,11 @@ from core.logging import get_logger
 from core.text import slugify
 from engine.clock import WorldTime
 from engine.space import SpaceManager
-from world.models import (
+from core.interfaces.entity import (
     ActiveErrand,
     BodyKind,
     EntityPresence,
     Npc,
-    NpcSeed,
     WorldEntity,
     WorldEntityType,
 )
@@ -271,23 +270,36 @@ class EnvironmentSystem:
     def get_body_location(self, body_id: str) -> str:
         return self._locations.get(body_id, UNPLACED)
 
+    def body_locations(self, body_ids: Iterable[str]) -> dict[str, str]:
+        """Where each of these bodies is, for an author's read-only view. An unplaced body has no
+        entry: it has no place to name, so a roster leaves it out rather than say "某地"."""
+        return {
+            bid: loc for bid in body_ids
+            if (loc := self.get_body_location(bid)) != UNPLACED
+        }
+
     def narrative_location_name(self, location_id: str) -> str:
         """The single location-name resolver for narrative text. IN_TRANSIT → "途中"; unknown →
-        "此处", never a bare id (that would leak into embedded prose)."""
+        "某地", never a bare id (that would leak into embedded prose). Don't fall back to "此处":
+        the text reaches bystanders, others' memories and god's-eye menus, where "here" claims a
+        place that isn't known."""
         if location_id == IN_TRANSIT:
             return "途中"
-        return self.space.name_of(location_id) or "此处"
+        name = self.space.name_of(location_id)
+        if not name:
+            logger.debug("directory_miss", extra={"lookup_id": location_id, "kind": "location"})
+            return "某地"
+        return name
 
-    def spawn_npc(self, seed: NpcSeed, *, location_id: str) -> bool:
+    def spawn_npc(self, npc: Npc, *, location_id: str) -> bool:
         """The one way to put a body-without-a-mind into the world. Returns False when nothing
         was created (no name or id, an id already taken, not a real place, or at quota); that's
         not a build failure.
 
         The quota is enforced here, not on restore, or a world that grew to the cap would lose
-        people on restore. The id is the seed's, fixed in the world's setup, so replay reproduces
-        the same world.
+        people on restore. The id is the setup's, so replay reproduces the same world.
         """
-        name = seed.name.strip()
+        name = npc.name.strip()
         if not name:
             return False
         if location_id in (IN_TRANSIT, UNPLACED) or not self.space.has(location_id):
@@ -304,14 +316,11 @@ class EnvironmentSystem:
             return False
 
         # The id is the setup's (``WorldSetup.from_build`` gives one, unique in the world).
-        npc_id = seed.npc_id
+        npc_id = npc.npc_id
         if not npc_id or npc_id in self._npcs:
             logger.warning("npc_spawn_without_id", extra={"npc_name": name, "npc_id": npc_id})
             return False
-        self._npcs[npc_id] = Npc(
-            npc_id=npc_id, name=name, gender=seed.gender, age=seed.age,
-            description=seed.description,
-        )
+        self._npcs[npc_id] = replace(npc, name=name)
         self._place_body(npc_id, location_id, BodyKind.NPC)
         return True
 
@@ -521,7 +530,6 @@ class EnvironmentSystem:
                 content=spawn.content,
                 presence=presence,
                 presence_ref=presence_ref,
-                is_takeable=entity_type.is_takeable,
                 is_public=spawn.is_public,
                 created_step=self._current_step,
             )
@@ -1081,7 +1089,6 @@ class EnvironmentSystem:
                     description=str(payload.get("description", "")),
                     presence=presence,
                     presence_ref=presence_ref,
-                    is_takeable=bool(payload.get("is_takeable", entity_type.is_takeable)),
                     is_public=bool(payload.get("is_public", True)),
                     created_step=int(payload.get("created_step", 0) or 0),
                     content=str(payload.get("content", "")),

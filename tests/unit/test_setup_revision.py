@@ -12,7 +12,7 @@ from agent.memory import memory_collection_name
 from agent.memory_types import MemoryStream
 from agent.need import NeedState, NeedType
 from agent.personality import EmotionState, EmotionType
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from world import WorldCatalog
 from world.models import HistoricalEventSeed, NpcSeed, RelationSeed, ThemeAnalysis, WorldEntitySeed
 from world.setup import (
@@ -321,7 +321,7 @@ async def _built_world(container, test_config, catalog: WorldCatalog) -> tuple[s
     """A world built and not yet confirmed, and its cast's ids by name."""
     application = NarrativeApplication(container, test_config, catalog=catalog)
     world_id = await application.build_world("玄武门之变", template="changan_iso")
-    setup = await application.world_setup(world_id)
+    setup = await WorldSetup.load(container.snapshot, world_id)
     return world_id, {d.soul.name: d.agent_id for d in setup.characters}
 
 
@@ -509,7 +509,7 @@ async def test_setup_is_open_until_the_world_is_confirmed(mock_build_container, 
     catalog = WorldCatalog(None)
     application = NarrativeApplication(mock_build_container, test_config, catalog=catalog)
     world_id = await application.build_world("玄武门之变", template="changan_iso")
-    agent_id = (await application.world_setup(world_id)).characters[0].agent_id
+    agent_id = (await WorldSetup.load(mock_build_container.snapshot, world_id)).characters[0].agent_id
     edit = {"role": "将军"}
     with _client(mock_build_container, test_config, catalog) as client:
         url = f"/api/worlds/{world_id}/setup/characters/{agent_id}"
@@ -523,7 +523,7 @@ async def test_setup_is_not_the_actors(mock_build_container, test_config) -> Non
     catalog = WorldCatalog(None)
     application = NarrativeApplication(mock_build_container, test_config, catalog=catalog)
     world_id = await application.build_world("玄武门之变", template="changan_iso")
-    character_id = (await application.world_setup(world_id)).characters[0].agent_id
+    character_id = (await WorldSetup.load(mock_build_container.snapshot, world_id)).characters[0].agent_id
     with _client(mock_build_container, test_config, catalog) as client:
         client.post(f"/api/worlds/{world_id}/confirm", json={"character_id": character_id})
         assert client.get(f"/api/worlds/{world_id}/setup").status_code == 403
@@ -609,13 +609,13 @@ async def test_a_confirmation_failing_after_step_zero_leaves_the_setup_file_auth
             await application.confirm_world(world_id)
     assert await mock_build_container.snapshot.load(world_id, 0) is not None
 
-    agent_id = (await application.world_setup(world_id)).characters[0].agent_id
+    agent_id = (await WorldSetup.load(mock_build_container.snapshot, world_id)).characters[0].agent_id
     await application.revise_setup(
         world_id,
         lambda setup, places: setup.with_character(agent_id, CharacterRevision(role="将军"), places=places),
     )
 
-    assert (await application.world_setup(world_id)).character(agent_id).soul.role == "将军"
+    assert (await WorldSetup.load(mock_build_container.snapshot, world_id)).character(agent_id).soul.role == "将军"
 
 
 @pytest.mark.asyncio

@@ -243,33 +243,34 @@ async def _run_lifecycle(
         _record_action_phase(sink, world_id, run_step, agent, action, env, name_by_id, seeded, phases)
         return
 
-    if isinstance(result, ActionResult):
-        phases["start"] = {"kind": "immediate", "result": _result_view(result, name_by_id)}
-        phases["complete"] = {"kind": "immediate(同 start)", "results": [_result_view(result, name_by_id)]}
+    registry.add_active(result)
+    phases["start"] = {"kind": "multi_step", "state": _state_view(result)}
+    ticks: list[dict] = []
+    total = result.estimated_steps
+    interrupt_at = scenario.get("interrupt_at")
+    # advance ticks until completion or the scheduled interrupt point
+    tick_limit = total - 1 if interrupt_at is None else min(int(interrupt_at), total - 1)
+    for _ in range(max(0, tick_limit)):
+        result.remaining_steps -= 1
+        trs = await executor.tick(result, run_step, agents=world.agents, environment=env, message_system=message_system)
+        ticks.append({"elapsed": total - result.remaining_steps,
+                      "narratives": [{"agent": name_by_id.get(t.agent_id, t.agent_id), "narrative": t.outcome} for t in trs]})
+    phases["tick"] = ticks
+    if interrupt_at is not None:
+        # interrupt_reason is what cut it off (third person); interrupt_reaction the doer's own
+        # reason for breaking off (first person).
+        finals = await executor.interrupt(
+            result, run_step,
+            agents=world.agents, environment=env,
+            interrupted_agent_id=doer_id,
+            thought=scenario.get("interrupt_reaction", ""),
+            cause=scenario.get("interrupt_reason", "突发变故"),
+        )
+        phases["complete"] = {"kind": "interrupt", "results": [_result_view(r, name_by_id) for r in finals]}
     else:
-        registry.add_active(result)
-        phases["start"] = {"kind": "multi_step", "state": _state_view(result)}
-        ticks: list[dict] = []
-        total = result.estimated_steps
-        interrupt_at = scenario.get("interrupt_at")
-        # advance ticks until completion or the scheduled interrupt point
-        tick_limit = total - 1 if interrupt_at is None else min(int(interrupt_at), total - 1)
-        for _ in range(max(0, tick_limit)):
-            result.remaining_steps -= 1
-            trs = await executor.tick(result, run_step, agents=world.agents, environment=env, message_system=message_system)
-            ticks.append({"elapsed": total - result.remaining_steps,
-                          "narratives": [{"agent": name_by_id.get(t.agent_id, t.agent_id), "narrative": t.outcome} for t in trs]})
-        phases["tick"] = ticks
-        if interrupt_at is not None:
-            finals = await executor.interrupt(
-                result, scenario.get("interrupt_reason", "突发变故"), run_step,
-                agents=world.agents, environment=env,
-                interrupted_agent_id=doer_id, reaction=scenario.get("interrupt_reaction", ""))
-            phases["complete"] = {"kind": "interrupt", "results": [_result_view(r, name_by_id) for r in finals]}
-        else:
-            result.remaining_steps = 0
-            finals = await executor.complete(result, run_step, agents=world.agents, environment=env, message_system=message_system)
-            phases["complete"] = {"kind": "complete", "results": [_result_view(r, name_by_id) for r in finals]}
+        result.remaining_steps = 0
+        finals = await executor.complete(result, run_step, agents=world.agents, environment=env, message_system=message_system)
+        phases["complete"] = {"kind": "complete", "results": [_result_view(r, name_by_id) for r in finals]}
     clear_log_context()
     _record_action_phase(sink, world_id, run_step, agent, action, env, name_by_id, seeded, phases)
 

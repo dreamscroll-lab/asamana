@@ -19,6 +19,7 @@ from agent.memory import MemorySystem
 from agent.memory_types import Memory, MemoryImportance, MemoryStream
 from agent.reflection import INSIGHT_BASE_IMPORTANCE, ReflectionEngine
 from agent.relation_evolution import RelationEvolution
+from agent.state_codec import decode_agent_state, encode_agent_state
 from agent.goals import GoalEntity, GoalStatus, is_live_goal, amend_short_term_goals
 from agent.need import NeedEngine, NeedEvaluation, NeedType
 from agent.perception import InternalContext, PerceptionPacket, RetrievalQuery
@@ -271,7 +272,7 @@ class Agent:
             for aid in agent_ids
         }
 
-    async def _resolve_relation_context(self, agent_ids) -> str:
+    async def _resolve_relation_context(self, agent_ids, *, include_legend: bool = True) -> str:
         """Build the "my relations with the people involved" block for memory writes.
 
         Skips empty default relations. Names come from the agent's own knowledge (_known_agents /
@@ -295,7 +296,14 @@ class Agent:
             gender = (known.gender if known else "") or rel.to_gender
             marks = (DECEASED_MARK,) if aid in self._dead_agent_ids else ()
             named.append((person_referent(name, gender, *marks), rel))
-        return render_relation_context(named)
+        return render_relation_context(named, include_legend=include_legend)
+
+    async def relation_context(self, agent_ids: Iterable[str]) -> str:
+        """My relations with these people, as the rows a memory-write prompt reads; "" when none
+        is substantive. The same rows the agent's own memory writes use, so an executor writing a
+        memory for this agent never renders relations by a second rule. No legend: the executor
+        keeps ``relation_legend()`` in its system prompt, the cacheable prefix."""
+        return await self._resolve_relation_context(agent_ids, include_legend=False)
 
     async def _event_people_context(self, agent_ids) -> tuple[Dict[str, str], str]:
         """{id: display name} plus the relations block for a memory write.
@@ -1289,16 +1297,11 @@ class Agent:
                 "feedback_action_success": bool(result.succeeded),
                 "feedback_action_actual": result.factual_memory,
             }
-            if self.is_main_character:
-                with annotate_call(**feedback_extra):
-                    response = await llm.complete_with_retry(
-                        scene, messages, temperature=0.7, max_tokens=output_budget(115), json_mode=True,
-                    )
-            else:
-                with annotate_call(**feedback_extra):
-                    response = await llm.complete(
-                        scene, messages, temperature=0.7, max_tokens=output_budget(115), json_mode=True,
-                    )
+            complete = llm.complete_with_retry if self.is_main_character else llm.complete
+            with annotate_call(**feedback_extra):
+                response = await complete(
+                    scene, messages, temperature=0.7, max_tokens=output_budget(115), json_mode=True,
+                )
             logger.info(
                 "llm_call",
                 extra={
@@ -1429,22 +1432,14 @@ class Agent:
                 interrupt_doing=current_action_desc,
                 interrupt_trigger=reason,
             ):
-                if self.is_main_character:
-                    resp = await llm.complete_with_retry(
-                        LLMScene.AGENT_INTERRUPT_DECISION,
-                        messages,
-                        temperature=0.7,
-                        max_tokens=output_budget(105),  # thought ≤60 chars ≈90 + bool + JSON ≈ 105 tok
+                complete = llm.complete_with_retry if self.is_main_character else llm.complete
+                resp = await complete(
+                    LLMScene.AGENT_INTERRUPT_DECISION,
+                    messages,
+                    temperature=0.7,
+                    max_tokens=output_budget(105),  # thought ≤60 chars ≈90 + bool + JSON ≈ 105 tok
                     json_mode=True,
-                    )
-                else:
-                    resp = await llm.complete(
-                        LLMScene.AGENT_INTERRUPT_DECISION,
-                        messages,
-                        temperature=0.7,
-                        max_tokens=output_budget(105),  # thought ≤60 chars ≈90 + bool + JSON ≈ 105 tok
-                    json_mode=True,
-                    )
+                )
             data = extract_json(resp.content)
             if "interrupt" not in data:
                 note_active_call_adoption(False, "missing_interrupt")
@@ -1834,24 +1829,15 @@ class Agent:
             extra_fields["given_facts"].insert(0, f"进来时的心境：{cur_emotion.summary()}")
         try:
             llm = self.llm_router
-            if self.is_main_character:
-                with annotate_call(**extra_fields):
-                    response = await llm.complete_with_retry(
-                        LLMScene.AGENT_DECISION_MAIN,
-                        messages,
-                        temperature=0.5,
-                        max_tokens=output_budget(130),  # reason ≤20 chars + emotion + 2 numbers + need_activation (≤5) ≈ 130 tok
-                        json_mode=True,
-                    )
-            else:
-                with annotate_call(**extra_fields):
-                    response = await llm.complete(
-                        LLMScene.AGENT_DECISION_MAIN,
-                        messages,
-                        temperature=0.5,
-                        max_tokens=output_budget(130),  # reason ≤20 chars + emotion + 2 numbers + need_activation (≤5) ≈ 130 tok
-                        json_mode=True,
-                    )
+            complete = llm.complete_with_retry if self.is_main_character else llm.complete
+            with annotate_call(**extra_fields):
+                response = await complete(
+                    LLMScene.AGENT_DECISION_MAIN,
+                    messages,
+                    temperature=0.5,
+                    max_tokens=output_budget(130),  # reason ≤20 chars + emotion + 2 numbers + need_activation (≤5) ≈ 130 tok
+                    json_mode=True,
+                )
             return parse_perception_emotion_response(response.content)
         except Exception as exc:
             # Warn, or an outage is indistinguishable from the benign "no new reaction" path.
@@ -1945,51 +1931,22 @@ class Agent:
 
     async def persist_state(self, state: StateLayer) -> None:
         await self.agent_store.save_agent_state(
-            self.world_id,
-            self.agent_id,
-            AgentState(
-                world_id=self.world_id,
-                agent_id=self.agent_id,
-                updated_step=state.step,
-                current_emotion=state.emotion.primary,
-                emotion_intensity=state.emotion.intensity,
-                emotion_valence=state.emotion.valence,
-                emotion_triggered_by=state.emotion.triggered_by,
-                active_needs=list(state.active_needs),
-                dominant_need=state.dominant_need,
-                long_term_goals=list(state.long_term_goals),
-                short_term_goals=list(state.short_term_goals),
-                current_location=state.current_location,
-                activity_status=state.activity_status.value,
-                activity_target=state.activity_target,
-                action_status=state.action_status.value,
-                current_action=state.current_action,
-                action_remaining_steps=state.action_remaining_steps,
-                last_action=state.last_action,
-                last_action_result=state.last_action_result,
-                last_action_succeeded=state.last_action_succeeded,
-                short_term_goal_entities=[
-                    {
-                        "id": g.id,
-                        "text": g.text,
-                        "goal_type": g.goal_type,
-                        "status": g.status if isinstance(g.status, str) else g.status.value,
-                        "related_need": g.related_need.value if g.related_need is not None else None,
-                        "created_step": g.created_step,
-                        "due_step": g.due_step,
-                        "last_evaluated_step": g.last_evaluated_step,
-                        "progress_summary": g.progress_summary,
-                        "origin": g.origin if isinstance(g.origin, str) else g.origin.value,
-                    }
-                    for g in state.short_term_goal_entities
-                ],
-                need_intensities=dict(state.need_intensities),
-                vitality=state.vitality,
-                condition=condition_to_dict(state.condition),
-                last_decision_step=state.last_decision_step,
-                acted_upon=list(state.acted_upon),
-            )
+            self.world_id, self.agent_id, encode_agent_state(self.world_id, self.agent_id, state),
         )
+
+    def apply_stored_state(self, stored: AgentState, *, in_resumed_execution: bool) -> None:
+        """Bring back the state a restore loaded. An act in progress goes on only with the
+        execution that carries it (``in_resumed_execution``); without one he comes back idle."""
+        orphaned = stored.action_status == ActionStatus.IN_PROGRESS.value and not in_resumed_execution
+        self.personality.restore_state(decode_agent_state(self.agent_id, stored, orphaned=orphaned))
+        # vitality is the single source of truth for alive/dead and is_active isn't persisted: a
+        # dead character left active (the default) would die again next step, announced twice.
+        self.set_active(stored.vitality > 0.0)
+        if orphaned:
+            logger.info(
+                "in_progress_action_cleared",
+                extra={"agent_id": self.agent_id, "cleared_action": stored.current_action},
+            )
 
 
 def snapshot_agent_state(agent: "Agent") -> Dict[str, Any]:

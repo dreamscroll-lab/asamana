@@ -5,13 +5,13 @@ import pytest
 from agent.decision import ActionType
 from core.container import Container
 from core.interfaces.action import EntityStateChange
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from interaction.replayer import Replayer
 from tests.unit.step_view import agents, events
 from interaction.world_manager import WorldManager
 from world import WorldBuilder
 from world.initializer import WorldInitializer
-from world.models import WorldEntity, WorldEntityType
+from core.interfaces.entity import WorldEntity, WorldEntityType
 from worlds.tiled import TiledWorldConfig
 from tests.unit.confirmed_world import confirmed_world
 
@@ -157,7 +157,6 @@ async def test_restore_recovers_live_environment_entity_state(container, test_co
             entity_type=WorldEntityType.ITEM,
             state="sealed",
             presence_ref=holder_location,
-            is_takeable=True,
         )
     )
     environment.change_entity_state(
@@ -392,7 +391,7 @@ def test_goal_entity_from_dict_preserves_lifecycle_metadata() -> None:
     last_evaluated_step / progress_summary instead of resetting them."""
     from agent.goals import GoalStatus
     from agent.need import NeedType
-    from world.initializer import _goal_entity_from_dict
+    from agent.state_codec import goal_entity_from_dict
 
     ent = {
         "id": "stg-7",
@@ -403,8 +402,9 @@ def test_goal_entity_from_dict_preserves_lifecycle_metadata() -> None:
         "created_step": 12,
         "last_evaluated_step": 18,
         "progress_summary": "fail:2;仍未达成。",
+        "origin": "cognitive",
     }
-    goal = _goal_entity_from_dict(ent, fallback_id="restored-stg-0")
+    goal = goal_entity_from_dict(ent, fallback_id="restored-stg-0")
     assert goal.id == "stg-7"
     assert goal.status == GoalStatus.ACTIVE
     assert goal.related_need == NeedType.SAFETY
@@ -413,39 +413,26 @@ def test_goal_entity_from_dict_preserves_lifecycle_metadata() -> None:
     assert goal.progress_summary == "fail:2;仍未达成。"
 
     # An unknown related_need degrades to None rather than raising.
-    degraded = _goal_entity_from_dict(
-        {"id": "x", "text": "t", "related_need": "not_a_need"}, fallback_id="fb"
+    degraded = goal_entity_from_dict(
+        {"id": "x", "text": "t", "related_need": "not_a_need", "origin": "cognitive"}, fallback_id="fb"
     )
     assert degraded.related_need is None
 
 
-def test_goal_entity_from_dict_origin_round_trip_and_legacy_default() -> None:
-    """origin round-trips; existing saves (no such field) and unknown values fall back to COGNITIVE.
-
-    COGNITIVE rather than RESIDUE is the conservative choice: misreading a goal as unfinished business
-    would give an old plan unearned protection from eviction.
-    """
+def test_goal_entity_from_dict_origin_round_trip() -> None:
     from agent.goals import GoalOrigin
-    from world.initializer import _goal_entity_from_dict
+    from agent.state_codec import goal_entity_from_dict
 
-    restored = _goal_entity_from_dict(
+    restored = goal_entity_from_dict(
         {"id": "x", "text": "我答应了要去查此事", "origin": "residue"}, fallback_id="fb"
     )
     assert restored.origin == GoalOrigin.RESIDUE
-
-    legacy = _goal_entity_from_dict({"id": "x", "text": "t"}, fallback_id="fb")
-    assert legacy.origin == GoalOrigin.COGNITIVE
-
-    unknown = _goal_entity_from_dict(
-        {"id": "x", "text": "t", "origin": "not_an_origin"}, fallback_id="fb"
-    )
-    assert unknown.origin == GoalOrigin.COGNITIVE
 
 
 @pytest.mark.asyncio
 async def test_restore_preserves_persisted_goal_metadata(container, test_config) -> None:
     """Integration: goal lifecycle metadata written to the store survives a
-    full restore — _apply_stored_state must not silently drop it."""
+    full restore — Agent.apply_stored_state must not silently drop it."""
     from agent.need import NeedType
 
     application = NarrativeApplication(container, test_config)
@@ -464,6 +451,7 @@ async def test_restore_preserves_persisted_goal_metadata(container, test_config)
             "created_step": 9,
             "last_evaluated_step": 14,
             "progress_summary": "fail:3;屡试未果。",
+            "origin": "cognitive",
         }
     ]
     await container.agent_store.save_agent_state(world.world_id, agent_id, stored)
@@ -656,3 +644,13 @@ async def test_build_world_without_catalog_does_not_register(container, test_con
     world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     # Session is live and runnable even though nothing was cataloged.
     assert application.has_session(world.world_id)
+
+
+def test_goal_entity_from_dict_coerces_a_missing_or_unknown_origin() -> None:
+    """One bad stored field must not abort the world's restore: it degrades to COGNITIVE."""
+    from agent.goals import GoalOrigin
+    from agent.state_codec import goal_entity_from_dict
+
+    for raw in ({}, {"origin": "no-such-origin"}):
+        ent = {"id": "g1", "text": "守住宫门", **raw}
+        assert goal_entity_from_dict(ent, fallback_id="x").origin is GoalOrigin.COGNITIVE

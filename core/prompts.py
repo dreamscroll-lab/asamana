@@ -21,6 +21,7 @@ from enum import Enum
 from typing import Any, Iterable
 
 from core.duration import describe_duration
+from core.interfaces.action import Deed
 from core.interfaces.memory import MemoryKind
 from core.interfaces.phenomenon import Phenomenon
 from core.interfaces.perception import DEFAULT_ENTITY_STATE
@@ -70,23 +71,24 @@ VITALITY_RELIEF_DEFINITION: str = (
 )
 
 
-#: The ``deed`` of a PHYSICAL adjudication — the act, not what it achieved. The judge prompt offers
-#: a subset by target kind; the audit reads values back into Chinese from the same table.
-PHYSICAL_DEEDS: dict[str, str] = {
-    "strike": "施加暴力伤害",
-    "restrain": "动手但不为伤人：制止/擒抱/推搡/搀扶/救治",
-    "seize": "把它拿到手上带走",
-    "relinquish": "把它交出手：放到此地，或交到某人手上",
+#: What each ``deed`` of a PHYSICAL adjudication means — the act, not what it achieved. The judge
+#: prompt offers a subset by target kind; the audit reads values back into Chinese from the same
+#: table. EXERT has no entry: it is never offered, only the fallback when there is no target.
+PHYSICAL_DEED_DESCRIPTIONS: dict[Deed, str] = {
+    Deed.STRIKE: "施加暴力伤害",
+    Deed.RESTRAIN: "动手但不为伤人：制止/擒抱/推搡/搀扶/救治",
+    Deed.SEIZE: "把它拿到手上带走",
+    Deed.RELINQUISH: "把它交出手：放到此地，或交到某人手上",
     # operate vs destroy turns on whether the thing still exists afterward, not how violent the act
     # looks. Don't put destruction verbs in operate's description, or destroying never reaches destroy.
-    "operate": "就地操作它：开启/使用/改变其状态——事后它仍在",
-    "destroy": "把它毁掉：烧毁/砸碎/撕毁——事后它不复存在",
+    Deed.OPERATE: "就地操作它：开启/使用/改变其状态——事后它仍在",
+    Deed.DESTROY: "把它毁掉：烧毁/砸碎/撕毁——事后它不复存在",
 }
 
 
-def deed_options(*names: str) -> str:
+def deed_options(*deeds: Deed) -> str:
     """Selected deeds → "strike（施加暴力伤害）、restrain（…）"."""
-    return "、".join(f"{n}（{PHYSICAL_DEEDS[n]}）" for n in names)
+    return "、".join(f"{d.value}（{PHYSICAL_DEED_DESCRIPTIONS[d]}）" for d in deeds)
 
 
 #: Lower bound of "充沛", shared by vitality_label and vitality_line; don't write the number elsewhere.
@@ -108,6 +110,9 @@ def vitality_label(vitality: float) -> str:
     return "将竭"
 
 
+CONDITION_CONFINED_MARK = "行动自由受限制"
+
+
 def render_condition(
     condition,
     *,
@@ -115,9 +120,11 @@ def render_condition(
     seconds_per_step: int = 3600,
     with_duration: bool = False,
 ) -> str:
-    """The only renderer for conditions in prompts (duck-typed: needs .description/.since_step).
+    """The only renderer for conditions in prompts (duck-typed: needs .description/.since_step,
+    optionally .confined).
 
     No condition → ``""``, and the caller drops the whole line rather than render "condition: none".
+    A confined condition carries ``CONDITION_CONFINED_MARK`` after its description everywhere.
 
     - ``with_duration=False`` → just the description, for roster marks.
     - ``with_duration=True`` → ``"<description>（已持续<duration>）"``, for profiles and adjudication,
@@ -128,6 +135,8 @@ def render_condition(
     description = (getattr(condition, "description", "") or "").strip()
     if not description:
         return ""
+    if getattr(condition, "confined", False):
+        description = f"{description}，{CONDITION_CONFINED_MARK}"
     if not with_duration:
         return description
     elapsed = max(now_step - int(getattr(condition, "since_step", 0) or 0), 0)

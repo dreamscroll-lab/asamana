@@ -55,7 +55,7 @@ from engine.injection import (
     parse_broadcast_spec,
     parse_message_spec,
 )
-from world.models import Npc, WorldEntity, WorldEntityType
+from core.interfaces.entity import Npc, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
 from engine.world_mutation import (
     ConditionMutation,
@@ -65,6 +65,7 @@ from engine.world_mutation import (
     SpawnMutation,
     VitalityEffect,
     VitalityMutation,
+    parse_entity_mutation,
     parse_spawn,
 )
 
@@ -227,11 +228,11 @@ entity_type 仅 item(拿得走的物品)或 landmark(拿不走的固着物);
   "broadcast": {{"location_scope": 发生地的地点序号(笼罩全域就填 null,或整个不写这一项), "content": "公开发生了什么,不超过 80 字", "severity": "{Severity.prompt_choices()}", "phenomenon": "{Phenomenon.prompt_choices()}"}} 或 null,
   "message": {{"recipients": [人物序号], "content": "送到他们面前的话,不超过 80 字", "urgency": "low|normal|high|critical"}} 或 null,
   "mutations": [
-    {{"kind": "entity", "entity": 物件序号, "destroyed": true 或 false, "state": "变化后的状态词,不超过 12 字,不变就留空", "description": "变化后它看上去的样子,不超过 40 字,不变就留空", "content": "改动后上面写着的全文,不超过 80 字,不变就留空", "observation": "旁人看见的一句话,不超过 40 字"}},
+    {{"kind": "entity", "entity": 物件序号, "destroyed": true 或 false, "state": "变化后的状态词,不超过 12 字,不变就留空", "description": "变化后它看上去的样子,不超过 40 字,不变就留空", "content": "改动后上面写着的全文,不超过 80 字,不变就留空", "observation": "旁人看见的一句话,不超过 40 字"}}(不毁掉时,state/description/content 至少改一项;物件本身没变、只是让人察觉到一件事,用 broadcast),
     {{"kind": "spawn", "location": 地点序号, "entity_type": "item 或 landmark", "name": "它叫什么,不超过 12 字", "description": "它看上去是什么样,不超过 40 字", "content": "只有写着字、记着东西的才有(信、告示、账册);大多数东西没有,留空字符串。有则不超过 80 字", "observation": "在场的人看见的一句话,不超过 40 字"}},
     {{"kind": "vitality", "person": 人物序号, "effect": "{VitalityEffect.prompt_choices()}", "observation": "旁人看见的一句话,不超过 40 字"}},
     {{"kind": "relocate", "person": 人物序号, "location": 地点序号, "observation": "旁人在**目的地**看见的一句话,不超过 40 字"}},
-    {{"kind": "condition", "person": 人物序号, "condition": "他此后身处的处境,不超过 15 字;解开原有处境就留空字符串", "observation": "旁人看见的一句话,不超过 40 字"}}
+    {{"kind": "condition", "person": 人物序号, "condition": "他此后身处的处境,不超过 15 字;解开原有处境就留空字符串", "confined": true 或 false(这个处境是否限制了他的行动自由;condition 为空时填 false), "observation": "旁人看见的一句话,不超过 40 字"}}
   ],
   "narrative_desc": "这一拍实际投出去了什么,不超过 60 字。**把上面填过的序号换回名字再写**：写「某地起了大火」,不是「#18 起了大火」"
 }}
@@ -313,6 +314,7 @@ class DirectorChannel:
         text: str,
         *,
         all_agents: Mapping[str, "Agent"],
+        agent_locations: Mapping[str, str],
         npcs: Sequence[NpcOnMenu],
         locations: Sequence[Place],
         entities: Sequence[WorldEntity],
@@ -329,6 +331,7 @@ class DirectorChannel:
         prompt = self.build_prompt(
             text,
             all_agents=all_agents,
+            agent_locations=agent_locations,
             npcs=npcs,
             locations=locations,
             entities=entities,
@@ -374,19 +377,25 @@ class DirectorChannel:
         text: str,
         *,
         all_agents: Mapping[str, "Agent"],
+        agent_locations: Mapping[str, str],
         npcs: Sequence[NpcOnMenu],
         locations: Sequence[Place],
         entities: Sequence[WorldEntity],
         world_time: WorldTime,
     ) -> DirectivePrompt:
         """Assemble everything this parse would send, without sending; shared with the
-        developer console."""
+        developer console.
+
+        ``agent_locations`` maps agent id → where his body is (``EnvironmentSystem.body_locations``,
+        read by the caller as ``NpcOnMenu.location_id`` is); an unplaced agent has no entry.
+        """
         names = _people_names(all_agents, npcs)
         return DirectivePrompt(
             system=_SYSTEM_PROMPT,
             user=self._build_user_prompt(
                 text,
                 all_agents=all_agents,
+                agent_locations=agent_locations,
                 npcs=npcs,
                 locations=locations,
                 entities=entities,
@@ -443,7 +452,8 @@ class DirectorChannel:
         )
         if plan is None:
             # Declared feasible but nothing dispatchable parsed (out-of-range indices, mutations
-            # without an observation): reject rather than inject an empty event.
+            # without an observation, an entity change that changes nothing): reject rather than
+            # inject an empty event.
             note_active_call_adoption(False, reason="no_dispatchable_channel")
             logger.warning("directive_plan_empty", extra={"text": text[:80]})
             return DirectiveResult(
@@ -537,6 +547,7 @@ class DirectorChannel:
         text: str,
         *,
         all_agents: Mapping[str, "Agent"],
+        agent_locations: Mapping[str, str],
         npcs: Sequence[NpcOnMenu],
         locations: Sequence[Place],
         entities: Sequence[WorldEntity],
@@ -548,7 +559,10 @@ class DirectorChannel:
         # list's index into the other's slot. Code decides the tier from the resolved id.
         names = _people_names(all_agents, npcs)
         agent_lines = "\n".join(
-            [self._agent_line(i + 1, a) for i, a in enumerate(all_agents.values())]
+            [
+                self._agent_line(i + 1, a, agent_locations.get(aid))
+                for i, (aid, a) in enumerate(all_agents.items())
+            ]
             + [
                 self._npc_line(len(all_agents) + i + 1, npc, names)
                 for i, npc in enumerate(npcs)
@@ -581,14 +595,17 @@ class DirectorChannel:
 照上面说定的 JSON 格式把这条指令翻出来(reason 在前),只输出 JSON、不写任何多余内容。
 记住:忠实翻译,不加戏;落实不了就 feasible=false 并说清卡在哪。"""
 
-    def _agent_line(self, index: int, agent: "Agent") -> str:
+    def _agent_line(self, index: int, agent: "Agent", location_id: str | None) -> str:
         """One line of identifying facts plus one of background. Every item helps match "the
         one at the gate" / "his brother" to a person: gender and age separate same-surname
         siblings, and death must be marked."""
         soul = agent.personality.soul
         facts = [f for f in (
             soul.role,
-            f"现于{self._directory.location_name(agent.personality.state.current_location)}",
+            # Where his body is, not his own ``current_location``, which lags while he travels.
+            # The dead have no body in the world; an unplaced one has no place to name.
+            f"现于{self._directory.location_name(location_id)}"
+            if agent.is_active and location_id else "",
             # Needed to lift or replace a condition and to write an observation that fits it.
             render_condition(agent.personality.state.condition),
             "" if agent.is_active else DECEASED_MARK,
@@ -709,17 +726,13 @@ class DirectorChannel:
                 continue
             kind = str(item.get("kind", "")).strip().lower()
             if kind == "entity":
-                resolved = entity_ref.resolve([item.get("entity")])
-                if not resolved:
+                entity = parse_entity_mutation(
+                    item, entity_ref, destroyed=coerce_bool(item.get("destroyed"), False),
+                )
+                if entity is None:
+                    logger.warning("directive_entity_mutation_dropped", extra={"entity": item.get("entity")})
                     continue
-                out.append(EntityMutation(
-                    observation=observation,
-                    entity_id=resolved[0],
-                    new_state=str(item.get("state", "")).strip(),
-                    new_description=str(item.get("description", "")).strip(),
-                    new_content=str(item.get("content", "")).strip(),
-                    destroyed=coerce_bool(item.get("destroyed"), False),
-                ))
+                out.append(entity)
             elif kind == "spawn":
                 spawn = parse_spawn(item, location_ref)
                 if spawn is None:
@@ -756,10 +769,13 @@ class DirectorChannel:
                 who = person_ref.resolve([item.get("person")])
                 if not who:
                     continue
+                condition = str(item.get("condition", "") or "").strip()
                 out.append(ConditionMutation(
                     observation=observation,
                     body_id=who[0],
-                    description=str(item.get("condition", "") or "").strip(),
+                    description=condition,
+                    # Lifting a condition confines nobody, whatever the model put here.
+                    confined=bool(condition) and coerce_bool(item.get("confined"), False),
                 ))
         return out
 

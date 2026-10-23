@@ -9,13 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from core.logging import get_logger
+from tuning.cli_terms import AUDIT_SCOPE_ALIAS
+
 from interaction.api.app import ApiServices
 from interaction.api.dev.jobs import JobRegistry
 
 logger = get_logger(__name__)
-
-# CLI scope aliases accepted by `python -m tuning audit --scope` (tuning/cli.py:_SCOPE_ALIAS).
-_AUDIT_SCOPES = {"sass", "sams", "mass", "mams", "init"}
 
 
 def build_audit_router(services: ApiServices, jobs: JobRegistry) -> Any:
@@ -90,11 +89,11 @@ def build_audit_router(services: ApiServices, jobs: JobRegistry) -> Any:
             raise HTTPException(status_code=404, detail=f"World {world_id} has no trace to audit")
         scopes = payload.get("scopes") or None
         if scopes:
-            bad = [s for s in scopes if s not in _AUDIT_SCOPES]
+            bad = [s for s in scopes if s not in AUDIT_SCOPE_ALIAS]
             if bad:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Unknown scope {bad}; valid: {sorted(_AUDIT_SCOPES)}",
+                    detail=f"Unknown scope {bad}; valid: {sorted(AUDIT_SCOPE_ALIAS)}",
                 )
         cmd = [sys.executable, "-m", "tuning", "audit", world_id]
         if scopes:

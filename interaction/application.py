@@ -45,6 +45,7 @@ from world import ActorCasting, World, WorldBuilder, WorldCatalog
 from world.initializer import WorldInitializer
 from world.setup import MapPlaces, SetupRejected, WorldSetup
 from world.stored_config import StoredWorldConfig
+from worlds import TiledWorldConfig  # noqa: F401  registers the built-in WorldConfig kinds
 
 logger = get_logger(__name__)
 
@@ -179,7 +180,7 @@ class NarrativeApplication:
         """
         async with self._lifecycle_lock(world_id):
             entry = self._catalog.get(world_id) if self._catalog is not None else None
-            if entry is not None and entry.get("confirmed"):
+            if self._catalog is not None and self._catalog.is_confirmed(world_id):
                 if character_id is not None:
                     raise ValueError(f"World {world_id!r} is confirmed; its cast is locked.")
                 if (session := self._sessions.get(world_id)) is not None:
@@ -191,7 +192,9 @@ class NarrativeApplication:
                     raise ValueError(f"World {world_id!r} is not cataloged.")
                 if self._catalog.director_reviewed(world_id):
                     raise ValueError(f"World {world_id!r} was reviewed by the director; nobody can be cast.")
-                setup = await self.world_setup(world_id)
+                setup = await WorldSetup.load(self._container.snapshot, world_id)
+                if setup is None:
+                    raise ValueError(f"World {world_id!r} has no setup.")
                 if character_id not in {d.agent_id for d in setup.characters}:
                     raise ValueError(f"World {world_id!r} has no character {character_id!r} to cast the actor as")
                 casting = ActorCasting(character_id=character_id)
@@ -391,13 +394,6 @@ class NarrativeApplication:
                 world_id, ActorCasting(character_id=casting.character_id, exited=True),
             )
 
-    async def world_setup(self, world_id: str) -> WorldSetup:
-        """The world's setup: its file until the world is confirmed, step 0's after."""
-        setup = await WorldSetup.load(self._container.snapshot, world_id)
-        if setup is None:
-            raise ValueError(f"World {world_id!r} has no setup.")
-        return setup
-
     async def revise_setup(
         self, world_id: str, revise: Callable[[WorldSetup, MapPlaces], WorldSetup],
     ) -> WorldSetup:
@@ -410,9 +406,9 @@ class NarrativeApplication:
         either way nothing changes.
         """
         async with self._lifecycle_lock(world_id):
-            if self._catalog is None or (entry := self._catalog.get(world_id)) is None:
+            if self._catalog is None or self._catalog.get(world_id) is None:
                 raise ValueError(f"World {world_id!r} is not cataloged.")
-            if entry.get("confirmed"):
+            if self._catalog.is_confirmed(world_id):
                 raise ValueError(f"World {world_id!r} is confirmed; its setup is locked.")
             snapshots = self._container.snapshot
             stored = await snapshots.load_world_setup(world_id)
@@ -686,6 +682,7 @@ class NarrativeApplication:
         environment = session.world.environment
         return director, {
             "all_agents": session.world.agents,
+            "agent_locations": environment.body_locations(session.world.agents),
             "npcs": [
                 NpcOnMenu(npc=npc, location_id=environment.get_body_location(npc.npc_id))
                 for npc in environment.all_npcs()
