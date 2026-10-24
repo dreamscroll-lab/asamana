@@ -31,6 +31,7 @@ export function describeDecisionSummary(decisionSummary: Pick<ActorDecisionSumma
   if (typeof p.destination_id === "string" && p.destination_id) details.push(`去往：${targetName({kind: "location", id: p.destination_id}, b, self)}`);
   if (typeof p.item_id === "string" && p.item_id) details.push(`带去：${targetName({kind: "item", id: p.item_id}, b, self)}`);
   if (typeof p.recipient_id === "string" && p.recipient_id) details.push(`交给：${targetName({kind: "agent", id: p.recipient_id}, b, self)}`);
+  if (typeof p.anonymous === "boolean") details.push(`签名：${p.anonymous ? "匿名" : "实名"}`);
   if (p.announce) details.push("送给：在场所有人");
   if (typeof p.message === "string" && p.message) details.push(`内容：${p.message}`);
   if (typeof p.talk_topic === "string" && p.talk_topic) details.push(`来意：${p.talk_topic}`);

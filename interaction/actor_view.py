@@ -133,6 +133,8 @@ def _inside(event: ScopeEvent, viewer_id: str) -> ScopeEvent:
     """An event the viewer is inside: everything but the other participants' own parts."""
     if isinstance(event, ActionSummary):
         return replace(event, private=[p for p in event.private if p.agent_id == viewer_id])
+    if isinstance(event, MessageSummary) and event.anonymous:
+        return replace(event, sender_id=None)
     return event
 
 
@@ -152,7 +154,7 @@ def _public_or_own(event: ScopeEvent, viewer_id: str) -> ScopeEvent | None:
         # A visible result does not prove this viewer witnessed who created it.
         return replace(event, shared=None, private=[], created_entity_ids=[])
     if isinstance(event, (MessageSummary, BroadcastSummary)):
-        return event if event.audience is None else None
+        return _inside(event, viewer_id) if event.audience is None else None
     return event
 
 

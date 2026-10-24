@@ -1316,7 +1316,7 @@ export class TiledWorldScene
       if (act.action_type === ActionType.send_message) {
         const addressees = actedOnAgents(act.target);
         if (addressees.length) await directedMessages(this, tok, addressees);
-        else await localAnnounce(this, tok);
+        else if (!act.anonymous) await localAnnounce(this, tok);
       }
       // On a failure the chip says why: `failure_reason` is a short phrase written for this spot,
       // never parsed out of `outcome`. Falls back to the gist, then the caption; from outside

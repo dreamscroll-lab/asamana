@@ -128,16 +128,15 @@ async def test_message_memory_carries_sender_name(container) -> None:
 
 
 @pytest.mark.asyncio
-async def test_narrator_message_memory_has_no_sender_prefix(container) -> None:
-    """Pseudo-senders such as narrator/system (narrative) are narration and get no "来自X" sender
-    prefix."""
+async def test_anonymous_injection_memory_keeps_its_signature(container) -> None:
+    """An injected letter retains the same public signature as an anonymous character letter."""
     personality = _make_personality()
     layer, mem = _make_layer(container, is_main_character=True)
     msg = Message(
-        id="m-2", world_id="world-1", sender_id="narrator", sender_name="旁白",
+        id="m-2", world_id="world-1", sender_id="narrator", sender_name="匿名", anonymous=True, sender_is_agent=False,
         content="风云骤变", recipients=["agent-1"], location_scope=None,
         created_step=1, deliver_step=1, urgency=Urgency.HIGH,
-        metadata={"narrative": True},
+        metadata={"source": "system"},
     )
     before = set(mem._entries.keys())
     await layer.record(
@@ -149,7 +148,7 @@ async def test_narrator_message_memory_has_no_sender_prefix(container) -> None:
         if m.id not in before and m.raw_content.startswith("[消息]")
     ]
     assert len(written) == 1
-    assert "来自" not in written[0].raw_content
+    assert "来自匿名的消息：" in written[0].raw_content
     assert "风云骤变" in written[0].raw_content
 
 
@@ -189,12 +188,7 @@ async def test_scoring_ambient_low(container) -> None:
 
 @pytest.mark.asyncio
 async def test_narrator_message_is_not_attributed_to_a_sender(container) -> None:
-    """A narrator-type message (metadata['narrative']=True) has no sender in the memory it writes.
-
-    Locked contract: PerceptionLayer doesn't recognize the string sender_id == 'narrator'; it
-    excludes the pseudo-sender at the related_agents stage via the message.metadata['narrative']
-    flag.
-    """
+    """Anonymous injections carry no identified person into memory or relations."""
     layer, mem = _make_layer(container, is_main_character=True)
 
     # A message from a real agent
@@ -206,9 +200,10 @@ async def test_narrator_message_is_not_attributed_to_a_sender(container) -> None
     # An emotional event triggered by the narrator
     narrator_msg = Message(
         id="nar-1", world_id="world-1", sender_id="narrator",
+        sender_name="匿名", anonymous=True, sender_is_agent=False,
         content="你心头突然涌起一阵不安。", recipients=["agent-1"], location_scope=None,
         deliver_step=1, created_step=1, urgency=Urgency.HIGH,
-        metadata={"narrative": True},
+        metadata={"source": "system"},
     )
 
     await layer.record(

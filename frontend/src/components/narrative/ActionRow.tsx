@@ -138,7 +138,7 @@ export default function ActionRow({
         {parts.some((p) => cast.isMain(p.agent_id)) && <span className="text-[10px] text-indigo-400">★</span>}
         <span className="text-xs text-slate-500">📍 {cast.placeOf(act.location_id)}</span>
         <span className={`ml-auto text-[10px] px-1.5 py-0.5 rounded-md border ${meta.chip}`}>
-          {meta.icon} {meta.label}
+          {meta.icon} {meta.label}{act.anonymous && act.action_type === ActionType.send_message ? " · 匿名" : ""}
         </span>
         {/* Mark the running act and its conclusion, so the result visibly belongs to
             something begun steps ago. */}

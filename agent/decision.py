@@ -169,6 +169,7 @@ class LLMSelection:
     # layer, delivered and read by recipients). A different voice from action_description (my own
     # memory of the act). Empty for other actions.
     message_content: str = ""
+    anonymous: bool = False
     # TALK only: see AgentAction.talk_topic.
     talk_topic: str = ""
     # ERRAND only: who runs it, where to, and what to do there. None for other actions.
@@ -480,7 +481,7 @@ _ACTION_COMMON_FIELDS = frozenset({"action_description", "estimated_steps"})
 _DECISION_FIELDS = frozenset({"inner_monologue", "expected_outcome", "urgency"})
 _ACTION_FIELDS: dict[ActionType, frozenset[str]] = {
     ActionType.TALK: frozenset({"person_indices", "message_content", "talk_topic"}),
-    ActionType.SEND_MESSAGE: frozenset({"person_indices", "message_content", "message_announce"}),
+    ActionType.SEND_MESSAGE: frozenset({"person_indices", "message_content", "message_announce", "anonymous"}),
     ActionType.MOVE: frozenset({"destination_index", "move_carry_indices"}),
     ActionType.PHYSICAL: frozenset({
         "physical_person_index", "physical_npc_index", "physical_entity_index", "physical_recipient_index", "item_name",
@@ -588,6 +589,7 @@ def _select(payload: dict, action_type: ActionType, slots: _Slots) -> LLMSelecti
         urgency=parse_urgency(payload.get("urgency"), default=Urgency.NORMAL),
         expected_outcome=_text(payload, "expected_outcome"),
         message_content=_text(payload, "message_content"),
+        anonymous=action_type is ActionType.SEND_MESSAGE and payload.get("anonymous") is True,
         talk_topic=_text(payload, "talk_topic") if action_type is ActionType.TALK else "",
     )
 
@@ -702,6 +704,7 @@ class DecisionEngine:
             # This can become a message's intent, so it stays narrative.
             reason=selection.inner_monologue,
             content=selection.message_content if selection.action_type == ActionType.SEND_MESSAGE else "",
+            anonymous=selection.anonymous,
             intent=intent,
         )
 
@@ -819,8 +822,8 @@ class DecisionEngine:
                     # + expected_outcome≤30 + several index/enum fields; est. ~380 tok. The last three
                     # may each carry a bracketed date (ABSOLUTE_TIME_RULE, ≈8 chars×3 ≈36 tok) → ~416.
                     # Per-type extras are mutually exclusive: PHYSICAL recipient index ≈11 or
-                    # item_name≤10 chars ≈20 → ≤~436; MOVE move_carry_indices ≈12 → ~439; SEND
-                    # message_announce ≈8 → ~447; TALK talk_topic≤30 chars ≈50 → ~466. ERRAND is
+                    # item_name≤10 chars ≈20 → ≤~436; MOVE ≤10 move_carry_indices ≈35 → ~451; SEND
+                    # message_announce + anonymous ≈16 → ~455; TALK talk_topic≤30 chars ≈50 → ~466. ERRAND is
                     # costliest: ~416 + errand_message≤60 chars ≈90 + four index fields ≈44 +
                     # errand_announce ≈8 → ~558.
                     max_tokens=output_budget(558),
@@ -935,10 +938,10 @@ class DecisionEngine:
                 # reason ≤60 chars ≈90 + action_description ≤40 ≈60 + expected_outcome ≤30 ≈45
                 # + decision/selected_index/estimated_steps ≈9 → ~204, plus per type (exclusive):
                 # SEND_MESSAGE message_content ≤60 ≈90 + urgency ≈3 + ≤10 person indices ≈30 +
-                # announce ≈3 → ~330; ERRAND errand_message ≤60 ≈90 + four indices ≈12 + announce
-                # ≈3 → ~309; TALK talk_topic ≤30 ≈45 + indices ≈30 → ~279. Keys and structure:
-                # ≤12 fields × 5 ≈60 → ~390.
-                max_tokens=output_budget(390),
+                # announce + anonymous ≈6 → ~333; ERRAND errand_message ≤60 ≈90 + four indices ≈12
+                # + announce ≈3 → ~309; TALK talk_topic ≤30 ≈45 + indices ≈30 → ~279.
+                # SEND_MESSAGE has ≤13 fields × 5 ≈65 structure → ~398.
+                max_tokens=output_budget(398),
                 json_mode=True,
             )
         except Exception as exc:
@@ -1020,7 +1023,7 @@ class DecisionEngine:
             "decision": '"<act | idle | unclear>"',
             "selected_index": '<act 时：【行动类型】里的序号，0 起>',
             "person_indices": '<最多10个整数，"我能触及的人"的序号；TALK 第一个是交谈对象，其余旁听；SEND_MESSAGE 是收件人>',
-            "message_announce": '<SEND_MESSAGE 不指名、当众宣告时填 true>',
+            "message_announce": '<SEND_MESSAGE 不指名、向此处众人发送通知时填 true>',
             "destination_index": '<MOVE 的去处，"我可前往"的序号>',
             "move_carry_indices": '<最多10个整数，MOVE 时强行带走的在场者，"我能触及的人"的序号>',
             "physical_person_index": '<PHYSICAL 对人，"我能触及的人"里标(在场)者的序号>',
@@ -1036,6 +1039,7 @@ class DecisionEngine:
             "action_description": '"<act 时：角色第一人称，写这一步做什么，≤40字>"',
             "talk_topic": '"<TALK 时，意图里说明的、要让对方一开始就知道的来意，≤30字；没说明就不填>"',
             "message_content": '"<SEND_MESSAGE 要送出的原话，第一人称对收件人说，≤60字；SEND_MESSAGE 必填。TALK 不填：交谈的话由角色当面一句句说>"',
+            "anonymous": '<仅 SEND_MESSAGE：意图明确要求匿名时填 true，否则填 false；固定参数必须原样保留；匿名只隐藏发送人的名字，不想让接受人知道发送人>',
             "errand_message": '"<ERRAND 他到那头要原样说出口的话，≤60字>"',
             "expected_outcome": '"<act 时：角色第一人称，这一步想带来什么，≤30字；意图里读不出就不填>"',
             "estimated_steps": f'<act 时：整数，>=1；每步{step_duration}，这件事要做多久；意图里说了就照它，没说就按事情本身估>',
@@ -1332,10 +1336,10 @@ class DecisionEngine:
   "inner_monologue": "<第一人称，我此刻心里是怎么思考的、怎么权衡的、为什么倾向某个选择，20-60字（先想，再据此定 act 与下面的 selected_index）>",
   "act": <true=我要行动；false=我通盘想过，此刻确实没有任何值得行动的事（比如没有该回应的、该推进的等等），于是什么都不做——这是正当选择，不为填满这一拍硬编一个行动，也不用它逃避该面对的抉择。填 false 时，下面 selected_index 及其余字段一律省略>,
   "selected_index": <仅当 act=true：我选的行动，【我能做的】里 0 到 N 的整数>,
-  "person_indices": <整数数组，序号取自"我能触及的人"(1起)。SEND_MESSAGE 可填**多个**序号群发给指定多人；TALK 只填一个(多填只取第一个)，TALK 只能选标(在场)。SEND_MESSAGE 可选(不在场)的>,
-  "message_announce": <仅当 SEND_MESSAGE 且我不指名任何人、就是要向我此刻所在地的众人当众宣告：填 true，同时 person_indices 留空。定向传讯给指定的人则省略此字段。**SEND_MESSAGE 这两条通道必须走一条**：既没填 person_indices、又没写 true，这一行动就作废了——我要找的人若不在"我能触及的人"名单上，那就是此刻传不到他，我该改做别的，而不是把话说给空气听>,
+  "person_indices": <最多10个整数，序号取自"我能触及的人"(1起)。SEND_MESSAGE 可填**多个**序号群发给指定多人；TALK 只填一个(多填只取第一个)，TALK 只能选标(在场)。SEND_MESSAGE 可选(不在场)的>,
+  "message_announce": <仅当 SEND_MESSAGE 且我不指名任何人、就是要向我此刻所在地的众人发送通知：填 true，同时 person_indices 留空。定向传讯给指定的人则省略此字段。**SEND_MESSAGE 这两条通道必须走一条**：既没填 person_indices、又没写 true，这一行动就作废了——我要找的人若不在"我能触及的人"名单上，那就是此刻传不到他，我该改做别的，而不是把话说给空气听>,
   "destination_index": <若我选 MOVE，填"我可前往"里的序号(1起)，不过如果没有合理的地点，也可以省略，不要乱填；否则省略>,
-  "move_carry_indices": <整数数组，仅当我选 MOVE 且要把人强行一并带走：填"我能触及的人"里那些标(在场)者的序号(1起)；我独自走，或没有非带不可的人，就省略此字段>,
+  "move_carry_indices": <最多10个整数，仅当我选 MOVE 且要把人强行一并带走：填"我能触及的人"里那些标(在场)者的序号(1起)；我独自走，或没有非带不可的人，就省略此字段>,
   "physical_person_index": <若我选 PHYSICAL 且要**对"我能触及的人"里的人**动手：填其中某个标(在场)者的序号(1起)；对此处听人吩咐做事的动手改填 physical_npc_index，其他情况则省略>,
   "physical_npc_index": <若我选 PHYSICAL 且要对**此处听人吩咐做事的**那些人动手(拦下、按住、夺他手里的东西)：填"此处听人吩咐做事的"里的序号(1起)；否则省略>,
   "physical_entity_index": <若我选 PHYSICAL 且要**对物**动手：填"我够得着的东西"里那样东西的序号(1起)；对人动手则省略>,
@@ -1348,7 +1352,8 @@ class DecisionEngine:
   "errand_announce": <仅当我要他到了那处把 errand_message *当众*广播宣告给在场的所有听时：填 true。我看不见那处有谁，所以公开是我主动选的，不是默认；只说给某个人听、或那只是我对他的交代，就省略此字段>,
   "action_description": "<**act=true 时必填，任何行动都不可省**。第一人称，写我打算做什么，内容要具体完整：若上面指认了对象，就落到那个人 / 地点 / 物上；若这一动只关乎我自己(无对象可指认)，就直接写我此刻要做的事。描述具体清晰，简洁明了，15-40字>",
   "talk_topic": "<仅当 TALK：我找对方谈的来意，谈话一开始对方和旁听的人就都知道；不想让他们事先知道我的来意，就省略此字段。≤30字>",
-  "message_content": "<仅当 SEND_MESSAGE：我此刻要对**上面 person_indices 指认的那些收件人**(或在场众人)当面说出的**原话**，第一人称直接对其说，像真的在传话/宣告——不是对我自己动作的描述，也不要以第三人称提到对方；20-60字。SEND_MESSAGE 必填：没有原话，这一动就作废。其他行动一律省略此字段>",
+  "message_content": "<仅当 SEND_MESSAGE：我此刻要对**上面 person_indices 指认的那些收件人**(或在场众人)传达的**原话**，第一人称直接对其说，像真的在对他们传话——不是对我自己动作的描述，也不要以第三人称提到对方；20-60字。SEND_MESSAGE 必填：没有原话，这一动就作废。其他行动一律省略此字段>",
+  "anonymous": <仅当 SEND_MESSAGE：我是否隐藏自己的名字，让接收人不知道我是谁，true 为匿名，false 为实名；我按自己的目的与处境选择。>,
   "errand_message": "<他到了那头**说出口**的原话。**先定听众**：填了 errand_recipient_index 就只说给那一个人听；填了 errand_announce=true 就是当众宣告。两个都没有，那这句话就不会被他说出口——它会被当成我打发他时的交代收起来。写成能照着说出口的话：第一人称，对听的人说，20-60字。这趟差事是干什么的已经写在 action_description 里，不必在这儿重复。不带话就省略>",
   "expected_outcome": "<我期望这一步带来什么，10-30字>",
   "estimated_steps": <整数，>=1；每步{step_hint}，完成某件事情或者持续做某件事的时长，MOVE 由距离自动决定，填 1 即可；若选 REST，休息时长看两头——身体亏空越深(越接近垮掉)越要久，手头待办越多/越急则越短(只够缓口气)，在两者间权衡取值。>,
@@ -1464,7 +1469,7 @@ def _message_roster(packet: PerceptionPacket) -> List[tuple[str, PerceivedIdenti
         # Skip senders without cognition: a runner's report is a Message too, but on this list it
         # only yields an undeliverable letter (``deliver_for_agents`` only has inboxes for agents).
         # ``sender_is_agent`` works even for a body never seen before.
-        if not msg.sender_is_agent:
+        if msg.anonymous or not msg.sender_is_agent:
             continue
         _add(msg.sender_id, msg.sender_name or "", rel_gender.get(msg.sender_id, ""))
     for rel in getattr(awareness, "relevant_relations", []) or []:
@@ -1499,16 +1504,14 @@ def _render_perceived_signals(packet: PerceptionPacket, lines: List[str], facts:
         lines.append("我听到的广播：")
         facts.add("广播", heard)
         lines.extend(f"- {line}" for line in heard)
-    # The narrator's sender_name is already "不知来源", so it reads as an unknown sender like
-    # any other.
     if packet.inbox:
         lines.append("有人捎话给我：")
         lines.extend(
-            f"- {msg.sender_name or '某人'}：{msg.content}"
+            f"- {msg.sender_name}：{msg.content}"
             for msg in packet.inbox[:SIGNAL_CAPS["inbox"]]
         )
         facts.add("有人捎话", [
-            f"{msg.sender_name or '某人'}：{msg.content}"
+            f"{msg.sender_name}：{msg.content}"
             for msg in packet.inbox[:SIGNAL_CAPS["inbox"]]
         ])
 
@@ -1627,7 +1630,7 @@ _ACTOR_TEXT_SLOTS: tuple[tuple[str, str], ...] = (
     ("item_name", "item_name"),
     ("errand_message", "errand_message"),
 )
-_ACTOR_FLAG_SLOTS: tuple[str, ...] = ("message_announce", "errand_announce")
+_ACTOR_FLAG_SLOTS: tuple[str, ...] = ("message_announce", "errand_announce", "anonymous")
 
 
 def _actor_payload(action: ActorAction, lists: CandidateLists) -> dict:
@@ -1668,6 +1671,8 @@ def _fixed_intent_payload(packet: PerceptionPacket, intent: ActorIntent, base: A
     """The fixed part of an intent as the slots the reading must keep."""
     payload = _actor_payload(base, candidate_lists(packet))
     payload["selected_index"] = next(i for i, c in enumerate(_ACTION_SPACE) if c.action_type is base.action_type)
+    if base.action_type is ActionType.SEND_MESSAGE:
+        payload["anonymous"] = base.anonymous
     if intent.parameters.announce is not None:
         payload["errand_announce"] = intent.parameters.announce
     return payload
@@ -1720,7 +1725,7 @@ def _constrained_actor_action_from_payload(
             return None
         if selected != fixed_payload["selected_index"]:
             raise ActorAnswerRejected("operation_constraint_conflict")
-    for key in ("message_content", "errand_message"):
+    for key in ("message_content", "errand_message", "anonymous"):
         if key in fixed_payload and key in payload and payload[key] != fixed_payload[key]:
             raise ActorAnswerRejected("operation_constraint_conflict")
     payload = {**fixed_payload, **payload}

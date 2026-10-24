@@ -40,7 +40,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Sequence
 
-from core.interfaces.message import Message, MessageProvider
+from core.interfaces.message import ANONYMOUS_SENDER_NAME, Message, MessageProvider
 from core.interfaces.urgency import Urgency
 
 if TYPE_CHECKING:
@@ -72,6 +72,7 @@ class MessageDelivery:
                     "id": message.id,
                     "sender_id": message.sender_id,
                     "sender_name": message.sender_name,
+                    "anonymous": message.anonymous,
                     "recipients": list(message.recipients) if message.recipients is not None else None,
                     "location_scope": message.location_scope,
                     "content": message.content,
@@ -169,7 +170,8 @@ class MessageSystem:
             id=str(uuid.uuid4()),
             world_id=self._world_id,
             sender_id=action.agent_id,
-            sender_name=sender_name,
+            sender_name=ANONYMOUS_SENDER_NAME if action.anonymous else sender_name,
+            anonymous=action.anonymous,
             # The exact words addressed to the recipient; never action_description, the sender's
             # own account of the act.
             content=action.content,

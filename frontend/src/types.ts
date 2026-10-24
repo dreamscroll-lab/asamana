@@ -181,6 +181,7 @@ export interface ActionSummary {
   // WHICH BEAT of an execution this is — the only thing that says whether the outcome is an
   // opening or a result. See lib/contract's Phase for the six values.
   phase: string;
+  anonymous: boolean;
   // What the body was seen doing (see lib/contract Deed). Same as `action_type` except for
   // physical, which packs several verbs into one type. Empty = nothing was done → draw nothing.
   deed: string;
@@ -235,8 +236,9 @@ export interface MessageSummary {
   kind: "message";
   seq: number;
   message_id: string;
-  sender_id: string;
+  sender_id: string | null;
   sender_name: string;
+  anonymous: boolean;
   // Who received it in this scope: one for a direct message, everyone there for a place's.
   receiver_ids: string[];
   scope: MessageScope;
@@ -763,7 +765,7 @@ export interface BriefEntity {
 }
 
 export interface BriefMessage {
-  sender_name: string; // empty when the message names nobody
+  sender_name: string; // Public signature, including anonymous messages.
   content: string;
   urgency: string;
 }
@@ -801,6 +803,7 @@ export interface ActorOperationParameters {
   item_id?: string;
   recipient_id?: string;
   announce?: boolean;
+  anonymous?: boolean;
 }
 export type ActorIntent = { turn_id: string; text: string } | {
   turn_id: string; operation: ActorOperation; target: ActorTarget;
@@ -813,7 +816,7 @@ export interface ActorRecordedIntent {
   target: ActorTarget | null;
   parameters: {
     destination_id: string | null; item_id: string | null; recipient_id: string | null;
-    message: string | null; announce: boolean | null;
+    message: string | null; announce: boolean | null; anonymous: boolean | null;
   };
   description: string;
 }

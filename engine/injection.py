@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 from core.interfaces.action import Observed
 from core.interfaces.directory import WorldDirectory
 from core.interfaces.llm import IndexedRef
-from core.interfaces.message import Message
+from core.interfaces.message import ANONYMOUS_SENDER_NAME, Message
 from core.interfaces.perception import Broadcast, BroadcastType
 from core.interfaces.phenomenon import Phenomenon, parse_phenomenon
 from core.interfaces.severity import Severity, parse_severity
@@ -288,7 +288,6 @@ _NEGATIVE_ALIASES = {"负面", "negative", "坏", "bad"}
 # The author is a code-layer fact, recorded in ``metadata["source"]`` and not in sender;
 # otherwise the out-of-story "director" identity would appear in the narrative layer.
 _UNSIGNED_SENDER_ID = "narrator"
-_UNSIGNED_SENDER_NAME = "不知来源"
 
 
 @dataclass(frozen=True)
@@ -393,7 +392,8 @@ class InjectionDispatcher:
                     id=str(uuid.uuid4()),
                     world_id=self._message_system.world_id,
                     sender_id=_UNSIGNED_SENDER_ID,
-                    sender_name=_UNSIGNED_SENDER_NAME,
+                    sender_name=ANONYMOUS_SENDER_NAME,
+                    anonymous=True,
                     content=message.content,
                     recipients=list(message.recipients),
                     location_scope=None,
@@ -402,7 +402,7 @@ class InjectionDispatcher:
                     urgency=message.urgency,
                     # Otherwise the recipient would try to form a relation with it and reply.
                     sender_is_agent=False,
-                    metadata={"source": author.value, "narrative": True},
+                    metadata={"source": author.value},
                 ))
                 dispatched.add("message")
                 touched.extend(message.recipients)

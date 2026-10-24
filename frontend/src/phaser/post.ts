@@ -66,7 +66,7 @@ export class PostLayer {
       return !!tok && !tok.dead;
     };
     const flights: Promise<void>[] = [];
-    const senderInk = (id: string) => id && id !== "narrator" ? this.host.identityColor(id) : UNSIGNED_INK;
+    const senderInk = (m: MessageSummary) => !m.anonymous && m.sender_id ? this.host.identityColor(m.sender_id) : UNSIGNED_INK;
     // reader → every `direct` letter addressed to him; a letter to five lands in all five piles.
     // Crowding is handled below by how many piles open themselves, never by withholding mail.
     const post = new Map<string, MessageSummary[]>();
@@ -81,11 +81,11 @@ export class PostLayer {
       // The flight, for letters that left no hand (a signed one flew a step ago), all at once.
       // FOCUS-GATED, unlike the badge: a state readout is for everyone, a timed beat belongs
       // to the subject you asked to watch (as in playTrack).
-      if (!this.host.token(m.sender_id)) {
+      if (m.anonymous || !m.sender_id || !this.host.token(m.sender_id)) {
         for (const rid of readers) {
           if (this.host.focusActive() && !this.host.isFocused(rid)) continue;
           flights.push(arrivingMessage(this.host, this.host.token(rid)!,
-            m.sender_id && m.sender_id !== "narrator" ? { color: senderInk(m.sender_id) } : undefined,
+            !m.anonymous && m.sender_id ? { color: senderInk(m) } : undefined,
           ));
         }
       }
@@ -96,10 +96,10 @@ export class PostLayer {
       // lands there with the speaker's name; don't badge every listener — that turns one
       // proclamation into N private letters (see the `scope` contract). Badges are `direct` only.
       if (m.scope !== "direct") {
-        const from = { name: m.sender_name, ink: senderInk(m.sender_id) };
+        const from = { name: m.sender_name, ink: senderInk(m) };
         heard.push({
           content: said, location_id: m.scope === "place" ? m.location_id : null,
-          speaker: m.sender_id, from,
+          speaker: m.anonymous ? "" : m.sender_id ?? "", from,
         });
         continue;
       }
@@ -113,7 +113,7 @@ export class PostLayer {
       const tok = this.host.token(rid)!;
       tok.postData = letters.map((m) => ({
         from: m.sender_name,
-        ink: senderInk(m.sender_id),
+        ink: senderInk(m),
         said: (m.spoken || m.content).trim(),
       }));
       this.renderPostBadge(tok);

@@ -37,7 +37,7 @@ const agent = (agent_id: string): AgentView => ({
 });
 
 const act = (seq: number, over: Partial<ActionSummary> = {}): ActionSummary => ({
-  kind: "action", seq, execution_id: `x${seq}`, initiator_id: "a", participant_ids: ["a"], action_type: "move",
+  kind: "action", anonymous: false, seq, execution_id: `x${seq}`, initiator_id: "a", participant_ids: ["a"], action_type: "move",
   phase: "settled", deed: "move", target: { acts_on: [], claims: [], reaches: [] },
   affected_entity_ids: [], created_entity_ids: [], overheard_by: [], interrupted_by: "",
   detected: false, not_executed: false, public: null,
@@ -50,7 +50,7 @@ const act = (seq: number, over: Partial<ActionSummary> = {}): ActionSummary => (
 });
 
 const letter = (receiver: string): MessageSummary => ({
-  kind: "message", seq: 3, message_id: "m1", sender_id: "s", sender_name: "某人", receiver_ids: [receiver],
+  kind: "message", anonymous: false, seq: 3, message_id: "m1", sender_id: "s", sender_name: "某人", receiver_ids: [receiver],
   scope: "direct", content: "来", spoken: "来", audience: [receiver],
 });
 

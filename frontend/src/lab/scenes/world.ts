@@ -203,8 +203,8 @@ export function buildWorldScenes({ se: SE, far: FAR, open: OPEN, tight: TIGHT }:
       group: "世界",
       title: "无来源的密报",
       watch:
-        "事件注入的消息没有真正的发送者：sender_id 是 narrator，名字是「不知来源」。地图上没有任何人做出「递出」的动作——" +
-        "信封 ✉？ 从世界之外飞进来落在收信人身上，再打开成正文，标题「✉ 不知来源」用中性石板色（不属于任何人的身份色）。" +
+        "事件注入的消息没有真正的发送者：sender_id 是 narrator，名字是「匿名」。地图上没有任何人做出「递出」的动作——" +
+        "信封 ✉？ 从世界之外飞进来落在收信人身上，再打开成正文，正文来源「匿名」用中性石板色（不属于任何人的身份色）。" +
         "「看得见它来了，也看得见你看不见它从哪来」——飞在空中和摊开在手上，必须是同一种颜色。",
       steps: [
         step({ states: [who(MO, OPEN), who(SHI, OPEN)] }),
@@ -217,7 +217,8 @@ export function buildWorldScenes({ se: SE, far: FAR, open: OPEN, tight: TIGHT }:
             {
               message_id: "1a3d2719-d81e-4389-b41b-11b4b8532b99",
               sender_id: "narrator",
-              sender_name: "不知来源",
+              sender_name: "匿名",
+              anonymous: true,
               receiver_ids: [MO.id],
               content: `急报：${OPEN.name}有人在打听你的行踪，speak 慎言。`,
               spoken: `急报：${OPEN.name}有人在打听你的行踪，speak 慎言。`,

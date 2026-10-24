@@ -142,3 +142,12 @@ describe("map operation backend-owned requirements", () => {
     expect(markup).not.toContain(">关闭<");
   });
 });
+
+describe("broadcast signature", () => {
+  it.each([false, true])("shows the selected anonymity state (%s)", (anonymous) => {
+    const { markup } = operationForm("broadcast", ["message"], { message: "请留步", anonymous });
+    expect(markup).toContain("匿名发送");
+    expect(markup).toContain('type="checkbox"');
+    expect(markup.includes('checked=""')).toBe(anonymous);
+  });
+});

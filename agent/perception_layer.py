@@ -149,25 +149,21 @@ class PerceptionMemoryLayer:
                           "location_scope": bc.location_scope},
             ))
 
-        # related_agents holds only senders with cognition; _write_item reads it to decide whether
-        # a message is a relation signal. Excluded: narrator pseudo-senders (narration is not a
-        # person) and cognition-less bodies (people, but they don't form relations; they still
-        # keep sender_name so memory knows who said it).
+        # Only identified senders with cognition can be relation signals.
         for msg in inbox:
             if not msg.content:
                 continue
             urgency = getattr(msg, "urgency", Urgency.NORMAL)
-            is_narrative = bool(msg.metadata.get("narrative"))
             related = [msg.sender_id] if (
-                msg.sender_id and not is_narrative and msg.sender_is_agent
+                msg.sender_id and not msg.anonymous and msg.sender_is_agent
             ) else []
             # Weave the sender into the text, or a recalled memory loses who said it.
-            sender_name = (getattr(msg, "sender_name", "") or "某人") if not is_narrative else ""
+            sender_name = msg.sender_name
             # Memory keeps only the speech (metadata "spoken"), not attached material: an
             # errand-runner's scene report is long, stale next step, and would crowd out recall.
             # With no mark, the whole text is speech (a letter).
             body = str(msg.metadata.get("spoken") or "") or msg.content
-            content = f"来自{sender_name}的消息：{body}" if sender_name else body
+            content = f"来自{sender_name}的消息：{body}"
             items.append(PerceptionItem(
                 content=content,
                 source="message",
@@ -175,9 +171,9 @@ class PerceptionMemoryLayer:
                 signal_strength=URGENCY_TO_STRENGTH[urgency],
                 metadata={
                     "source": "message",
-                    "sender_id": msg.sender_id,
+                    "sender_id": None if msg.anonymous else msg.sender_id,
                     "message_id": msg.id,
-                    "narrative": is_narrative,
+                    "anonymous": msg.anonymous,
                 },
             ))
 

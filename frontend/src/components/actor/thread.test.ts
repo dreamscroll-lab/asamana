@@ -65,7 +65,7 @@ describe("buildThread · 卡片", () => {
     if (entry.kind !== "said") throw new Error("Unexpected test entry");
     entry.intent = {
       turn_id: t.turn_id, text: null, operation: "physical", target: { kind: "agent", id: "li" },
-      parameters: { destination_id: null, item_id: null, recipient_id: null, message: null, announce: null }, description: "避开要害",
+      parameters: { destination_id: null, item_id: null, recipient_id: null, message: null, announce: null, anonymous: null }, description: "避开要害",
     };
     expect(buildThread([asked(t), entry], t).at(-1)).toMatchObject({ kind: "said", intent: entry.intent });
   });

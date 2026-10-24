@@ -97,7 +97,7 @@ export function buildErrandScenes(places: LabPlaces): LabScene[] {
             {
               message_id: "1b5d90a4-3c27-4f08-9ad6-6e2c85b70f13",
               sender_id: WANG.npc_id,
-              sender_name: WANG.name,
+              anonymous: false, sender_name: WANG.name,
               receiver_ids: [MO.id],
               // The backend sends both parts: the bubble shows `spoken` (short), the feed shows
               // `content` (the full text).

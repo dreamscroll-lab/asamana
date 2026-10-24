@@ -14,7 +14,7 @@ import Who from "./Who";
  */
 export default function MessageRow({ m, cast }: { m: Scoped<MessageSummary>; cast: StepCast }) {
   const to = m.receiver_ids.map(cast.nameOf).filter(Boolean);
-  const sender = <Who cast={cast} id={m.sender_id} name={m.sender_name || "不知来源"} />;
+  const sender = <Who cast={cast} id={m.anonymous ? undefined : m.sender_id ?? undefined} name={m.sender_name} />;
   const heard = m.receiver_ids.length;
   return (
     <div className="flex items-start gap-1.5 text-[13px] text-slate-400">

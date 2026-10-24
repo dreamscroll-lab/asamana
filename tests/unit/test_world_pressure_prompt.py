@@ -89,11 +89,11 @@ def _spatial(*, location: str, visible: dict[str, str] | None = None, ambient: l
 
 def _msg(
     content: str, *, sender_id: str = "x", sender_name: str = "某人",
-    sender_is_agent: bool = True,
+    sender_is_agent: bool = True, anonymous: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         content=content, sender_id=sender_id, sender_name=sender_name,
-        sender_is_agent=sender_is_agent,
+        sender_is_agent=sender_is_agent, anonymous=anonymous,
     )
 
 
@@ -202,7 +202,7 @@ async def test_sender_relations_resolves_remote_skips_non_agents_and_colocated()
     inbox = [
         _msg("速来", sender_id="a_shimin", sender_name="李世民"),    # remote agent → resolved
         _msg("传旨", sender_id="narrator", sender_name="旁白", sender_is_agent=False),
-        _msg("他在城西", sender_id="director", sender_name="不知来源", sender_is_agent=False),
+        _msg("他在城西", sender_id="director", sender_name="匿名", sender_is_agent=False, anonymous=True),
         _msg("话带到了", sender_id="npc_1", sender_name="禁军屯卫", sender_is_agent=False),
         _msg("近前", sender_id="a_here", sender_name="侍卫"),         # co-located → excluded
     ]

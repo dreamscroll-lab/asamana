@@ -39,6 +39,8 @@ from typing import Any
 
 from core.interfaces.urgency import Urgency
 
+ANONYMOUS_SENDER_NAME = "匿名"
+
 
 @dataclass
 class Message:
@@ -58,10 +60,12 @@ class Message:
     Time is orthogonal: deliver_step > created_step = delayed. ``content`` and ``urgency``
     follow the module charter (lossless transport; the receiver decides).
 
-    ``sender_is_agent``: can the receiver form a relation with this sender? The body kind lives
-    on ``EnvironmentSystem``, which ``agent/`` must not use, so the engine declares it. Not
-    interchangeable with ``metadata["narrative"]``, which also drops ``sender_name``: a
-    non-cognitive body is a real person whose name must stay in memory.
+    ``sender_id`` always records the real source. ``anonymous`` withholds that identity from
+    recipients; ``sender_name`` already carries the public signature. Cognition must not bind
+    an anonymous message to its sender, even if that person is otherwise known.
+
+    ``sender_is_agent`` declares whether the sender has cognition. Non-cognitive bodies can be
+    named, but receivers cannot form relations with them.
 
     ``doer_ids`` is this pipe's half of self-exclusion (the other is ``AmbientEvent.doer_ids``):
     the mouth and the author can differ, and an agent who dictated a message an Npc reads aloud
@@ -77,6 +81,7 @@ class Message:
     deliver_step: int                      # step at which delivery happens
     created_step: int
     sender_name: str = ""
+    anonymous: bool = False
     intent: str = ""
     urgency: Urgency = Urgency.NORMAL      # 4-level enum — meta-signal, receiver may ignore it
     sender_is_agent: bool = True           # False = sender has no cognition; receivers form no relation with it

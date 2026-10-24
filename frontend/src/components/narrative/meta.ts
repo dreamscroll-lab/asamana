@@ -47,7 +47,7 @@ export function collapsedOf(item: FeedItem, cast: StepCast): { icon: string; tex
   if (item.kind === "injection")
     return { icon: item.data.authored_by === "director" ? "🎬" : "⚡", text: item.data.narrative };
   if (item.kind === "message")
-    return { icon: "✉", text: `${item.data.sender_name || "不知来源"} · ${item.data.content}` };
+    return { icon: "✉", text: `${item.data.sender_name} · ${item.data.content}` };
   if (item.kind === "broadcast") return { icon: "📣", text: item.data.content };
   if (item.kind === "observation") return { icon: "👁", text: item.data.text };
   const act = item.data;

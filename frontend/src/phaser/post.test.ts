@@ -60,7 +60,7 @@ describe("offscreen post identity", () => {
     const layer = new PostLayer(host, {} as never, {} as never, heard as never);
     vi.spyOn(layer as unknown as PostRendering, "renderPostBadge").mockImplementation(() => {});
     const message = (sender_id: string, scope: string): Scoped<MessageSummary> => ({
-      sender_id, sender_name: sender_id, receiver_ids: ["reader"], scope, content: "A letter", spoken: "",
+      sender_id, anonymous: sender_id === "narrator", sender_name: sender_id, receiver_ids: ["reader"], scope, content: "A letter", spoken: "",
     }) as Scoped<MessageSummary>;
     await layer.playDeliveries([
       message("offscreen", "direct"), message("narrator", "direct"), message("offscreen", "world"),
@@ -86,9 +86,44 @@ describe("offscreen post identity", () => {
     vi.spyOn(layer as unknown as PostRendering, "renderPostBadge").mockImplementation(() => {});
     vi.spyOn(layer as unknown as PostRendering, "openPost").mockResolvedValue(undefined);
     await layer.playDeliveries([{
-      sender_id: "offscreen", sender_name: "Sender", receiver_ids: ["reader"], scope: "direct",
+      sender_id: "offscreen", anonymous: false, sender_name: "Sender", receiver_ids: ["reader"], scope: "direct",
       content: "A letter", spoken: "",
     } as Scoped<MessageSummary>], 1);
     expect(arrivingMessage).toHaveBeenCalledWith(host, reader, { color: 0x123456 });
+  });
+});
+
+describe("anonymous deliveries", () => {
+  it.each(["direct", "place", "world"].flatMap((scope) =>
+    ["sender", null].map((sender_id) => ({ scope, sender_id })),
+  ))("withholds sender identity for $scope ($sender_id)", async ({ scope, sender_id }) => {
+    vi.mocked(arrivingMessage).mockClear();
+    const reader = { dead: false, postData: [] } as unknown as AgentToken;
+    const sender = { dead: false, locationId: "hall" } as unknown as AgentToken;
+    const host = {
+      renderGen: 1,
+      token: (id: string) => id === "reader" ? reader : id === "sender" ? sender : undefined,
+      identityColor: vi.fn(() => 0x123456), holdPose: vi.fn(),
+      focusActive: () => true, isFocused: (id: string) => id === "reader", canSelect: () => true,
+    } as unknown as PostHost;
+    const heard = { playBroadcast: vi.fn() };
+    const layer = new PostLayer(host, {} as never, {} as never, heard as never);
+    vi.spyOn(layer as unknown as PostRendering, "renderPostBadge").mockImplementation(() => {});
+    vi.spyOn(layer as unknown as PostRendering, "openPost").mockResolvedValue(undefined);
+    await layer.playDeliveries([{
+      kind: "message", seq: 1, message_id: "anonymous", sender_id, sender_name: "匿名",
+      anonymous: true, receiver_ids: ["reader"], scope, content: "请留步", spoken: "请留步",
+      location_id: "hall", audience: ["reader"],
+    } as Scoped<MessageSummary>], 1);
+    expect(host.identityColor).not.toHaveBeenCalled();
+    expect(host.holdPose).not.toHaveBeenCalled();
+    expect(arrivingMessage).toHaveBeenCalledWith(host, reader, undefined);
+    if (scope === "direct") {
+      expect(reader.postData).toEqual([{ from: "匿名", ink: 0x8a94a8, said: "请留步" }]);
+    } else {
+      expect(heard.playBroadcast).toHaveBeenCalledWith(
+        { content: "请留步", location_id: scope === "place" ? "hall" : null }, { name: "匿名", ink: 0x8a94a8 },
+      );
+    }
   });
 });

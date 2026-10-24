@@ -118,6 +118,7 @@ def _msg(
         content=content,
         urgency=urgency,
         sender_is_agent=is_agent,
+        anonymous=False,
     )
 
 

@@ -9,6 +9,7 @@ from core.action_duration import action_duration_steps
 from core.interfaces.directory import WorldDirectory
 from core.duration import describe_duration
 from core.interfaces.execution import TickResult
+from core.interfaces.message import ANONYMOUS_SENDER_NAME
 from engine.executors.base import ActionExecutionState, ActionExecutor
 from engine.narration import (
     format_intent_clause, format_interrupt_reason_3p, format_interrupt_thought, observed_here,
@@ -189,21 +190,27 @@ class SimpleExecutor(ActionExecutor):
         message_text = action.content
         place = observe_location(environment, action.agent_id)
         doer_name = self._directory.agent_name(action.agent_id)
+        signature = ANONYMOUS_SENDER_NAME if action.anonymous else ""
         if directed:
             recipient_text = "、".join(self._directory.agent_name(aid) for aid in recipient_ids)
-            factual = f"我成功在{place}传讯给{recipient_text}：「{message_text}」"
-            outcome = scene_line(place, f"{doer_name}成功向{recipient_text}传讯：「{message_text}」")
+            factual = f"我成功在{place}{signature}传讯给{recipient_text}：「{message_text}」"
+            outcome = scene_line(place, f"{doer_name}成功{signature}向{recipient_text}传讯：「{message_text}」")
         else:
             # Name everyone: the memory must later answer "who heard this".
             heard_text = "、".join(self._directory.agent_name(aid) for aid in receivers)
-            factual = f"我在{place}当着{heard_text}的面宣告：「{message_text}」"
-            outcome = scene_line(place, f"{doer_name}成功向在场的{heard_text}宣告：「{message_text}」")
+            if action.anonymous:
+                factual = f"我在{place}匿名向{heard_text}发送通知：「{message_text}」"
+                outcome = scene_line(place, f"{doer_name}成功匿名向{heard_text}发送通知：「{message_text}」")
+            else:
+                factual = f"我在{place}当着{heard_text}的面宣告：「{message_text}」"
+                outcome = scene_line(place, f"{doer_name}成功向在场的{heard_text}宣告：「{message_text}」")
         stub = AgentAction(
             agent_id=action.agent_id,
             step=step,
             action_type=ActionType.SEND_MESSAGE,
             action_description=action.action_description or "send message",
             content=action.content,
+            anonymous=action.anonymous,
             estimated_steps=1,
             # The record is rebuilt from this stub; without the target a letter renders as a notice.
             target=action.target,
@@ -231,20 +238,24 @@ class SimpleExecutor(ActionExecutor):
         message_text = action.content
         place = observe_location(environment, action.agent_id)
         doer_name = self._directory.agent_name(action.agent_id)
+        signature = ANONYMOUS_SENDER_NAME if action.anonymous else ""
         if directed:
             reason = "没有能送到的人"
-            factual = f"我在{place}传讯：「{message_text}」，但没有一个人收得到"
-            outcome = scene_line(place, f"{doer_name}发出传讯「{message_text}」，但没有一个人收得到。")
+            factual = f"我在{place}{signature}传讯：「{message_text}」，但没有一个人收得到"
+            outcome = scene_line(place, f"{doer_name}发出{signature}传讯「{message_text}」，但没有一个人收得到。")
         else:
             reason = "此处无人"
-            factual = f"我在{place}宣告：「{message_text}」，但此处无人，没有人听见"
-            outcome = scene_line(place, f"{doer_name}向四下宣告「{message_text}」，但此处无人，没有人听见。")
+            verb = "匿名发送通知" if action.anonymous else "宣告"
+            unheard = "没有人收到" if action.anonymous else "没有人听见"
+            factual = f"我在{place}{verb}：「{message_text}」，但此处无人，{unheard}"
+            outcome = scene_line(place, f"{doer_name}向四下{verb}「{message_text}」，但此处无人，{unheard}。")
         stub = AgentAction(
             agent_id=action.agent_id,
             step=step,
             action_type=ActionType.SEND_MESSAGE,
             action_description=action.action_description or "send message",
             content=action.content,
+            anonymous=action.anonymous,
             estimated_steps=1,
             target=action.target,
         )

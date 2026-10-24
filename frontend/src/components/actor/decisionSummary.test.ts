@@ -34,7 +34,7 @@ describe("describeDecisionSummary", () => {
   it("retains the selected operation and target alongside a supplemental description", () => {
     const text = describeIntent({
       turn_id: "t", text: null, operation: "physical", target: { kind: "agent", id: "b" },
-      parameters: { destination_id: null, item_id: null, recipient_id: null, message: null, announce: null },
+      parameters: { destination_id: null, item_id: null, recipient_id: null, message: null, announce: null, anonymous: null },
       description: "避开要害",
     }, briefing);
     expect(text).toEqual({ headline: "动手 · 避开要害", details: ["对象：李建成"] });
@@ -43,7 +43,7 @@ describe("describeDecisionSummary", () => {
     for (const operation of ["work", "rest", "covert"] as const) {
       const text = describeIntent({
         turn_id: "t", text: null, operation, target: { kind: "agent", id: "self" },
-        parameters: { destination_id: null, item_id: null, recipient_id: null, message: null, announce: null }, description: "",
+        parameters: { destination_id: null, item_id: null, recipient_id: null, message: null, announce: null, anonymous: null }, description: "",
       }, briefing, { agent_id: "self", name: "李世民" });
       expect(text?.headline).not.toContain(" · ");
       expect(text?.details).toEqual(["对象：李世民"]);
@@ -83,5 +83,15 @@ describe("reasonText", () => {
     expect(reasonText("destination_id_not_perceived")).toContain("不在你能触及的范围");
     expect(reasonText("something_new")).toBe("这样做不成，换个说法试试。");
     expect(reasonText(null)).toBe("");
+  });
+});
+
+describe("signature confirmation", () => {
+  it.each([false, true])("shows the resolved signature before sending (%s)", (anonymous) => {
+    const text = describeDecisionSummary(decisionSummary({
+      operation: "send_message", target: null, parameters: { message: "请留步", anonymous },
+    }), briefing);
+    expect(text.details).toContain(`签名：${anonymous ? "匿名" : "实名"}`);
+    expect(text.details).toContain("内容：请留步");
   });
 });

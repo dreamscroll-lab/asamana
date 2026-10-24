@@ -76,6 +76,7 @@ def action_events(
                 lead.get("participant_ids") or [r.get("agent_id") for r in group]
             ),
             "action_type": action_type,
+            "anonymous": bool(lead.get("anonymous", False)),
             "phase": phase,
             "deed": str(lead.get("deed") or ""),
             "target": lead.get("target") or {"acts_on": [], "claims": [], "reaches": []},
@@ -128,6 +129,7 @@ def message_events(
             "message_id": message.id,
             "sender_id": message.sender_id,
             "sender_name": message.sender_name,
+            "anonymous": message.anonymous,
             "recipients": list(message.recipients) if message.recipients is not None else None,
             "location_scope": message.location_scope,
             "content": message.content,

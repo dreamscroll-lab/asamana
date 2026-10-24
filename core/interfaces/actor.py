@@ -204,6 +204,7 @@ class ActorAction:
     person_ids: tuple[str, ...] = ()
     # SEND_MESSAGE to everyone here instead of to named people.
     message_announce: bool = False
+    anonymous: bool = False
     # SEND_MESSAGE: the words delivered. A TALK's words the actor speaks turn by turn.
     message_content: str = ""
     # TALK: what it is about, known to everyone in it from the start; "" keeps it to myself.
@@ -251,6 +252,7 @@ class ActorOperationParameters:
     recipient_id: str | None = None
     message: str | None = None
     announce: bool | None = None
+    anonymous: bool | None = None
 
     def __post_init__(self) -> None:
         for name in ("destination_id", "item_id", "recipient_id"):
@@ -295,9 +297,9 @@ class ActorIntent:
                     raise ValueError("A broadcast intent takes no description; its text is the message")
             allowed = {
                 ActorOperation.ERRAND: {"destination_id", "item_id", "recipient_id", "message", "announce"},
-                ActorOperation.BROADCAST: {"message"},
+                ActorOperation.BROADCAST: {"message", "anonymous"},
             }.get(self.operation, set())
-            for name in ("destination_id", "item_id", "recipient_id", "message", "announce"):
+            for name in ("destination_id", "item_id", "recipient_id", "message", "announce", "anonymous"):
                 if getattr(self.parameters, name) is not None and name not in allowed:
                     raise ValueError(f"Parameter {name} does not apply to {self.operation.value}")
 

@@ -145,9 +145,10 @@ async def test_an_injected_message_is_unsigned_and_only_metadata_names_the_autho
     )
 
     [message] = await message_system.peek_pending()
-    assert (message.sender_id, message.sender_name) == ("narrator", "不知来源")
+    assert (message.sender_id, message.sender_name) == ("narrator", "匿名")
+    assert message.anonymous is True
     assert message.sender_is_agent is False
-    assert message.metadata == {"source": author.value, "narrative": True}
+    assert message.metadata == {"source": author.value}
 
 
 @pytest.mark.asyncio

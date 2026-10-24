@@ -160,7 +160,7 @@ export function buildPocketScenes({ open: OPEN }: LabPlaces): LabScene[] {
             {
               message_id: "3d71c0a4-9e52-47bb-8f10-6c2ad4915b7e",
               sender_id: MO.id,
-              sender_name: MO.name,
+              anonymous: false, sender_name: MO.name,
               receiver_ids: [LIN.id],
               content: "阿墨要你今夜之前把药送到坊门。",
               spoken: "阿墨要你今夜之前把药送到坊门。",

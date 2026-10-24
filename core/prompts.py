@@ -745,8 +745,7 @@ def render_perceived_signals(*, spatial, inbox, broadcasts) -> list[str]:
     for ev in getattr(spatial, "ambient_events", [])[:SIGNAL_CAPS["ambient"]]:
         lines.append(f"{AMBIENT_TAG}：{ev.content}")
     for msg in (inbox or [])[:SIGNAL_CAPS["inbox"]]:
-        # The narrator's sender_name is already a narrative "unknown source"; no special case.
-        sender = getattr(msg, "sender_name", None) or "某人"
+        sender = msg.sender_name
         lines.append(f"收到来自{sender}的{MESSAGE_TAG}：{msg.content}")
     for bc in (broadcasts or [])[:SIGNAL_CAPS["broadcast"]]:
         lines.append(f"{broadcast_tag(bc.location_scope)}：{bc.content}")

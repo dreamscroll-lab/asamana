@@ -104,6 +104,8 @@ def actor_decision_beat(decision: ActorDecision, packet: "PerceptionPacket") -> 
     }
     if words := action.message_content or action.errand_message:
         beat["message_content"] = words
+    if action.action_type is ActionType.SEND_MESSAGE:
+        beat["anonymous"] = action.anonymous
     if action.item_name:
         beat["item_name"] = action.item_name
     return beat
@@ -164,7 +166,7 @@ def build_actor_operation(intent: ActorIntent, packet: "PerceptionPacket") -> Ac
         return ActorAction(definition.action_type, description, destination_id=target.id)
     if operation is ActorOperation.BROADCAST:
         return ActorAction(definition.action_type, description, message_announce=True,
-                           message_content=(params.message or "").strip())
+                           message_content=(params.message or "").strip(), anonymous=params.anonymous is True)
     if operation is ActorOperation.TALK:
         return ActorAction(definition.action_type, description, person_ids=(target.id,))
     if operation is ActorOperation.ERRAND:
@@ -259,6 +261,7 @@ def build_actor_decision_summary(
         params["expected_outcome"] = action.expected_outcome
     if action.action_type is ActionType.SEND_MESSAGE:
         params["message"] = action.message_content
+        params["anonymous"] = action.anonymous
         params["announce"] = action.message_announce
         params["urgency"] = action.urgency.value
         if action.message_announce and not action.person_ids:

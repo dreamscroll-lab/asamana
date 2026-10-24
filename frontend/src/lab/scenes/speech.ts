@@ -224,7 +224,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
             {
               message_id: "9f2c41e0-5a7b-4d16-8c33-2b1f7a0e94dd",
               sender_id: MO.id,
-              sender_name: MO.name,
+              anonymous: false, sender_name: MO.name,
               receiver_ids: [LIN.id],
               content: "阿墨约你明日辰时在坊门相见。",
               spoken: "阿墨约你明日辰时在坊门相见。",
@@ -255,7 +255,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
             {
               message_id: "6f5a7182-93a4-b5c6-d7e8-f9a0b1c2d3e4",
               sender_id: MO.id,
-              sender_name: MO.name,
+              anonymous: false, sender_name: MO.name,
               receiver_ids: [SHI.id, LIN.id],
               content: "今夜三更，坊门东侧见，两位都来。",
               spoken: "今夜三更，坊门东侧见，两位都来。",
@@ -287,7 +287,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
             {
               message_id: "7a6b8293-a4b5-c6d7-e8f9-a0b1c2d3e4f5",
               sender_id: MO.id,
-              sender_name: MO.name,
+              anonymous: false, sender_name: MO.name,
               receiver_ids: [SHI.id, LIN.id],
               content: "事情有变，你们两个都先别动。",
               spoken: "事情有变，你们两个都先别动。",
@@ -316,7 +316,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
           messages: [MO, SHI, LAN, YAN, CHE].map((who_, i) => ({
             message_id: `8b7c93a4-b5c6-d7e8-f9a0-b1c2d3e4f5${String(i).padStart(2, "0")}`,
             sender_id: who_.id,
-            sender_name: who_.name,
+            anonymous: false, sender_name: who_.name,
             receiver_ids: [LIN.id],
             content: `${who_.name}让你尽快回话。`,
             spoken: `${who_.name}让你尽快回话。`,
@@ -372,7 +372,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
             {
               message_id: "1a0b2c3d-4e5f-6071-8293-a4b5c6d7e8f9",
               sender_id: MO.id,
-              sender_name: MO.name,
+              anonymous: false, sender_name: MO.name,
               receiver_ids: [LIN.id],
               content: "阿墨要你今夜之前给个准话。",
               spoken: "阿墨要你今夜之前给个准话。",
@@ -382,7 +382,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
             {
               message_id: "2b1c3d4e-5f60-7182-93a4-b5c6d7e8f9a0",
               sender_id: SHI.id,
-              sender_name: SHI.name,
+              anonymous: false, sender_name: SHI.name,
               receiver_ids: [LIN.id],
               content: "阿石劝你别答应，那件事有诈。",
               spoken: "阿石劝你别答应，那件事有诈。",
@@ -392,7 +392,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
             {
               message_id: "3c2d4e5f-6071-8293-a4b5-c6d7e8f9a0b1",
               sender_id: LAN.id,
-              sender_name: LAN.name,
+              anonymous: false, sender_name: LAN.name,
               receiver_ids: [LIN.id],
               content: "阿岚说坊门已经有人守着了。",
               spoken: "阿岚说坊门已经有人守着了。",
@@ -433,7 +433,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
             {
               message_id: "4d3e5f60-7182-93a4-b5c6-d7e8f9a0b1c2",
               sender_id: MO.id,
-              sender_name: MO.name,
+              anonymous: false, sender_name: MO.name,
               receiver_ids: [SHI.id, LIN.id],
               content: "西市的绢价今日起按新章程走，各家自便。",
               spoken: "西市的绢价今日起按新章程走，各家自便。",
@@ -449,7 +449,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
             {
               message_id: "5e4f6071-8293-a4b5-c6d7-e8f9a0b1c2d3",
               sender_id: MO.id,
-              sender_name: MO.name,
+              anonymous: false, sender_name: MO.name,
               receiver_ids: [SHI.id, LIN.id],
               content: "自今日起，坊门宵禁提前一个时辰。",
               spoken: "自今日起，坊门宵禁提前一个时辰。",

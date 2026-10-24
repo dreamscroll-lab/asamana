@@ -523,6 +523,8 @@ class ThemeAnalyzer:
             "- 性别一致性：key_figures 的 gender 必须与人物之间分性别的称谓一致："
             "关系标签里指明性别的那些（父子/父女、兄弟/兄妹、夫/妻之类）所指的性别，"
             "与该人物的 gender 不得矛盾；role 本身隐含性别时亦然。"
+            "labels 表示的是 B(to) 对于 A(from) 来说的关系描述，即表示 B 是 A 的谁，比如 B 是 A 的老板；"
+            "reverse_labels 表示的是 A(from) 对于 B(to) 来说的关系描述，即表示 A 是 B 的谁，比如 A 是 B 的员工。这个非常重要，必须遵守这个规则。 "
         )
         constraint_lines.append(
             "- 前史：生成至多 6 条 historical_events。它们都是**已经发生过**的事，"

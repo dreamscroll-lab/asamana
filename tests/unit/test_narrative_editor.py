@@ -567,21 +567,17 @@ async def test_pure_message_plan_dispatches_only_message(container) -> None:
     assert fired is not None
     assert fired["dispatched_to"] == ["message"]
     assert bc.peek_pending() == []
-    # message delivered correctly: sent by narrator, recipients=[a1], metadata.narrative=True
     pending = await _messages(system).peek_pending()
     assert len(pending) == 1
     msg = pending[0]
     assert msg.sender_id == "narrator"
-    # The narrator's sender_name is a narrative referent ("不知来源"), never a system concept:
-    # people in the story don't know the narrative engine exists.
-    assert msg.sender_name == "不知来源"
+    assert msg.sender_name == "匿名"
+    assert msg.anonymous
     assert msg.recipients == ["a1"]
     assert msg.urgency == Urgency.HIGH
-    # The narrator isn't a person one can form a relation with, and the sender declares that (left
-    # to each recipient, they'd each decide differently): undeclared, the recipient would take on a
-    # relation with "不知来源" and list it as someone they can message.
+    # Injection authors are not people in the story; anonymity also withholds their identity.
     assert msg.sender_is_agent is False
-    assert msg.metadata.get("narrative") is True
+    assert msg.metadata == {"source": "system"}
     assert msg.metadata.get("source") == "system"
 
 

@@ -259,6 +259,7 @@ def _message_from_dict(data: dict) -> Message:
         deliver_step=int(data["deliver_step"]),
         created_step=int(data["created_step"]),
         sender_name=str(data.get("sender_name", "")),
+        anonymous=bool(data["anonymous"]),
         intent=str(data.get("intent", "")),
         urgency=parse_urgency(raw_urgency),
         # Dropping either field changes delivery after a restore: a mindless body would be

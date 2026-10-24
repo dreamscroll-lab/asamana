@@ -242,17 +242,17 @@ async def test_an_urgent_message_names_the_sender_it_carries(container) -> None:
     spy = _DecisionSpy((False, ""))
     agent.evaluate_interrupt = spy  # type: ignore[method-assign]
     unsigned = replace(_urgent_message("mc", "阶前拾得铜符"), sender_id="narrator",
-                       sender_name="不知来源", sender_is_agent=False)
+                       sender_name="匿名", sender_is_agent=False)
     errand = replace(_urgent_message("mc", "承天门无人"), sender_id="npc_1",
                      sender_name="宫娥", sender_is_agent=False)
 
-    unnamed = replace(_urgent_message("mc", "速来布政坊"), sender_id="li")
+    signed = replace(_urgent_message("mc", "速来布政坊"), sender_id="li", sender_name="li")
 
     await runtime._interrupts.evaluate_interrupts(
-        _delivery(2, unsigned, errand, unnamed), [], {"mc": agent}, step=2)
+        _delivery(2, unsigned, errand, signed), [], {"mc": agent}, step=2)
 
     reason = spy.reasons[0]
-    assert "收到不知来源的急讯：阶前拾得铜符" in reason
+    assert "收到匿名的急讯：阶前拾得铜符" in reason
     assert "收到宫娥的急讯：承天门无人" in reason
     assert "收到li的急讯：速来布政坊" in reason   # soul.name == agent_id in these fixtures
     assert "某人" not in reason and "narrator" not in reason and "npc_1" not in reason

@@ -659,6 +659,7 @@ class ExecutionProcessor:
             # rendering while replay looks right.
             "action_type": str(getattr(result.action.action_type, "value", result.action.action_type or "")),
             "action_description": result.action.action_description,
+            "anonymous": result.action.anonymous,
             "location_id": self._environment.get_body_location(result.action.agent_id),
             "phase": phase,
             "outcome": result.outcome,            # full authority (web / snapshot / god view)

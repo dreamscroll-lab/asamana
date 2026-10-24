@@ -284,7 +284,7 @@ class WorldPressureEvaluator:
         out: dict[str, str] = {}
         for msg in inbox:
             sid = getattr(msg, "sender_id", "") or ""
-            if not sid or not msg.sender_is_agent or sid in exclude_ids or sid in out:
+            if msg.anonymous or not sid or not msg.sender_is_agent or sid in exclude_ids or sid in out:
                 continue
             rel = await agent.relation_system.load_existing(sid)
             out[sid] = self._format_relation({
@@ -345,9 +345,9 @@ class WorldPressureEvaluator:
             )
             has_any = True
         for msg in inbox:
-            sender_name = getattr(msg, "sender_name", None) or "某人"
+            sender_name = msg.sender_name
             line = f"- 收到来自{sender_name}的{MESSAGE_TAG}：{msg.content}"
-            rel = sender_relations.get(getattr(msg, "sender_id", "") or "")
+            rel = None if msg.anonymous else sender_relations.get(msg.sender_id)
             if rel:
                 line += f"（该角色对{sender_name}的关系：{rel}）"
             lines.append(line)

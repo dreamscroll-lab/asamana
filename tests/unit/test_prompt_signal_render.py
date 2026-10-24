@@ -193,15 +193,14 @@ def test_render_perceived_signals_labels_a_local_broadcast_local() -> None:
 
 
 def test_render_perceived_signals_narrator_message_labels_unknown_source() -> None:
-    """Narrator is like a message relayed from an unknown source: rendered as usual as
-    "收到来自不知来源的消息"; system concepts (the narrative engine) never enter in-character text."""
+    """An injected message exposes the same anonymous signature as a character letter."""
     narrator = SimpleNamespace(
-        sender_id="narrator", sender_name="不知来源",
-        content="李世民心头突然涌起一阵莫名的不安", metadata={"narrative": True},
+        sender_id="narrator", sender_name="匿名", anonymous=True,
+        content="李世民心头突然涌起一阵莫名的不安", metadata={"source": "system"},
     )
     lines = render_perceived_signals(spatial=_spatial(), inbox=[narrator], broadcasts=[])
     joined = "\n".join(lines)
-    assert "收到来自不知来源的消息：李世民心头突然涌起一阵莫名的不安" in joined
+    assert "收到来自匿名的消息：李世民心头突然涌起一阵莫名的不安" in joined
     assert "叙事引擎" not in joined and "narrator" not in joined
 
 

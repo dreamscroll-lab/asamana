@@ -387,7 +387,7 @@ def test_main_prompt_json_schema_uses_index_fields(main_engine) -> None:
 def test_main_prompt_inbox_messages_rendered(main_engine) -> None:
     from types import SimpleNamespace
     inbox = [SimpleNamespace(
-        sender_id="agent-yuan", sender_name="李渊", sender_is_agent=True,
+        sender_id="agent-yuan", sender_name="李渊", sender_is_agent=True, anonymous=False,
         content="即刻觐见", urgency=Urgency.HIGH, metadata={},
     )]
     packet = _make_packet(inbox=inbox)
@@ -399,19 +399,17 @@ def test_main_prompt_inbox_messages_rendered(main_engine) -> None:
 
 
 def test_main_prompt_narrator_message_labels_unknown_source(main_engine) -> None:
-    """The narrator (metadata.narrative) is treated like a message of unknown origin: it goes under
-    "有人捎话给我" headed "不知来源". System concepts (the narrative engine) never enter an
-    in-character prompt."""
+    """Injected messages expose the anonymous signature without the engine author."""
     from types import SimpleNamespace
     inbox = [SimpleNamespace(
-        sender_id="narrator", sender_name="不知来源", sender_is_agent=True,
+        sender_id="narrator", sender_name="匿名", sender_is_agent=False, anonymous=True,
         content="李世民心头突然涌起一阵莫名的不安", urgency=Urgency.HIGH,
-        metadata={"narrative": True},
+        metadata={"source": "system"},
     )]
     packet = _make_packet(inbox=inbox)
     prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
     assert "有人捎话给我：" in prompt
-    assert "不知来源：李世民心头突然涌起一阵莫名的不安" in prompt
+    assert "匿名：李世民心头突然涌起一阵莫名的不安" in prompt
     assert "叙事引擎" not in prompt and "narrator" not in prompt
 
 

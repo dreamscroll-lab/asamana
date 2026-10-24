@@ -544,6 +544,7 @@ class ActionSummary:
     #   settled          — opened and closed in one beat.
     #   interrupt        — cut short. Terminal like a completion; ``interrupted_by`` says by whom.
     phase: str = ""
+    anonymous: bool = False
     deed: str = ""  # the observable VERB — see core.interfaces.action.Deed. Empty = nothing was done.
     target: ActionTargetView = field(default_factory=ActionTargetView)
     # What this beat actually CHANGED, as against what ``target.acts_on`` was AIMED at: empty when
@@ -612,7 +613,7 @@ class MessageSummary:
 
     seq: int
     message_id: str
-    sender_id: str
+    sender_id: str | None  # None when the viewer is not allowed to know the sender.
     sender_name: str
     # Who received it in this scope: one for a direct message, everyone there for a place's.
     receiver_ids: list[str]
@@ -622,6 +623,7 @@ class MessageSummary:
     # report plus a description of the scene). The sender marks the split in the message
     # metadata, so displays needn't cut by length. Equal to ``content`` for a plain letter.
     spoken: str
+    anonymous: bool = False
     audience: list[str] | None = None
     kind: str = "message"
 
@@ -968,6 +970,7 @@ class _StepAssembler:
                 # boundary by tests/unit/test_state_payload_is_jsonable.py. Don't re-defend here.
                 action_type=str(record.get("action_type") or ""),
                 phase=str(record.get("phase") or ""),
+                anonymous=bool(record.get("anonymous", False)),
                 deed=str(record.get("deed") or ""),
                 target=_target_view(record.get("target")),
                 affected_entity_ids=[str(e) for e in coerce_list(record.get("affected_entity_ids"))],
@@ -1051,6 +1054,7 @@ class _StepAssembler:
                     message_id=str(record.get("message_id") or ""),
                     sender_id=sender_id,
                     sender_name=str(record.get("sender_name") or ""),
+                    anonymous=bool(record.get("anonymous", False)),
                     receiver_ids=ids,
                     scope=scope,
                     content=content,

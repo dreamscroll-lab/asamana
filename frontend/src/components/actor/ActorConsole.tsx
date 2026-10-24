@@ -372,7 +372,7 @@ function Perceived({ item }: { item: Extract<ThreadItem, { kind: "perceived" }> 
           {item.messages.map((m, i) => (
             <li key={`m${i}`}>
               <span className="text-slate-500">✉ </span>
-              {m.sender_name && <span className="text-slate-400">{m.sender_name}：</span>}
+              <span className="text-slate-400">{m.sender_name}：</span>
               {m.content}
               {PRESSING.has(m.urgency) && <span className="text-amber-400">（{URGENCY_LABEL[m.urgency]}）</span>}
             </li>

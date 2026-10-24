@@ -342,6 +342,8 @@ class Agent:
             # in this persistent cache.
             self.remember_agent(vid, presence.identity)
         for msg in inbox:
+            if msg.anonymous or not msg.sender_is_agent:
+                continue
             self.remember_agent(
                 msg.sender_id,
                 PerceivedIdentity(name=getattr(msg, "sender_name", "") or ""),
@@ -689,7 +691,7 @@ class Agent:
             # contactable list as an undeliverable recipient.
             # Test the sender's own ``sender_is_agent`` stamp; don't add a second id list: one it
             # misses would persist a relation with an "unknown source".
-            if not getattr(msg, "sender_is_agent", True):
+            if msg.anonymous or not msg.sender_is_agent:
                 continue
             if not sid or sid in relevant_ids:
                 continue

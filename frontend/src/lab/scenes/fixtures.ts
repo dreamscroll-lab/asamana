@@ -501,6 +501,7 @@ export function step({
       participant_ids: participants,
       action_type: lead.action_type,
       phase: lead.phase,
+      anonymous: false,
       deed: lead.deed,
       target: lead.target,
       affected_entity_ids: [...new Set(records.flatMap((r) => r.affected_entity_ids))],

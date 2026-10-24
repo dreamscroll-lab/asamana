@@ -254,7 +254,7 @@ def _decode_intent(data: Any) -> ActorIntent:
         "description": _string,
         "parameters": lambda v: _build(ActorOperationParameters, v, {
             "destination_id": _string, "item_id": _string, "recipient_id": _string,
-            "message": _string, "announce": _boolean,
+            "message": _string, "announce": _boolean, "anonymous": _boolean,
         }),
     })
 

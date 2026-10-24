@@ -527,12 +527,10 @@ def test_a_body_leaving_the_map_is_not_the_same_as_leaving_the_world() -> None:
 
 
 def test_one_criterion_decides_whether_a_sender_is_someone() -> None:
-    """Whether a sender is someone I can form a relation with has one answer: ``sender_is_agent``
-    (Message's contract: the sender declares what it is).
+    """Sender cognition is declared by ``sender_is_agent``, never inferred from id membership.
 
-    Any other criterion leaks: an id whitelist only knows the ids it spells out (miss the director
-    and you render a relation line for "不知来源"), and an id set built from perception requires
-    having met the sender. This blocks comparing an id against a set or a literal.
+    An anonymous message additionally withholds the sender's identity. An id whitelist misses
+    non-agent senders, while an id set built from perception excludes people not yet encountered.
     """
     import ast
     from pathlib import Path

@@ -681,7 +681,7 @@ class NarrativeEditor:
 - destroy:毁掉「地上的东西」名单里的一件。
 - broadcast:世界级公开广播,全域或某地点的人都会感知到——可播报环境变化,也可播报
   世界级消息/动静。
-- message:定向投递给特定人物的内容。
+- message:匿名定向投递给特定人物的内容，不会附带任何角色身份；正文不要出现编辑器或系统等幕后身份。
 spawn / alter / destroy 每拍各至多一件。你投出去的话里若有一件东西出现、被改或被毁,
 就用对应的一项让它真的发生 —— 否则人们会去找一件根本不存在的东西。
 新东西只能落在某个地点上,不会凭空到谁手里:要让某人得到它,就放在他所在的地方,
@@ -714,7 +714,7 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
   "alter": {{"entity": 物件序号, "state": "变化后的状态词,不超过 12 字,不变就留空", "description": "变化后它看上去的样子,不超过 40 字,不变就留空", "content": "改动后上面写着的全文,不超过 80 字,不变就留空", "observation": "这件东西本身的变化,不写人,不超过 40 字"}} 或 null,
   "destroy": {{"entity": 物件序号, "observation": "这件东西本身的变化,不写人,不超过 40 字"}} 或 null,
   "broadcast": {{"location_scope": 发生地的地点序号(笼罩全域就填 null,或整个不写这一项), "content": "广播内容,不超过 80 字", "severity": "{Severity.prompt_choices()}", "phenomenon": "{Phenomenon.prompt_choices()}"}} 或 null,
-  "message": {{"recipients": [人物序号], "content": "定向内容,不超过 80 字", "urgency": "low|normal|high|critical"}} 或 null,
+  "message": {{"recipients": [人物序号，最多10个], "content": "定向内容,不超过 80 字", "urgency": "low|normal|high|critical"}} 或 null,
   "narrative_desc": "事件总览(供回放):概括上面这一拍实际做了什么,不超过 60 字"
 }}
 """
@@ -750,10 +750,10 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
                 # + destroy{entity 3 + observation 60 + 2 fields 10} = 73
                 # + broadcast{scope 3 + content ≤80 chars 120 + severity 3 + phenomenon 3
                 #   + 4 fields 20} = 149
-                # + message{recipients ~6 + content ≤80 chars 120 + urgency 3 + 3 fields 15} = 144
+                # + message{≤10 recipients ×3 =30 + content ≤80 chars 120 + urgency 3 + 3 fields 15} = 168
                 # + narrative_desc ≤60 chars (90) + top-level 8-field structure (40);
-                #   ~1169 tok
-                max_tokens=output_budget(1169),
+                #   ~1193 tok
+                max_tokens=output_budget(1193),
                 temperature=0.8,
             json_mode=True,
             )

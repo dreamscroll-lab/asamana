@@ -254,6 +254,7 @@ class AgentAction:
     # SEND_MESSAGE only: the words delivered. Never filled from ``action_description``, which
     # is the sender's own.
     content: str = ""
+    anonymous: bool = False
     intent: Any = None
 
     def __post_init__(self) -> None:

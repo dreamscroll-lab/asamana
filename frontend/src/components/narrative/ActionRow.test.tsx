@@ -20,7 +20,7 @@ const entity = (over: Partial<PlacedEntity> = {}): PlacedEntity => ({
 
 function render(created: string[], over: Partial<Placed<ActionSummary>> = {}, thing = entity()): string {
   const act: Placed<ActionSummary> = {
-    kind: "action", seq: 1, execution_id: "work-1", initiator_id: "maker", participant_ids: ["maker"],
+    kind: "action", anonymous: false, seq: 1, execution_id: "work-1", initiator_id: "maker", participant_ids: ["maker"],
     action_type: "work", phase: "settled", deed: "work", target: { acts_on: [], claims: [], reaches: [] },
     affected_entity_ids: ["copy"], created_entity_ids: created, overheard_by: [], interrupted_by: "",
     detected: false, not_executed: false, public: null, private: [], location_id: "hall",
@@ -31,12 +31,18 @@ function render(created: string[], over: Partial<Placed<ActionSummary>> = {}, th
     ...over,
   };
   return renderToStaticMarkup(<ActionRow
-    act={act} privateParts={[]} cast={cast} turns={[]} showConversation={false}
+    act={act} privateParts={act.private} cast={cast} turns={[]} showConversation={false}
     entities={{ copy: thing }} shared={act.shared} actionDescription=""
   />);
 }
 
 describe("action products", () => {
+  it("shows the action's anonymous status without requiring a private part", () => {
+    const action = { action_type: "send_message", deed: "send_message", private: [] };
+    expect(render([], { ...action, anonymous: true })).toContain("· 匿名");
+    expect(render([], { ...action, anonymous: false })).not.toContain("· 匿名");
+  });
+
   it("does not credit a same-step injected object to its taker", () => {
     expect(render([], { action_type: "physical", deed: "seize" })).not.toContain("留下：");
   });

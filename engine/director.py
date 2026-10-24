@@ -83,15 +83,15 @@ _SCENE = LLMScene.DIRECTIVE
 _TEMPERATURE = 0.2   # translation, not creation
 # reason ≤80 chars (120) + feasible (3) + refusal ≤40 chars (60)
 # + broadcast{scope 3 + content ≤80 chars 120 + severity 3 + phenomenon 3 + 4 fields 20} = 149
-# + message{recipients ~6 + content ≤80 chars 120 + urgency 3 + 3 fields 15} = 144
+# + message{≤10 recipients ×3 =30 + content ≤80 chars 120 + urgency 3 + 3 fields 15} = 168
 # + mutations 5 × the longest kind (spawn, same length as a full entity){location/entity 3
 #   + type/destroyed 3 + name/state ≤12 chars 18 + description ≤40 chars 60
 #   + content ≤80 chars 120 + observation ≤40 chars 60 + kind 3 + 7 fields 35} = 5×302 = 1510
-# + narrative_desc ≤60 chars (90) + top-level 7-field structure (35); ~2111 tok
+# + narrative_desc ≤60 chars (90) + top-level 7-field structure (35); ~2135 tok
 #
 # Mutations are budgeted at 5, not the prompt's "at most 3": `_parse_mutations` doesn't
 # truncate (that would silently drop what the director asked for), so the realistic bound is higher.
-_MAX_TOKENS = output_budget(2111)
+_MAX_TOKENS = output_budget(2135)
 
 
 @dataclass(frozen=True)
@@ -199,6 +199,7 @@ _SYSTEM_PROMPT = f"""\
 「让某人去做某事」对其余的人**不在此列**:它照铁律 2 落成送到他面前的一句话,不要拒绝。
 
 【怎么填这些字段】
+- message 通道统一匿名投递，不会附带任何角色身份，正文不要出现导演或系统等幕后身份。
 - 名单里的身份与位置**只为认人认物**:导演常不报名字,只说「那个太子」「守门的那位」
   「桌上那把刀」。认出来之后就别再回头看它 —— 把名单里的细节写进你投出去的内容,
   就是加戏。
@@ -226,7 +227,7 @@ entity_type 仅 item(拿得走的物品)或 landmark(拿不走的固着物);
   "feasible": true 或 false,
   "refusal": "feasible=false 时,给他看的一句话:卡在哪、可以怎么改;写名字不写编号。不超过 40 字;可落实时留空字符串",
   "broadcast": {{"location_scope": 发生地的地点序号(笼罩全域就填 null,或整个不写这一项), "content": "公开发生了什么,不超过 80 字", "severity": "{Severity.prompt_choices()}", "phenomenon": "{Phenomenon.prompt_choices()}"}} 或 null,
-  "message": {{"recipients": [人物序号], "content": "送到他们面前的话,不超过 80 字", "urgency": "low|normal|high|critical"}} 或 null,
+  "message": {{"recipients": [人物序号，最多10个], "content": "送到他们面前的话,不超过 80 字", "urgency": "low|normal|high|critical"}} 或 null,
   "mutations": [
     {{"kind": "entity", "entity": 物件序号, "destroyed": true 或 false, "state": "变化后的状态词,不超过 12 字,不变就留空", "description": "变化后它看上去的样子,不超过 40 字,不变就留空", "content": "改动后上面写着的全文,不超过 80 字,不变就留空", "observation": "旁人看见的一句话,不超过 40 字"}}(不毁掉时,state/description/content 至少改一项;物件本身没变、只是让人察觉到一件事,用 broadcast),
     {{"kind": "spawn", "location": 地点序号, "entity_type": "item 或 landmark", "name": "它叫什么,不超过 12 字", "description": "它看上去是什么样,不超过 40 字", "content": "只有写着字、记着东西的才有(信、告示、账册);大多数东西没有,留空字符串。有则不超过 80 字", "observation": "在场的人看见的一句话,不超过 40 字"}},
@@ -236,7 +237,7 @@ entity_type 仅 item(拿得走的物品)或 landmark(拿不走的固着物);
   ],
   "narrative_desc": "这一拍实际投出去了什么,不超过 60 字。**把上面填过的序号换回名字再写**：写「某地起了大火」,不是「#18 起了大火」"
 }}
-mutations 没有就给 []。上面五种形状只是格式示例,不是让你五种都用。
+mutations 最多 3 条，没有就给 []。上面五种形状只是格式示例,不是让你五种都用。
 最后回读一遍 content / observation / narrative_desc:里面只要还剩一个 # 号,就是写错了,改掉再交。
 """
 
