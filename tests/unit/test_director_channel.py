@@ -110,8 +110,7 @@ def _make_agent(
             world_id=WORLD_ID, agent_id=agent_id,
         ),
         need_engine=NeedEngine(router),
-        relation_system=RelationSystem(container.agent_store, world_id=WORLD_ID, agent_id=agent_id),
-        agent_store=container.agent_store,
+        relation_system=RelationSystem(world_id=WORLD_ID, agent_id=agent_id),
         is_main_character=False,
     )
 

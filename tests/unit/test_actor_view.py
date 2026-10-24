@@ -51,6 +51,7 @@ def _body(agent_id: str, **private: object) -> AgentView:
 def _action(seq: int, audience: list[str], *, public: str | None = "有人动手") -> ActionSummary:
     return ActionSummary(
         seq=seq, initiator_id=audience[0] if audience else "", action_type="physical",
+        affected_entity_ids=["product"], created_entity_ids=["product"],
         public=ObservedView(public) if public is not None else None,
         shared=ActionSharedView(
             audience=audience, outcome="完整经过", gist="一句话", succeeded=False, failure_reason="没打着",
@@ -119,11 +120,13 @@ def test_events_here_show_their_public_side_unless_the_character_is_inside() -> 
     inside, outside = shown[1], shown[2]
     assert isinstance(inside, ActionSummary) and inside.shared is not None
     assert (inside.shared.outcome, inside.shared.failure_reason) == ("完整经过", "没打着")
+    assert inside.created_entity_ids == ["product"]
     # Inside it, still only its own part: another's intent and thought stay theirs.
     assert inside.private == [ActionPrivateView(agent_id=ME, action_description=f"{ME}的打算", inner_monologue=f"{ME}的念头")]
     # Outside it, only what was seen: not the account, not the verdict, nobody's part.
     assert isinstance(outside, ActionSummary)
     assert (outside.shared, outside.private) == (None, [])
+    assert outside.created_entity_ids == []
     assert outside.public == ObservedView("有人动手")
 
 

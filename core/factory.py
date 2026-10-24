@@ -13,7 +13,6 @@ class ComponentKind(str, Enum):
     LLM = "llm"
     EMBEDDING = "embedding"
     VECTOR_STORE = "vector_store"
-    AGENT_STORE = "agent_store"
     MESSAGE = "message"
     SNAPSHOT = "snapshot"
     WORLD = "world"
@@ -86,10 +85,6 @@ def _default_contract_for(kind: ComponentKind) -> type | None:
         from core.interfaces.vector_store import VectorStoreProvider
 
         return VectorStoreProvider
-    if kind == ComponentKind.AGENT_STORE:
-        from core.interfaces.agent_store import AgentStoreProvider
-
-        return AgentStoreProvider
     if kind == ComponentKind.MESSAGE:
         from core.interfaces.message import MessageProvider
 

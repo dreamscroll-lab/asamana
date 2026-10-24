@@ -100,18 +100,3 @@ export function involves(item: FeedItem, focus: Set<string>): boolean {
   if (!cast.length) return true;
   return cast.some((id) => focus.has(id));
 }
-
-
-/**
- * Which things THIS step brought into the world, read off its own entity table.
- *
- * Don't diff against the previous step instead of reading `created_step`: the feed is a
- * sliding window (FEED_CAP), so its earliest step has no predecessor and every thing in it
- * would be credited to whichever deed touched it.
- *
- * Callers intersect with the action's `affected_entity_ids` to say which deed made it.
- */
-export function bornInStep(step: StepView): Set<string> {
-  const table = indexStep(step).entities;
-  return new Set(Object.keys(table).filter((eid) => table[eid]?.created_step === step.step));
-}

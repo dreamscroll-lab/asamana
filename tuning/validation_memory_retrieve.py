@@ -24,6 +24,7 @@ from core.container import Container
 from core.interfaces.llm import LLMProvider, LLMScene
 from core.logging import get_logger
 from world.initializer import WorldInitializer
+from tuning.dry_run import isolate_container
 
 from tuning.judge_llm import create_judge
 from tuning.judge_memory_retrieve import judge_memory_retrieve
@@ -151,7 +152,7 @@ async def validate_memory_retrieve(
     scenarios = load_scenarios(scenarios_path, _DEFAULT_SCENARIOS)
     judge_llm = judge_provider or create_judge(config, judge_model)
 
-    world = await WorldInitializer(container).restore(world_id)
+    world = await WorldInitializer(await isolate_container(container, world_id)).restore(world_id)
     agent_ids = set(world.agents.keys())
     out_dir = Path(trace_dir) / world_id / "validation" / "memory_retrieve"
 

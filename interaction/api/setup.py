@@ -191,8 +191,12 @@ def build_setup_router(services: ApiServices) -> Any:
             raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
         # The setup holds every character's secrets and every relation: while an actor performs,
         # the world is seen through one character, who knows none of that.
-        if application.performing_character(world_id) is not None:
-            raise HTTPException(status_code=403, detail="The setup is closed while an actor performs")
+        try:
+            await application.record_director_read(world_id)
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="The director review could not be recorded.") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         setup = await manager.world_setup(world_id)
         if setup is None:
             raise HTTPException(status_code=404, detail=f"World {world_id!r} has no setup.")

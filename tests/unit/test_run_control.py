@@ -242,14 +242,14 @@ async def test_delete_world_purges_and_stops(mock_build_container, test_config) 
 
 def _make_store_yield(container) -> None:
     """Make the first store call inside reset_session yield, like a file-backed store."""
-    store = container.agent_store
-    original = store.clear_relations
+    store = container.message_provider
+    original = store.clear
 
-    async def slow_clear_relations(world_id: str) -> None:
+    async def slow_clear(world_id: str) -> None:
         await asyncio.sleep(0.05)
         await original(world_id)
 
-    store.clear_relations = slow_clear_relations  # type: ignore[method-assign]
+    store.clear = slow_clear  # type: ignore[method-assign]
 
 
 @pytest.mark.asyncio

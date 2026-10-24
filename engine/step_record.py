@@ -80,6 +80,7 @@ def action_events(
             "deed": str(lead.get("deed") or ""),
             "target": lead.get("target") or {"acts_on": [], "claims": [], "reaches": []},
             "affected_entity_ids": _unique(e for r in group for e in r.get("affected_entity_ids") or []),
+            "created_entity_ids": _unique(e for r in group for e in r.get("created_entity_ids") or []),
             "acted_upon": _unique(a for r in group for a in r.get("acted_upon") or []),
             "overheard_by": _unique(a for r in group for a in r.get("overheard_by") or []),
             "interrupted_by": str(lead.get("interrupted_by") or ""),

@@ -6,9 +6,8 @@ factual write (verbatim mirror) + experiential LLM rewrite. Captures the produce
 memories + resolved importance + the write gate, then applies structural deterministic
 checks + an LLM judge (syntax + semantics of the write).
 
-Persistence isolation: the harness wraps the agent in _DryRunAgentStore (read-through,
-write-capture) + InMemoryVectorStore, so writes go to in-memory shadows and the baseline
-world's ./data stays clean.
+Persistence isolation: restore runs on isolate_container's shadow stores, so writes stay in
+memory and the baseline world's ./data stays clean.
 
 Deterministic checks (always run) are hard tripwires: FACTUAL == the event text verbatim (no LLM
 rewrite) with emotion_label=objective and valence=0; importance∈[0,1]; experiential prose has
@@ -29,6 +28,7 @@ from core.container import Container
 from core.interfaces.llm import LLMProvider, LLMScene
 from core.logging import get_logger
 from world.initializer import WorldInitializer
+from tuning.dry_run import isolate_container
 
 from tuning.judge_llm import create_judge
 from tuning.judge_memory_write import judge_memory_write
@@ -189,7 +189,7 @@ async def validate_memory_write(
     scenarios = load_scenarios(scenarios_path, _DEFAULT_SCENARIOS)
     judge_llm = judge_provider or create_judge(config, judge_model)
 
-    world = await WorldInitializer(container).restore(world_id)
+    world = await WorldInitializer(await isolate_container(container, world_id)).restore(world_id)
     agent_ids = set(world.agents.keys())
 
     out_dir = Path(trace_dir) / world_id / "validation" / "memory_write"

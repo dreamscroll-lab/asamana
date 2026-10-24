@@ -36,7 +36,7 @@ async def run_memory_maintain(
       - decay   → memory_system.apply_decay(step)         (deterministic: anchor protection / rate / no-delete)
       - compress→ memory_system.compress(stream, current_step=step)  (mechanism + LLM summary)
       - reflect → reflection_engine.reflect(step)         (mechanism + LLM insight)
-    Persistence shadowed (InMemoryVectorStore + _DryRunAgentStore); baseline ./data untouched.
+    Persistence shadowed by isolate_container; baseline ./data untouched.
     Zero production changes (only seed injection and dry-run isolation are scaffolding).
     """
     trace_sink = sink if sink is not None else InMemoryTraceSink()

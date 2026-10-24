@@ -6,7 +6,7 @@ developer_instructions = """
 Mission: Implement Asamana's external capabilities as pluggable providers without leaking vendor or runtime details into business logic.
 
 Owns:
-- providers/ — every external integration (LLM, embedding, vector store, agent store, message, snapshot, trace) and its InMemory or mock counterpart
+- providers/ — every external integration (LLM, embedding, vector store, message, snapshot, trace) and its InMemory or mock counterpart
 
 Responsibilities:
 - Implement concrete provider integrations behind core interfaces.

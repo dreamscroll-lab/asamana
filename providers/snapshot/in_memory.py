@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.factory import ComponentKind, ProviderFactory
@@ -20,10 +21,10 @@ class InMemorySnapshotProvider(SnapshotProvider):
         self._world_assets: Dict[Tuple[str, str], bytes] = {}
 
     async def save(self, world_id: str, step: int, snapshot: WorldSnapshot) -> None:
-        self._snapshots[(world_id, step)] = snapshot
+        self._snapshots[(world_id, step)] = deepcopy(snapshot)
 
     async def load(self, world_id: str, step: int) -> Optional[WorldSnapshot]:
-        return self._snapshots.get((world_id, step))
+        return deepcopy(self._snapshots.get((world_id, step)))
 
     async def list_steps(self, world_id: str) -> List[int]:
         return sorted(
@@ -54,25 +55,25 @@ class InMemorySnapshotProvider(SnapshotProvider):
             del self._world_assets[key]
 
     async def save_world_config(self, world_id: str, data: dict[str, Any]) -> None:
-        self._world_configs[world_id] = data
+        self._world_configs[world_id] = deepcopy(data)
 
     async def load_world_config(self, world_id: str) -> Optional[dict[str, Any]]:
-        return self._world_configs.get(world_id)
+        return deepcopy(self._world_configs.get(world_id))
 
     async def save_world_setup(self, world_id: str, data: dict[str, Any]) -> None:
-        self._world_setups[world_id] = data
+        self._world_setups[world_id] = deepcopy(data)
 
     async def load_world_setup(self, world_id: str) -> Optional[dict[str, Any]]:
-        return self._world_setups.get(world_id)
+        return deepcopy(self._world_setups.get(world_id))
 
     async def delete_world_setup(self, world_id: str) -> None:
         self._world_setups.pop(world_id, None)
 
     async def save_world_map(self, world_id: str, data: dict[str, Any]) -> None:
-        self._world_maps[world_id] = data
+        self._world_maps[world_id] = deepcopy(data)
 
     async def load_world_map(self, world_id: str) -> Optional[dict[str, Any]]:
-        return self._world_maps.get(world_id)
+        return deepcopy(self._world_maps.get(world_id))
 
     async def save_world_asset(self, world_id: str, rel_path: str, data: bytes) -> None:
         self._world_assets[(world_id, rel_path)] = data

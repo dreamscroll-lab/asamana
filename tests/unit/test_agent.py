@@ -66,11 +66,9 @@ def _make_agent(container: object, *, agent_id: str = "agent-1") -> Agent:
         ),
         need_engine=NeedEngine(router),
         relation_system=RelationSystem(
-            container.agent_store,  # type: ignore[attr-defined]
             world_id="world-1",
             agent_id=agent_id,
         ),
-        agent_store=container.agent_store,  # type: ignore[attr-defined]
         is_main_character=False,
     )
 
@@ -365,9 +363,8 @@ def _make_llm_cognition_agent(container: object, *, goal_eval_response: str) -> 
         ),
         need_engine=NeedEngine(llm_router=router),
         relation_system=RelationSystem(
-            container.agent_store, world_id="world-1", agent_id="agent-1",  # type: ignore[attr-defined]
+            world_id="world-1", agent_id="agent-1",
         ),
-        agent_store=container.agent_store,  # type: ignore[attr-defined]
         is_main_character=True,
     )
 
@@ -1027,11 +1024,9 @@ async def test_llm_emotion_returns_emotion_state_for_main_character(container: o
         ),
         need_engine=NeedEngine(router),
         relation_system=RelationSystem(
-            container.agent_store,  # type: ignore[attr-defined]
             world_id="world-1",
             agent_id="agent-mc",
         ),
-        agent_store=container.agent_store,  # type: ignore[attr-defined]
         is_main_character=True,
     )
     result = _make_action_result(succeeded=True)
@@ -1067,9 +1062,8 @@ async def test_llm_emotion_injects_situation_header(container: object) -> None:
         ),
         need_engine=NeedEngine(router),
         relation_system=RelationSystem(
-            container.agent_store, world_id="world-1", agent_id="agent-mc",  # type: ignore[attr-defined]
+            world_id="world-1", agent_id="agent-mc",
         ),
-        agent_store=container.agent_store,  # type: ignore[attr-defined]
         is_main_character=True,
     )
     # Simulate the situation runtime caches in perceive_step.
@@ -1114,9 +1108,8 @@ async def test_llm_emotion_injects_agent_specific_need_label(container: object) 
         ),
         need_engine=NeedEngine(router),
         relation_system=RelationSystem(
-            container.agent_store, world_id="world-1", agent_id="agent-mc",  # type: ignore[attr-defined]
+            world_id="world-1", agent_id="agent-mc",
         ),
-        agent_store=container.agent_store,  # type: ignore[attr-defined]
         is_main_character=True,
     )
     await agent._llm_emotion(_make_action_result(succeeded=True), NeedType.SOCIAL)  # noqa: SLF001
@@ -1149,11 +1142,9 @@ async def test_llm_emotion_returns_none_on_parse_failure(container: object) -> N
         ),
         need_engine=NeedEngine(router),
         relation_system=RelationSystem(
-            container.agent_store,  # type: ignore[attr-defined]
             world_id="world-1",
             agent_id="agent-mc",
         ),
-        agent_store=container.agent_store,  # type: ignore[attr-defined]
         is_main_character=True,
     )
     result = _make_action_result(succeeded=True)
@@ -1184,11 +1175,9 @@ def _make_bg_emotion_agent(container: object) -> "Agent":
         ),
         need_engine=NeedEngine(router),
         relation_system=RelationSystem(
-            container.agent_store,  # type: ignore[attr-defined]
             world_id="world-1",
             agent_id="agent-bg",
         ),
-        agent_store=container.agent_store,  # type: ignore[attr-defined]
         is_main_character=False,
     )
 
@@ -1473,9 +1462,8 @@ async def test_llm_emotion_injects_standing_condition_as_backdrop(container: obj
         ),
         need_engine=NeedEngine(router),
         relation_system=RelationSystem(
-            container.agent_store, world_id="world-1", agent_id="agent-mc",  # type: ignore[attr-defined]
+            world_id="world-1", agent_id="agent-mc",
         ),
-        agent_store=container.agent_store,  # type: ignore[attr-defined]
         is_main_character=True,
     )
     agent._situation = Situation(

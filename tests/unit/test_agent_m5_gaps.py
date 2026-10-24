@@ -66,8 +66,7 @@ def _make_agent(container, *, agent_id: str = "agent-target", vitality: float = 
             world_id="world-1", agent_id=agent_id,
         ),
         need_engine=NeedEngine(router),
-        relation_system=RelationSystem(container.agent_store, world_id="world-1", agent_id=agent_id),
-        agent_store=container.agent_store,
+        relation_system=RelationSystem(world_id="world-1", agent_id=agent_id),
         is_main_character=False,
     )
 
@@ -160,9 +159,7 @@ async def test_apply_target_effect_relation_none_skips_relation_update(container
     )
     await agent.apply_target_effect(effect, from_agent_id="agent-shimin", step=5)
     # The relation wasn't triggered by get_or_create, so it's not in the store
-    relation_loaded = await container.agent_store.load_relation(
-        "world-1", "agent-target", "agent-shimin"
-    )
+    relation_loaded = await agent.relation_system.load_existing("agent-shimin")
     # This effect didn't trigger a relation update, and seed_factual_memory won't either;
     # the relation should not exist
     assert relation_loaded is None

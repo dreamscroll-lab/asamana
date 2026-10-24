@@ -26,7 +26,6 @@ from providers.llm.keyless import KeylessLLMProvider
 logger = get_logger(__name__)
 
 _BUILTIN_MODULES = (
-    "providers.agent_store",
     "providers.embedding",
     "providers.llm",
     "providers.message",
@@ -71,11 +70,6 @@ def build_container(config: Config) -> Container:
             config.vector_store.provider,
             kind=ComponentKind.VECTOR_STORE,
             **config.vector_store.params,
-        ),
-        agent_store=ProviderFactory.create(
-            config.agent_store.provider,
-            kind=ComponentKind.AGENT_STORE,
-            **config.agent_store.params,
         ),
         message_provider=ProviderFactory.create(
             config.message.provider,

@@ -242,11 +242,7 @@ class WorldPressureEvaluator:
         """
         out: list[dict[str, Any]] = []
         for vid in visible_ids:
-            rel = None
-            try:
-                rel = await agent.agent_store.load_relation(agent.world_id, agent.agent_id, vid)
-            except Exception:  # noqa: BLE001 — a relation read failure must not abort evaluation
-                rel = None
+            rel = await agent.relation_system.load_existing(vid)
             other = all_agents.get(vid)
             other_soul = other.personality.soul if other is not None else None
             who = (
@@ -290,11 +286,7 @@ class WorldPressureEvaluator:
             sid = getattr(msg, "sender_id", "") or ""
             if not sid or not msg.sender_is_agent or sid in exclude_ids or sid in out:
                 continue
-            rel = None
-            try:
-                rel = await agent.agent_store.load_relation(agent.world_id, agent.agent_id, sid)
-            except Exception:  # noqa: BLE001 — a relation read failure must not abort evaluation
-                rel = None
+            rel = await agent.relation_system.load_existing(sid)
             out[sid] = self._format_relation({
                 "trust": round(rel.trust_objective, 2) if rel is not None else None,
                 "affection": round(rel.affection_objective, 2) if rel is not None else None,

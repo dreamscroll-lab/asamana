@@ -16,10 +16,10 @@ from agent.goals import text_to_long_term_goal_entity
 from agent.need import NeedEngine
 from agent.personality import ActionStatus, AgentActivityStatus, PersonalityLayer, StateLayer
 from agent.relation import RelationSystem
-from agent.state_codec import encode_agent_state
+from agent.state_codec import agent_state_from_record
 from core.container import Container
-from core.interfaces.agent_store import AgentRelation, AgentState, relations_snapshot
-from core.interfaces.snapshot import EngineState, WorldSnapshot, WorldState
+from core.interfaces.relation import AgentRelation, relation_from_snapshot_dict, relation_to_snapshot_dict
+from core.interfaces.snapshot import AgentState, EngineState, WorldSnapshot, WorldState
 from core.logging import get_logger
 from engine.clock import (
     SECONDS_PER_HOUR,
@@ -84,8 +84,8 @@ class WorldInitializer:
     async def initialize(self, world_id: str, *, casting: ActorCasting | None = None) -> World:
         """Materialize a world from its persisted setup and write step 0.
 
-        Creates the agents and writes what the setup derives: relations, backstory memories and
-        initial agent states, then step 0 with the setup frozen into it. Runs once, when the world
+        Creates the agents with what the setup derives (relations, backstory memories), then writes
+        step 0 with the setup frozen into it: the first commit point, the one a reset returns to. Runs once, when the world
         is confirmed, from the setup file; the caller clears whatever an earlier, failed attempt
         left behind and deletes the file afterwards. Raises on any failure, like the build (Rule 2/6).
         ``casting`` as in ``restore``.
@@ -123,7 +123,7 @@ class WorldInitializer:
                 raise result
 
         directory = LiveWorldDirectory.from_agents(agents, environment)
-        await self._initialize_relations(world_id=world_id, agents=agents, setup=setup)
+        self._initialize_relations(world_id=world_id, agents=agents, setup=setup)
         await self._write_historical_memories(
             agents=agents,
             historical_events=setup.historical_events,
@@ -139,13 +139,6 @@ class WorldInitializer:
         # Short-term goals aren't generated here; NeedEngine.run is their sole owner. Each agent's
         # first cognition step finds an empty queue (_should_update_goals) and generates them from real
         # perception, warmed history and perceived relations. One generation path keeps quality uniform.
-        # A failed initial state write must raise (Rule 6 write): swallowing it would quietly corrupt restore/reset.
-        for result in await asyncio.gather(
-            *(self._persist_initial_agent_state(agent) for agent in agents.values()),
-            return_exceptions=True,
-        ):
-            if isinstance(result, BaseException):
-                raise result
         step_zero_snapshot = await self._save_initial_snapshot(
             world_id=world_id,
             setup=setup,
@@ -250,11 +243,7 @@ class WorldInitializer:
             time_label_for=_time_label_for,
             world_start_second_of_day=world_start_second_of_day,
         )
-        relation_system = RelationSystem(
-            self._container.agent_store,
-            world_id=world_id,
-            agent_id=definition.agent_id,
-        )
+        relation_system = RelationSystem(world_id=world_id, agent_id=definition.agent_id)
         from agent.relation_evolution import RelationEvolution
 
         relation_evolution = RelationEvolution(
@@ -277,7 +266,6 @@ class WorldInitializer:
             need_engine=NeedEngine(llm_router=self._container.llm_router, seconds_per_step=seconds_per_step,
                                    world_start_second_of_day=world_start_second_of_day),
             relation_system=relation_system,
-            agent_store=self._container.agent_store,
             llm_router=self._container.llm_router,
             is_main_character=is_main,
             seconds_per_step=seconds_per_step,
@@ -286,21 +274,10 @@ class WorldInitializer:
             relation_evolution=relation_evolution,
         )
 
-    async def _persist_initial_agent_state(self, agent: Agent) -> None:
-        initial_state = encode_agent_state(agent.world_id, agent.agent_id, agent.personality.state)
-        await agent.agent_store.save_agent_state(agent.world_id, agent.agent_id, initial_state)
-        await agent.agent_store.save_initial_agent_state(agent.world_id, agent.agent_id, initial_state)
-
-    async def _initialize_relations(
-        self,
-        *,
-        world_id: str,
-        agents: dict[str, Agent],
-        setup: WorldSetup,
-    ) -> None:
+    def _initialize_relations(self, *, world_id: str, agents: dict[str, Agent], setup: WorldSetup) -> None:
         # Each setup relation holds both directions of one pair (``WorldSetup.validate`` admits one
         # per pair), so each becomes two records.
-        tasks = []
+        held: dict[str, list[AgentRelation]] = {agent_id: [] for agent_id in agents}
         for relation in setup.relations:
             for from_id, to_id, trust, affection, labels in (
                 (relation.source_id, relation.target_id,
@@ -309,7 +286,7 @@ class WorldInitializer:
                  relation.reverse_trust, relation.reverse_affection, list(relation.reverse_labels)),
             ):
                 target_soul = agents[to_id].personality.soul
-                initial_relation = AgentRelation(
+                held[from_id].append(AgentRelation(
                     world_id=world_id,
                     from_id=from_id,
                     to_id=to_id,
@@ -322,22 +299,9 @@ class WorldInitializer:
                     # present, so this record is their only reference in the prompt, and a name alone still leaves the
                     # LLM guessing gender.
                     to_gender=target_soul.gender,
-                )
-                tasks.append(self._container.agent_store.save_relation(initial_relation))
-                tasks.append(self._container.agent_store.save_initial_relation(initial_relation))
-        if tasks:
-            # A build-time write failure must raise (Rule 2/6), same rule as _persist_initial_agent_state.
-            # Initial relation labels are never rewritten (rule 3), so dropping a father-son label here loses it for
-            # good: the world still reports ready, the user still confirms, and the two treat each other as
-            # strangers from step one with no way to recover it.
-            # return_exceptions=True only keeps siblings from being cancelled (Rule 4); raise on any exception after collecting.
-            for result in await asyncio.gather(*tasks, return_exceptions=True):
-                if isinstance(result, BaseException):
-                    logger.error(
-                        "relation_save_failed",
-                        extra={"world_id": world_id, "error": str(result)},
-                    )
-                    raise result
+                ))
+        for agent_id, relations in held.items():
+            agents[agent_id].relation_system.restore(relations)
 
     async def _write_historical_memories(
         self,
@@ -391,7 +355,7 @@ class WorldInitializer:
         """Restore a previously built world from persisted storage.
 
         Loads the world's persisted setup and config asset, reconstructs agents
-        from their definitions, applies the latest AgentState from agent_store,
+        from their definitions, applies complete agent states from the latest committed snapshot,
         and returns a runtime-ready World.
 
         ``casting`` is kept outside the world's stores (in the catalog), so the caller passes it;
@@ -429,12 +393,19 @@ class WorldInitializer:
             (s for s in await self._container.snapshot.list_steps(world_id) if s > 0),
             default=0,
         )
-        await self._rollback_relations(world_id, resume_step)
+        # Everything below comes from this one snapshot, the last commit point: never pair it
+        # with state another step wrote.
         latest = await self._container.snapshot.load(world_id, resume_step)
+        if latest is None or set(latest.state.agents) != {d.agent_id for d in agent_definitions}:
+            raise ValueError(f"World {world_id!r} snapshot {resume_step} doesn't hold every character")
         stored_states = {
-            definition.agent_id: await self._container.agent_store.load_agent_state(world_id, definition.agent_id)
+            definition.agent_id: agent_state_from_record(latest.state.agents[definition.agent_id])
             for definition in agent_definitions
         }
+        held_relations: dict[str, list[AgentRelation]] = {}
+        for payload in latest.state.relations.values():
+            relation = relation_from_snapshot_dict(payload)
+            held_relations.setdefault(relation.from_id, []).append(relation)
         active_executions = _resumable_executions(world_id, latest, stored_states)
         resumed_participants = {pid for execution in active_executions for pid in execution.participant_ids}
 
@@ -451,23 +422,18 @@ class WorldInitializer:
             await agent.memory_system.purge_memories_after(resume_step)
 
             stored = stored_states[agent.agent_id]
-            if stored is not None:
-                agent.apply_stored_state(
-                    stored, in_resumed_execution=agent.agent_id in resumed_participants
+            agent.apply_stored_state(stored, in_resumed_execution=agent.agent_id in resumed_participants)
+            agent.relation_system.restore(held_relations.get(agent.agent_id, []))
+            # Don't place the dead: death handling already removed them from the environment (current_location
+            # isn't cleared, it only records where they fell). Placing them unconditionally would stand the
+            # corpse back up in the room, visible to everyone there forever.
+            # Check liveness with is_active (just derived by apply_stored_state from vitality, the single source of truth), not a raw vitality comparison.
+            if agent.is_active:
+                environment.place_agent(
+                    agent_id=agent.agent_id,
+                    location_id=_body_location(latest, agent.agent_id, stored, resumed_participants),
                 )
-                # Don't place the dead: death handling already removed them from the environment (current_location
-                # isn't cleared, it only records where they fell). Placing them unconditionally would stand the
-                # corpse back up in the room, visible to everyone there forever.
-                # Check liveness with is_active (just derived by apply_stored_state from vitality, the single source of truth), not a raw vitality comparison.
-                if agent.is_active:
-                    environment.place_agent(
-                        agent_id=agent.agent_id,
-                        location_id=_body_location(latest, agent.agent_id, stored, resumed_participants),
-                    )
-                await agent.memory_system.warm_recent_memories(current_step=stored.updated_step)
-            else:
-                environment.place_agent(agent_id=agent.agent_id, location_id=definition.initial_location)
-                await agent.memory_system.warm_recent_memories(current_step=0)
+            await agent.memory_system.warm_recent_memories(current_step=stored.step)
 
         self._restore_environment_state(latest, environment)
         self._repatriate_transit_agents(agents, agent_definitions, environment, resumed_participants=resumed_participants)
@@ -493,26 +459,6 @@ class WorldInitializer:
             current_step=resume_step,
             active_executions=active_executions,
         )
-
-    async def _rollback_relations(self, world_id: str, resume_step: int) -> None:
-        """Make the relation store match the snapshot the world resumes from.
-
-        Relations are written during a step (perception, feedback), but only a completed step's
-        snapshot is authoritative; a step that never committed would otherwise leave its
-        relation changes behind and apply them twice. An empty snapshot table is the read-failure
-        fallback of the step that wrote it, not "no relations", so it is left alone.
-        """
-        snapshot = await self._container.snapshot.load(world_id, resume_step)
-        if snapshot is None or not snapshot.state.relations:
-            logger.warning(
-                "relation_rollback_skipped",
-                extra={"world_id": world_id, "step": resume_step},
-            )
-            return
-        store = self._container.agent_store
-        await store.clear_relations(world_id)
-        for payload in snapshot.state.relations.values():
-            await store.save_relation(AgentRelation(**payload))
 
     def _repatriate_transit_agents(
         self,
@@ -551,9 +497,7 @@ class WorldInitializer:
             )
 
     @staticmethod
-    def _restore_environment_state(
-        snapshot: WorldSnapshot | None, environment: EnvironmentSystem
-    ) -> None:
+    def _restore_environment_state(snapshot: WorldSnapshot, environment: EnvironmentSystem) -> None:
         """Re-apply the persisted environment state onto a freshly seeded world.
 
         ``restore`` rebuilds the environment from the step-0 entity seeds, which leaves item
@@ -567,8 +511,6 @@ class WorldInitializer:
         puts them back. Skipping step 0 (every fresh world's first run, every reset) leaves the
         world with none: ERRAND silently out of reach.
         """
-        if snapshot is None:
-            return
         environment.restore_state(
             npcs=snapshot.state.npcs,
             entities=snapshot.state.entities,
@@ -684,7 +626,11 @@ class WorldInitializer:
                 agents={agent_id: snapshot_agent_state(agent) for agent_id, agent in agents.items()},
                 npcs=environment_state["npcs"],
                 entities=environment_state["entities"],
-                relations=await relations_snapshot(self._container.agent_store, world_id, agents),
+                relations={
+                    f"{relation.from_id}->{relation.to_id}": relation_to_snapshot_dict(relation)
+                    for agent in agents.values()
+                    for relation in await agent.relation_system.all_relations()
+                },
             ),
             engine=EngineState(
                 pending_messages=await self._container.message_provider.peek_pending(world_id),
@@ -783,18 +729,15 @@ class WorldInitializer:
 
 
 def _resumable_executions(
-    world_id: str, snapshot: WorldSnapshot | None, stored_states: Mapping[str, AgentState | None],
+    world_id: str, snapshot: WorldSnapshot, stored_states: Mapping[str, AgentState],
 ) -> list[ActionExecutionState]:
     """The multi-step acts the resume step's snapshot left under way, each kept only if every
-    participant's saved state is still in it.
+    participant's committed state is still in it.
 
-    Both are written at the step's commit point, so they agree unless an agent state write
-    failed (Rule 6). An act that can't be read, or that someone in it has no record of, is
+    Both share the snapshot's commit point. An act that can't be read, or that someone in it has no record of, is
     dropped whole: half an act would tick a character who isn't in it. Its participants are then
     left idle by ``Agent.apply_stored_state``, as is anyone whose snapshot saved no act at all.
     """
-    if snapshot is None:
-        return []
     resumed: list[ActionExecutionState] = []
     for payload in snapshot.engine.active_executions:
         try:
@@ -825,7 +768,7 @@ def _resumable_executions(
 
 
 def _body_location(
-    snapshot: WorldSnapshot | None, agent_id: str, stored: AgentState, resumed_participants: set[str],
+    snapshot: WorldSnapshot, agent_id: str, stored: AgentState, resumed_participants: set[str],
 ) -> str:
     """Where to stand a living body on restore.
 
@@ -834,8 +777,6 @@ def _body_location(
     arrival, so that would put him back at his origin for the step before his trip ticks on.
     Everyone else stands where they last knew themselves to be.
     """
-    if agent_id in resumed_participants and snapshot is not None:
-        where = (snapshot.state.agents.get(agent_id) or {}).get("location_id")
-        if where:
-            return str(where)
+    if agent_id in resumed_participants:
+        return str(snapshot.state.agents[agent_id]["location_id"])
     return stored.current_location

@@ -221,7 +221,6 @@ class NarrativeApplication:
         """Drop what an earlier, failed confirmation wrote; the setup file and the frozen map stay."""
         container = self._container
         await container.snapshot.delete_steps_after(world_id, -1)
-        await container.agent_store.delete_world(world_id)
         await container.vector_store.delete_world(world_id)
         await container.message_provider.clear(world_id)
 
@@ -305,10 +304,10 @@ class NarrativeApplication:
     async def reset_session(self, world_id: str) -> World:
         """Reset a world to its initial state (step 0) and register a fresh session.
 
-        Rolls every store back to its step-0 baseline first, then rebuilds through the canonical
-        ``restore`` path, so the agents carry baseline state (not step-N minds on a step-0
-        clock). Memory keeps its backstory seeds and traces keep the build segment: only what
-        the *run* produced is purged.
+        Drops everything after step 0, then rebuilds through the canonical ``restore`` path,
+        which resumes from step 0's snapshot: agent states and relations come back as built.
+        Memory keeps its backstory seeds and traces keep the build segment: only what the *run*
+        produced is purged.
 
         Runs under the lifecycle lock, re-checking inside that no loop is running: the
         rollback spans many awaits, and a loop started meanwhile would be orphaned.
@@ -322,22 +321,11 @@ class NarrativeApplication:
             raise ValueError(f"World {world_id!r} is running — stop the run before resetting.")
 
         initializer = WorldInitializer(self._container, max_npcs=self._config.engine.max_npcs)
-        agent_store = self._container.agent_store
-        snapshot_store = self._container.snapshot
 
-        # Clear relations first, or runtime-created pairs survive the reset.
-        await agent_store.clear_relations(world_id)
-        for agent_id in await agent_store.list_agent_ids(world_id):
-            initial_state = await agent_store.load_initial_agent_state(world_id, agent_id)
-            if initial_state is not None:
-                await agent_store.save_agent_state(world_id, agent_id, initial_state)
-            for rel in await agent_store.load_all_initial_relations(world_id, agent_id):
-                await agent_store.save_relation(rel)
-
-        # Drop in-flight messages and post-step-0 snapshots so restore re-seeds the
-        # environment from step 0 and no stale message is delivered after the reset.
+        # Drop in-flight messages and post-step-0 snapshots so restore resumes from step 0 and
+        # no stale message is delivered after the reset.
         await self._container.message_provider.clear(world_id)
-        await snapshot_store.delete_steps_after(world_id, 0)
+        await self._container.snapshot.delete_steps_after(world_id, 0)
 
         # Traces rewind with the clock (see TraceSink.delete_run_traces).
         self._container.trace_sink.delete_run_traces(world_id)
@@ -393,6 +381,19 @@ class NarrativeApplication:
             return await self._recast_locked(
                 world_id, ActorCasting(character_id=casting.character_id, exited=True),
             )
+
+    async def record_director_read(self, world_id: str) -> None:
+        """Keep a private read and actor casting mutually exclusive."""
+        async with self._lifecycle_lock(world_id):
+            if self.performing_character(world_id) is not None:
+                raise ValueError(f"An actor performs in world {world_id!r}; private director reads are closed.")
+            # Uncataloged worlds cannot cast an actor, so they need no casting gate.
+            if (
+                self._catalog is not None
+                and self._catalog.get(world_id) is not None
+                and not self._catalog.is_confirmed(world_id)
+            ):
+                self._catalog.mark_director_review(world_id)
 
     async def revise_setup(
         self, world_id: str, revise: Callable[[WorldSetup, MapPlaces], WorldSetup],
@@ -868,6 +869,8 @@ class NarrativeApplication:
 
     async def _delete_world_locked(self, world_id: str) -> None:
         session = self._sessions.get(world_id)
+        if session is not None and session.runtime.is_running and session.task is None:
+            raise ValueError(f"World {world_id!r} is running — wait for the run before deleting.")
         if session is not None and session.task is not None and not session.task.done():
             if session.controller is not None:
                 session.controller.stop()
@@ -882,7 +885,6 @@ class NarrativeApplication:
 
         container = self._container
         await container.snapshot.delete_world(world_id)
-        await container.agent_store.delete_world(world_id)
         await container.vector_store.delete_world(world_id)
         await container.message_provider.clear(world_id)
         container.trace_sink.delete_world(world_id)
@@ -972,7 +974,6 @@ class NarrativeApplication:
                 quota_window=self._config.engine.injection_quota_window,
             ),
             snapshot_provider=self._container.snapshot,
-            agent_store=self._container.agent_store,
             event_bus=self._container.event_bus,
             broadcast_channel=broadcast_channel,
             directory=world.directory,

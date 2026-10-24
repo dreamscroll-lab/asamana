@@ -390,7 +390,7 @@ def _config_with(**scene_providers: str):
     local = {"provider": "in_memory", "params": {}}
     return Config(
         llm=llm,
-        embedding=local, vector_store=local, agent_store=local,
+        embedding=local, vector_store=local,
         message=local, snapshot=local,
         world={"config": "tiled"},
         observability={"enabled": False},
@@ -490,7 +490,7 @@ def _two_model_config():
             "default_provider": "fast",
             "scenes": {LLMScene.WORLD_BUILDING.value: {"provider": "pro"}},
         },
-        embedding=local, vector_store=local, agent_store=local,
+        embedding=local, vector_store=local,
         message=local, snapshot=local,
         world={"config": "tiled"}, observability={"enabled": False},
         rate_limit={"tpm": 500000},

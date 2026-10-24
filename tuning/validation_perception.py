@@ -25,6 +25,7 @@ from core.container import Container
 from core.logging import get_logger
 from engine.clock import GlobalClock
 from world.initializer import WorldInitializer
+from tuning.dry_run import isolate_container
 
 from tuning.phase_harness.perception import perceive_world
 from tuning.trace import write_json
@@ -159,7 +160,7 @@ async def validate_perception(
     baseline_label = "baseline" if "baseline" in tunings else next(iter(tunings))
 
     # One read-only restore for the whole suite — perception never mutates world state.
-    world = await WorldInitializer(container).restore(world_id)
+    world = await WorldInitializer(await isolate_container(container, world_id)).restore(world_id)
     name_by_id = {aid: a.personality.soul.name for aid, a in world.agents.items()}
     id_by_name = {v: k for k, v in name_by_id.items()}
     agent_locations = {aid: world.environment.get_body_location(aid) for aid in world.agents}

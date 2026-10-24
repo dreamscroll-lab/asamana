@@ -11,10 +11,6 @@ vector_store:
   provider: in_memory
   params: {}
 
-agent_store:
-  provider: in_memory
-  params: {}
-
 message:
   provider: in_memory
   params: {}

@@ -20,6 +20,7 @@ from world.builders.theme_analyzer import (
 from world.initializer import WorldInitializer
 from world.setup import WorldSetup
 from world.models import AgentDefinition, AgentTier, HistoricalEventSeed, LocationSeed, NpcSeed, RelationSeed, ThemeAnalysis, ThemeFigure, WorldEntitySeed
+from agent.state_codec import agent_state_from_record
 from agent.personality import EmotionState, SoulLayer
 from worlds.tiled import TiledWorldConfig
 from tests.unit.confirmed_world import confirmed_world
@@ -165,8 +166,8 @@ async def test_world_initializer_creates_memory_streams_bidirectional_relations_
 
     agent_a = world.agents["a"]
     agent_b = world.agents["b"]
-    relation_a_b = await container.agent_store.load_relation(world.world_id, "a", "b")
-    relation_b_a = await container.agent_store.load_relation(world.world_id, "b", "a")
+    relation_a_b = await agent_a.relation_system.load_existing("b")
+    relation_b_a = await agent_b.relation_system.load_existing("a")
 
     assert relation_a_b is not None
     assert relation_b_a is not None
@@ -788,30 +789,18 @@ def test_world_entity_seeds_schema_excludes_narrative_meaning_hint() -> None:
 
 
 @pytest.mark.asyncio
-async def test_world_initializer_persists_each_agent_state_exactly_once(container) -> None:
+async def test_world_initializer_commits_every_agent_state_at_step_zero(container) -> None:
     analysis = _analysis()
     definitions = await AgentGenerator(container.llm_router).generate(analysis)
 
-    agent_store = container.agent_store
-    original_save = agent_store.save_agent_state
-    save_call_count: dict[str, int] = {}
+    world = await _materialize(container, analysis, definitions, "world-commit-step-zero")
 
-    async def counting_save(world_id: str, agent_id: str, state) -> None:
-        save_call_count[agent_id] = save_call_count.get(agent_id, 0) + 1
-        return await original_save(world_id, agent_id, state)
-
-    agent_store.save_agent_state = counting_save  # type: ignore[method-assign]
-    try:
-        await _materialize(container, analysis, definitions, "world-persist-once")
-    finally:
-        agent_store.save_agent_state = original_save  # type: ignore[method-assign]
-
-    assert save_call_count, "save_agent_state was never called"
-    for agent_id, count in save_call_count.items():
-        assert count == 1, (
-            f"agent {agent_id!r} state persisted {count} times during build; "
-            "expected exactly 1 (Phase F removed the duplicate persist call)"
-        )
+    step_zero = await container.snapshot.load(world.world_id, 0)
+    assert step_zero is not None
+    assert set(step_zero.state.agents) == set(world.agents)
+    for agent_id, record in step_zero.state.agents.items():
+        state = agent_state_from_record(record)
+        assert (state.world_id, state.agent_id, state.step) == (world.world_id, agent_id, 0)
 
 
 # ---- TemplateSelector: which land a story belongs on -------------------------
@@ -1100,29 +1089,8 @@ def test_an_npc_seed_without_a_description_is_marked_undescribed(caplog: pytest.
 
 # --- Build-time write failures must propagate (Rule 2/6) -------------------------------------
 #
-# Relations and pre-history are written once by the LLM for this world and never come again: initial
-# relation labels are never rewritten (rule 3), and pre-history has no second write. So these two
-# rank with the initial state write; logging an error and letting build report ready would have the
-# user confirm a world permanently missing content.
-
-
-@pytest.mark.asyncio
-async def test_build_raises_when_a_relation_write_fails(mock_build_container, test_config) -> None:
-    store = mock_build_container.agent_store
-    original = store.save_relation
-    seen = {"n": 0}
-
-    async def flaky_save_relation(relation):  # type: ignore[no-untyped-def]
-        seen["n"] += 1
-        if seen["n"] == 2:
-            raise OSError("disk full")
-        await original(relation)
-
-    store.save_relation = flaky_save_relation  # type: ignore[method-assign]
-
-    app = NarrativeApplication(mock_build_container, test_config)
-    with pytest.raises(OSError):
-        await confirmed_world(app, "宫廷权谋", template="changan_iso")
+# Pre-history is written once for this world and never comes again, so logging an error and letting
+# build report ready would have the user confirm a world permanently missing content.
 
 
 @pytest.mark.asyncio

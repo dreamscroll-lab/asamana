@@ -187,8 +187,9 @@ def action_semantics(action: "AgentAction", result: "ActionResult") -> dict[str,
     - ``deed``: the observable verb (see ``Deed``).
     - ``target``: the aim (``target_semantics``); it survives failure, unlike
       ``affected_entity_ids``.
-    - ``affected_entity_ids``: entities this deed changed or created. Which are new the
-      observer derives from the entity table.
+    - ``affected_entity_ids``: entities this deed changed or created.
+    - ``created_entity_ids``: entities this deed created, from accepted spawns only. Being
+      born in the same step does not attribute an entity to this deed.
 
     The deed must name the act, not the consequence: "an object changed" is true of taking and
     of smashing alike. PHYSICAL's adjudicator declares it; every other type is its own deed.
@@ -207,6 +208,7 @@ def action_semantics(action: "AgentAction", result: "ActionResult") -> dict[str,
             *(c.entity_id for c in (result.entity_state_changes or [])),
             *(s.entity_id for s in (result.entity_spawns or []) if s.entity_id),
         ],
+        "created_entity_ids": [s.entity_id for s in result.entity_spawns if s.entity_id],
     }
 
 

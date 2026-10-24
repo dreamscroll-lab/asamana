@@ -10,7 +10,7 @@ from core.interfaces.actor import ActorAmendments, ActorMind, BriefGoal, BriefRe
 
 if TYPE_CHECKING:
     from agent.personality import PersonalityLayer
-    from core.interfaces.agent_store import AgentRelation
+    from core.interfaces.relation import AgentRelation
 
 
 def build_actor_mind(

@@ -28,7 +28,7 @@ from core.interfaces.actor import (
     ActorIntentResult,
     ActorOperations,
 )
-from core.interfaces.agent_store import AgentStoreProvider, relations_snapshot
+from core.interfaces.relation import relation_to_snapshot_dict
 from core.interfaces.directory import WorldDirectory
 from core.interfaces.snapshot import EngineState, SnapshotProvider, WorldSnapshot, WorldState
 from core.interfaces.trace import CONSCRIPTED, BeatKind, Stage, StepTrace, TraceSink, record_beat
@@ -65,7 +65,6 @@ from core.interfaces.llm import LLMRouter
 from engine.world_pressure import WorldPressureEvaluator
 if TYPE_CHECKING:
     from agent.agent import Agent
-    from core.interfaces.message import Message
     from core.interfaces.perception import Broadcast, PerceivedSignals, SpatialPerception
 
 
@@ -102,7 +101,6 @@ class NarrativeRuntime:
         message_system: MessageSystem,
         narrative_editor_settings: NarrativeEditorSettings,
         snapshot_provider: SnapshotProvider,
-        agent_store: AgentStoreProvider,
         event_bus: NarrativeEventBus,
         broadcast_channel: BroadcastChannel,
         directory: WorldDirectory,
@@ -120,7 +118,6 @@ class NarrativeRuntime:
         self._environment = environment
         self._message_system = message_system
         self._snapshot_provider = snapshot_provider
-        self._agent_store = agent_store
         self._event_bus = event_bus
         self._broadcast_channel = broadcast_channel
         self._directory = directory
@@ -360,6 +357,8 @@ class NarrativeRuntime:
         return self._step_in_progress
 
     async def run_step(self, agents: List[Agent]) -> RuntimeStepResult:
+        if self._step_in_progress:
+            raise ValueError(f"World {self._world_id!r} already has a step in progress.")
         self._step_in_progress = True
         try:
             return await self._run_step(agents)
@@ -675,7 +674,6 @@ class NarrativeRuntime:
             step=step,
         )
 
-        pending_messages = await self._message_system.peek_pending()
         # The two authors keep separate ledgers (so "the quota only constrains the LLM editor" is
         # structural) and merge into one stream here: observers / replay / frontend ask one
         # question. authored_by says who wrote each; the director's landed first.
@@ -770,30 +768,38 @@ class NarrativeRuntime:
             injections=injection_events(serialized_events),
         )
 
-        await self._persist_agent_states(agents, step)
-        snapshot = await self._step_snapshot(
-            step=step,
-            world_time=world_time,
-            agents=agent_records_now,
-            agent_ids=agents_dict.keys(),
-            events=events,
-            pending_messages=pending_messages,
-            schedule=plan.as_dict(),
-        )
         _t_snapshot = time.perf_counter()
+        # A step commits whole or not at all: a snapshot missing a part would be the newest commit
+        # point, and restore would resume from it. Unbuilt, the previous snapshot stays the commit
+        # point and the next step's snapshot carries everything forward.
+        snapshot: WorldSnapshot | None = None
         try:
-            await self._snapshot_provider.save(self._world_id, step, snapshot)
+            snapshot = await self._step_snapshot(
+                step=step,
+                world_time=world_time,
+                agents=agent_records_now,
+                live_agents=agents_dict,
+                events=events,
+                schedule=plan.as_dict(),
+            )
         except Exception as exc:  # noqa: BLE001 — Rule 6: log error, don't kill run
             logger.error(
-                "snapshot_save_failed",
+                "snapshot_build_failed",
                 extra={"world_id": self._world_id, "step": step, "error": str(exc)},
             )
+        if snapshot is not None:
+            try:
+                await self._snapshot_provider.save(self._world_id, step, snapshot)
+            except Exception as exc:  # noqa: BLE001 — Rule 6: log error, don't kill run
+                logger.error(
+                    "snapshot_save_failed",
+                    extra={"world_id": self._world_id, "step": step, "error": str(exc)},
+                )
+            # Live observers get the very record that was saved, so live and replay read one shape.
+            self._event_bus.publish({
+                "type": "step", "world_id": self._world_id, "step": step, "snapshot": snapshot,
+            })
         snapshot_ms = round((time.perf_counter() - _t_snapshot) * 1000, 1)
-
-        # Live observers get the very record that was saved, so live and replay read one shape.
-        self._event_bus.publish({
-            "type": "step", "world_id": self._world_id, "step": step, "snapshot": snapshot,
-        })
 
         tick_narratives = [r["outcome"] for r in tick_records]
         step_elapsed_ms = (time.perf_counter() - step_start) * 1000.0
@@ -857,13 +863,17 @@ class NarrativeRuntime:
         step: int,
         world_time: WorldTime,
         agents: Dict[str, Dict[str, Any]],
-        agent_ids: Iterable[str],
+        live_agents: Dict[str, Agent],
         events: List[Dict[str, Any]],
-        pending_messages: List[Message],
         schedule: Dict[str, Any],
     ) -> WorldSnapshot:
         """The committed step's record, from what each subsystem holds at the commit point."""
         environment_state = self._environment.world_state()
+        relations = {
+            f"{relation.from_id}->{relation.to_id}": relation_to_snapshot_dict(relation)
+            for agent in live_agents.values()
+            for relation in await agent.relation_system.all_relations()
+        }
         return WorldSnapshot(
             world_id=self._world_id,
             step=step,
@@ -873,11 +883,11 @@ class NarrativeRuntime:
                 agents=agents,
                 npcs=environment_state["npcs"],
                 entities=environment_state["entities"],
-                relations=await self._build_relation_snapshot(agent_ids),
+                relations=relations,
             ),
             events=events,
             engine=EngineState(
-                pending_messages=pending_messages,
+                pending_messages=await self._message_system.peek_pending(),
                 # Broadcasts not yet due. Death notices (deliver_step = next step) straddle this
                 # boundary; unsaved, nobody would know of the death after a restore.
                 pending_broadcasts=self._broadcast_channel.peek_pending(),
@@ -952,41 +962,6 @@ class NarrativeRuntime:
             if (record := records.get(agent_id)) is not None:
                 record["displaced"] = True
         return records
-
-    async def _persist_agent_states(self, agents: List[Agent], step: int) -> None:
-        """Save every agent's state at the step's commit point, right before its snapshot.
-
-        The only writer of agent state: restore reads it back next to the latest snapshot, so it
-        must hold exactly the state that snapshot saw. Don't persist mid-step as well: other
-        agents' acts (target effects, director moves, decay, a condition expiring) change an agent
-        without any act of its own, and a crash mid-step would leave the store a step ahead.
-        """
-        results = await asyncio.gather(
-            *(agent.persist_state(agent.personality.state) for agent in agents),
-            return_exceptions=True,
-        )
-        for agent, result in zip(agents, results):
-            if isinstance(result, BaseException):
-                logger.error(
-                    "agent_state_save_failed",
-                    extra={"world_id": self._world_id, "agent_id": agent.agent_id,
-                           "step": step, "error": str(result)},
-                )
-
-    async def _build_relation_snapshot(self, agent_ids: "Any") -> Dict[str, Dict[str, Any]]:
-        """Collect each agent's outgoing relations for the step snapshot.
-
-        Read failure degrades to an empty snapshot (Rule 6: provider read
-        failure) so a transient store error never blocks the snapshot write.
-        """
-        try:
-            return await relations_snapshot(self._agent_store, self._world_id, agent_ids)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "relation_snapshot_read_failed",
-                extra={"world_id": self._world_id, "error": str(exc)},
-            )
-            return {}
 
     def _sync_dead_ids(self, agents: "dict[str, Agent]") -> None:
         """After deaths, push the new set of dead to every agent.

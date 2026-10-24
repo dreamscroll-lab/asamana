@@ -61,11 +61,9 @@ def _make_agent(
         ),
         need_engine=NeedEngine(router),
         relation_system=RelationSystem(
-            container.agent_store,  # type: ignore[attr-defined]
             world_id="world-1",
             agent_id=agent_id,
         ),
-        agent_store=container.agent_store,  # type: ignore[attr-defined]
         is_main_character=is_main,
     )
 

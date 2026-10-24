@@ -191,6 +191,8 @@ export interface ActionSummary {
   // a figure turns toward and walks to; `affected` is empty precisely when he tried and
   // nothing gave.
   affected_entity_ids: string[];
+  // Accepted creations by this beat; a subset of affected_entity_ids.
+  created_entity_ids: string[];
   // Listeners the initiator named, standing there. Not in participant_ids: they spent no turn on it.
   overheard_by: string[];
   // Who cut short an in-progress action (phase "interrupt"); "" otherwise.

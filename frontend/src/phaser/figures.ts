@@ -118,6 +118,7 @@ export function beatsOf(index: StepIndex, cast: Cast, viewer: Viewer = null): Be
       : SHOWN_BY_MOTION.has(act.action_type) ? "" : act.public?.text ?? "";
     return (act.participant_ids.length ? act.participant_ids : [act.initiator_id]).map((id) => ({
       ...act, agent_id: id, agent_name: nameOf(id), shared, caption,
+      created_entity_ids: shared ? act.created_entity_ids : [],
     }));
   });
 }

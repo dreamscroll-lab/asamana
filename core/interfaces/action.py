@@ -507,6 +507,9 @@ class ActionResult:
     - ``entity_spawns``: ``name``/``description`` are the item's narrative reference;
       ``perception`` is onlooker text. ``is_public`` decides who can reach it from now on,
       ``perception`` who sees it appear; a private item sets neither.
+      Successful landing assigns ``entity_id``; action events preserve those receipts as
+      ``created_entity_ids``, a subset of ``affected_entity_ids``. Birth step alone cannot
+      attribute an injected or another action's item to this action.
 
     TALK is the model case: ``outcome`` = the named transcript; ``observations`` = "A and B
     talked and parted on bad terms"; ``factual_memory`` = each participant's own summary.

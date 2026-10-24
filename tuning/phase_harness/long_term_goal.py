@@ -36,7 +36,7 @@ async def run_long_term_goal(
     scaffolding); everything else is the agent's own state. ``life_goal`` comes from the restored
     real personality and serves as the immovable north star.
 
-    Persistence is isolated by isolate_agent's shadow store; baseline ./data is never written.
+    Persistence is isolated by isolate_container's shadow stores; baseline ./data is never written.
     Restores per scenario.
     """
     trace_sink = sink if sink is not None else InMemoryTraceSink()

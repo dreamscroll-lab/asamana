@@ -23,7 +23,7 @@ import InjectionRow from "./InjectionRow";
 import MessageRow from "./MessageRow";
 import ObservationRow from "./ObservationRow";
 import { stepCast } from "./cast";
-import { bornInStep, buildFeed, involves, itemKey } from "./feed";
+import { buildFeed, involves, itemKey } from "./feed";
 import { collapsedOf } from "./meta";
 
 export default function NarrativeStep({
@@ -50,8 +50,6 @@ export default function NarrativeStep({
   // Beats the reader opened despite the focus. Owned by the card, so it survives a focus
   // change: an expanded beat is one you asked to see.
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
-  // What this step brought into the world (see feed.bornInStep).
-  const born = bornInStep(step);
   const focusSet = new Set(focusAgents);
   const focusActive = focusSet.size > 0;
   const cast = stepCast(step, publicCast, places, npcs);
@@ -101,7 +99,7 @@ export default function NarrativeStep({
           skipped): blank would look like a broken feed, rows would dress the absence up as deeds. */}
       {step.step === 0 ? (
         <AgentRollRow agents={Object.values(index.agents)} cast={cast} />
-      ) : feed.length === 0 && (
+      ) : feed.length === 0 && !index.npcs.some((npc) => npc.private.outcome.trim()) && (
         <div className="mt-2 text-[13px] text-slate-600 italic">本步无人行动。</div>
       )}
 
@@ -143,7 +141,6 @@ export default function NarrativeStep({
               cast={cast}
               turns={turns}
               showConversation={showConversation}
-              born={born}
               entities={index.entities}
               shared={item.shared}
               actionDescription={item.action_description}

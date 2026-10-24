@@ -20,6 +20,8 @@ from world.setup import WorldSetup
 
 from interaction.api import create_app
 from interaction.api.actor import _decode_amendments
+from interaction.api.serialization import to_wire_json
+from interaction.models import agent_profile
 
 
 async def _unconfirmed_world(container, test_config, catalog: WorldCatalog) -> tuple[str, str]:
@@ -69,6 +71,45 @@ def _talk_index() -> int:
 
 def _work_index() -> int:
     return next(i for i, c in enumerate(_ACTION_SPACE) if c.action_type is ActionType.WORK)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("private_route", ["setup", "profile"])
+async def test_private_reads_close_actor_casting(mock_build_container, test_config, private_route) -> None:
+    catalog = WorldCatalog()
+    world_id, character_id = await _unconfirmed_world(mock_build_container, test_config, catalog)
+    path = "setup" if private_route == "setup" else f"agents/{character_id}/profile"
+    with _client(mock_build_container, test_config, catalog) as client:
+        assert client.get(f"/api/worlds/{world_id}/{path}").status_code == 200
+        assert catalog.director_reviewed(world_id)
+        response = client.post(f"/api/worlds/{world_id}/confirm", json={"character_id": character_id})
+        assert response.status_code == 409
+        assert client.post(f"/api/worlds/{world_id}/confirm").status_code == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("private_route", ["setup", "profile", "review"])
+@pytest.mark.parametrize("failure", ["refresh", "write"])
+async def test_private_reads_fail_closed_when_review_cannot_be_recorded(
+    mock_build_container, test_config, monkeypatch, private_route, failure,
+) -> None:
+    catalog = WorldCatalog()
+    world_id, character_id = await _unconfirmed_world(mock_build_container, test_config, catalog)
+    if failure == "refresh":
+        monkeypatch.setattr(catalog, "_refreshed_for_write", lambda *_: False)
+    else:
+        def fail_write() -> None:
+            raise OSError("Catalog storage unavailable")
+
+        monkeypatch.setattr(catalog, "_flush", fail_write)
+    path = f"agents/{character_id}/profile" if private_route == "profile" else private_route
+    with _client(mock_build_container, test_config, catalog) as client:
+        response = (
+            client.post(f"/api/worlds/{world_id}/{path}") if private_route == "review"
+            else client.get(f"/api/worlds/{world_id}/{path}")
+        )
+    assert response.status_code == 503
+    assert response.json() == {"detail": "The director review could not be recorded."}
 
 
 @pytest.mark.asyncio
@@ -406,13 +447,14 @@ async def test_observation_routes_answer_as_the_character_until_the_actor_exits(
     for definition in setup["characters"]:
         definition["soul_data"].update(private)
     await mock_build_container.snapshot.save_world_setup(world_id, setup)
+    profiles = {
+        d.agent_id: to_wire_json(agent_profile(d)) for d in WorldSetup.from_dict(setup).characters
+    }
 
     with _client(mock_build_container, test_config, catalog) as client:
-        profiles = {
-            agent_id: client.get(f"/api/worlds/{world_id}/agents/{agent_id}/profile").json()
-            for agent_id in (d["agent_id"] for d in setup["characters"])
-        }
-        client.post(f"/api/worlds/{world_id}/confirm", json={"character_id": character_id})
+        assert client.post(
+            f"/api/worlds/{world_id}/confirm", json={"character_id": character_id},
+        ).status_code == 200
         performing = {
             agent_id: client.get(f"/api/worlds/{world_id}/agents/{agent_id}/profile").json()
             for agent_id in profiles

@@ -71,8 +71,8 @@ class BodyCondition:
 def condition_to_dict(condition: BodyCondition | None) -> dict[str, object] | None:
     """BodyCondition → JSON-native dict (None passes through).
 
-    ``FileAgentStore`` reads via ``AgentState(**data)`` without rebuilding types, so a stored
-    dataclass would come back as a dict and diverge from ``InMemoryAgentStore``.
+    Snapshot records are JSON: a file snapshot reads a stored dataclass back as a dict, so an
+    in-memory snapshot holding the dataclass would diverge from it.
     """
     if condition is None:
         return None

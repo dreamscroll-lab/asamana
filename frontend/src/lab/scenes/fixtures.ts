@@ -101,6 +101,7 @@ export interface ActRecord {
   interrupted_by: string;
   target: ActionTarget;
   affected_entity_ids: string[];
+  created_entity_ids: string[];
   overheard_by: string[];
   inner_monologue: string;
   is_main_character: boolean;
@@ -370,6 +371,7 @@ export function did(
     interrupted_by: "",
     target: aimNothing(),
     affected_entity_ids: [],
+    created_entity_ids: [],
     inner_monologue: "",
     is_main_character: character.main,
     dialogue: [],
@@ -502,6 +504,7 @@ export function step({
       deed: lead.deed,
       target: lead.target,
       affected_entity_ids: [...new Set(records.flatMap((r) => r.affected_entity_ids))],
+      created_entity_ids: [...new Set(records.flatMap((r) => r.created_entity_ids))],
       overheard_by: overheard,
       interrupted_by: lead.interrupted_by,
       detected: lead.detected,

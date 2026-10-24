@@ -15,7 +15,7 @@ from agent.relation import (
     parse_relation_direction,
     render_relation_context,
 )
-from core.interfaces.agent_store import AgentRelation
+from core.interfaces.relation import AgentRelation
 from core.prompts import canonical_relation_label, relation_labels
 
 
@@ -47,14 +47,13 @@ def test_render_relation_context_empty_returns_blank() -> None:
 @pytest.mark.asyncio
 async def test_load_existing_does_not_create(container: object) -> None:
     system = _make_relation_system(container)
-    # Missing → None, and nothing is persisted (storage stays clean)
+    # Missing → None, and nothing is created
     assert await system.load_existing("ghost") is None
-    assert await container.agent_store.load_relation("world-1", "agent-1", "ghost") is None  # type: ignore[attr-defined]
+    assert await system.all_relations() == []
 
 
 def _make_relation_system(container: object, *, world_id: str = "world-1", agent_id: str = "agent-1") -> RelationSystem:
     return RelationSystem(
-        container.agent_store,  # type: ignore[attr-defined]
         world_id=world_id,
         agent_id=agent_id,
     )
@@ -327,12 +326,12 @@ async def test_perceive_backfills_and_renders_target_gender(container: object) -
     bracket."""
     from agent.relation import render_relation_lines
 
-    system = RelationSystem(container.agent_store, world_id="w", agent_id="agent-1")
+    system = RelationSystem(world_id="w", agent_id="agent-1")
     perceived = await system.perceive(
         "agent-2", emotion=EmotionState(), agent_name="长孙无垢", agent_gender="女",
     )
     assert perceived.target_agent_gender == "女"
-    stored = await container.agent_store.load_relation("w", "agent-1", "agent-2")
+    stored = await system.load_existing("agent-2")
     assert stored.to_gender == "女"
     assert render_relation_lines([perceived])[0].startswith("长孙无垢（女）：")
 
@@ -404,3 +403,25 @@ async def test_replaced_labels_are_stored_in_canonical_form(container: object) -
     system = _make_relation_system(container)
     await system.replace_labels("agent-2", ["父子：儿子", "父子:", "政敌"], step=1)
     assert (await system.get_or_create("agent-2")).labels == ["父子:儿子", "政敌"]
+
+
+@pytest.mark.asyncio
+async def test_held_relations_do_not_alias_what_goes_in_or_comes_out() -> None:
+    """Reads and restores copy: a snapshot's record or a caller's copy must not change what the
+    agent holds."""
+    system = RelationSystem(world_id="w", agent_id="a")
+    relation = AgentRelation("w", "a", "b", 0.5, 0.0, 0, labels=["ally"])
+    system.restore([relation])
+    relation.labels.append("external")
+    held = (await system.all_relations())[0]
+    assert held.labels == ["ally"]
+    held.labels.clear()
+    assert (await system.load_existing("b")).labels == ["ally"]
+
+
+@pytest.mark.asyncio
+async def test_restore_replaces_every_held_relation() -> None:
+    system = RelationSystem(world_id="w", agent_id="a")
+    await system.apply_interaction("stranger", trust_delta=0.1, affection_delta=0.0, step=3)
+    system.restore([AgentRelation("w", "a", "b", 0.5, 0.0, 0)])
+    assert [r.to_id for r in await system.all_relations()] == ["b"]

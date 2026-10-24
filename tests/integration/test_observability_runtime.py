@@ -54,8 +54,7 @@ def _agent(container, router, *, world_id, agent_id, name, main) -> Agent:
             world_id=world_id, agent_id=agent_id,
         ),
         need_engine=NeedEngine(router),
-        relation_system=RelationSystem(container.agent_store, world_id=world_id, agent_id=agent_id),
-        agent_store=container.agent_store,
+        relation_system=RelationSystem(world_id=world_id, agent_id=agent_id),
         is_main_character=main,
     )
 
@@ -78,7 +77,6 @@ async def test_run_step_records_stage_tagged_traces(container) -> None:
         message_system=message_system,
         narrative_editor_settings=narrative_editor_settings,
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=LiveWorldDirectory.from_agents({}, environment),

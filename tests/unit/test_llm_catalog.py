@@ -200,7 +200,7 @@ def test_one_config_can_route_two_scenes_to_two_providers(monkeypatch) -> None:
                 },
             },
         },
-        embedding=local, vector_store=local, agent_store=local,
+        embedding=local, vector_store=local,
         message=local, snapshot=local,
         world={"config": "tiled"},
         observability={"enabled": False},

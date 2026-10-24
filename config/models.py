@@ -274,7 +274,6 @@ class Config(AsamanaConfigModel):
     llm: LLMConfig
     embedding: ProviderConfig
     vector_store: ProviderConfig
-    agent_store: ProviderConfig
     message: ProviderConfig
     snapshot: ProviderConfig
     world: WorldConfigSection

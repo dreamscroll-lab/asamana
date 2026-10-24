@@ -102,7 +102,6 @@ def _runtime(container, *, trace_sink=None):
         message_system=message_system,
         narrative_editor_settings=NarrativeEditorSettings(check_interval=2, max_injections_per_window=1),
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=directory,
@@ -299,7 +298,7 @@ async def test_a_message_from_the_director_makes_him_nobody_to_know(container) -
 
     await runtime.run_step(agents)
 
-    assert await container.agent_store.load_relation(WORLD_ID, "a2", "director") is None
+    assert await agents[1].relation_system.load_existing("director") is None
 
 
 @pytest.mark.asyncio

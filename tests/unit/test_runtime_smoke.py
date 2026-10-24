@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from agent.state_codec import agent_state_from_record
 from agent.agent import Agent, AgentStepPlan
 from agent.decision import ActionType, AgentAction, DecisionEngine, DecisionStatus
 from core.interfaces.action import ActionResult, ActionTarget, Observed, Ref
@@ -62,8 +63,7 @@ def _build_agent(container, *, world_id: str, agent_id: str, name: str, is_main_
             agent_id=agent_id,
         ),
         need_engine=NeedEngine(container.llm_router),
-        relation_system=RelationSystem(container.agent_store, world_id=world_id, agent_id=agent_id),
-        agent_store=container.agent_store,
+        relation_system=RelationSystem(world_id=world_id, agent_id=agent_id),
         is_main_character=is_main_character,
     )
 
@@ -136,7 +136,6 @@ def _build_runtime(
         message_system=message_system,
         narrative_editor_settings=narrative_editor_settings,
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=LiveWorldDirectory.from_agents({}, environment),
@@ -212,8 +211,8 @@ async def test_narrative_runtime_runs_one_step_and_persists_contract_state(conta
     result = await runtime.run_step(agents)
     event = published()[0]
     snapshot = await container.snapshot.load(world_id, 1)
-    main_state = await container.agent_store.load_agent_state(world_id, "agent-1")
-    bg_state = await container.agent_store.load_agent_state(world_id, "agent-2")
+    main_state = agent_state_from_record(snapshot.state.agents["agent-1"])
+    bg_state = agent_state_from_record(snapshot.state.agents["agent-2"])
     action_events = snapshot.events_of("action")
 
     assert result.step == 1
@@ -281,7 +280,6 @@ async def test_runtime_fallback_move_updates_environment_and_agent_location(cont
         message_system=message_system,
         narrative_editor_settings=NarrativeEditorSettings(check_interval=2, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=directory,
@@ -409,7 +407,6 @@ async def test_runtime_interrupts_executor_owned_action(container) -> None:
         message_system=message_system,
         narrative_editor_settings=NarrativeEditorSettings(check_interval=2, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=directory,
@@ -498,12 +495,12 @@ async def test_multi_step_action_defers_redecision_to_settle_step(container) -> 
 
     s1 = await runtime.run_step([agent])
     assert "agent-1" in s1.scheduled_agent_ids
-    st1 = await container.agent_store.load_agent_state(world_id, "agent-1")
+    st1 = agent_state_from_record((await container.snapshot.load(world_id, 1)).state.agents["agent-1"])
     assert st1.action_status == ActionStatus.IN_PROGRESS.value  # multi-step started
 
     s2 = await runtime.run_step([agent])
     assert "agent-1" not in s2.scheduled_agent_ids  # final tick completes, but no re-decision
-    st2 = await container.agent_store.load_agent_state(world_id, "agent-1")
+    st2 = agent_state_from_record((await container.snapshot.load(world_id, 2)).state.agents["agent-1"])
     assert st2.action_status != ActionStatus.IN_PROGRESS.value  # action actually completed
 
     s3 = await runtime.run_step([agent])
@@ -632,8 +629,8 @@ async def test_narrative_runtime_delivers_targeted_messages_without_llm_event_ap
     second_step = await runtime.run_step(agents)
     second_event = published()[0]
     second_snapshot = await container.snapshot.load(world_id, 2)
-    main_state = await container.agent_store.load_agent_state(world_id, "agent-1")
-    bg_state = await container.agent_store.load_agent_state(world_id, "agent-2")
+    main_state = agent_state_from_record(second_snapshot.state.agents["agent-1"])
+    bg_state = agent_state_from_record(second_snapshot.state.agents["agent-2"])
 
     assert second_step.step == 2
     assert second_step.delivered_message_count == 1
@@ -699,7 +696,6 @@ async def test_talk_to_active_agent_is_rejected_without_double_booking(container
         message_system=message_system,
         narrative_editor_settings=NarrativeEditorSettings(check_interval=99, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=directory,
@@ -780,7 +776,6 @@ def _arb_runtime(container, world_id, agents_dict, environment, *, trace_sink=No
         message_system=ms,
         narrative_editor_settings=NarrativeEditorSettings(check_interval=99, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=bc,
         directory=directory,
@@ -2319,6 +2314,10 @@ async def test_a_declared_product_reaches_the_world(container) -> None:
     await rt._processor.land_result_feedback(result, agents, step=1)  # noqa: SLF001
 
     assert "换防部署令" in [e.name for e in env.all_live_entities()]
+    from engine.executors.base import action_semantics
+
+    created_ids = action_semantics(action, result)["created_entity_ids"]
+    assert created_ids == [e.entity_id for e in env.all_live_entities() if e.name == "换防部署令"]
     assert [e.name for e in env.spatial_for(agent_id="agent-a").visible_entities] == ["换防部署令"]
     # Private property stays private through the feedback layer.
     assert env.spatial_for(agent_id="agent-b").visible_entities == []
@@ -2946,7 +2945,7 @@ async def test_independent_adjudication_runs_concurrently(container) -> None:
 
     async def _noop_land(result, agents_dict, step):  # isolate adjudication
         pass
-    rt._processor.land_result_feedback = _noop_land  # type: ignore[method-assign]  # noqa: SLF001
+    rt._processor.land_agent_feedback = _noop_land  # type: ignore[method-assign]  # noqa: SLF001
 
     exec_states = [_add_work_exec(rt, f"agent-{i}") for i in range(n)]
     results = await rt._processor.finalize_executions_batch(exec_states, agents, step=1)  # noqa: SLF001
@@ -2988,7 +2987,7 @@ async def test_adjudication_exception_isolated(container) -> None:
 
     async def _noop_land(result, agents_dict, step):
         pass
-    rt._processor.land_result_feedback = _noop_land  # type: ignore[method-assign]  # noqa: SLF001
+    rt._processor.land_agent_feedback = _noop_land  # type: ignore[method-assign]  # noqa: SLF001
 
     exec_states = []
     for aid in ids:
@@ -3115,7 +3114,7 @@ async def _land_pair(container, world_id: str, *, hit_partner: bool) -> tuple[in
             pass
         landed.append(result.action.agent_id)
         inflight -= 1
-    rt._processor.land_result_feedback = _barrier_land  # type: ignore[method-assign]  # noqa: SLF001
+    rt._processor.land_agent_feedback = _barrier_land  # type: ignore[method-assign]  # noqa: SLF001
 
     es = ActionExecutionState.create(
         target=ActionTarget(),
@@ -3359,7 +3358,6 @@ async def test_setting_out_moves_the_anchor_with_the_body(container) -> None:
         message_system=message_system,
         narrative_editor_settings=NarrativeEditorSettings(check_interval=2, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=directory,

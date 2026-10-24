@@ -1,13 +1,17 @@
-"""The one codec between an agent's in-memory ``StateLayer`` and its stored ``AgentState``.
+"""The one codec between an agent's in-memory ``StateLayer`` and its committed ``AgentState``.
 
-Every write (each step's commit and the world's initial save) goes through ``encode_agent_state``
-and every restore through ``decode_agent_state``, so a field added to one side can't be missed
-by the other.
+Every snapshot record (``snapshot_agent_state``) is written through ``encode_agent_state`` and
+every restore reads it back through ``agent_state_from_record`` and ``decode_agent_state``, so a
+field added to one side can't be missed by the other. What the agent carries outside the
+``StateLayer`` is added and restored by ``Agent.committed_state`` / ``Agent.apply_stored_state``.
 """
 
 from __future__ import annotations
 
-from agent.goals import GoalEntity, GoalOrigin, GoalStatus, text_to_long_term_goal_entity
+from dataclasses import fields
+from typing import Any, Mapping
+
+from agent.goals import GoalEntity, GoalOrigin, GoalStatus
 from agent.need import NeedType
 from agent.personality import (
     ActionStatus,
@@ -16,7 +20,7 @@ from agent.personality import (
     StateLayer,
     parse_emotion_type,
 )
-from core.interfaces.agent_store import AgentState
+from core.interfaces.snapshot import AgentState
 from core.interfaces.condition import condition_from_dict, condition_to_dict
 
 
@@ -24,11 +28,13 @@ def encode_agent_state(world_id: str, agent_id: str, state: StateLayer) -> Agent
     return AgentState(
         world_id=world_id,
         agent_id=agent_id,
-        updated_step=state.step,
-        current_emotion=state.emotion.primary,
-        emotion_intensity=state.emotion.intensity,
-        emotion_valence=state.emotion.valence,
-        emotion_triggered_by=state.emotion.triggered_by,
+        step=state.step,
+        emotion={
+            "primary": state.emotion.primary.value,
+            "intensity": state.emotion.intensity,
+            "valence": state.emotion.valence,
+            "triggered_by": state.emotion.triggered_by,
+        },
         active_needs=list(state.active_needs),
         dominant_need=state.dominant_need,
         long_term_goals=list(state.long_term_goals),
@@ -50,7 +56,20 @@ def encode_agent_state(world_id: str, agent_id: str, state: StateLayer) -> Agent
         # starved on step 1, so a fresh world does not open on a step where nobody thought.
         last_decision_step=state.last_decision_step,
         acted_upon=list(state.acted_upon),
+        long_term_goal_entities=[_goal_entity_to_dict(g) for g in state.long_term_goal_entities],
     )
+
+
+_AGENT_STATE_FIELDS = tuple(f.name for f in fields(AgentState))
+
+
+def agent_state_from_record(record: Mapping[str, Any]) -> AgentState:
+    """The committed state in a ``WorldState.agents`` record, without the identity and body
+    fields the record also carries. Raises ``ValueError`` if the record lacks a required field."""
+    try:
+        return AgentState(**{name: record[name] for name in _AGENT_STATE_FIELDS if name in record})
+    except TypeError as exc:
+        raise ValueError(f"Agent record is incomplete: {exc}") from exc
 
 
 def decode_agent_state(agent_id: str, stored: AgentState, *, orphaned: bool) -> StateLayer:
@@ -59,12 +78,12 @@ def decode_agent_state(agent_id: str, stored: AgentState, *, orphaned: bool) -> 
     ever tick or end that act)."""
     return StateLayer(
         agent_id=agent_id,
-        step=stored.updated_step,
+        step=stored.step,
         emotion=EmotionState(
-            primary=parse_emotion_type(stored.current_emotion),
-            intensity=stored.emotion_intensity,
-            valence=stored.emotion_valence,
-            triggered_by=stored.emotion_triggered_by,
+            primary=parse_emotion_type(str(stored.emotion["primary"])),
+            intensity=float(stored.emotion["intensity"]),
+            valence=float(stored.emotion["valence"]),
+            triggered_by=stored.emotion.get("triggered_by"),
         ),
         active_needs=list(stored.active_needs),
         dominant_need=stored.dominant_need,
@@ -87,9 +106,10 @@ def decode_agent_state(agent_id: str, stored: AgentState, *, orphaned: bool) -> 
             goal_entity_from_dict(ent, fallback_id=f"restored-stg-{i}")
             for i, ent in enumerate(stored.short_term_goal_entities)
         ],
-        # Long-term goals persist as text; restore rebuilds the entities from text (related_need
-        # left None, as at build).
-        long_term_goal_entities=[text_to_long_term_goal_entity(t) for t in stored.long_term_goals],
+        long_term_goal_entities=[
+            goal_entity_from_dict(ent, fallback_id=f"restored-ltg-{i}")
+            for i, ent in enumerate(stored.long_term_goal_entities)
+        ],
         need_intensities=dict(stored.need_intensities),
         vitality=stored.vitality,
         # Stored as a dict (see the AgentState.condition comment), rebuilt into a BodyCondition here.

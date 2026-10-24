@@ -139,13 +139,13 @@ async def test_world_pressure_shows_the_target_s_secret_but_not_a_co_present_per
     knows."""
     from engine.world_pressure import WorldPressureEvaluator
 
-    class _Store:
-        async def load_relation(self, *_a):  # noqa: ANN002
+    class _Relations:
+        async def load_existing(self, *_a):  # noqa: ANN002
             return None
 
     target = _agent("我欠了外人一大笔钱", agent_id="t")
     target.world_id = "w"
-    target.agent_store = _Store()
+    target.relation_system = _Relations()
     other = _agent(agent_id="o")
     ev = WorldPressureEvaluator(llm_router=None)
     co_located = await ev._co_located(target, {"t": target, "o": other}, None, ["o"])  # noqa: SLF001

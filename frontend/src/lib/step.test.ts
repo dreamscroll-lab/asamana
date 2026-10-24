@@ -35,7 +35,7 @@ const npcs: Npcs = {
 const talk: ActionSummary = {
   kind: "action", seq: 7, execution_id: "x", initiator_id: "a", participant_ids: ["a", "b"], action_type: "talk",
   phase: "settled", deed: "talk", target: { acts_on: [], claims: [], reaches: [] },
-  affected_entity_ids: [], overheard_by: [], interrupted_by: "",
+  affected_entity_ids: [], created_entity_ids: [], overheard_by: [], interrupted_by: "",
   detected: false, not_executed: false, public: null,
   shared: {
     audience: ["a", "b"], outcome: "", gist: "", succeeded: true, failure_reason: "", dialogue: [],

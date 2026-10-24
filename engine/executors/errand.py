@@ -176,13 +176,24 @@ class ErrandExecutor(ActionExecutor):
                 "一时未能确知派没派出去。"
             )))]
 
+        if order.item_id:
+            item = environment.get_entity(order.item_id)
+            if item is None or item.is_destroyed or item.owner_id != state.initiator_id:
+                environment.clear_errand(order.npc_id)
+                failed = self._unavailable(
+                    self._stub(state, step), step,
+                    f"{(item.name if item is not None else '') or '那样东西'}已不在他手上",
+                    environment=environment,
+                )
+                return [failed.extra["completed_result"]]
+
         doer_name = self._directory.agent_name(state.initiator_id)
         bearer = npc.name or "那人"
         errand_clause = "，".join(_render_errand(
             order, environment=environment, directory=self._directory,
         ))
         # The item must reach the bearer now, or every carrying errand arrives empty-handed.
-        # The gate in ``start`` guarantees he still holds it. No ``perception``: the handover is
+        # Revalidated after earlier item-changing actions. No ``perception``: the handover is
         # folded into the single observation below.
         handover = [EntityStateChange(entity_id=order.item_id, owner_id=order.npc_id)] if (
             order.item_id

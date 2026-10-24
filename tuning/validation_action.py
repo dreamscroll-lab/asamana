@@ -25,6 +25,7 @@ from core.container import Container
 from core.interfaces.llm import LLMProvider, LLMScene
 from core.logging import get_logger
 from world.initializer import WorldInitializer
+from tuning.dry_run import isolate_container
 
 from tuning.judge_action import judge_action
 from tuning.judge_llm import create_judge
@@ -233,7 +234,7 @@ async def validate_action(
     # Don't pass enable_thinking here: thinking is an endpoint property set in ``llm.judge.params`` (see create_judge).
     judge_llm = judge_provider or create_judge(config, judge_model)
 
-    world = await WorldInitializer(container).restore(world_id)
+    world = await WorldInitializer(await isolate_container(container, world_id)).restore(world_id)
     agent_ids = set(world.agents.keys())
 
     out_dir = Path(trace_dir) / world_id / "validation" / "action"

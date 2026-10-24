@@ -69,6 +69,7 @@ export function buildMadeScenes({ open: OPEN }: LabPlaces): LabScene[] {
               action_description: "我摊开花名册，拟定换防部署。",
               outcome: `在${OPEN.name}，阿墨写完了换防部署令。`,
               affected_entity_ids: [KEPT],
+              created_entity_ids: [KEPT],
             }),
           ],
         }),
@@ -81,7 +82,7 @@ export function buildMadeScenes({ open: OPEN }: LabPlaces): LabScene[] {
       title: "造物 · 做完了留在原地",
       watch:
         "第二拍地上**长出**一件东西:marker 从无到有弹起来（不是淡入——淡入与每次重画没有区别），" +
-        "同时在房间上方飘一句「一道栅栏 已出现」。这是「已损毁」的镜像:一个只报损失、" +
+        "同时在物件上方飘一句「一道栅栏 已出现」。这是「已损毁」的镜像:一个只报损失、" +
         "多出东西时一声不响的世界，读起来像只会衰败。" +
         "第三拍它就是一件寻常物件了，安静待在原地，不再弹、不再飘字。",
       steps: [
@@ -97,6 +98,7 @@ export function buildMadeScenes({ open: OPEN }: LabPlaces): LabScene[] {
               action_description: "我把栅栏一根根立起来。",
               outcome: `在${OPEN.name}，阿墨筑起了一道栅栏。`,
               affected_entity_ids: [SET_DOWN],
+              created_entity_ids: [SET_DOWN],
             }),
           ],
         }),

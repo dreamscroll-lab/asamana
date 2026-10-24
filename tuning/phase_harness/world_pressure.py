@@ -92,11 +92,7 @@ async def run_world_pressure(
         sp = spatials[aid]
         rels = []
         for vid in sp.visible_agent_ids:
-            rel = None
-            try:
-                rel = await world.agents[aid].agent_store.load_relation(world_id, aid, vid)
-            except Exception:  # noqa: BLE001
-                rel = None
+            rel = await world.agents[aid].relation_system.load_existing(vid)
             other = world.agents.get(vid)
             osoul = other.personality.soul if other is not None else None
             rels.append({

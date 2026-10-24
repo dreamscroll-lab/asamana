@@ -157,15 +157,16 @@ async def test_restore_does_not_resurrect_baked_in_occupancy(container, test_con
 
     # Simulate the agent having ended the run in a different location.
     agent_id = next(iter(world.agents))
-    stored = await container.agent_store.load_agent_state(world.world_id, agent_id)
-    old_location = stored.current_location
+    committed = await container.snapshot.load_latest(world.world_id)
+    stored = committed.state.agents[agent_id]
+    old_location = stored["current_location"]
     other_location = next(
         eid
         for eid, e in world.world_config.get_places().items()
         if isinstance(e, Place) and eid != old_location
     )
-    stored.current_location = other_location
-    await container.agent_store.save_agent_state(world.world_id, agent_id, stored)
+    stored["current_location"] = other_location
+    await container.snapshot.save(world.world_id, committed.step, committed)
 
     restored = await WorldInitializer(container).restore(world.world_id)
     env = restored.environment
@@ -223,6 +224,35 @@ async def test_run_world_rejects_concurrent_runs_of_same_world(container, test_c
 
     # The latch resets after the run: the world can run again.
     await application.run_world(world.world_id, steps=1)
+
+
+@pytest.mark.asyncio
+async def test_delete_refuses_a_foreground_run(container, test_config, monkeypatch) -> None:
+    application = NarrativeApplication(container, test_config)
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
+    runtime = application.get_session(world.world_id).runtime
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original = runtime._run_step
+
+    async def suspended_step(agents):
+        entered.set()
+        await release.wait()
+        return await original(agents)
+
+    monkeypatch.setattr(runtime, "_run_step", suspended_step)
+    running = asyncio.create_task(application.run_world(world.world_id, steps=1))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        with pytest.raises(ValueError, match="before deleting"):
+            await application.delete_world(world.world_id)
+        assert application.has_session(world.world_id)
+        assert await container.snapshot.load(world.world_id, 0) is not None
+    finally:
+        release.set()
+        await running
+    await application.delete_world(world.world_id)
+    assert await container.snapshot.list_steps(world.world_id) == []
 
 
 # ---------------------------------------------------------------------------
@@ -298,8 +328,8 @@ async def test_two_worlds_run_concurrently_without_crosstalk(container, test_con
     # Stores stay world-scoped: each world sees exactly its own snapshots and agents.
     assert await container.snapshot.list_steps(world_a.world_id) == [0, 1, 2]
     assert await container.snapshot.list_steps(world_b.world_id) == [0, 1, 2]
-    assert len(await container.agent_store.list_agent_ids(world_a.world_id)) == len(world_a.agents)
-    assert len(await container.agent_store.list_agent_ids(world_b.world_id)) == len(world_b.agents)
+    assert set((await container.snapshot.load(world_a.world_id, 2)).state.agents) == set(world_a.agents)
+    assert set((await container.snapshot.load(world_b.world_id, 2)).state.agents) == set(world_b.agents)
 
 
 @pytest.mark.asyncio
@@ -312,9 +342,9 @@ async def test_restore_does_not_place_dead_agent(container, test_config) -> None
     await application.run_world(world.world_id, steps=1)
 
     agent_id = next(iter(world.agents))
-    stored = await container.agent_store.load_agent_state(world.world_id, agent_id)
-    stored.vitality = 0.0
-    await container.agent_store.save_agent_state(world.world_id, agent_id, stored)
+    committed = await container.snapshot.load_latest(world.world_id)
+    committed.state.agents[agent_id]["vitality"] = 0.0
+    await container.snapshot.save(world.world_id, committed.step, committed)
 
     restored = await WorldInitializer(container).restore(world.world_id)
     assert restored.agents[agent_id].is_active is False
@@ -387,8 +417,7 @@ async def test_a_snapshot_written_by_an_older_shape_still_loads(tmp_path) -> Non
     existing snapshot unreadable.
 
     Splatting ``WorldSnapshot(**data)`` directly raises TypeError once a field is removed, breaking
-    that world's restore and replay with a cryptic "unexpected keyword argument". agent_store
-    filters with _AGENT_STATE_FIELDS for the same reason.
+    that world's restore and replay with a cryptic "unexpected keyword argument".
     """
     import json as _json
 

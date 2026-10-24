@@ -194,6 +194,8 @@ def build_lifecycle_router(services: ApiServices) -> Any:
             raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
         try:
             await application.open_director_review(world_id)
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="The director review could not be recorded.") from exc
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         meta = await manager.get_world(world_id)
@@ -225,7 +227,10 @@ def build_lifecycle_router(services: ApiServices) -> Any:
         meta = await manager.get_world(world_id)
         if meta is None:
             raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
-        await application.delete_world(world_id)
+        try:
+            await application.delete_world(world_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"world_id": world_id, "deleted": True}
 
     # ----- run control -----------------------------------------------------

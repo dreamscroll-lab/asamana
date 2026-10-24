@@ -79,8 +79,6 @@ def test_load_config_applies_engine_and_logging_defaults(tmp_path: Path) -> None
                 "  provider: in_memory",
                 "vector_store:",
                 "  provider: in_memory",
-                "agent_store:",
-                "  provider: in_memory",
                 "message:",
                 "  provider: in_memory",
                 "snapshot:",

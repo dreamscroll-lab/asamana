@@ -198,18 +198,13 @@ def test_read_model_degrades_to_empty_not_crash(record_condition: object) -> Non
     assert agent(StepView.from_snapshot(snapshot), "a2").public.condition == ""
 
 
-def test_snapshot_payload_stays_json_native() -> None:
+def test_snapshot_payload_stays_json_native(container) -> None:
     """A BodyCondition instance must never appear in the snapshot payload — it feeds both
     persistence and the read model."""
     from agent.agent import snapshot_agent_state
+    from tests.unit.test_runtime_smoke import _build_agent
 
-    class _A:
-        agent_id = "a2"
-        is_active = True
-        is_main_character = False
-        personality = PersonalityLayer(soul=SoulLayer(name="李元吉", agent_id="a2"))
-
-    a = _A()
+    a = _build_agent(container, world_id="w", agent_id="a2", name="李元吉", is_main_character=False)
     a.personality.set_condition(BOUND)
     payload = snapshot_agent_state(a)
     assert isinstance(payload["condition"], dict)

@@ -942,6 +942,36 @@ async def test_compression_with_strict_filter_and_source_ids(container: object) 
     assert any(s.source_ids for s in summaries)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_provider", ["embedding", "vector_store"])
+async def test_compression_preserves_sources_when_summary_persistence_fails(
+    container: object, monkeypatch: pytest.MonkeyPatch, failed_provider: str,
+) -> None:
+    provider = MockLLMProvider(fixed_response='{"points": ["市集如常。"]}')
+    system = _make_memory_system(container, provider=provider)
+    personality = _make_personality()
+    for index in range(30):
+        await system.write(
+            f"Routine market observation #{index}.", MemoryStream.FACTUAL,
+            personality=personality, importance=0.2,
+            current_step=5 + index % 15, decay_score=0.15,
+        )
+    collection = system._namespace(MemoryStream.FACTUAL)
+    original_ids = {row.id for row in await container.vector_store.list_all(collection)}
+
+    async def fail(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("Persistence unavailable")
+
+    if failed_provider == "embedding":
+        monkeypatch.setattr(container.embedding, "embed", fail)
+    else:
+        monkeypatch.setattr(container.vector_store, "upsert", fail)
+
+    assert await system.compress(MemoryStream.FACTUAL, current_step=200) == 0
+    assert {row.id for row in await container.vector_store.list_all(collection)} == original_ids
+    assert set(system._entries) == original_ids
+
+
 def test_summary_prompt_renders_time_range_not_step(container: object) -> None:
     """The compression prompt shows the time span in the world calendar ("<time> 至 <time>") and
     doesn't leak code-layer steps."""
@@ -1876,6 +1906,36 @@ async def test_drain_writes_completes_experiential_rewrite(container) -> None:
     await system.drain_writes()
     assert experiential.stored_content == "我把它读作对我的挑衅。"  # background rewrite
     assert experiential.id in system._entries  # added to _entries only once rewritten
+
+
+@pytest.mark.asyncio
+async def test_background_rewrite_uses_event_time_personality(container: object) -> None:
+    from agent.personality import EmotionType
+    from core.interfaces.condition import BodyCondition
+
+    provider = MockLLMProvider(fixed_response="那阵脚步声让我害怕。")
+    system = _make_memory_system(container, provider=provider, is_main_character=True)
+    await system.ensure_collections()
+    personality = _make_personality(
+        emotion=EmotionState(primary=EmotionType.FEAR, intensity=0.7, valence=-0.5),
+    )
+    personality.set_condition(BodyCondition(description="双手被缚", since_step=1))
+    entries = await system.record_event(
+        current_step=2, raw_content="门外传来脚步声", personality=personality,
+        importance=MemoryImportance.HIGH,
+    )
+    personality.update_emotion(primary=EmotionType.JOY, intensity=0.8, valence=0.7)
+    personality.set_condition(BodyCondition(description="伤口疼痛", since_step=3))
+    await system.drain_writes()
+
+    prompt = provider.call_history[-1][-1].content
+    assert "恐惧" in prompt
+    assert "喜悦" not in prompt
+    assert "双手被缚" in prompt
+    assert "伤口疼痛" not in prompt
+    experiential = next(m for m in entries if m.stream == MemoryStream.EXPERIENTIAL)
+    assert experiential.emotion_label == EmotionType.FEAR
+    assert experiential.stored_content == "那阵脚步声让我害怕。"
 
 
 def test_foiled_attempt_is_transient_never_persisted(container) -> None:

@@ -213,12 +213,6 @@ vector_store:
     path: ./data/vectors
     # Clear this directory before changing dimension: upsert raises on a dimension mismatch.
 
-agent_store:
-  # file | in_memory
-  provider: file
-  params:
-    path: ./data/agents
-
 message:
   provider: in_memory
   params: {}

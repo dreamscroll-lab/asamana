@@ -22,6 +22,7 @@ from engine.presence import attach_presence
 from world.initializer import WorldInitializer
 
 from tuning.plan_view import plan_step_view
+from tuning.dry_run import isolate_container
 from tuning.trace import InMemoryTraceSink, JsonlTraceSink, PhaseTrace, traced_router
 
 logger = get_logger(__name__)
@@ -51,7 +52,7 @@ async def run_plan_step(
     router = traced_router(
         container.llm_router, trace_sink, max_concurrent=config.engine.max_concurrent_llm
     )
-    traced_container = dataclasses.replace(container, llm_router=router)
+    traced_container = dataclasses.replace(await isolate_container(container, world_id), llm_router=router)
 
     initializer = WorldInitializer(traced_container)
     world = await initializer.restore(world_id)

@@ -1,8 +1,7 @@
 """Example worlds shipped in ``examples/``, copied into a fresh install on first start.
 
 ``examples/`` mirrors the on-disk layout of the file-backed stores (``snapshots/<id>/``,
-``agents/<id>/``, ``vectors/<id>_*.jsonl``, ``traces/<id>/``) plus ``worlds.json``, the catalog
-entries. Seeding copies each world into the paths the config names and registers it through
+``vectors/<id>_*.jsonl``, ``traces/<id>/``) plus ``worlds.json``, the catalog entries. Seeding copies each world into the paths the config names and registers it through
 ``WorldCatalog``, so a new user can browse and replay finished worlds before configuring any keys.
 
 It runs once per data directory, recorded by a marker file beside the catalog. Don't key it on the
@@ -61,7 +60,6 @@ def seed_examples(
         if snapshot_dir.exists():
             continue
         shutil.copytree(examples_dir / "snapshots" / world_id, snapshot_dir)
-        shutil.copytree(examples_dir / "agents" / world_id, stores["agents"] / world_id)
         stores["vectors"].mkdir(parents=True, exist_ok=True)
         for vector_file in (examples_dir / "vectors").glob(f"{world_id}_*.jsonl"):
             shutil.copy2(vector_file, stores["vectors"] / vector_file.name)
@@ -93,7 +91,6 @@ def _store_paths(config: Config) -> dict[str, Path] | None:
 
     required = {
         "snapshots": config.snapshot,
-        "agents": config.agent_store,
         "vectors": config.vector_store,
     }
     paths: dict[str, Path] = {}

@@ -177,6 +177,14 @@ class MemorySystem:
         self._seq += 1
         return self._seq
 
+    @property
+    def id_seq(self) -> int:
+        return self._seq
+
+    def restore_id_seq(self, id_seq: int) -> None:
+        """Resume the id counter a snapshot committed, so new ids never reuse old ones."""
+        self._seq = id_seq
+
     async def drain_writes(self) -> None:
         """Barrier before maintenance (compression/reflection). See MemoryWriteQueue.drain."""
         await self._write_q.drain()
@@ -326,7 +334,8 @@ class MemorySystem:
         self._write_q.enqueue(self._refine_event(
             factual=factual,
             experiential=experiential,
-            personality=personality,
+            # The queue may run after later feedback changes emotion or condition.
+            personality=PersonalityLayer(soul=personality.soul, state=personality.state),
             related_directory=related_directory,
             related_relations_text=related_relations_text,
             situation=situation,
@@ -750,8 +759,8 @@ class MemorySystem:
         """Record an action that didn't happen: a ``not_executed`` foiled attempt, or a decision
         dropped because arbitration conscripted the agent (see Agent.defer_decided_intent).
 
-        Never persisted: nothing changed in the world, and a templated "I meant to X but couldn't"
-        memory would dilute retrieval and feed relation_evolution a dealing that never happened.
+        Never written as a memory: nothing changed in the world, and a templated "I meant to X but
+        couldn't" memory would dilute retrieval and feed relation_evolution a dealing that never happened.
 
         text must be first-person and membrane-safe; it goes straight into the decide prompt.
         ``key``/``gist`` are optional merge inputs (none → never merges). ``gist`` should be the
@@ -1153,12 +1162,10 @@ class MemorySystem:
                 kind=MemoryKind.SUMMARY,
                 source_ids=[memory.id for memory in cluster],
             )
-            try:
-                await self._persist(summary_memory)
-            except Exception as exc:
+            if not await self._persist(summary_memory):
                 logger.error(
                     "compression_summary_persist_failed",
-                    extra={"agent_id": self._agent_id, "stream": stream.value, "error": str(exc)},
+                    extra={"agent_id": self._agent_id, "stream": stream.value},
                 )
                 # Roll back; the source memories stay.
                 self._entries.pop(summary_memory.id, None)
@@ -1411,7 +1418,8 @@ class MemorySystem:
 
     async def _persist(self, memory: Memory) -> bool:
         """Cache insert + embed + upsert, for new or changed text (unchanged text uses
-        _persist_payload). Returns whether it was persisted; only build-time callers should read it."""
+        _persist_payload). Returns whether it was persisted; callers that delete something on
+        the strength of it (seeding, compression) must read it."""
         self._entries[memory.id] = memory
         return await self._persist_vector(memory)
 

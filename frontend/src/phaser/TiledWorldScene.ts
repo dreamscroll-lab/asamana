@@ -932,15 +932,17 @@ export class TiledWorldScene
     );
     // Withhold every entity change a deed this step will cause, so the map shows cause before
     // effect: a step reports the world after the step, so applying it up front opens the door
-    // before the hand touches it. The test is general — it changed visibly and an action names it
-    // in affected_entity_ids — not a `destroyed` special case.
+    // before the hand touches it. Existing things defer through affected_entity_ids; an unseen
+    // thing has no known before-state unless created_entity_ids explicitly records its creation.
     //
     // Withheld means the previous snapshot keeps drawing, so layout and marker code need not know.
     // playTrack reveals each as its beat ends; the safety net below catches the rest. Computed
     // before layout so a withheld item still on the ground gets a cell from layoutFixtures.
     const causedEntityIds = new Set<string>();
+    const createdEntityIds = new Set<string>();
     for (const a of actions) for (const eid of a.affected_entity_ids ?? []) causedEntityIds.add(eid);
-    const shownEntities = this.entities.beginStep(entities, causedEntityIds, cut, isWholeWorld(this.viewer));
+    for (const a of actions) for (const eid of a.created_entity_ids) createdEntityIds.add(eid);
+    const shownEntities = this.entities.beginStep(entities, causedEntityIds, createdEntityIds, cut, isWholeWorld(this.viewer));
 
     // Clear corpses shown dead in a prior step (a backward scrub re-creates them below). Runs
     // before layout so "has a token" means "has a body on this map" for the rest of the render
@@ -1200,7 +1202,10 @@ export class TiledWorldScene
         const state = stateById.get(id);
         if (tok && state) this.body.applyBodyState(tok, state, this.placed.has(state.agent_id));
       }
-      this.entities.revealEntities([...entityBeat].filter(([, beat]) => beat === actIdx).map(([eid]) => eid));
+      this.entities.revealEntities(
+        [...entityBeat].filter(([, beat]) => beat === actIdx).map(([eid]) => eid),
+        new Set(acts[actIdx].created_entity_ids),
+      );
     };
 
     const seenDialogue = new Set<string>();

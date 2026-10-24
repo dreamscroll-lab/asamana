@@ -26,7 +26,6 @@ export default function ActionRow({
   cast,
   turns,
   showConversation,
-  born,
   entities,
   shared,
   actionDescription,
@@ -37,9 +36,6 @@ export default function ActionRow({
   cast: StepCast;
   turns: DialogueTurn[];
   showConversation: boolean;
-  // What this STEP brought into the world, and the entity table to name it by. Only together
-  // with `affected_entity_ids` does it say what this deed made.
-  born?: ReadonlySet<string>;
   entities?: Record<string, PlacedEntity>;
   shared: ActionSharedView | null;
   actionDescription: string;
@@ -48,9 +44,8 @@ export default function ActionRow({
 }) {
   const parts = initiatorFirst(act.initiator_id, act.participant_ids)
     .map((id) => ({ agent_id: id, agent_name: cast.nameOf(id) || "某人" }));
-  // What THIS deed made: touched and born. A thing it merely changed is touched but not born.
-  const made = (act.affected_entity_ids ?? [])
-    .filter((eid) => born?.has(eid) && entities?.[eid])
+  const made = (shared ? act.created_entity_ids : [])
+    .filter((eid) => entities?.[eid])
     .map((eid) => entities![eid]);
   // Whoever the act was DONE TO is in `target.acts_on` and earns the arrow; whoever merely had
   // their turn spent on it is in `target.claims`. A move drags people along with no arrow:
@@ -291,7 +286,9 @@ export default function ActionRow({
               {i > 0 && "、"}
               {e.name}
               <span className="text-amber-300/50">
-                （{e.presence === "held" ? "随身" : "放在此地"}
+                （{e.presence === "held"
+                  ? e.presence_ref === act.initiator_id ? "随身" : `现由${cast.nameOf(e.presence_ref) || "他人"}持有`
+                  : e.presence_ref === act.location_id ? "放在此地" : `在${cast.placeOf(e.presence_ref)}`}
                 {e.is_public === false && "，不公开"}）
               </span>
             </span>

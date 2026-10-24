@@ -51,7 +51,7 @@ async def run_interrupt(
     (validated separately).
 
     The injected personality state (emotion / short-term goals) and the ongoing action are test
-    scaffolding; persistence is isolated by isolate_agent's shadow store, baseline ./data is never
+    scaffolding; persistence is isolated by isolate_container's shadow stores, baseline ./data is never
     written. Restores per scenario.
     """
     trace_sink = sink if sink is not None else InMemoryTraceSink()

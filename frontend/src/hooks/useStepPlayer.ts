@@ -50,6 +50,7 @@ export function useStepPlayer(
   const [liveOrdered, setLiveOrdered] = useState<StepView[]>([]);
   const [liveCursor, setLiveCursor] = useState(-1);
   const [liveFeed, setLiveFeed] = useState<StepView[]>([]);
+  const liveReceived = useRef(-1);
 
   // --- playback ---
   const [steps, setSteps] = useState<number[]>([]);
@@ -69,6 +70,7 @@ export function useStepPlayer(
 
   // --- derived ---
   const displayStep = mode === "live" ? liveOrdered[liveCursor] ?? null : pbStep;
+  const renderedStep = useRef<StepView | null>(null);
 
   // The narrative feed says the same thing in both modes: THE STORY SO FAR, newest-first.
   // Live grows as steps arrive; playback grows as the scrubber advances and recedes when
@@ -92,11 +94,16 @@ export function useStepPlayer(
     );
 
   const onLiveStep = (ev: StepView) => {
-    setLiveOrdered((prev) => (prev.some((e) => e.step === ev.step) ? prev : [...prev, ev]));
-    setLiveFeed((prev) => [ev, ...prev.filter((e) => e.step !== ev.step)].slice(0, FEED_CAP));
+    if (ev.step <= liveReceived.current) return;
+    liveReceived.current = ev.step;
+    setLiveOrdered((prev) => [...prev, ev]);
+    setLiveFeed((prev) => [ev, ...prev].slice(0, FEED_CAP));
   };
 
-  const doneRendering = () => setRendering(false);
+  const doneRendering = () => {
+    renderedStep.current = displayStep;
+    setRendering(false);
+  };
 
   // Load playback step list when switching to playback mode.
   useEffect(() => {
@@ -151,7 +158,8 @@ export function useStepPlayer(
     if (mode !== "live" || rendering) return;
     if (liveCursor < liveOrdered.length - 1) {
       setRendering(true);
-      setLiveCursor((c) => c + 1);
+      setLiveOrdered((queued) => queued.slice(liveCursor + 1));
+      setLiveCursor(0);
     }
   }, [mode, rendering, liveCursor, liveOrdered.length]);
 
@@ -188,7 +196,9 @@ export function useStepPlayer(
   const goTo = (index: number) => {
     const clamped = Math.min(Math.max(index, 0), Math.max(steps.length - 1, 0));
     if (clamped === pbIndex) return;
-    setRendering(true);
+    const cached = stepCache.current.get(steps[clamped]);
+    // Returning to the still-displayed, completed step starts no render to reopen the gate.
+    setRendering(!(cached && cached === pbStep && cached === renderedStep.current));
     setPbIndex(clamped);
   };
   const seek = (delta: number) => goTo(pbIndex + delta);

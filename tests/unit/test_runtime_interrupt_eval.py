@@ -79,8 +79,7 @@ def _build_agent(container, *, world_id: str, agent_id: str, is_main: bool) -> A
             agent_id=agent_id,
         ),
         need_engine=NeedEngine(container.llm_router),
-        relation_system=RelationSystem(container.agent_store, world_id=world_id, agent_id=agent_id),
-        agent_store=container.agent_store,
+        relation_system=RelationSystem(world_id=world_id, agent_id=agent_id),
         is_main_character=is_main,
     )
 
@@ -101,7 +100,6 @@ def _build_runtime(container, world_id: str):
         message_system=message_system,
         narrative_editor_settings=NarrativeEditorSettings(check_interval=2, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=directory,

@@ -32,9 +32,9 @@ from engine.world_pressure import (
 )
 
 
-class _StubStore:
-    """Agent store stub: no relations (load_relation → None)."""
-    async def load_relation(self, world_id, from_id, to_id):  # noqa: ANN001, D102
+class _StubRelations:
+    """Relation system stub: no relations (load_existing → None)."""
+    async def load_existing(self, target_agent_id):  # noqa: ANN001, D102
         return None
 
 
@@ -58,7 +58,7 @@ def _stub_agent(
         agent_id=agent_id or name,
         is_active=is_active,
         reads_world_pressure=reads_world_pressure,
-        agent_store=_StubStore(),
+        relation_system=_StubRelations(),
         personality=SimpleNamespace(
             soul=SimpleNamespace(
                 name=name, role=role, gender=gender, core_traits=tuple(core_traits),
@@ -176,13 +176,13 @@ def test_agent_prompt_renders_remote_sender_relation_inline() -> None:
     assert "同处一地" not in prompt
 
 
-class _RelStore:
-    """Agent store stub returning a fixed objective relation per target id (None = unknown)."""
+class _Relations:
+    """Relation system stub returning a fixed objective relation per target id (None = unknown)."""
     def __init__(self, rels: dict[str, SimpleNamespace]) -> None:
         self._rels = rels
 
-    async def load_relation(self, world_id, from_id, to_id):  # noqa: ANN001, D102
-        return self._rels.get(to_id)
+    async def load_existing(self, target_agent_id):  # noqa: ANN001, D102
+        return self._rels.get(target_agent_id)
 
 
 def _rel(*, trust: float, affection: float, labels: list[str]) -> SimpleNamespace:
@@ -198,7 +198,7 @@ async def test_sender_relations_resolves_remote_skips_non_agents_and_colocated()
     """
     ev = _ev()
     agent = _stub_agent(name="李建成", role="太子", location="donggong")
-    agent.agent_store = _RelStore({"a_shimin": _rel(trust=0.1, affection=-0.6, labels=["兄弟:敌对"])})
+    agent.relation_system = _Relations({"a_shimin": _rel(trust=0.1, affection=-0.6, labels=["兄弟:敌对"])})
     inbox = [
         _msg("速来", sender_id="a_shimin", sender_name="李世民"),    # remote agent → resolved
         _msg("传旨", sender_id="narrator", sender_name="旁白", sender_is_agent=False),
@@ -215,7 +215,7 @@ async def test_sender_relations_resolves_remote_skips_non_agents_and_colocated()
 async def test_sender_relations_unknown_sender_renders_undefined() -> None:
     ev = _ev()
     agent = _stub_agent(name="李建成", role="太子", location="donggong")
-    agent.agent_store = _RelStore({})  # no relation known for the sender
+    agent.relation_system = _Relations({})  # no relation known for the sender
     out = await ev._sender_relations(
         agent, [_msg("你是谁", sender_id="stranger", sender_name="陌生人")], exclude_ids=set(),
     )

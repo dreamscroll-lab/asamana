@@ -16,7 +16,6 @@ def test_container_builds_from_test_config(container) -> None:
     assert not hasattr(container, "world_config")
     assert type(container.embedding).__name__ == "InMemoryEmbeddingProvider"
     assert type(container.vector_store).__name__ == "InMemoryVectorStore"
-    assert type(container.agent_store).__name__ == "InMemoryAgentStore"
     assert type(container.message_provider).__name__ == "InMemoryMessageProvider"
     assert type(container.snapshot).__name__ == "InMemorySnapshotProvider"
     assert description["message_provider"] == "InMemoryMessageProvider"

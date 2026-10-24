@@ -7,6 +7,7 @@ import asyncio
 import inspect
 import json
 import re
+from agent.state_codec import encode_agent_state
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -442,8 +443,7 @@ async def test_what_landed_on_the_character_survives_a_restore(container) -> Non
     await hero.apply_target_effect(
         TargetAgentEffect(agent_id=HERO, factual_memory="李建成一把将我推开"), from_agent_id=OTHER, step=1,
     )
-    await hero.persist_state(hero.personality.state)
-    stored = await hero.agent_store.load_agent_state(hero.world_id, HERO)
+    stored = encode_agent_state(hero.world_id, HERO, hero.personality.state)
     hero.personality.clear_acted_upon()
 
     hero.apply_stored_state(stored, in_resumed_execution=False)

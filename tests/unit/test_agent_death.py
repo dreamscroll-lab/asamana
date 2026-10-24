@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import pytest
+from agent.state_codec import encode_agent_state
 from types import SimpleNamespace
 
 from agent.agent import Agent
@@ -66,8 +67,7 @@ def _make_agent(container, *, agent_id: str = "agent-target", name: str = "李�
             world_id=WORLD_ID, agent_id=agent_id,
         ),
         need_engine=NeedEngine(router),
-        relation_system=RelationSystem(container.agent_store, world_id=WORLD_ID, agent_id=agent_id),
-        agent_store=container.agent_store,
+        relation_system=RelationSystem(world_id=WORLD_ID, agent_id=agent_id),
         is_main_character=False,
     )
 
@@ -90,7 +90,6 @@ def _build_runtime(
         message_system=message_system,
         narrative_editor_settings=narrative_editor_settings,
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=directory,
@@ -325,9 +324,8 @@ async def test_restore_derives_inactive_from_zero_vitality(container) -> None:
     dead = _make_agent(container, agent_id="agent-dead", vitality=1.0)
     dead.personality.apply_vitality_damage(1.0)  # vitality → 0
     dead.set_active(False)
-    await dead.persist_state(dead.personality.state)
-    stored = await container.agent_store.load_agent_state(WORLD_ID, "agent-dead")
-    assert stored is not None and stored.vitality == 0.0
+    stored = encode_agent_state(WORLD_ID, "agent-dead", dead.personality.state)
+    assert stored.vitality == 0.0
 
     fresh = _make_agent(container, agent_id="agent-dead", vitality=1.0)
     assert fresh.is_active is True  # active by default

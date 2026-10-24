@@ -11,40 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from core.interfaces.agent_store import AgentRelation, AgentState
+from core.interfaces.relation import AgentRelation
 from core.interfaces.snapshot import WorldSnapshot
 from core.interfaces.trace import LLMCallTrace, StepTrace
-from providers.agent_store.in_memory import InMemoryAgentStore
 from providers.snapshot.in_memory import InMemorySnapshotProvider
 from providers.trace.in_memory import InMemoryTraceSink
 from providers.trace.null import NullTraceSink
 from providers.vector_store.in_memory import InMemoryVectorStore
 from world.catalog import WorldCatalog
-
-
-def _agent_state(world_id: str, agent_id: str) -> AgentState:
-    return AgentState(
-        world_id=world_id,
-        agent_id=agent_id,
-        updated_step=0,
-        current_emotion="calm",
-        emotion_intensity=0.0,
-        emotion_valence=0.0,
-        emotion_triggered_by=None,
-        active_needs=[],
-        dominant_need=None,
-        long_term_goals=[],
-        short_term_goals=[],
-        current_location="palace",
-        activity_status="idle",
-        activity_target=None,
-        action_status="idle",
-        current_action=None,
-        action_remaining_steps=0,
-        last_action=None,
-        last_action_result=None,
-        last_action_succeeded=None,
-    )
 
 
 def _relation(world_id: str, from_id: str, to_id: str) -> AgentRelation:
@@ -74,32 +48,6 @@ async def test_in_memory_snapshot_delete_world_purges_only_target() -> None:
     assert await provider.load_world_config("wa") is None
     assert await provider.list_steps("wb") == [1]
     assert await provider.load_world_config("wb") == {"theme": "beta"}
-
-
-@pytest.mark.asyncio
-async def test_in_memory_agent_store_delete_world_purges_only_target() -> None:
-    store = InMemoryAgentStore()
-    await store.save_agent_state("wa", "a1", _agent_state("wa", "a1"))
-    await store.save_initial_agent_state("wa", "a1", _agent_state("wa", "a1"))
-    await store.save_relation(_relation("wa", "a1", "a2"))
-    await store.save_initial_relation(_relation("wa", "a1", "a2"))
-    await store.save_agent_state("wb", "b1", _agent_state("wb", "b1"))
-    await store.save_initial_agent_state("wb", "b1", _agent_state("wb", "b1"))
-    await store.save_relation(_relation("wb", "b1", "b2"))
-    await store.save_initial_relation(_relation("wb", "b1", "b2"))
-
-    await store.delete_world("wa")
-
-    assert await store.list_agent_ids("wa") == []
-    assert await store.load_agent_state("wa", "a1") is None
-    assert await store.load_initial_agent_state("wa", "a1") is None
-    assert await store.load_relation("wa", "a1", "a2") is None
-    assert await store.load_all_initial_relations("wa", "a1") == []
-    # Other world untouched.
-    assert await store.list_agent_ids("wb") == ["b1"]
-    assert await store.load_agent_state("wb", "b1") is not None
-    assert await store.load_relation("wb", "b1", "b2") is not None
-    assert len(await store.load_all_initial_relations("wb", "b1")) == 1
 
 
 @pytest.mark.asyncio

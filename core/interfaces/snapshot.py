@@ -12,6 +12,47 @@ from core.interfaces.perception import Broadcast
 
 
 @dataclass
+class AgentState:
+    """One agent's committed state: the part of its ``WorldState.agents`` record a restore
+    decodes (``Agent.committed_state`` / ``Agent.apply_stored_state``). It holds what a restore
+    needs to bring back the agent as it was; short-lived bookkeeping whose loss soon heals stays
+    out (see ``Agent``). Nested values are JSON-native dicts and lists."""
+
+    world_id: str
+    agent_id: str
+    step: int
+    # ``EmotionState`` as a dict: primary (an ``EmotionType`` value), intensity, valence, triggered_by.
+    emotion: dict[str, object]
+    active_needs: list[str]
+    dominant_need: str | None
+    long_term_goals: list[str]
+    short_term_goals: list[str]
+    current_location: str
+    activity_status: str
+    activity_target: str | None
+    action_status: str
+    current_action: str | None
+    action_remaining_steps: int
+    last_action: str | None
+    last_action_result: str | None
+    last_action_succeeded: bool | None
+    short_term_goal_entities: list[dict[str, object]] = field(default_factory=list)
+    need_intensities: dict[str, float] = field(default_factory=dict)
+    vitality: float = 1.0
+    # A dict, not a BodyCondition, so the file and in-memory snapshots agree (see
+    # condition_to_dict); agent.state_codec.decode_agent_state rebuilds it.
+    condition: dict[str, object] | None = None
+    # 0 = never decided; the scheduler's cadence gate reads that as starved and admits it, so a
+    # fresh world's step 1 isn't empty.
+    last_decision_step: int = 0
+    # Others' acts landed on him since he last perceived (StateLayer.acted_upon).
+    acted_upon: list[str] = field(default_factory=list)
+    long_term_goal_entities: list[dict[str, object]] = field(default_factory=list)
+    # The memory id counter. Restarted, it would hand out ids already in use and overwrite memories.
+    memory_seq: int = 0
+
+
+@dataclass
 class WorldState:
     """The world at the end of a step, whole: every body, thing and relation.
 
@@ -21,14 +62,16 @@ class WorldState:
     they are fixed at build and live in the world's stored config.
     """
 
-    # Agent id → ``snapshot_agent_state`` plus where the body is (``location_id``: a place, or
-    # ``IN_TRANSIT`` between two waypoints), its ``transit`` while mid-move and ``displaced``.
+    # Agent id → ``snapshot_agent_state`` (every ``AgentState`` field plus identity) and where the
+    # body is (``location_id``: a place, or ``IN_TRANSIT`` between two waypoints), its ``transit``
+    # while mid-move and ``displaced``. The only committed copy of the agent: restore reads it.
     agents: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Npc id → the whole Npc, with ``location_id``, ``displaced`` and this beat's ``outcome``.
     npcs: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Entity id → every field, tombstones included (restore must not resurrect a destroyed seed).
     entities: dict[str, dict[str, Any]] = field(default_factory=dict)
-    # Relation key → the full relation record, numbers included.
+    # ``"from->to"`` → the full relation record (``relation_to_snapshot_dict``), numbers included.
+    # The only committed copy: restore hands each agent its own back.
     relations: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 

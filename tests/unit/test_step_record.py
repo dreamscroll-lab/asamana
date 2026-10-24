@@ -18,6 +18,7 @@ from engine.event_seq import EventSequencer
 from engine.message_system import MessageDelivery
 from engine.step_record import action_events, message_events
 from providers.snapshot.file import FileSnapshotProvider
+from interaction.models import StepView
 
 
 def _record(agent_id: str, **fields: object) -> dict[str, object]:
@@ -52,6 +53,16 @@ def test_two_executions_of_one_agent_stay_two_events() -> None:
         _record("a", execution_id="x2", phase="begin", participant_ids=["a"]),
     ], routes={})
     assert [(e["execution_id"], e["phase"]) for e in events] == [("x1", "ongoing_complete"), ("x2", "begin")]
+
+
+def test_creation_attribution_survives_the_joint_beat_fold() -> None:
+    [event] = action_events([
+        _record("b", affected_entity_ids=["injected", "draft"], created_entity_ids=["draft"]),
+        _record("a", affected_entity_ids=["injected", "draft"], created_entity_ids=["draft"]),
+    ], routes={})
+
+    assert event["affected_entity_ids"] == ["injected", "draft"]
+    assert event["created_entity_ids"] == ["draft"]
 
 
 def test_the_route_walked_rides_the_beat_the_move_ended_on() -> None:
@@ -100,7 +111,9 @@ async def test_a_snapshot_survives_the_file_round_trip(tmp_path) -> None:
         world_id="w", step=3, timestamp=datetime(2026, 1, 1),
         world_time={"label": "辰时", "hour": 8, "minute": 0},
         state=WorldState(agents={"a": {"agent_name": "甲", "location_id": "hall"}}),
-        events=[{"kind": "action", "seq": 7, "initiator_id": "a", "parts": []}],
+        events=[{"kind": "action", "seq": 7, "initiator_id": "a", "parts": [],
+                 "location_id": "hall", "affected_entity_ids": ["injected", "draft"],
+                 "created_entity_ids": ["draft"]}],
         engine=EngineState(pending_messages=[in_flight], pending_broadcasts=[notice], event_seq=8,
                            environment={"transit_origins": {}}),
     )
@@ -109,3 +122,7 @@ async def test_a_snapshot_survives_the_file_round_trip(tmp_path) -> None:
     loaded = await provider.load("w", 3)
 
     assert loaded == snapshot
+    live = StepView.from_snapshot(snapshot).locations["hall"].events[0]
+    replay = StepView.from_snapshot(loaded).locations["hall"].events[0]
+    assert live == replay
+    assert live.created_entity_ids == ["draft"]

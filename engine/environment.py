@@ -551,13 +551,13 @@ class EnvironmentSystem:
         doer_id: str | None = None,
     ) -> bool:
         """The ONLY runtime path for mutating entity placement/state, so the placement invariant
-        lives in one place. Returns True if the entity was found.
+        lives in one place. Returns True if a live entity was found; destruction is terminal.
 
         ``perception``, if given, is delivered with the change. ``WorldMutationChannel`` omits it
         because it delivers through its own ``_deliver``; both would double the perception.
         """
         entity = self._entities.get(change.entity_id)
-        if entity is None:
+        if entity is None or entity.is_destroyed:
             return False
 
         # Capture the scope before mutation: a held item that gets destroyed

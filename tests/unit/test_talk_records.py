@@ -42,7 +42,7 @@ def _agent(agent_id: str, name: str, gender: str):
         async def relation_context(self, agent_ids) -> str:  # noqa: ANN001
             """Stands in for the canonical rows: one acquaintance per id asked about."""
             from agent.relation import render_relation_context
-            from core.interfaces.agent_store import AgentRelation
+            from core.interfaces.relation import AgentRelation
             from core.prompts import person_referent
 
             ids = list(agent_ids)

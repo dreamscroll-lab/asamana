@@ -133,7 +133,7 @@ async def run_feedback(
     """Isolated dry-run of the feedback stage (landing) for a restored world.
 
     Drives the real ``begin_ongoing_step`` → ``finalize_ongoing_action`` (kind=self) or ``agent.apply_target_effect``
-    (kind=target); persistence is shadowed by _DryRunAgentStore + InMemoryVectorStore so
+    (kind=target); persistence is shadowed by isolate_container so
     the baseline world's ./data is never written. Captures before/after agent state.
     """
     trace_sink = sink if sink is not None else InMemoryTraceSink()

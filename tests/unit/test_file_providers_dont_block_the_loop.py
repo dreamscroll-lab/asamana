@@ -16,7 +16,6 @@ from pathlib import Path
 import pytest
 
 _PROVIDERS = (
-    "providers/agent_store/file.py",
     "providers/snapshot/file.py",
     "providers/vector_store/file.py",
     "providers/trace/file.py",

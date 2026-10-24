@@ -44,7 +44,7 @@ def _relation_state_view(rel) -> dict[str, Any]:
 async def _apply_relation_setup(
     agent, scenario: dict, id_by_name: dict, valid_ids, name_by_id: dict
 ) -> dict[str, str]:
-    """Set each target's baseline labels/trust/affection/summary/to_name (written to the dry-run shadow store).
+    """Set each target's baseline labels/trust/affection/summary/to_name on the agent's held relations.
 
     Returns {target_id: must_keep_labels echo} purely for driving convenience; the real
     must_keep/expect values are echoed through outputs.
@@ -62,7 +62,6 @@ async def _apply_relation_setup(
         if raw.get("summary"):
             rel.history_summary = str(raw["summary"])
         rel.to_name = str(raw.get("to_name") or name_by_id.get(tid, tid))
-        await agent.relation_system._store.save_relation(rel)  # noqa: SLF001 — dry-run shadow store
     return {}
 
 
@@ -169,7 +168,7 @@ async def run_relation(
     drives RelationEvolution.evaluate (LLM objective label/summary judgment,
     captured through the traced router). relation_setup sets each target's baseline
     labels/trust/affection/to_name; scene.seed_memories injects recent evidence (for evolve).
-    Persistence is shadowed by _DryRunAgentStore + InMemoryVectorStore; baseline ./data is never
+    Persistence is shadowed by isolate_container; baseline ./data is never
     written. Zero production intrusion.
     """
     trace_sink = sink if sink is not None else InMemoryTraceSink()

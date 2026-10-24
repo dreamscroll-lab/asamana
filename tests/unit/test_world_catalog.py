@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
+
+import pytest
 
 from world.catalog import WorldCatalog
 
@@ -136,3 +140,61 @@ def test_entries_sees_a_world_registered_by_another_instance(tmp_path: Path) -> 
     assert set(server.entries()) == {"w-existing", "w-from-cli"}
     # The enumeration read already synced memory, so per-world lookups don't need their own disk reads.
     assert server.get("w-from-cli") is not None
+
+
+def test_concurrent_writers_lock_before_reading_the_catalog(tmp_path: Path, monkeypatch) -> None:
+    path = str(tmp_path / "worlds.json")
+    first, second = WorldCatalog(path), WorldCatalog(path)
+    first_writing, release_first, second_read = Event(), Event(), Event()
+    flush = first._flush
+    refresh = second._refresh_from_disk
+
+    def blocked_flush() -> None:
+        first_writing.set()
+        assert release_first.wait(timeout=5)
+        flush()
+
+    def observed_refresh() -> bool:
+        second_read.set()
+        return refresh()
+
+    monkeypatch.setattr(first, "_flush", blocked_flush)
+    monkeypatch.setattr(second, "_refresh_from_disk", observed_refresh)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_write = pool.submit(first.register, "world-a")
+        assert first_writing.wait(timeout=5)
+        second_write = pool.submit(second.register, "world-b")
+        try:
+            assert not second_read.wait(timeout=0.1)
+        finally:
+            release_first.set()
+        first_write.result(timeout=5)
+        second_write.result(timeout=5)
+
+    assert set(WorldCatalog(path).entries()) == {"world-a", "world-b"}
+
+
+def test_director_review_requires_successful_catalog_refresh(tmp_path: Path) -> None:
+    path = tmp_path / "worlds.json"
+    catalog = WorldCatalog(str(path))
+    catalog.register("world-a")
+    path.write_text("<<corrupt>>", encoding="utf-8")
+
+    with pytest.raises(OSError, match="director review"):
+        catalog.mark_director_review("world-a")
+
+    assert not catalog.director_reviewed("world-a")
+
+
+def test_director_review_requires_successful_write(tmp_path: Path, monkeypatch) -> None:
+    catalog = WorldCatalog(str(tmp_path / "worlds.json"))
+    catalog.register("world-a")
+
+    def fail_write() -> None:
+        raise OSError("Catalog write unavailable")
+
+    monkeypatch.setattr(catalog, "_flush", fail_write)
+    with pytest.raises(OSError, match="unavailable"):
+        catalog.mark_director_review("world-a")
+
+    assert not WorldCatalog(str(tmp_path / "worlds.json")).director_reviewed("world-a")

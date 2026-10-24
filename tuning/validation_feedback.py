@@ -5,9 +5,8 @@ Restores a built world and, per scenario, drives the **real production feedback 
 capturing before/after agent state, then applies structural deterministic checks + an LLM
 judge (syntax + semantics of the landing).
 
-Persistence isolation: the harness wraps the agent in _DryRunAgentStore (read-through,
-write-capture) + InMemoryVectorStore, so every feedback-layer write goes to in-memory shadows
-and the baseline world's ./data stays clean.
+Persistence isolation: restore runs on isolate_container's shadow stores, so every
+feedback-layer write stays in memory and the baseline world's ./data stays clean.
 
 Deterministic checks (always run) are hard tripwires: written memories have no agent id and no
 "第N步/steps"; emotions canonical with intensity/valence in range; appraised gap∈[0,1]; relation
@@ -27,6 +26,7 @@ from core.container import Container
 from core.interfaces.llm import LLMProvider, LLMScene
 from core.logging import get_logger
 from world.initializer import WorldInitializer
+from tuning.dry_run import isolate_container
 
 from tuning.judge_feedback import judge_feedback
 from tuning.judge_llm import create_judge
@@ -175,7 +175,7 @@ async def validate_feedback(
     scenarios = load_scenarios(scenarios_path, _DEFAULT_SCENARIOS)
     judge_llm = judge_provider or create_judge(config, judge_model)
 
-    world = await WorldInitializer(container).restore(world_id)
+    world = await WorldInitializer(await isolate_container(container, world_id)).restore(world_id)
     agent_ids = set(world.agents.keys())
 
     out_dir = Path(trace_dir) / world_id / "validation" / "feedback"

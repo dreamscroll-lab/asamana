@@ -22,8 +22,10 @@ import asyncio
 import hashlib
 import json
 import re
+from collections.abc import Awaitable, Callable
+from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from core.factory import ComponentKind, ProviderFactory
 from core.interfaces.vector_store import SearchResult, VectorStoreProvider
@@ -34,6 +36,7 @@ from providers.vector_store.similarity import rank_records
 logger = get_logger(__name__)
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+_T = TypeVar("_T")
 
 
 @ProviderFactory.register("file", kind=ComponentKind.VECTOR_STORE)
@@ -46,7 +49,7 @@ class FileVectorStore(VectorStoreProvider):
         self._dimensions: dict[str, int | None] = {}
         self._files: dict[str, Path] = {}
         self._compacted: set[str] = set()  # collections this process has compacted (it is their writer)
-        self._compacting: dict[str, asyncio.Future[bool]] = {}  # rewrites still in a worker thread
+        self._write_locks: dict[str, asyncio.Lock] = {}
         self._dir = Path(path)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._load_all()
@@ -69,15 +72,26 @@ class FileVectorStore(VectorStoreProvider):
 
     async def list_all(self, collection: str) -> list[SearchResult]:
         return [
-            SearchResult(id=rid, score=1.0, payload=rec["payload"])
+            SearchResult(id=rid, score=1.0, payload=deepcopy(rec["payload"]))
             for rid, rec in self._records.get(collection, {}).items()
         ]
 
-    # --- writes (update the index, then append to disk) -------------------
+    # --- writes (persist before committing the index) --------------------
     async def create_collection(self, collection: str, dimension: int) -> None:
-        self._records.setdefault(collection, {})
-        self._dimensions[collection] = dimension
-        await asyncio.to_thread(self._ensure_meta, collection)
+        async def write() -> None:
+            previous = self._dimensions.get(collection)
+            self._dimensions[collection] = dimension
+            try:
+                await asyncio.to_thread(self._ensure_meta, collection)
+            except Exception:
+                if previous is None:
+                    self._dimensions.pop(collection, None)
+                else:
+                    self._dimensions[collection] = previous
+                raise
+            self._records.setdefault(collection, {})
+
+        await self._write_ordered(collection, write)
 
     async def upsert(
         self,
@@ -87,36 +101,82 @@ class FileVectorStore(VectorStoreProvider):
         sparse_vector: dict[int, float] | None,
         payload: dict[str, Any],
     ) -> None:
-        expected = self._dimensions.get(collection)
-        if expected is not None and len(dense_vector) != expected:
-            raise ValueError(
-                f"Dense vector dimension mismatch for collection '{collection}': "
-                f"expected {expected}, got {len(dense_vector)}"
-            )
-        rec = {"dense": list(dense_vector), "sparse": dict(sparse_vector or {}), "payload": dict(payload)}
-        self._records.setdefault(collection, {})[id] = rec
-        if await self._compact_on_first_write(collection):
-            return  # the rewrite already includes this record (_records was updated first)
-        await asyncio.to_thread(self._append_with_meta, collection, {"id": id, **rec})
+        rec = {"dense": list(dense_vector), "sparse": dict(sparse_vector or {}), "payload": deepcopy(payload)}
+
+        async def write() -> None:
+            expected = self._dimensions.get(collection)
+            if expected is not None and len(rec["dense"]) != expected:
+                raise ValueError(
+                    f"Dense vector dimension mismatch for collection '{collection}': "
+                    f"expected {expected}, got {len(rec['dense'])}"
+                )
+            await self._persist_change(collection, id, rec, {"id": id, **rec})
+            self._records.setdefault(collection, {})[id] = rec
+
+        await self._write_ordered(collection, write)
 
     async def update_payload(self, collection: str, id: str, payload: dict[str, Any]) -> bool:
-        record = self._records.get(collection, {}).get(id)
-        if record is None:
-            return False
-        record["payload"] = dict(payload)
-        if await self._compact_on_first_write(collection):
-            return True  # the rewrite already includes this record
-        # Append only the payload, not the vector: touch/decay come through here on every recall.
-        await asyncio.to_thread(
-            self._append_with_meta, collection, {"id": id, "_payload": record["payload"]}
-        )
-        return True
+        saved_payload = deepcopy(payload)
+
+        async def write() -> bool:
+            record = self._records.get(collection, {}).get(id)
+            if record is None:
+                return False
+            updated = {**record, "payload": saved_payload}
+            await self._persist_change(collection, id, updated, {"id": id, "_payload": saved_payload})
+            self._records[collection][id] = updated
+            return True
+
+        return await self._write_ordered(collection, write)
 
     async def delete(self, collection: str, id: str) -> None:
-        self._records.get(collection, {}).pop(id, None)
-        if await self._compact_on_first_write(collection):
-            return  # the rewritten file no longer has this id, so no tombstone needed
-        await asyncio.to_thread(self._append, collection, {"id": id, "_del": True})
+        async def write() -> None:
+            await self._persist_change(collection, id, None, {"id": id, "_del": True})
+            self._records.get(collection, {}).pop(id, None)
+
+        await self._write_ordered(collection, write)
+
+    async def _write_ordered(self, collection: str, write: Callable[[], Awaitable[_T]]) -> _T:
+        lock = self._write_locks.setdefault(collection, asyncio.Lock())
+
+        async def run() -> _T:
+            async with lock:
+                return await write()
+
+        # Cancelling to_thread does not stop its thread. Finish the accepted write and its index
+        # commit before releasing the lock, or a later write/delete can be undone on disk.
+        task = asyncio.create_task(run())
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not task.cancelled():
+                task.exception()
+            raise
+
+    async def _persist_change(
+        self,
+        collection: str,
+        record_id: str,
+        record: dict[str, Any] | None,
+        change: dict[str, Any],
+    ) -> None:
+        if collection not in self._compacted:
+            snapshot = dict(self._records.get(collection, {}))
+            if record is None:
+                snapshot.pop(record_id, None)
+            else:
+                snapshot[record_id] = record
+            self._compacted.add(collection)
+            if await asyncio.to_thread(self._rewrite, collection, snapshot):
+                return
+        await asyncio.to_thread(self._append_with_meta, collection, change)
 
     # --- persistence -------------------------------------------------------
     def _file_for(self, collection: str) -> Path:
@@ -138,8 +198,9 @@ class FileVectorStore(VectorStoreProvider):
         try:
             with self._file_for(collection).open("a", encoding="utf-8") as f:
                 f.write(self._dumps(obj))
-        except Exception as exc:  # noqa: BLE001 — log write failures; don't crash the simulation
+        except Exception as exc:
             logger.error("vector_store_append_failed", extra={"collection": collection, "error": str(exc)})
+            raise
 
     @staticmethod
     def _unlink_collections(paths: list[Path]) -> None:
@@ -153,7 +214,7 @@ class FileVectorStore(VectorStoreProvider):
                 )
 
     def _append_with_meta(self, collection: str, obj: dict[str, Any]) -> None:
-        """Write the meta header and the change in one thread hop, so another write can't land between them."""
+        """Write the meta header and change while the caller holds the collection's write lock."""
         self._ensure_meta(collection)
         self._append(collection, obj)
 
@@ -216,53 +277,27 @@ class FileVectorStore(VectorStoreProvider):
             except Exception as exc:  # noqa: BLE001 — one corrupt file must not break the store
                 logger.warning("vector_store_load_failed", extra={"file": str(fp), "error": str(exc)})
 
-    async def _compact_on_first_write(self, collection: str) -> bool:
-        """Compact the collection on this process's first write to it.
-
-        Returns True if the file was rewritten (including the change the caller just put in
-        _records), so the caller needn't append. Returns False if the rewrite failed or was
-        already done; the caller then appends as usual (a failed rewrite leaves the original
-        file intact).
-
-        The ``_compacted`` bookkeeping must stay on the event loop (no await between the next
-        two lines): it is check-then-act, and in a worker thread two concurrent writes to one
-        collection could both see "not compacted" and both rewrite the file. Only the expensive
-        rewrite itself runs in a thread.
-
-        The thread gets a snapshot taken here, never the live dict: writes keep landing on the loop
-        while it runs. Those writes wait for the rewrite before appending, or ``tmp.replace`` would
-        erase their lines from disk while memory still holds them."""
-        if collection in self._compacted:
-            pending = self._compacting.get(collection)
-            if pending is not None:
-                await asyncio.shield(pending)
-            return False
-        self._compacted.add(collection)
-        snapshot = {rid: dict(rec) for rid, rec in self._records.get(collection, {}).items()}
-        task = asyncio.ensure_future(asyncio.to_thread(self._rewrite, collection, snapshot))
-        self._compacting[collection] = task
-        task.add_done_callback(lambda _: self._compacting.pop(collection, None))
-        return await asyncio.shield(task)
-
     async def delete_world(self, world_id: str) -> None:
         # Drop every collection named f"{world_id}:…" (each per-agent stream of this world).
         # Unlink is best-effort: a missing file must not stall the in-memory purge.
         prefix = f"{world_id}:"
         seen: set[str] = set()
-        for source in (self._records, self._files):
+        for source in (self._records, self._files, self._write_locks):
             for collection in list(source):
                 if collection.startswith(prefix):
                     seen.add(collection)
-        # Unlink in one thread hop: a world has two collections per character, each up to several MB.
-        await asyncio.to_thread(
-            self._unlink_collections,
-            [p for p in (self._files.get(c) for c in seen) if p is not None],
-        )
         for collection in seen:
-            self._records.pop(collection, None)
-            self._dimensions.pop(collection, None)
-            self._files.pop(collection, None)
-            self._compacted.discard(collection)
+            async def delete(collection: str = collection) -> None:
+                path = self._files.get(collection)
+                if path is not None:
+                    await asyncio.to_thread(self._unlink_collections, [path])
+                self._records.pop(collection, None)
+                self._dimensions.pop(collection, None)
+                self._files.pop(collection, None)
+                self._compacted.discard(collection)
+
+            await self._write_ordered(collection, delete)
+            self._write_locks.pop(collection, None)
         logger.info(
             "world_vectors_deleted",
             extra={"world_id": world_id, "collections": len(seen)},

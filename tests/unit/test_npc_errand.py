@@ -687,6 +687,38 @@ async def test_he_cannot_send_off_a_thing_that_is_not_in_his_own_hands() -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("destroyed", [False, True])
+async def test_item_lost_after_assignment_does_not_enter_errand(destroyed: bool) -> None:
+    from core.interfaces.action import EntityStateChange
+
+    env = _world()
+    npc_id = _bearer(env)
+    env.place_agent(agent_id="a1", location_id="hall")
+    env.register_entity(WorldEntity(
+        entity_id="box", name="木匣", entity_type=WorldEntityType.ITEM,
+        presence=EntityPresence.HELD, presence_ref="a1",
+    ))
+    executor = ErrandExecutor(LiveWorldDirectory.from_agents({}, env))
+    state = await executor.start(
+        _action("a1", npc_id, ErrandOrder(npc_id, "gate", item_id="box")), 1,
+        agents={}, environment=env, message_system=None,
+    )
+    assert env.get_npc(npc_id).errand is not None
+    env.change_entity_state(EntityStateChange(
+        entity_id="box", destroyed=destroyed, owner_id=None if destroyed else "other",
+    ))
+
+    result = (await executor.complete(state, 1, agents={}, environment=env, message_system=None))[0]
+
+    assert not result.succeeded
+    assert not result.entity_state_changes
+    assert not result.errand_orders
+    assert "已不在他手上" in result.factual_memory
+    assert env.get_npc(npc_id).errand is None
+    assert env.get_entity("box").owner_id == (None if destroyed else "other")
+
+
+@pytest.mark.asyncio
 async def test_walking_through_makes_no_news_but_it_is_still_standing_there() -> None:
     """Passing through is traffic, not an event, so walking produces no ambient.
 

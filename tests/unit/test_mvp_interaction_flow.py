@@ -56,12 +56,8 @@ async def test_world_builder_persists_real_step_zero_snapshot(container) -> None
     } <= set(first_state)
     assert snapshot.state.relations
 
-    stored_states = [
-        await container.agent_store.load_agent_state(world.world_id, agent_id)
-        for agent_id in await container.agent_store.list_agent_ids(world.world_id)
-    ]
-    assert len(stored_states) == len(world.agents)
-    assert any(state is not None and state.current_location for state in stored_states)
+    assert set(snapshot.state.agents) == set(world.agents)
+    assert any(record["current_location"] for record in snapshot.state.agents.values())
 
 
 @pytest.mark.asyncio
@@ -440,8 +436,8 @@ async def test_restore_preserves_persisted_goal_metadata(container, test_config)
     await application.run_world(world.world_id, steps=1)
 
     agent_id = next(iter(world.agents))
-    stored = await container.agent_store.load_agent_state(world.world_id, agent_id)
-    stored.short_term_goal_entities = [
+    committed = await container.snapshot.load_latest(world.world_id)
+    committed.state.agents[agent_id]["short_term_goal_entities"] = [
         {
             "id": "stg-meta",
             "text": "巩固兵权",
@@ -454,7 +450,7 @@ async def test_restore_preserves_persisted_goal_metadata(container, test_config)
             "origin": "cognitive",
         }
     ]
-    await container.agent_store.save_agent_state(world.world_id, agent_id, stored)
+    await container.snapshot.save(world.world_id, committed.step, committed)
 
     initializer = WorldInitializer(container)
     restored = await initializer.restore(world.world_id)
@@ -476,9 +472,7 @@ async def test_reset_session_rebuilds_in_memory_world_at_step_zero(container, te
     await application.run_world(world.world_id, steps=2)
 
     agent_id = next(iter(world.agents))
-    # The run advanced persisted state past step 0.
-    advanced = await container.agent_store.load_agent_state(world.world_id, agent_id)
-    assert advanced.updated_step > 0
+    assert world.agents[agent_id].personality.state.step > 0
 
     reset_world = await application.reset_session(world.world_id)
 
@@ -489,9 +483,6 @@ async def test_reset_session_rebuilds_in_memory_world_at_step_zero(container, te
     # The session clock starts at step 0 too, and the world's current step with it.
     assert application.get_session(world.world_id).runtime._clock.current_step == 0
     assert reset_world.current_step == 0
-    # Persisted state was rolled back to the baseline.
-    rolled_back = await container.agent_store.load_agent_state(world.world_id, agent_id)
-    assert rolled_back.updated_step == 0
     # No post-step-0 snapshots remain.
     assert await container.snapshot.list_steps(world.world_id) == [0]
 
@@ -578,18 +569,18 @@ async def test_reset_session_purges_runtime_memories_but_keeps_seeds(container, 
 async def test_reset_session_drops_runtime_created_relations(container, test_config) -> None:
     """A relation created during the run (a directed pair absent at step 0) is
     deleted on reset, leaving only the initial baseline relations."""
-    from core.interfaces.agent_store import AgentRelation
+    from core.interfaces.relation import AgentRelation
 
     application = NarrativeApplication(container, test_config)
     world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     from_id = next(iter(world.agents))
-    initial = await container.agent_store.load_all_relations(world.world_id, from_id)
-    initial_targets = {r.to_id for r in initial}
+    relations = world.agents[from_id].relation_system
+    initial_targets = {r.to_id for r in await relations.all_relations()}
     assert "ghost-target" not in initial_targets
 
-    await container.agent_store.save_relation(
-        AgentRelation(
+    held = await relations.all_relations()
+    relations.restore([*held, AgentRelation(
             world_id=world.world_id,
             from_id=from_id,
             to_id="ghost-target",
@@ -597,15 +588,12 @@ async def test_reset_session_drops_runtime_created_relations(container, test_con
             affection_objective=0.0,
             updated_step=5,
             labels=["路人"],
-        )
-    )
-    assert "ghost-target" in {
-        r.to_id for r in await container.agent_store.load_all_relations(world.world_id, from_id)
-    }
+        )])
+    assert "ghost-target" in {r.to_id for r in await relations.all_relations()}
 
-    await application.reset_session(world.world_id)
+    reset = await application.reset_session(world.world_id)
 
-    after = await container.agent_store.load_all_relations(world.world_id, from_id)
+    after = await reset.agents[from_id].relation_system.all_relations()
     assert "ghost-target" not in {r.to_id for r in after}
     assert {r.to_id for r in after} == initial_targets
 

@@ -41,8 +41,8 @@ async def _inject_relations_for(agent, scenario: dict, id_by_name: dict, name_by
     scene.relations = [{"from","to","trust"?,"affection"?,"labels"?,"history"?,"interaction_count"?}].
     Baseline relations are often blank defaults (trust 0.5 / no labels / no history / 0 interactions),
     which `_resolve_relation_context` correctly skips (no substantive relation, nothing injected) — so a scenario that wants to
-    exercise relation-colored importance/experiential must seed the relationship. Must run AFTER
-    isolate_agent: writes land in the dry-run shadow store, baseline ./data untouched. Test scaffolding.
+    exercise relation-colored importance/experiential must seed the relationship. Edits the agent's
+    held relations in memory; baseline ./data untouched. Test scaffolding.
     """
     for r in (scenario.get("scene", {}) or {}).get("relations", []):
         from_id = resolve_ref(str(r.get("from", "")), id_by_name, valid_ids)
@@ -63,7 +63,6 @@ async def _inject_relations_for(agent, scenario: dict, id_by_name: dict, name_by
         rel.interaction_count = max(int(rel.interaction_count), int(r.get("interaction_count", 1)))
         if not rel.to_name:
             rel.to_name = name_by_id.get(to_id, to_id)
-        await agent.relation_system._store.save_relation(rel)  # noqa: SLF001 — dry-store shadow
 
 
 async def run_memory_write(
@@ -80,7 +79,7 @@ async def run_memory_write(
     Drives the real production write: importance LLM appraisal + asymmetric-write gate
     (``_should_write_experiential``) + factual write (verbatim mirror) + experiential LLM
     rewrite (first-person, personality-colored). Persistence is shadowed by
-    _DryRunAgentStore + InMemoryVectorStore so the baseline world's ./data is never written.
+    isolate_container so the baseline world's ./data is never written.
     The event + the writer's current emotion/personality are the inputs; the produced
     factual/experiential memories + resolved importance + the write gate are captured.
     Zero production changes (only scene injection and dry-run isolation are scaffolding).

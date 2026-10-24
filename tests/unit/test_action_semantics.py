@@ -455,8 +455,8 @@ class TestTargetSurvivesTheExecutor:
 class TestSpawnAttribution:
     """Which beat created a thing — only the backend can answer that.
 
-    The observer can diff out "it appeared this step" (the entity table only grows; tombstones
-    stay), but when several people act in one step it can't infer who made it. The renderer uses
+    An entity's birth step says when it appeared, but when several people act in one step it
+    cannot say who made it. The renderer uses
     this to hold the entrance until the causing beat; otherwise the thing pops up at step start,
     before the narration says he finished.
     """
@@ -472,7 +472,35 @@ class TestSpawnAttribution:
             entity_spawns=[EntitySpawn(name="换防部署令", entity_id="made_entity_x")],
         )
 
-        assert action_semantics(action, result)["affected_entity_ids"] == ["made_entity_x"]
+        semantics = action_semantics(action, result)
+        assert semantics["affected_entity_ids"] == ["made_entity_x"]
+        assert semantics["created_entity_ids"] == ["made_entity_x"]
+
+    def test_modifying_an_injected_item_is_not_creating_it(self) -> None:
+        action = AgentAction(agent_id="agent-a", step=13, action_type=ActionType.PHYSICAL)
+        result = _result(action, deed=Deed.SEIZE.value, entity_state_changes=[
+            EntityStateChange(entity_id="injected-copy", owner_id="agent-a"),
+        ])
+
+        semantics = action_semantics(action, result)
+
+        assert semantics["affected_entity_ids"] == ["injected-copy"]
+        assert semantics["created_entity_ids"] == []
+
+    def test_partial_work_failure_keeps_only_its_own_accepted_creations(self) -> None:
+        from core.interfaces.action import EntitySpawn
+
+        action = AgentAction(agent_id="agent-a", step=13, action_type=ActionType.WORK)
+        result = _result(
+            action, succeeded=False,
+            entity_state_changes=[EntityStateChange(entity_id="injected-copy", new_state="annotated")],
+            entity_spawns=[EntitySpawn(name="Draft", entity_id="draft"), EntitySpawn(name="Rejected")],
+        )
+
+        semantics = action_semantics(action, result)
+
+        assert semantics["affected_entity_ids"] == ["injected-copy", "draft"]
+        assert semantics["created_entity_ids"] == ["draft"]
 
     def test_a_refused_spawn_touched_nothing(self) -> None:
         """World is full → spawn_entity returns no id → it really touched nothing, so don't report."""
@@ -487,6 +515,7 @@ class TestSpawnAttribution:
         )
 
         assert action_semantics(action, result)["affected_entity_ids"] == []
+        assert action_semantics(action, result)["created_entity_ids"] == []
 
 
 class TestAKindIsCarriedThrough:

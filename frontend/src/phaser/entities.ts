@@ -15,7 +15,7 @@ import { type FxHost, flyMessageArc } from "./effects";
 import { inkOn } from "./hud";
 import { mix, shade } from "../lib/color";
 import { type CarriedItem, FONT, TEXT_RES, drawPlate } from "./types";
-import type { Room, WorldMap } from "./worldMap";
+import type { WorldMap } from "./worldMap";
 
 // The landmark's stone: ONE base color per tier that `shade()` lights into faces.
 const STONE = 0x6b7185;         // footing
@@ -74,9 +74,8 @@ export class EntityLayer {
   /**
    * Things some deed this step BROUGHT INTO THE WORLD; they get one arrival when their beat lands.
    *
-   * Needs both halves: the step names it (`causedIds`) AND the map never drew it. Diffing alone
-   * fires on every thing made since the last drawn step after a scrub; `causedIds` alone fires
-   * on a thing that merely changed. Deleted as drawn, so a re-run does not replay the arrival.
+   * Only explicit creations get an arrival; a first sighting or an injected item touched by a
+   * deed proves no creation. Deleted as drawn, so a re-run does not replay the arrival.
    */
   private bornEntities = new Set<string>();
   /**
@@ -103,7 +102,8 @@ export class EntityLayer {
    * the deeds name, this layer knows which would visibly change, and neither half is the test.
    */
   beginStep(
-    entities: Record<string, PlacedEntity>, causedIds: Set<string>, cut: boolean, wholeWorld = true,
+    entities: Record<string, PlacedEntity>, causedIds: Set<string>, createdIds: Set<string>,
+    cut: boolean, wholeWorld = true,
   ): Record<string, PlacedEntity> {
     this.stepEntities = entities;
     this.cut = cut;
@@ -114,18 +114,21 @@ export class EntityLayer {
     const ids = new Set([...Object.keys(entities), ...Object.keys(this.lastEntityStates)]);
     this.withheldEntities = new Set(
       [...ids].filter(
-        (eid) => causedIds.has(eid) && entityChanged(this.lastEntityStates[eid], entities[eid]),
+        (eid) => causedIds.has(eid) && entityChanged(this.lastEntityStates[eid], entities[eid])
+          // With no previous view, only a creation has a known before-state (absence).
+          // A first-seen item changed this step has no reconstructable initial placement.
+          && (!!this.lastEntityStates[eid] || createdIds.has(eid)),
       ),
     );
     this.bornEntities = new Set(
-      Object.keys(entities).filter((eid) => causedIds.has(eid) && !this.lastEntityStates[eid]),
+      Object.keys(entities).filter((eid) => createdIds.has(eid) && !this.lastEntityStates[eid]),
     );
     return this.effectiveEntities();
   }
 
   /** Land every change whose causing beat never played (focus-gated out, say). */
   revealWithheld(): void {
-    this.revealEntities([...this.withheldEntities]);
+    this.revealEntities([...this.withheldEntities], new Set());
   }
 
   // Float the loss and remove the marker: the one place the instant path, the deferred path
@@ -171,9 +174,15 @@ export class EntityLayer {
    * and re-seating a room's other fixtures by one cell is the same shuffle they already do
    * whenever a thing enters or leaves that room between steps.
    */
-  revealEntities(eids: string[]): void {
+  revealEntities(eids: string[], createdByBeat: ReadonlySet<string>): void {
     let any = false;
-    for (const eid of eids) any = this.withheldEntities.delete(eid) || any;
+    for (const eid of eids) {
+      if (!this.withheldEntities.delete(eid)) continue;
+      any = true;
+      // A later deed may change a new item again; its final placement cannot reconstruct
+      // the creation scene. Reveal it quietly rather than attribute birth to that later deed.
+      if (!createdByBeat.has(eid)) this.bornEntities.delete(eid);
+    }
     if (!any) return;
     const shown = this.effectiveEntities();
     this.host.layoutFixtures(shown);
@@ -259,8 +268,8 @@ export class EntityLayer {
           const marker = this.entityMarkers.get(eid) ?? make(eid);
           marker.setData("entityKind", e.entity_type);
           marker.setVisible(true).setPosition(at.x, at.y).setScale(1);
-          this.refreshEntityMarker(marker, room, eid, e);
-          if (this.bornEntities.delete(eid)) this.playArrival(marker, room, e.name);
+          this.refreshEntityMarker(marker, eid, e);
+          if (this.bornEntities.delete(eid)) this.playArrival(marker, e.name);
         }
       }
     }
@@ -412,14 +421,13 @@ export class EntityLayer {
 
   refreshEntityMarker(
     marker: Phaser.GameObjects.Container,
-    room: Room,
     eid: string,
     e: PlacedEntity,
   ): void {
     this.layoutEntityLabel(marker, e.name, e.state);
     const prev = this.lastEntityStates[eid];
     if (prev && prev.state !== e.state) {
-      this.host.floatNote(room.sx, room.sy - 26, `${e.name}：${prev.state}→${e.state}`, 0xd9a441);
+      this.host.floatNote(marker.x, marker.y - 26, `${e.name}：${prev.state}→${e.state}`, 0xd9a441);
       this.flashFixture(marker);
     }
   }
@@ -428,8 +436,8 @@ export class EntityLayer {
    * A thing ARRIVES on the ground: it swells into its slot and says its name once. The mirror
    * of `destroyEntityMarker`. Scales rather than fades, so it does not read as a redraw.
    */
-  playArrival(marker: Phaser.GameObjects.Container, room: Room, name: string): void {
-    this.host.floatNote(room.sx, room.sy - 26, `${name} 已出现`, 0xe8c06a);
+  playArrival(marker: Phaser.GameObjects.Container, name: string): void {
+    this.host.floatNote(marker.x, marker.y - 26, `${name} 已出现`, 0xe8c06a);
     marker.setScale(0);
     this.host.tweens.add({
       targets: marker,

@@ -149,7 +149,8 @@ def _public_or_own(event: ScopeEvent, viewer_id: str) -> ScopeEvent | None:
         # An act that showed nothing here (an unexposed covert act) has no public side.
         if event.public is None:
             return None
-        return replace(event, shared=None, private=[])
+        # A visible result does not prove this viewer witnessed who created it.
+        return replace(event, shared=None, private=[], created_entity_ids=[])
     if isinstance(event, (MessageSummary, BroadcastSummary)):
         return event if event.audience is None else None
     return event

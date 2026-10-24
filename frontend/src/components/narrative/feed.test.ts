@@ -6,20 +6,10 @@ import { indexStep } from "../../lib/step";
 import type { Npcs } from "../../lib/npcs";
 import type { Cast } from "../../lib/cast";
 import type { Places } from "../../lib/places";
-import { bornInStep, buildFeed } from "./feed";
+import { buildFeed } from "./feed";
 import type {
-  ActionSummary, AgentView, EntityView, LocationScope, MessageSummary, ObservationSummary, StepView,
+  ActionSummary, AgentView, LocationScope, MessageSummary, ObservationSummary, StepView,
 } from "../../types";
-
-const thing = (createdStep: number): EntityView => ({
-  name: "横刀",
-  entity_type: "item",
-  state: "intact",
-  description: "",
-  is_public: true,
-  created_step: createdStep,
-  private: { content: "" },
-});
 
 const place = (location_id: string, over: Partial<LocationScope> = {}): LocationScope => ({
   location_id, agents: [], npcs: [], entities: {}, events: [], ...over,
@@ -49,7 +39,7 @@ const agent = (agent_id: string): AgentView => ({
 const act = (seq: number, over: Partial<ActionSummary> = {}): ActionSummary => ({
   kind: "action", seq, execution_id: `x${seq}`, initiator_id: "a", participant_ids: ["a"], action_type: "move",
   phase: "settled", deed: "move", target: { acts_on: [], claims: [], reaches: [] },
-  affected_entity_ids: [], overheard_by: [], interrupted_by: "",
+  affected_entity_ids: [], created_entity_ids: [], overheard_by: [], interrupted_by: "",
   detected: false, not_executed: false, public: null,
   shared: {
     audience: ["a"], outcome: "", gist: "", succeeded: true, failure_reason: "", dialogue: [],
@@ -62,24 +52,6 @@ const act = (seq: number, over: Partial<ActionSummary> = {}): ActionSummary => (
 const letter = (receiver: string): MessageSummary => ({
   kind: "message", seq: 3, message_id: "m1", sender_id: "s", sender_name: "某人", receiver_ids: [receiver],
   scope: "direct", content: "来", spoken: "来", audience: [receiver],
-});
-
-describe("bornInStep", () => {
-  it("只认出生步等于本步的物件", () => {
-    const born = bornInStep(at(41, [place("loc-1", { entities: { seed: thing(0), made: thing(41) } })]));
-    expect([...born]).toEqual(["made"]);
-  });
-
-  it("叙事流最早的一步不会把世界原有之物算成新造的", () => {
-    // This is the edge of the 60-step sliding window: there's no step 40 to compare against.
-    // Diffing against the previous step would mark every entity in this step's table as made
-    // this beat, so an action touching an age-old knife would be shown as having made it.
-    expect([...bornInStep(at(41, [place("loc-1", { entities: { seed: thing(0), old: thing(7) } })]))]).toEqual([]);
-  });
-
-  it("造物的下一步它就是寻常物件", () => {
-    expect([...bornInStep(at(42, [place("loc-1", { entities: { made: thing(41) } })]))]).toEqual([]);
-  });
 });
 
 describe("buildFeed", () => {

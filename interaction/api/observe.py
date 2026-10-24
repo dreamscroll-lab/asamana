@@ -131,6 +131,13 @@ def build_observe_router(services: ApiServices) -> Any:
         profile = profiles.get(agent_id)
         if profile is None:
             raise HTTPException(status_code=404, detail=f"Agent profile not found: {agent_id}")
+        if application.performing_character(world_id) is None:
+            try:
+                await application.record_director_read(world_id)
+            except OSError as exc:
+                raise HTTPException(status_code=503, detail="The director review could not be recorded.") from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
         return _profile(world_id, profile)
 
     # ----- live WebSocket feed (push) -------------------------------------

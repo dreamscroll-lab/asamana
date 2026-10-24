@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from typing import Callable
 
 from core.event_bus import NarrativeEventBus
-from core.interfaces.agent_store import AgentStoreProvider
 from core.interfaces.embedding import EmbeddingProvider
 from core.interfaces.llm import LLMProvider, LLMRouter
 from core.interfaces.message import MessageProvider
@@ -26,7 +25,6 @@ class Container:
     llm_router: LLMRouter
     embedding: EmbeddingProvider
     vector_store: VectorStoreProvider
-    agent_store: AgentStoreProvider
     message_provider: MessageProvider
     snapshot: SnapshotProvider
     event_bus: NarrativeEventBus
@@ -44,7 +42,6 @@ class Container:
             "llm_router": type(self.llm_router).__name__,
             "embedding_provider": type(self.embedding).__name__,
             "vector_store_provider": type(self.vector_store).__name__,
-            "agent_store_provider": type(self.agent_store).__name__,
             "message_provider": type(self.message_provider).__name__,
             "snapshot_provider": type(self.snapshot).__name__,
             "trace_sink": type(self.trace_sink).__name__,

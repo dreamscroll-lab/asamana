@@ -703,7 +703,7 @@ async def test_resolve_relation_context_marks_deceased() -> None:
     decision/emotion/goals. deceased reads self._dead_agent_ids cached by perceive_step (decided by
     the caller)."""
     from agent.agent import Agent
-    from core.interfaces.agent_store import AgentRelation
+    from core.interfaces.relation import AgentRelation
 
     names = {"live": "活人", "dead": "故人"}
 
@@ -729,7 +729,7 @@ async def test_resolve_relation_context_carries_gender_beside_deceased() -> None
     """Relation lines for memory writes match the decision side: gender and deceased share one
     bracket; with no gender in the perception cache, fall back to the relation's to_gender."""
     from agent.agent import Agent
-    from core.interfaces.agent_store import AgentRelation
+    from core.interfaces.relation import AgentRelation
 
     genders = {"live": "女", "dead": "男"}
 

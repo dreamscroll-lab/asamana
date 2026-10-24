@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Awaitable
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Dict, Iterable, List, Sequence
 
 _PERCEPTION_MEMORY_TOP_K = 5  # memories per stream (factual + experiential) entering LLM context
@@ -34,7 +34,6 @@ from agent.personality import (
     EmotionState,
     EmotionType,
     PersonalityLayer,
-    StateLayer,
 )
 from agent.motivation import ExternalGoal
 from core.context import (
@@ -64,9 +63,9 @@ from core.interfaces.actor import (
     Invitation,
     PerceivedEntry,
 )
-from core.interfaces.agent_store import AgentRelation, AgentState, AgentStoreProvider
-from core.interfaces.condition import condition_to_dict
+from core.interfaces.relation import AgentRelation
 from core.interfaces.message import Message
+from core.interfaces.snapshot import AgentState
 from core.interfaces.perception import Broadcast, PerceivedIdentity, PerceivedSignals, Situation, SpatialPerception
 from core.prompts import (
     EMOTION_INTENSITY_DEFINITION,
@@ -200,7 +199,6 @@ class Agent:
     memory_system: MemorySystem
     need_engine: NeedEngine
     relation_system: RelationSystem
-    agent_store: AgentStoreProvider
     # For the agent's own feedback/interrupt/perception-emotion cognition: the same shared router
     # the subsystems receive, injected directly rather than borrowed from a subordinate component.
     llm_router: LLMRouter
@@ -232,8 +230,9 @@ class Agent:
             is_main_character=self.is_main_character,
         )
         # Perceived agent_id → PerceivedIdentity, for record_event's Mapping form; refilled from
-        # spatial.visible_agents each perceive, not persisted. Name and gender share one map so
-        # they can't drift apart.
+        # spatial.visible_agents each perceive, not committed: whoever was perceived also has a
+        # relation, which keeps the name and gender across a restore. Name and gender share one
+        # map so they can't drift apart.
         self._known_agents: Dict[str, PerceivedIdentity] = {}
         # This step's "when and where I am" for paths with no plan context (commit/finalize/
         # interrupt) to inject as their header. Perception is the only legitimate source of names/
@@ -247,8 +246,8 @@ class Agent:
         # Means "N times recently", not "in a row": other actions in between push the same matter
         # and must not reset it. Only the matter actually happening clears it (_clear_foiled).
         # Separate from MemorySystem._recent_foiled, which restarts on rewording and gives no
-        # decidable N. Not persisted: the foiled buffer isn't snapshotted either, and restoring only
-        # the count would boost an intent the agent no longer remembers being blocked on.
+        # decidable N. Not committed, like that buffer: a restore restarts the count, and the
+        # window is a few steps.
         self._foiled_misses: Dict[tuple[str, str], tuple[int, int]] = {}
 
     def remember_agent(self, agent_id: str, identity: PerceivedIdentity) -> None:
@@ -1929,16 +1928,20 @@ class Agent:
                     situation=self._situation,
                 )
 
-    async def persist_state(self, state: StateLayer) -> None:
-        await self.agent_store.save_agent_state(
-            self.world_id, self.agent_id, encode_agent_state(self.world_id, self.agent_id, state),
+    def committed_state(self) -> AgentState:
+        """What a restore needs to bring this agent back, for the step's snapshot: its
+        ``StateLayer`` through the codec plus its memory's id counter."""
+        return replace(
+            encode_agent_state(self.world_id, self.agent_id, self.personality.state),
+            memory_seq=self.memory_system.id_seq,
         )
 
     def apply_stored_state(self, stored: AgentState, *, in_resumed_execution: bool) -> None:
-        """Bring back the state a restore loaded. An act in progress goes on only with the
+        """Bring back what ``committed_state`` saved. An act in progress goes on only with the
         execution that carries it (``in_resumed_execution``); without one he comes back idle."""
         orphaned = stored.action_status == ActionStatus.IN_PROGRESS.value and not in_resumed_execution
         self.personality.restore_state(decode_agent_state(self.agent_id, stored, orphaned=orphaned))
+        self.memory_system.restore_id_seq(stored.memory_seq)
         # vitality is the single source of truth for alive/dead and is_active isn't persisted: a
         # dead character left active (the default) would die again next step, announced twice.
         self.set_active(stored.vitality > 0.0)
@@ -1950,58 +1953,23 @@ class Agent:
 
 
 def snapshot_agent_state(agent: "Agent") -> Dict[str, Any]:
-    """Serialize agent state for world snapshots."""
+    """The agent's record in ``WorldState.agents``: everything it carries across steps
+    (``committed_state``, what restore decodes), plus who it is. The world adds where the body is.
 
-    state = agent.personality.state
+    JSON-native (``asdict``): the live path hands this dict to the read model, and a copy keeps
+    past snapshots from changing as the agent evolves."""
+
+    soul = agent.personality.soul
     return {
-        "agent_id": agent.agent_id,
-        "agent_name": agent.personality.soul.name,
+        **asdict(agent.committed_state()),
+        "agent_name": soul.name,
         "is_main_character": agent.is_main_character,
         # Visible at a glance, like the name: anyone in his presence sees them.
-        "gender": agent.personality.soul.gender,
-        "age": agent.personality.soul.age,
+        "gender": soul.gender,
+        "age": soul.age,
         # Immutable identity color — one write here reaches both the map
         # (AgentView) and the relationship graph (get_graph node).
-        "color": agent.personality.soul.color,
-        "location_id": state.current_location,
-        "current_location": state.current_location,
-        "emotion": {
-            # .value: json.dumps launders the str enum on disk, but the live path hands this dict
-            # to the read model, where str() gives "EmotionType.FRUSTRATION". See
-            # tests/unit/test_state_payload_is_jsonable.py.
-            "primary": state.emotion.primary.value,
-            "intensity": state.emotion.intensity,
-            "valence": state.emotion.valence,
-        },
-        "emotion_intensity": state.emotion.intensity,
-        "emotion_valence": state.emotion.valence,
-        "activity_status": state.activity_status.value,
-        "dominant_need": state.dominant_need,
-        "current_action": state.current_action,
-        "action_remaining_steps": state.action_remaining_steps,
-        "last_action": state.last_action,
-        "last_action_result": state.last_action_result,
-        "last_action_succeeded": state.last_action_succeeded,
-        "long_term_goals": list(state.long_term_goals),
-        "short_term_goals": list(state.short_term_goals),
-        "short_term_goal_entities": [
-            {
-                "text": g.text,
-                "status": g.status.value if hasattr(g.status, "value") else g.status,
-                # Whether the agent set this goal itself or it is unfinished business left by
-                # experience; see GoalOrigin.
-                "origin": g.origin.value if hasattr(g.origin, "value") else g.origin,
-            }
-            for g in state.short_term_goal_entities
-        ],
-        "vitality": state.vitality,
-        # A plain JSON dict (or None), never a BodyCondition instance. This payload feeds both
-        # snapshots and the read model; test_state_payload_is_jsonable rejects live objects/enums.
-        "condition": condition_to_dict(state.condition),
-        "is_active": agent.is_active,
-        # Copy: the store may hold the payload by reference before the snapshot is written, and
-        # aliasing live state would let past snapshots change as the agent evolves (same reason
-        # goals use list(...) above).
-        "active_needs": list(state.active_needs),
-        "need_intensities": dict(state.need_intensities),
+        "color": soul.color,
+        # Where he knows himself to be; the runtime overwrites it with where the body is.
+        "location_id": agent.personality.state.current_location,
     }

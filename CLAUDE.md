@@ -17,7 +17,7 @@ interaction/    — Reactor, WorldManager, api/ (observation and user commands; 
 world/          — WorldBuilder: one-shot theme→world construction
 engine/         — Runtime loop: Clock, Scheduler, Environment, Message, Event
 agent/          — Per-agent cognition: Personality, Memory, Need, Relation, Decision
-providers/      — Pluggable infrastructure: LLM, Embedding, VectorStore, AgentStore, Message, Snapshot
+providers/      — Pluggable infrastructure: LLM, Embedding, VectorStore, Message, Snapshot
 core/           — Interfaces, DI Container, Factory, Logging, Context
 ```
 
@@ -390,7 +390,9 @@ doer is judged by the LLM; there is no rule-based adjudication path (Design Prin
 ### Rule 6: Runtime provider read vs. write failures
 
 - **Read failures** (`embedding.embed`, `vector_store.search`): return an empty result, log `warning`, simulation continues.
-- **Write failures** (`agent_store.save_agent_state`, `snapshot.save`): log `error`, do not swallow silently. A missed state write means data loss on the next restore; repeated write failures should surface to the runtime layer.
+- **Write failures** (`snapshot.save`): log `error`, do not swallow silently. A missed state write means data loss on the next restore; repeated write failures should surface to the runtime layer.
+- **A step commits in one write, its snapshot.** Mutable simulation state lives in memory and is persisted only in the snapshot; append-only histories (memories, traces) carry their step and are cut back to the commit point on restore. A snapshot that can't be built whole isn't written, and restore never combines state from different steps.
+- **A snapshot holds what restoring the scene needs.** The test is whether the snapshot alone brings back the scene as it was at the commit, nested state included (every part of an emotion, a goal's whole lifecycle). Don't be over-strict: state whose loss barely matters (edge logic, bookkeeping kept elsewhere or read only within its step, work still in flight) may stay out, as long as the code says why it is safe to drop.
 
 ### Rule 7: No theme-specific logic in generic code paths
 

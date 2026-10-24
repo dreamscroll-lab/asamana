@@ -21,7 +21,7 @@ from core.coerce import (
 )
 from core.interfaces.action import DialogueTurn
 from core.interfaces.actor import ActorPace
-from core.interfaces.agent_store import relation_has_substance
+from core.interfaces.relation import relation_has_substance
 from core.interfaces.snapshot import WorldSnapshot
 from engine.environment import IN_TRANSIT
 from world.catalog import WorldCatalog
@@ -549,6 +549,8 @@ class ActionSummary:
     # What this beat actually CHANGED, as against what ``target.acts_on`` was AIMED at: empty when
     # a man fails to force a gate, which is when the aim matters most.
     affected_entity_ids: list[str] = field(default_factory=list)
+    # Accepted creations by this beat; a subset of affected_entity_ids, never inferred from age.
+    created_entity_ids: list[str] = field(default_factory=list)
     # Listeners the initiator named, standing there: party to none of it, so kept out of
     # participant_ids (they spent no turn on it).
     overheard_by: list[str] = field(default_factory=list)
@@ -969,6 +971,7 @@ class _StepAssembler:
                 deed=str(record.get("deed") or ""),
                 target=_target_view(record.get("target")),
                 affected_entity_ids=[str(e) for e in coerce_list(record.get("affected_entity_ids"))],
+                created_entity_ids=[str(e) for e in coerce_list(record.get("created_entity_ids"))],
                 overheard_by=overheard_by,
                 interrupted_by=str(record.get("interrupted_by") or ""),
                 detected=bool(record.get("detected", False)),
@@ -1124,15 +1127,17 @@ class _StepAssembler:
         belongings: dict[str, EntityView],
         relations: list[GraphEdge],
     ) -> AgentView:
-        emotion = record.get("emotion", "")
-        emotion_value = str(emotion.get("primary", "")) if isinstance(emotion, Mapping) else str(emotion)
+        emotion = coerce_dict(record.get("emotion"))
+        emotion_value = str(emotion.get("primary") or "")
+        vitality = coerce_optional_float(record.get("vitality"))
         activity_value = str(record.get("activity_status", ""))
         visible_activity = "" if activity_value == AgentActivityStatus.COVERT.value else activity_value
         need = coerce_optional_str(record.get("dominant_need"))
         return AgentView(
             agent_id=agent_id,
             is_main_character=bool(record.get("is_main_character", False)),
-            is_active=bool(record.get("is_active", True)),
+            # Vitality is the single source of truth for alive/dead.
+            is_active=vitality is None or vitality > 0.0,
             public=AgentPublicView(
                 activity_status=visible_activity,
                 activity_label=_member_label(AgentActivityStatus, visible_activity),
@@ -1148,11 +1153,11 @@ class _StepAssembler:
             private=AgentPrivateView(
                 emotion=emotion_value,
                 emotion_label=_member_label(EmotionType, emotion_value),
-                emotion_intensity=coerce_optional_float(record.get("emotion_intensity")),
-                emotion_valence=coerce_optional_float(record.get("emotion_valence")),
+                emotion_intensity=coerce_optional_float(emotion.get("intensity")),
+                emotion_valence=coerce_optional_float(emotion.get("valence")),
                 dominant_need=need,
                 dominant_need_label=_member_label(NeedType, need or ""),
-                vitality=coerce_optional_float(record.get("vitality")),
+                vitality=vitality,
                 activity_status=activity_value,
                 activity_label=_member_label(AgentActivityStatus, activity_value),
                 transit=dict(record["transit"]) if isinstance(record.get("transit"), Mapping) else None,
@@ -1299,8 +1304,8 @@ def build_world_meta(
 def relations_from_snapshot(snapshot: WorldSnapshot) -> list[GraphEdge]:
     """The snapshot's relations as graph edges — only those with narrative substance.
 
-    The store also persists a baseline record the moment two agents merely co-occur in a
-    memory; that is not a relationship. Same rule RelationEvolution filters candidates by.
+    A baseline record comes into being the moment two agents merely co-occur in a memory; that
+    is not a relationship. Same rule RelationEvolution filters candidates by.
     """
     edges: list[GraphEdge] = []
     for rel in snapshot.state.relations.values():

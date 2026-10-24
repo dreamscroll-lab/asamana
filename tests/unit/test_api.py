@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 
 import pytest
 from fastapi.testclient import TestClient
@@ -152,6 +153,35 @@ async def test_websocket_sends_initial_status_and_latest_step(container, test_co
         second = ws.receive_json()
         assert second["type"] == "latest_step"
         assert second["data"]["step"] == 0
+
+
+@pytest.mark.asyncio
+async def test_restore_only_state_never_reaches_observation(container, test_config) -> None:
+    """A character record carries what only restore reads (what set off the emotion, what landed
+    on him unperceived); the read model picks its fields, so none of that reaches a viewer."""
+    world_id = "world-private-engine"
+    snapshot = _snapshot(world_id, 0, {})
+    snapshot.state.agents["agent-2"].update(
+        emotion_triggered_by="hidden-mind", acted_upon=["hidden-mind"], private_restore_marker="x",
+    )
+    await container.snapshot.save(world_id, 0, snapshot)
+    with _client(container, test_config) as client:
+        payloads = [
+            client.get(f"/api/worlds/{world_id}/steps/0").json(),
+            client.get(f"/api/worlds/{world_id}/graph").json(),
+        ]
+        with client.websocket_connect(f"/ws/{world_id}") as ws:
+            assert ws.receive_json()["type"] == "status"
+            payloads.append(ws.receive_json())
+            snapshot.step = 1
+            container.event_bus.publish({
+                "type": "step", "world_id": world_id, "step": 1, "snapshot": snapshot,
+            })
+            payloads.append(ws.receive_json())
+    for payload in payloads:
+        encoded = json.dumps(payload)
+        assert "private_restore_marker" not in encoded
+        assert "hidden-mind" not in encoded
 
 
 @pytest.mark.asyncio

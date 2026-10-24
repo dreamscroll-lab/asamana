@@ -361,7 +361,6 @@ async def test_a_revision_writes_the_setup_and_nothing_else(mock_build_container
         ]})
     assert response.status_code == 200
     assert await mock_build_container.snapshot.list_steps(world_id) == []
-    assert await mock_build_container.agent_store.list_agent_ids(world_id) == []
     assert await _seeds(mock_build_container, world_id, ids["Li Shimin"]) == []
 
 
@@ -407,8 +406,8 @@ async def test_revised_character_reaches_profile_and_the_confirmed_world(mock_bu
     assert "secret" not in cast[target] and "core_traits" not in cast[target]
     assert profile["gender"] == "女" and profile["secret"] == "暗藏兵符"
     assert cast[target]["gender"] == "女"
-    relation = await mock_build_container.agent_store.load_relation(world_id, ids["Li Shimin"], target)
-    assert relation is not None and relation.to_gender == "女"
+    step_zero = await mock_build_container.snapshot.load(world_id, 0)
+    assert step_zero.state.relations[f"{ids['Li Shimin']}->{target}"]["to_gender"] == "女"
 
 
 @pytest.mark.asyncio
@@ -472,7 +471,7 @@ async def test_revised_relations_survive_a_reset(mock_build_container, test_conf
         edges = {(e["from_id"], e["to_id"]): e for e in client.get(f"/api/worlds/{world_id}/graph").json()["edges"]}
     assert set(edges) == {(shimin, gaozu), (gaozu, shimin)}
     assert edges[(shimin, gaozu)]["labels"] == ["父子:父亲"]
-    assert await mock_build_container.agent_store.load_relation(world_id, shimin, jiancheng) is None
+    assert f"{shimin}->{jiancheng}" not in (await mock_build_container.snapshot.load(world_id, 0)).state.relations
 
 
 @pytest.mark.asyncio
@@ -546,8 +545,8 @@ async def test_added_character_joins_the_confirmed_world(mock_build_container, t
         assert client.post(f"/api/worlds/{world_id}/reset").status_code == 200
         nodes = {n["id"] for n in client.get(f"/api/worlds/{world_id}/graph").json()["nodes"]}
     assert agent_id in cast and agent_id in nodes
-    state = await mock_build_container.agent_store.load_initial_agent_state(world_id, agent_id)
-    assert state is not None and state.current_location == place and state.long_term_goals == ["护主周全"]
+    record = (await mock_build_container.snapshot.load(world_id, 0)).state.agents[agent_id]
+    assert record["current_location"] == place and record["long_term_goals"] == ["护主周全"]
 
 
 @pytest.mark.asyncio
@@ -561,7 +560,7 @@ async def test_removed_character_is_not_in_the_confirmed_world(mock_build_contai
         assert client.post(f"/api/worlds/{world_id}/confirm").status_code == 200
         nodes = {n["id"] for n in client.get(f"/api/worlds/{world_id}/graph").json()["nodes"]}
     assert jiancheng not in nodes
-    assert jiancheng not in await mock_build_container.agent_store.list_agent_ids(world_id)
+    assert jiancheng not in (await mock_build_container.snapshot.load(world_id, 0)).state.agents
     assert setup["relations"] == []
     [event] = setup["historical_events"]
     assert event["figure_ids"] == [ids["Li Shimin"]]
@@ -574,17 +573,17 @@ async def test_a_failed_confirmation_leaves_the_world_unconfirmed_and_retryable(
     catalog = WorldCatalog(None)
     application = NarrativeApplication(mock_build_container, test_config, catalog=catalog)
     world_id = await application.build_world("玄武门之变", template="changan_iso")
-    original = mock_build_container.agent_store.save_initial_agent_state
+    original = mock_build_container.snapshot.save
 
     async def fail(*args, **kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr(mock_build_container.agent_store, "save_initial_agent_state", fail)
+    monkeypatch.setattr(mock_build_container.snapshot, "save", fail)
     with pytest.raises(OSError):
         await application.confirm_world(world_id)
     assert not catalog.get(world_id).get("confirmed") and not application.has_session(world_id)
 
-    monkeypatch.setattr(mock_build_container.agent_store, "save_initial_agent_state", original)
+    monkeypatch.setattr(mock_build_container.snapshot, "save", original)
     world = await application.confirm_world(world_id)
     # The retry starts clean: one seed per participant, not the failed attempt's on top.
     shimin = next(a.agent_id for a in world.agents.values() if a.personality.soul.name == "Li Shimin")

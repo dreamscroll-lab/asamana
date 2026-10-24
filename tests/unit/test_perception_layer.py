@@ -48,7 +48,7 @@ def _make_layer(
         world_id="world-1",
         agent_id=agent_id,
     )
-    rel = RelationSystem(container.agent_store, world_id="world-1", agent_id=agent_id)
+    rel = RelationSystem(world_id="world-1", agent_id=agent_id)
     layer = PerceptionMemoryLayer(
         memory_system=mem,
         relation_system=rel,
@@ -227,7 +227,7 @@ async def test_narrator_message_is_not_attributed_to_a_sender(container) -> None
     assert related_of("心头突然涌起") == []
     # The real sender's letter counts as contact, scored by nothing; the narrator is nobody.
     relations = {
-        r.to_id: r for r in await container.agent_store.load_all_relations("world-1", "agent-1")
+        r.to_id: r for r in await layer._relation_system.all_relations()  # noqa: SLF001
     }
     assert set(relations) == {"friend"}
     assert relations["friend"].interaction_count == 1

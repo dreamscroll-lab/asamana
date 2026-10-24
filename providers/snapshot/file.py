@@ -21,7 +21,7 @@ from core.serialization import atomic_write_text, dump_json, read_json_file
 logger = get_logger(__name__)
 
 # Unknown keys are dropped on read, so removing a dataclass field doesn't make every existing
-# snapshot unreadable (same as _AGENT_STATE_FIELDS in agent_store).
+# snapshot unreadable.
 _SNAPSHOT_FIELDS = frozenset(f.name for f in dataclasses.fields(WorldSnapshot))
 _STATE_FIELDS = frozenset(f.name for f in dataclasses.fields(WorldState))
 _ENGINE_FIELDS = frozenset(f.name for f in dataclasses.fields(EngineState))

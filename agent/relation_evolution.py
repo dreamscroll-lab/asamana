@@ -26,7 +26,7 @@ from agent.relation import (
     relation_legend,
     RelationSystem,
 )
-from core.interfaces.agent_store import AgentRelation
+from core.interfaces.relation import AgentRelation
 from core.context import annotate_active_call, annotate_call, note_active_call_adoption
 from core.interfaces.llm import (
     IndexedRef,

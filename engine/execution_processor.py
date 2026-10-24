@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Dict, List
 
 from agent.personality import ActionStatus
 from core.context import annotate_call, observe_stage
-from core.interfaces.action import ActionResult
+from core.interfaces.action import KIND_AGENT, KIND_LOCATION, KIND_NPC, ActionResult, ActionType, ErrandOrder
 from core.interfaces.directory import WorldDirectory
 from core.interfaces.trace import Stage
 from core.logging import get_logger
@@ -30,6 +30,9 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+# PHYSICAL targets that are not items: acts on them never contend for one.
+_NON_ITEM_KINDS = frozenset({KIND_AGENT, KIND_NPC, KIND_LOCATION})
 
 
 class ExecutionProcessor:
@@ -248,9 +251,11 @@ class ExecutionProcessor:
     ) -> Dict[str, List[ActionResult]]:
         """Complete a batch of executions in one beat; returns {execution_id: results}.
 
-        Read-only executors adjudicate concurrently against start-of-step state; executors that
-        mutate the world in complete() (MOVE) run serially afterwards, so judges see pre-move
-        positions. Then results land grouped by conflict key (_land_results_grouped).
+        Executions sharing an item adjudicate in input order, each wave's world changes landing
+        before the next wave's judges read the item. Independent executions stay concurrent.
+        MOVE completes afterwards so on-site judges still see pre-move positions. Character
+        feedback lands last for the whole batch: only items order the waves, so later judges
+        never see an earlier wave's injuries or emotions.
         """
         readonly: List[ActionExecutionState] = []
         world_infra: List[ActionExecutionState] = []
@@ -260,12 +265,25 @@ class ExecutionProcessor:
             (world_infra if mutates else readonly).append(es)
 
         results_by_exec: Dict[str, List[ActionResult]] = {}
-        if readonly:
+        pending = readonly
+        while pending:
+            wave: List[ActionExecutionState] = []
+            deferred: List[ActionExecutionState] = []
+            occupied: set[str] = set()
+            for es in pending:
+                keys = self._execution_item_keys(es)
+                if keys & occupied:
+                    deferred.append(es)
+                else:
+                    wave.append(es)
+                # A deferred execution also blocks its keys, preserving order across actions
+                # that touch more than one item.
+                occupied.update(keys)
             gathered = await asyncio.gather(
-                *(self._adjudicate_execution(es, agents_dict, step) for es in readonly),
+                *(self._adjudicate_execution(es, agents_dict, step) for es in wave),
                 return_exceptions=True,
             )
-            for es, res in zip(readonly, gathered):
+            for es, res in zip(wave, gathered):
                 if isinstance(res, StepWithdrawn):
                     raise res
                 if isinstance(res, BaseException):  # defensive; _adjudicate_execution already guards
@@ -275,28 +293,44 @@ class ExecutionProcessor:
                     )
                     res = []
                 results_by_exec[es.execution_id] = res
+                for result in res:
+                    self.land_world_changes(result, step)
+            pending = deferred
         for es in world_infra:
             results_by_exec[es.execution_id] = await self._adjudicate_execution(es, agents_dict, step)
+            for result in results_by_exec[es.execution_id]:
+                self.land_world_changes(result, step)
 
         await self._land_results_grouped(exec_states, results_by_exec, agents_dict, step)
         return results_by_exec
 
+    def _execution_item_keys(self, execution: ActionExecutionState) -> set[str]:
+        keys: set[str] = set()
+        if execution.action_type is ActionType.WORK:
+            keys.update(item.entity_id for item in self._environment.get_items_of(execution.initiator_id))
+        elif execution.action_type is ActionType.PHYSICAL:
+            target = execution.target
+            # The same lookup PhysicalExecutor judges by: its first ref, resolved once at start.
+            if target is not None and target.acts_on and target.acted_on_kind not in _NON_ITEM_KINDS:
+                lookup = execution.extra.get("resolved_id") or target.acts_on[0].id
+                item = self._environment.find_item(
+                    lookup, self._environment.get_body_location(execution.initiator_id),
+                )
+                # Keep exact ids even after destruction removes the item from the live table.
+                keys.add(item.entity_id if item is not None else lookup)
+        elif execution.action_type is ActionType.ERRAND:
+            order = execution.extra.get("errand_order")
+            if isinstance(order, ErrandOrder) and order.item_id:
+                keys.add(order.item_id)
+        return keys
+
     @staticmethod
     def _result_conflict_keys(result: ActionResult) -> set[str]:
-        """What one result changes when it lands; results with disjoint keys may land
-        concurrently.
-
-        ``entity_spawns`` yields no key: no other result can refer to a new thing, and
-        ``spawn_entity`` has no await, so concurrent groups can't interleave inside it."""
+        """Whose character feedback one result writes; results with disjoint keys may land
+        concurrently. World changes land before, serially (``land_world_changes``)."""
         keys: set[str] = {result.action.agent_id}
         for effect in result.target_effects:
             keys.add(effect.agent_id)
-        for change in result.entity_state_changes:
-            keys.add("item:" + change.entity_id)
-        # A body's condition can change only once per beat. Errands aren't keyed: they land in
-        # the world in ``ErrandExecutor.start``, and landing never touches them.
-        for npc_effect in result.npc_effects:
-            keys.add("npc:" + npc_effect.npc_id)
         return keys
 
     async def _land_results_grouped(
@@ -340,7 +374,7 @@ class ExecutionProcessor:
         async def _apply_group(members: List[tuple[str, ActionResult]]) -> None:
             for eid, result in self._landing_order(members):
                 with annotate_call(execution_id=eid):
-                    await self.land_result_feedback(result, agents_dict, step)
+                    await self.land_agent_feedback(result, agents_dict, step)
 
         group_results = await asyncio.gather(
             *(_apply_group(g) for g in groups.values()),
@@ -383,9 +417,19 @@ class ExecutionProcessor:
         agents_dict: Dict[str, "Agent"],
         step: int,
     ) -> None:
-        """Land one ActionResult's feedback, each item behind its own Rule-1 boundary: a failed
-        writeback loses only itself, never the run or the result's other items. Dead agents
-        get no writeback.
+        """Land one ActionResult whole: its character feedback, then its world changes."""
+        await self.land_agent_feedback(result, agents_dict, step)
+        self.land_world_changes(result, step)
+
+    async def land_agent_feedback(
+        self,
+        result: ActionResult,
+        agents_dict: Dict[str, "Agent"],
+        step: int,
+    ) -> None:
+        """Land one ActionResult's character feedback, each item behind its own Rule-1 boundary:
+        a failed writeback loses only itself, never the run or the result's other items. Dead
+        agents get no writeback.
         """
         agent_obj = agents_dict.get(result.action.agent_id)
         if agent_obj is not None and agent_obj.is_active:
@@ -419,6 +463,10 @@ class ExecutionProcessor:
                     "target_effect_failed",
                     extra={"agent_id": effect.agent_id, "step": step, "error": str(exc)},
                 )
+
+    def land_world_changes(self, result: ActionResult, step: int) -> None:
+        """Apply one ActionResult's changes to the environment (items, spawns, NPC bodies).
+        Synchronous, so a batch applies them in a fixed order with nothing interleaving."""
         for change in result.entity_state_changes:
             try:
                 self._environment.change_entity_state(change, doer_id=result.action.agent_id)
