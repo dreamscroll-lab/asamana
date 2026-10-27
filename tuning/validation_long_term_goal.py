@@ -56,7 +56,7 @@ def _deterministic_checks(outputs: dict, agent_ids: set[str]) -> dict[str, Any]:
 
     # This stage must never touch the north star (life_goal): the hardest rule invariant.
     if outputs.get("life_goal_before") != outputs.get("life_goal_after"):
-        v.append(f"毕生追求(北极星)被改动:「{outputs.get('life_goal_before')}」→「{outputs.get('life_goal_after')}」")
+        v.append(f"人生目标(北极星)被改动:「{outputs.get('life_goal_before')}」→「{outputs.get('life_goal_after')}」")
 
     if revised:
         # On change: output must be a non-empty list, actually different, and written back to the profile (after == output).

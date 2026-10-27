@@ -57,8 +57,8 @@ def _revise(setup: WorldSetup, agent_id: str, revision: CharacterRevision) -> Wo
 def test_the_build_speaks_names_and_the_setup_ids() -> None:
     characters = _setup().characters
     analysis = ThemeAnalysis(
-        theme_input="t", world_name="w", era_description="", core_tension="", narrative_theme="",
-        world_time_config={"seconds_per_step": 3600},
+        theme_input="t", world_name="w", era_description="", core_tension="", narrative_theme="人物在选择中探索彼此的关系",
+        world_time_config={"era_name": "", "start_year": 1, "start_month": 1, "start_day": 1, "start_hour": 6, "seconds_per_step": 3600},
         initial_relations=[
             RelationSeed(
                 "甲", "乙", trust=0.7, labels=["父子：父亲", " ", "父子:", "父子:父亲"],
@@ -84,8 +84,8 @@ def test_the_build_speaks_names_and_the_setup_ids() -> None:
 def test_the_build_gives_every_npc_and_thing_its_own_id() -> None:
     """Ids come from names, and two names can share a slug: the setup still gives each its own."""
     analysis = ThemeAnalysis(
-        theme_input="t", world_name="w", era_description="", core_tension="", narrative_theme="",
-        world_time_config={"seconds_per_step": 3600},
+        theme_input="t", world_name="w", era_description="", core_tension="", narrative_theme="人物在选择中探索彼此的关系",
+        world_time_config={"era_name": "", "start_year": 1, "start_month": 1, "start_day": 1, "start_hour": 6, "seconds_per_step": 3600},
         npc_seeds=[NpcSeed(name="脚夫", description="挑夫", location="palace"),
                    NpcSeed(name="更夫", description="打更", location="palace")],
         world_entity_seeds=[
@@ -304,11 +304,13 @@ def test_relations_refuse_bad_seeds(relations: list[SetupRelation]) -> None:
 
 
 def test_step_length_must_be_one_the_clock_takes() -> None:
-    setup = _setup().with_seconds_per_step(6 * 3600, places=PLACES)
+    original = _setup()
+    opening = {"era_name": "", "start_year": 1, "start_month": 1, "start_day": 1, "start_hour": 6}
+    setup = original.with_lore("主题", opening, 6 * 3600, places=PLACES)
     assert setup.lore.seconds_per_step == 6 * 3600
-    for seconds in (0, 25 * 3600):
+    for seconds in (0, 25 * 3600, True, 3600.5):
         with pytest.raises(ValueError):
-            _setup().with_seconds_per_step(seconds, places=PLACES)
+            original.with_lore("主题", opening, seconds, places=PLACES)
 
 
 # ----- through the API ------------------------------------------------------
@@ -442,11 +444,13 @@ async def test_revised_step_length_prices_the_backstory(mock_build_container, te
     catalog = WorldCatalog(None)
     world_id, ids = await _built_world(mock_build_container, test_config, catalog)
     with _client(mock_build_container, test_config, catalog) as client:
-        url = f"/api/worlds/{world_id}/setup/seconds-per-step"
-        saved = client.put(url, json={"seconds_per_step": 12 * 3600})
+        url = f"/api/worlds/{world_id}/setup/lore"
+        current = client.get(f"/api/worlds/{world_id}/setup").json()
+        payload = {key: current[key] for key in ("narrative_theme", "opening_time")}
+        saved = client.put(url, json={**payload, "seconds_per_step": 12 * 3600})
         assert saved.status_code == 200
         assert saved.json()["seconds_per_step"] == 12 * 3600
-        assert client.put(url, json={"seconds_per_step": 30 * 3600}).status_code == 400
+        assert client.put(url, json={**payload, "seconds_per_step": 30 * 3600}).status_code == 400
         meta = client.get(f"/api/worlds/{world_id}").json()
         assert client.post(f"/api/worlds/{world_id}/confirm").status_code == 200
     assert meta["seconds_per_step"] == 12 * 3600
@@ -860,3 +864,129 @@ def test_an_npc_of_unknown_gender_stays_revisable() -> None:
     revised = setup.with_npc("npc_guard", NpcRevision(gender="", description="力大，识字"), places=PLACES)
     assert revised.npc_seeds[0].gender == ""
     assert revised.npc_seeds[0].description == "力大，识字"
+
+
+@pytest.mark.asyncio
+async def test_lore_revision_is_persisted_and_locked_on_confirmation(mock_build_container, test_config) -> None:
+    catalog = WorldCatalog(None)
+    world_id, _ = await _built_world(mock_build_container, test_config, catalog)
+    original = await WorldSetup.load(mock_build_container.snapshot, world_id)
+    original_tension = original.lore.core_tension
+    opening = {"era_name": "武德", "start_year": 9, "start_month": 6, "start_day": 4, "start_hour": 7}
+    payload = {"narrative_theme": "信任与选择", "opening_time": opening, "seconds_per_step": 6 * 3600}
+    with _client(mock_build_container, test_config, catalog) as client:
+        url = f"/api/worlds/{world_id}/setup/lore"
+        before_meta = client.get(f"/api/worlds/{world_id}").json()
+        before_catalog = dict(catalog.get(world_id))
+        for invalid in (
+            {**payload, "narrative_theme": " "},
+            {**payload, "seconds_per_step": 25 * 3600},
+            {**payload, "seconds_per_step": True},
+            {**payload, "seconds_per_step": 3600.5},
+            {**payload, "core_tension": "不可修改"},
+            {**payload, "opening_time": {**opening, "start_month": 13}},
+            {**payload, "opening_time": {**opening, "start_hour": True}},
+        ):
+            before = client.get(f"/api/worlds/{world_id}/setup").json()
+            assert client.put(url, json=invalid).status_code == 400
+            assert client.get(f"/api/worlds/{world_id}/setup").json() == before
+        response = client.put(url, json=payload)
+        assert response.status_code == 200
+        for key, value in payload.items():
+            assert response.json()[key] == value
+        stored = client.get(f"/api/worlds/{world_id}/setup").json()
+        assert stored["opening_time"] == opening
+        after_catalog = catalog.get(world_id)
+        assert after_catalog["theme"] == before_catalog["theme"] == "玄武门之变"
+        for field in ("narrative_theme", "core_tension", "opening_time"):
+            assert field not in after_catalog
+        after_meta = client.get(f"/api/worlds/{world_id}").json()
+        listed = next(w for w in client.get("/api/worlds").json() if w["world_id"] == world_id)
+        for field in ("theme", "world_name", "description"):
+            assert after_meta[field] == listed[field] == before_meta[field]
+        assert after_meta["seconds_per_step"] == listed["seconds_per_step"] == payload["seconds_per_step"]
+        assert client.post(f"/api/worlds/{world_id}/confirm").status_code == 200
+        assert client.put(url, json=payload).status_code == 409
+    frozen = await WorldSetup.load(mock_build_container.snapshot, world_id)
+    assert frozen.lore.narrative_theme == payload["narrative_theme"]
+    assert frozen.lore.core_tension == original_tension
+    assert frozen.lore.world_time_config["start_hour"] == 7
+    assert frozen.lore.seconds_per_step == payload["seconds_per_step"]
+
+    snapshot = await mock_build_container.snapshot.load(world_id, 0)
+    assert snapshot.world_time["hour"] == opening["start_hour"]
+    application = NarrativeApplication(mock_build_container, test_config, catalog=catalog)
+    restored = await application.restore_session(world_id)
+    assert restored.setup.lore.narrative_theme == payload["narrative_theme"]
+    assert restored.setup.lore.core_tension == original_tension
+    assert restored.clock_config.seconds_per_step == payload["seconds_per_step"]
+    for field, value in opening.items():
+        assert getattr(restored.clock_config, field) == value
+    await application.get_session(world_id).runtime.aclose()
+
+
+@pytest.mark.parametrize("patch", [
+    {"start_year": 0}, {"start_month": 13}, {"start_day": 31}, {"start_hour": 24},
+    {"start_hour": True}, {"start_hour": 1.5}, {"era_name": None},
+    {"seconds_per_step": 7200}, {"calendar": "modern"},
+])
+def test_lore_revision_validates_time_without_the_api(patch: dict[str, object]) -> None:
+    setup = _setup()
+    opening = {"era_name": "", "start_year": 1, "start_month": 1, "start_day": 1, "start_hour": 6}
+    with pytest.raises(ValueError):
+        setup.with_lore("主题", {**opening, **patch}, 3600, places=PLACES)
+
+
+def test_lore_parser_rejects_unknown_fields_and_malformed_time() -> None:
+    from interaction.api.setup import lore_revision
+
+    payload = {
+        "narrative_theme": " 主题 ", "seconds_per_step": 3600,
+        "opening_time": {"era_name": " 武德 ", "start_year": 9, "start_month": 6, "start_day": 4, "start_hour": 7},
+    }
+    theme, opening, seconds = lore_revision(payload)
+    assert (theme, opening["era_name"], seconds) == ("主题", "武德", 3600)
+    for invalid in (
+        {**payload, "narrative_pitch": "ignored"},
+        {**payload, "core_tension": "不可修改"},
+        {**payload, "opening_time": []},
+        {**payload, "opening_time": {**payload["opening_time"], "calendar": "modern"}},
+        {**payload, "opening_time": {**payload["opening_time"], "start_hour": "7"}},
+    ):
+        with pytest.raises(ValueError):
+            lore_revision(invalid)
+
+
+@pytest.mark.parametrize("changes", [
+    {"world_name": " "},
+    {"narrative_theme": " "},
+    *({"world_time_config": {key: value}} for key, value in (
+        ("start_year", 0), ("start_month", 13), ("start_day", 31), ("start_hour", 24),
+        ("start_hour", True), ("start_hour", 1.5), ("era_name", None),
+        ("seconds_per_step", True), ("seconds_per_step", 25 * 3600),
+    )),
+])
+def test_setup_validation_rejects_invalid_lore(changes: dict[str, object]) -> None:
+    setup = _setup()
+    if "world_time_config" in changes:
+        changes = {**changes, "world_time_config": {
+            **setup.lore.world_time_config, **changes["world_time_config"],
+        }}
+    invalid = replace(setup, lore=replace(setup.lore, **changes))
+    with pytest.raises(ValueError):
+        invalid.validate(PLACES)
+
+
+@pytest.mark.asyncio
+async def test_initialization_validates_lore_before_materializing(mock_build_container, test_config) -> None:
+    from world.initializer import WorldInitializer
+
+    world_id, _ = await _built_world(mock_build_container, test_config, WorldCatalog(None))
+    setup = await WorldSetup.load(mock_build_container.snapshot, world_id)
+    invalid = replace(setup, lore=replace(setup.lore, world_time_config={
+        **setup.lore.world_time_config, "start_hour": 24,
+    }))
+    await mock_build_container.snapshot.save_world_setup(world_id, invalid.as_dict())
+    with pytest.raises(ValueError, match="start_hour"):
+        await WorldInitializer(mock_build_container).initialize(world_id)
+    assert await mock_build_container.snapshot.list_steps(world_id) == []

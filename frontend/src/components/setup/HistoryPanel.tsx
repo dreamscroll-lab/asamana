@@ -22,10 +22,12 @@ export default function HistoryPanel({
   cast,
   editable,
   onSave,
+  onEditingChange,
 }: {
   events: SetupHistoricalEventView[];
   cast: Cast;
   editable: boolean;
+  onEditingChange: (editing: boolean) => void;
   // Rejects with the backend's reason; the drafts stay so they can be fixed.
   onSave: (events: SetupHistoricalEventView[]) => Promise<void>;
 }) {
@@ -41,12 +43,13 @@ export default function HistoryPanel({
     setDrafts((d) => d && d.map((e, j) => (j === i ? { ...e, ...patch } : e)));
 
   async function save() {
-    if (!drafts) return;
+    if (!drafts || busy) return;
     setBusy(true);
     setError("");
     try {
       await onSave(drafts.map((e) => ({ ...e, event: e.event.trim() })));
       setDrafts(null);
+      onEditingChange(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -61,7 +64,7 @@ export default function HistoryPanel({
           <span className="inline-flex items-center rounded-full bg-slate-800/60 border border-slate-700/60 px-4 py-1.5">📜 过往事件</span>
         </h4>
         {editable && !editing && (
-          <button onClick={() => setDrafts(chronological(events))} className={BTN}>✎ 编辑</button>
+          <button onClick={() => { setDrafts(chronological(events)); onEditingChange(true); }} className={BTN}>✎ 编辑</button>
         )}
       </div>
 
@@ -72,7 +75,7 @@ export default function HistoryPanel({
               <li key={i} className="bg-slate-950/50 border border-slate-800/70 rounded-lg px-3 py-2">
                 <p className="text-xs text-slate-200 leading-relaxed">{e.event}</p>
                 <p className="mt-1 text-[10px] text-slate-500">
-                  {when(e.hours_before_start)} · {e.figure_ids.map(nameOf).join("、") || "无相关角色"} · 重要度 {pct(e.importance)}
+                  {when(e.hours_before_start)} · {e.figure_ids.map(nameOf).join("、") || "无相关角色"} · 重要程度 {pct(e.importance)}
                 </p>
               </li>
             ))}
@@ -117,7 +120,7 @@ export default function HistoryPanel({
                   );
                 })}
               </div>
-              {!e.figure_ids.length && <p className="text-[10px] text-amber-400/80">至少选一位相关角色：没有人经历过的事，没有人记得。</p>}
+              {!e.figure_ids.length && <p className="text-[10px] text-amber-400/80">请至少选择一名相关角色，事件将写入所选角色的记忆。</p>}
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-slate-400">
                 <label className="flex items-center gap-1.5">
                   故事开始前
@@ -132,7 +135,7 @@ export default function HistoryPanel({
                   小时（{durationLabel(e.hours_before_start * 3600)}）
                 </label>
                 <label className="flex items-center gap-1.5">
-                  <span className="shrink-0 whitespace-nowrap">重要度</span>
+                  <span className="shrink-0 whitespace-nowrap">重要程度</span>
                   <input
                     type="range"
                     min={0}
@@ -163,7 +166,7 @@ export default function HistoryPanel({
           </button>
           {error && <p className="text-[11px] text-rose-400">{error}</p>}
           <div className="flex justify-end gap-2">
-            <button onClick={() => { setDrafts(null); setError(""); }} disabled={busy} className={BTN}>取消</button>
+            <button onClick={() => { setDrafts(null); setError(""); onEditingChange(false); }} disabled={busy} className={BTN}>取消</button>
             <button onClick={() => void save()} disabled={busy} className={BTN_PRIMARY}>{busy ? "保存中…" : "保存"}</button>
           </div>
         </div>

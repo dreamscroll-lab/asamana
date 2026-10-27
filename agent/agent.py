@@ -262,20 +262,34 @@ class Agent:
         gender = identity.gender or (known.gender if known else "")
         self._known_agents[agent_id] = PerceivedIdentity(name=identity.name, gender=gender)
 
-    def _resolve_agent_names(self, agent_ids) -> Dict[str, str]:
-        """agent_id → display name for memory prose; unknown ids become "某人" (someone), never a
-        bare id (a layer leak). Bare names only: person_referent's parentheses are for rosters.
+    def _known_identity(self, agent_id: str, relation: AgentRelation | None) -> PerceivedIdentity:
+        """What I can call someone: what I perceived this run, gaps filled from my relation's
+        ``to_name``/``to_gender`` (someone I know but haven't seen this run, e.g. after a restore or
+        a message to someone away). The one rule for naming a person in my own text; don't read
+        ``_known_agents`` alone for it, or a restore turns everyone I know into a stranger.
         """
-        return {
-            aid: ((who.name if (who := self._known_agents.get(aid)) else "") or "某人")
-            for aid in agent_ids
-        }
+        known = self._known_agents.get(agent_id)
+        return PerceivedIdentity(
+            name=(known.name if known else "") or (relation.to_name if relation else ""),
+            gender=(known.gender if known else "") or (relation.to_gender if relation else ""),
+        )
+
+    async def _resolve_agent_names(self, agent_ids) -> Dict[str, str]:
+        """agent_id → display name for memory prose, by ``_known_identity``. Unknown ids become
+        "某人" (someone), never a bare id (a layer leak). Bare names only: person_referent's
+        parentheses are for rosters.
+        """
+        names: Dict[str, str] = {}
+        for aid in agent_ids:
+            relation = await self.relation_system.load_existing(aid)
+            names[aid] = self._known_identity(aid, relation).name or "某人"
+        return names
 
     async def _resolve_relation_context(self, agent_ids, *, include_legend: bool = True) -> str:
         """Build the "my relations with the people involved" block for memory writes.
 
-        Skips empty default relations. Names come from the agent's own knowledge (_known_agents /
-        relation.to_name); unknowns get a descriptive referent, never an id.
+        Skips empty default relations. Names come from ``_known_identity``; unknowns get a
+        descriptive referent, never an id.
         """
         named: list[tuple[str, AgentRelation]] = []
         seen: set[str] = set()
@@ -288,13 +302,9 @@ class Agent:
                 continue
             if rel.interaction_count == 0 and not rel.labels and not rel.history_summary:
                 continue
-            known = self._known_agents.get(aid)
-            name = (known.name if known else "") or rel.to_name or ""
-            if not name:
-                name = "某位与我有往来的人"
-            gender = (known.gender if known else "") or rel.to_gender
+            identity = self._known_identity(aid, rel)
             marks = (DECEASED_MARK,) if aid in self._dead_agent_ids else ()
-            named.append((person_referent(name, gender, *marks), rel))
+            named.append((person_referent(identity.name or "某位与我有往来的人", identity.gender, *marks), rel))
         return render_relation_context(named, include_legend=include_legend)
 
     async def relation_context(self, agent_ids: Iterable[str]) -> str:
@@ -311,7 +321,7 @@ class Agent:
         only precomputed state and never depends on RelationSystem.
         """
         return (
-            self._resolve_agent_names(agent_ids),
+            await self._resolve_agent_names(agent_ids),
             await self._resolve_relation_context(agent_ids),
         )
 
@@ -910,11 +920,12 @@ class Agent:
             self._trigger_death(step, cause=death_cause)
 
     def _trigger_death(self, step: int, cause: str | None = None) -> None:
-        """Agent-internal death: only flip the active flag and record the cause phrase.
+        """Agent-internal death: only flip the active flag and record the step and cause phrase.
 
         Never write an "I died" memory: there is no experiencing subject after death. World-side
         handling belongs to DeathHandler.process_new_deaths."""
         self.set_active(False)
+        self.personality.mark_dead(step)
         self.death_cause = cause
         logger.info("agent_died", extra={"agent_id": self.agent_id, "step": step})
 
@@ -1612,9 +1623,13 @@ class Agent:
             return 0
         return self._foiled_misses.get(key, (0, 0))[0]
 
-    def defer_decided_intent(self, action: "AgentAction", step: int) -> None:
+    async def defer_decided_intent(self, action: "AgentAction", step: int, *, invited_by: str = "") -> None:
         """Keep the intent of an agent who decided this step but was drawn into someone else's
         action; the signals behind it lived one step, so otherwise it is lost for good.
+
+        ``invited_by`` is the inviter when the agent accepted an invitation, "" when compelled.
+        Don't tell an accepted invitation as being dragged in: that would turn the character's
+        own choice into something done to it.
 
         Goes into the foiled buffer (same kind of thing as ``not_executed``), not the short-term
         goal queue: the queue would hold a concrete action, which the goal prompt forbids, and
@@ -1627,7 +1642,12 @@ class Agent:
         if not text:
             return
         # No "我本想" ("I meant to") prefix: action_description is already first-person.
-        fact = f"{text}——却被卷入他人的事，行动没能做成。"
+        if invited_by:
+            relation = await self.relation_system.load_existing(invited_by)
+            inviter = self._known_identity(invited_by, relation).name or "某人"
+            fact = f"{text}——后来接受了{inviter}的邀请，这件事没有去做。"
+        else:
+            fact = f"{text}——却被卷入他人的事，行动没能做成。"
         self._note_foiled(action, step=step, text=fact)
         if self.actor is not None:
             # Told like an act the arbiter turned away: it set out and never engaged the world.

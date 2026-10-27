@@ -204,7 +204,7 @@ export class Announcer {
       .setResolution(TEXT_RES);
     // Generic channel eyebrow (not theme content), so the sentence isn't unlabeled floating text.
     const tag = this.host.add
-      .text(0, 0, from ? `◈ ${from.name}信息 ◈` : "◈ 世界广播 ◈", {
+      .text(0, 0, from ? `◈ ${from.name}的消息 ◈` : "◈ 世界广播 ◈", {
         fontFamily: FONT,
         fontSize: "12px",
         fontStyle: "bold",

@@ -21,7 +21,7 @@ describe("describeDecisionSummary", () => {
     const self = { agent_id: "self", name: "李世民" };
     const text = describeDecisionSummary(decisionSummary({ operation: "rest", target: { kind: "agent", id: "self" } }), briefing, self);
     expect(text.details).toEqual(["对象：李世民"]);
-    expect(text.headline).toContain("歇息");
+    expect(text.headline).toContain("休息");
   });
   it("uses the loading fallback only for self and never resolves other people from the public cast", () => {
     const cast = { self: { agent_id: "self", name: "李世民" }, hidden: { agent_id: "hidden", name: "未见之人" } };
@@ -37,7 +37,7 @@ describe("describeDecisionSummary", () => {
       parameters: { destination_id: null, item_id: null, recipient_id: null, message: null, announce: null, anonymous: null },
       description: "避开要害",
     }, briefing);
-    expect(text).toEqual({ headline: "动手 · 避开要害", details: ["对象：李建成"] });
+    expect(text).toEqual({ headline: "💪 动手 · 避开要害", details: ["对象：李建成"] });
   });
   it("renders direct self operations without requiring supplemental words", () => {
     for (const operation of ["work", "rest", "covert"] as const) {
@@ -51,37 +51,38 @@ describe("describeDecisionSummary", () => {
   });
   it("reads a decision to do nothing this step as such, with no target", () => {
     expect(describeDecisionSummary(decisionSummary({ operation: "idle", description: "", target: null, estimated_duration_seconds: 0 }), briefing))
-      .toEqual({ headline: "⏸ 这次先不动", details: [] });
+      .toEqual({ headline: "⏸ 本步不行动", details: [] });
   });
   it("shows how pressing a message is and what the step is for", () => {
     const text = describeDecisionSummary(decisionSummary({
       operation: "send_message", target: null, parameters: { message: "速来", urgency: "high", expected_outcome: "让他赶来" },
     }), briefing);
-    expect(text.details).toEqual(["内容：速来", "紧急程度：急", "想要的结果：让他赶来"]);
+    expect(text.details).toEqual(["内容：速来", "紧急程度：紧急", "预期结果：让他赶来"]);
   });
   it("names the current location outside the reachable places", () => {
     expect(describeDecisionSummary(decisionSummary({ operation: "broadcast", target: { kind: "location", id: "hall" } }), briefing).details).toEqual(["对象：大堂"]);
   });
   it("never displays unknown identifiers", () => {
-    expect(describeDecisionSummary(decisionSummary({ operation: "move", target: { kind: "location", id: "unknown" } }), briefing).details).toEqual(["对象：某处"]);
+    expect(describeDecisionSummary(decisionSummary({ operation: "move", target: { kind: "location", id: "unknown" } }), briefing).details).toEqual(["对象：某地"]);
   });
   it("renders unconstrained action types and their meaningful parameters", () => {
     const text = describeDecisionSummary(decisionSummary({ operation: "send_message", parameters: { message: "留步", person_ids: ["b", "c"], announce: false } }), briefing);
-    expect(text.headline).toBe("📨 传信 · 劝他别进宫");
-    expect(text.details).toContain("送给：李建成、李元吉");
+    expect(text.headline).toBe("📨 发送消息 · 劝他别进宫");
+    expect(text.details).toContain("接收：李建成、李元吉");
     expect(text.details).toContain("内容：留步");
-    expect(describeDecisionSummary(decisionSummary({ operation: "rest", target: null }), briefing).headline).toContain("💤 歇息");
+    expect(describeDecisionSummary(decisionSummary({ operation: "rest", target: null }), briefing).headline).toContain("💤 休息");
   });
   it("shows carried people, recipients and objects without leaking ids", () => {
     const text = describeDecisionSummary(decisionSummary({ operation: "move", parameters: { move_carry_ids: ["c"], destination_id: "gate", item_id: "unknown", recipient_id: "b", item_name: "账本" } }), briefing);
-    expect(text.details).toEqual(["对象：李建成", "去往：玄武门", "带去：某物", "交给：李建成", "强行带走：李元吉", "物品：账本"]);
+    expect(text.details).toEqual(["对象：李建成", "目的地：玄武门", "携带物品：某物", "接收：李建成", "强行带走：李元吉", "物品：账本"]);
   });
 });
 describe("reasonText", () => {
   it("maps known reasons and falls back for unknown reasons", () => {
-    expect(reasonText("talk_target_not_present")).toBe("你想说话的人不在眼前。");
-    expect(reasonText("destination_id_not_perceived")).toContain("不在你能触及的范围");
-    expect(reasonText("something_new")).toBe("这样做不成，换个说法试试。");
+    expect(reasonText("talk_target_not_present")).toBe("交谈对象不在当前地点。");
+    expect(reasonText("physical_recipient_not_held")).toBe("你未持有要转交的物品。");
+    expect(reasonText("destination_id_not_perceived")).toContain("不在当前可感知范围");
+    expect(reasonText("something_new")).toBe("当前无法执行该操作，请调整后重试。");
     expect(reasonText(null)).toBe("");
   });
 });

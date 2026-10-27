@@ -29,7 +29,7 @@ const TABS: { key: Tab; label: string }[] = [
   { key: "emotion", label: "情绪" },
   { key: "goals", label: "目标" },
   { key: "relations", label: "关系" },
-  { key: "insight", label: "感悟" },
+  { key: "insight", label: "洞察" },
 ];
 
 // The backend's cap on one insight (interaction/api/actor.py).
@@ -261,7 +261,7 @@ export default function MindPanel({
       )}
       {tab === "relations" && (
         <div className="space-y-1.5">
-          {mind.relations.length === 0 && <p className="text-[12px] text-slate-600">你还没和谁有过交集。</p>}
+          {mind.relations.length === 0 && <p className="text-[12px] text-slate-600">暂无关系。</p>}
           {mind.relations.map((r) => (
             <RelationLine
               key={r.agent_id}
@@ -292,7 +292,7 @@ export default function MindPanel({
             onChange={(e) => setDraft({ ...draft, insight: e.target.value })}
             rows={2}
             maxLength={MAX_INSIGHT}
-            placeholder="想明白了什么？写下一条，比如：大哥终究容不下我"
+            placeholder="以你的视角记录一条新的认识或理解…"
             className={EDIT_BOX}
           />
         </div>
@@ -325,7 +325,7 @@ export default function MindPanel({
 }
 
 function Mark({ pending, edited }: { pending: boolean; edited: boolean }) {
-  if (edited) return <span className="text-[10px] text-indigo-300">已改</span>;
+  if (edited) return <span className="text-[10px] text-indigo-300">未保存</span>;
   if (pending) return <span className="text-[10px] text-amber-300/80">待生效</span>;
   return null;
 }
@@ -366,9 +366,9 @@ function EmotionTab({
           </button>
         )}
       </div>
-      <div className="flex flex-wrap gap-3">
-        <Slider label="强烈" range={EMOTION_INTENSITY_RANGE} value={value.intensity} onChange={(v) => set({ intensity: v })} />
-        <Slider label="好坏" range={EMOTION_VALENCE_RANGE} value={value.valence} onChange={(v) => set({ valence: v })} />
+      <div className="grid grid-cols-2 gap-3">
+        <Slider label="强度" range={EMOTION_INTENSITY_RANGE} value={value.intensity} onChange={(v) => set({ intensity: v })} />
+        <Slider label="正负值" range={EMOTION_VALENCE_RANGE} value={value.valence} onChange={(v) => set({ valence: v })} />
       </div>
     </div>
   );
@@ -452,16 +452,16 @@ function RelationLine({
           </button>
         )}
       </div>
-      <div className="flex flex-wrap gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <Slider
-          label="信任"
+          label="信任度"
           range={TRUST_RANGE}
           value={trust}
           delta={moved?.trust}
           onChange={(v) => onChange({ trust: v, affection: edit?.affection ?? null })}
         />
         <Slider
-          label="好感"
+          label="好感度"
           range={AFFECTION_RANGE}
           value={affection}
           delta={moved?.affection}
@@ -487,8 +487,8 @@ function Slider({
 }) {
   const moved = delta !== undefined && Math.abs(delta) >= 0.005;
   return (
-    <label className="flex items-center gap-1 text-[11px] text-slate-500">
-      {label}
+    <label className="flex min-w-0 items-center gap-1 text-[11px] text-slate-500">
+      <span className="shrink-0 whitespace-nowrap">{label}</span>
       <input
         type="range"
         min={range[0]}
@@ -496,11 +496,11 @@ function Slider({
         step={0.05}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="w-20 accent-indigo-500"
+        className="w-0 min-w-0 flex-1 border-0 bg-transparent p-0 accent-indigo-500"
       />
-      <span className="w-8 tabular-nums text-slate-400">{value.toFixed(2)}</span>
+      <span className="w-8 shrink-0 tabular-nums text-slate-400">{value.toFixed(2)}</span>
       {moved && (
-        <span className={`tabular-nums ${delta! > 0 ? "text-emerald-400/80" : "text-rose-400/80"}`}>
+        <span className={`shrink-0 tabular-nums ${delta! > 0 ? "text-emerald-400/80" : "text-rose-400/80"}`}>
           {delta! > 0 ? "↑" : "↓"}
           {Math.abs(delta!).toFixed(2)}
         </span>

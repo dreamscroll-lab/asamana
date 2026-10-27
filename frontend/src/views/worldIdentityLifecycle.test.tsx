@@ -52,6 +52,7 @@ vi.mock("../api/client", () => ({ API_BASE: "", api: {
 
 import { api } from "../api/client";
 import ReviewView from "./ReviewView";
+import { blankDraft } from "../components/setup/CharacterEditor";
 import WorldView from "./WorldView";
 
 const meta: WorldMeta = {
@@ -61,6 +62,8 @@ const meta: WorldMeta = {
   actor_pace: "every_step", director_reviewed: false,
 };
 const setup: SetupView = {
+  narrative_theme: "",
+  opening_time: { era_name: "", start_year: 1, start_month: 1, start_day: 1, start_hour: 6 },
   entities: [], npcs: [],
   seconds_per_step: 3600, historical_events: [], relations: [],
   characters: [{
@@ -131,6 +134,23 @@ describe("world identity phase boundary", () => {
     state.values.set(12, false);
     renderToStaticMarkup(<ReviewView />);
     expect(controls.confirmDisabled).toBe(false);
+  });
+
+  it.each([12, 13, 15, 16])("blocks confirmation for an open setup draft at state %i", (index) => {
+    state.values.set(0, { ...meta, director_reviewed: true });
+    state.values.set(5, setup);
+    state.values.set(index, true);
+    const html = renderToStaticMarkup(<ReviewView />);
+    expect(controls.confirmDisabled).toBe(true);
+    expect(html).not.toContain("✎ 编辑");
+  });
+
+  it("blocks confirmation while a character draft is open", () => {
+    state.values.set(0, { ...meta, director_reviewed: true });
+    state.values.set(5, setup);
+    state.values.set(6, { id: null, draft: blankDraft({ emotions: [], needs: [] }) });
+    renderToStaticMarkup(<ReviewView />);
+    expect(controls.confirmDisabled).toBe(true);
   });
 
   it("uses global identities for confirmed director review", () => {

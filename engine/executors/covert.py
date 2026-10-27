@@ -231,16 +231,16 @@ class CovertExecutor(ActionExecutor):
             else:
                 suffix = ""  # adjudication failed — record the interruption, claim no detection outcome
             fact = (
-                f"秘密行动「{state.purpose}」进行了{elapsed_label}后被迫中止{suffix}"
+                f"暗中探查「{state.purpose}」进行了{elapsed_label}后被迫中止{suffix}"
                 if elapsed > 0
-                else f"秘密行动「{state.purpose}」刚开始就被迫中止{suffix}"
+                else f"暗中探查「{state.purpose}」刚开始就被迫中止{suffix}"
             )
         if not outcome:
             suffix = ("，被人察觉了" if detected else "，幸未被察觉") if detection_known else ""
             outcome = (
-                f"{doer_name}的秘密行动「{state.purpose}」进行了{elapsed_label}后被迫中止{suffix}"
+                f"{doer_name}的暗中探查「{state.purpose}」进行了{elapsed_label}后被迫中止{suffix}"
                 if elapsed > 0
-                else f"{doer_name}的秘密行动「{state.purpose}」刚开始就被迫中止{suffix}"
+                else f"{doer_name}的暗中探查「{state.purpose}」刚开始就被迫中止{suffix}"
             )
 
 
@@ -291,7 +291,7 @@ class CovertExecutor(ActionExecutor):
         if not detected or not body:
             return []
         return observed_here(
-            environment, doer_id, f"[秘密行动暴露] {scene_line(observe_location(environment, doer_id), body)}",
+            environment, doer_id, f"[暗中探查暴露] {scene_line(observe_location(environment, doer_id), body)}",
             strength=SALIENT_AMBIENT_STRENGTH,
         )
 
@@ -317,7 +317,7 @@ class CovertExecutor(ActionExecutor):
             logger.warning("covert_judge_no_doer", extra={"purpose": purpose})
             return None
 
-        expected_part = f"\n- 期望结果：{expected_outcome}" if expected_outcome else ""
+        expected_part = f"\n- 预期结果：{expected_outcome}" if expected_outcome else ""
         # Memory-shaped input, so it follows the memory-injection contract (ordering,
         # MEMORY_ORDER_HINT, recency_prefix). Say it even when empty: otherwise the judge
         # invents findings to match expected_outcome.
@@ -339,17 +339,17 @@ class CovertExecutor(ActionExecutor):
         # keeps the findings out of context while the traces are written.
         system = """\
 【裁决任务】
-你是中立的世界裁决者。裁定一次秘密行动的两件事：他探到了什么（achieved），行迹是否被察觉（detected）。
+你是中立的世界裁决者。裁定一次暗中探查的两件事：他探到了什么（achieved），行迹是否被察觉（detected）。
 下面会给你「此处先后发生的事」。**你的活是判断他这一趟接住了其中哪些**，不是替他编一份情报——那里面没有的，一个字都不许添。
 
 【裁决原则】
 - 在场不等于看见：判暴露必须存在可信的感知通道（视线、声响、留下的痕迹）。
 - 对于能拿到什么信息需要符合物理常识和空间常识，比如在吵杂的环境或者说话声音本来就很小，那就有可能听不到内容，或者听到部分内容。
-- 下面那些事**都发生在他秘密行动的这段时间里，落到他眼里耳里**，他当时就在场。**不要因为某条标着「几小时前」就判他够不着**——那只说明它落在这段时间的较早处，不是说他当时不在。他接没接住，取决于上一条说的物理与空间条件，不取决于时间远近。
+- 下面那些事**都发生在他暗中探查的这段时间里，落到他眼里耳里**，他当时就在场。**不要因为某条标着「几小时前」就判他够不着**——那只说明它落在这段时间的较早处，不是说他当时不在。他接没接住，取决于上一条说的物理与空间条件，不取决于时间远近。
 - 不得因为现场有人就一律判暴露，也不得因为四下无人就一律判他探到了东西。
 - 是否被发觉和这一趟探到了什么需要分别裁定，不要混为一谈。
 - 不得因为行动者身份强势或性格果决就一律判成功，现场条件与行动难度同样起作用。
-- achieved 问的是「有没有探到本来拿不到的东西」，不是「这次秘密行动做完没有」：走了一趟什么都没有拿到，就是 false。
+- achieved 问的是「有没有探到本来拿不到的东西」，不是「这次暗中探查做完没有」：走了一趟什么都没有拿到，就是 false。
 - 此处这段时间没发生什么，或发生的都是他本来就看得见的，同样是 false。空手而归是常态，照实判。
 - 结合在场者各自的背景/性情，权衡他们对此事的立场（倾向揭发、佯装不见、还是漠不关心）：
   即便察觉，立场不同的人是否会声张大不相同——这与「物理上看没看见」一并影响 detected。
@@ -380,13 +380,13 @@ class CovertExecutor(ActionExecutor):
 {agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{doer_condition}
 
 【行动】
-- 秘密行动意图：{purpose}
+- 暗中探查意图：{purpose}
 - 投入时间：{duration_label}{expected_part}{interrupt_part}
 
 【现场】
 {scene if scene else "（现场情况不明）"}
 
-【他秘密行动的这段时间里，落到他眼里耳里的事】（{MEMORY_ORDER_HINT}；他接住了其中哪些由你裁断）
+【他暗中探查的这段时间里，落到他眼里耳里的事】（{MEMORY_ORDER_HINT}；他接住了其中哪些由你裁断）
 {happenings_block}
 
 依上面说定的 JSON 格式与字段先后给出裁决，只输出 JSON、不写任何多余内容。"""
@@ -394,13 +394,13 @@ class CovertExecutor(ActionExecutor):
         facts = (
             GivenFacts()
             .add("行动者处境", doer_condition)
-            .add("秘密行动意图", purpose)
+            .add("暗中探查意图", purpose)
             .add("投入时间", duration_label)
-            .add("期望结果", expected_outcome)
+            .add("预期结果", expected_outcome)
             .add("中途变故", interrupt_part.partition("：")[2])
             .add("现场", scene or "情况不明")
             # Omitting it would make the audit flag well-sourced findings as invented.
-            .add("他秘密行动时落到眼里耳里的事", happenings_block)
+            .add("他暗中探查时落到眼里耳里的事", happenings_block)
         )
         with annotate_call(given_facts=facts):
             data = await complete_json(

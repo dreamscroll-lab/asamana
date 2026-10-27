@@ -128,7 +128,7 @@ async def test_a_tool_body_is_told_and_it_goes() -> None:
     # The observer's deed comes from this action record: ERRAND is its own action.
     assert action_semantics(result.action, result)["deed"] == "errand"
     assert "宫门" in result.outcome and "今夜勿出" in result.outcome    # full authoritative view
-    assert result.factual_memory.startswith("我派")                    # first person
+    assert result.factual_memory.startswith("我向")                    # first person
     # Bystanders see him call the man over, say a few words, and the man leave, but not what he was
     # told.
     assert result.observations
@@ -159,7 +159,7 @@ async def test_a_body_already_out_on_one_cannot_be_sent_again() -> None:
     assert result.succeeded is False
     assert result.adjudication_failed is False        # a real event, not a null step
     assert result.errand_orders == []                 # no second errand appears in the world
-    assert "抽不开身" in result.failure_reason
+    assert "正在执行别人指派的任务" in result.failure_reason
     assert result.factual_memory                      # he still remembers being foiled this step
 
 
@@ -193,10 +193,10 @@ async def test_two_people_cannot_send_the_same_body_on_the_same_beat() -> None:
 
     assert first.succeeded is True and first.errand_orders
     assert second.succeeded is False and second.errand_orders == []
-    assert "抽不开身" in second.failure_reason
+    assert "正在执行别人指派的任务" in second.failure_reason
     assert second.adjudication_failed is False        # a real event, not a null step
     # The later requester's narrative must say it didn't happen.
-    assert "未能成行" in second.outcome and second.not_executed is True
+    assert "未能完成指派" in second.outcome and second.not_executed is True
     # The world holds only one errand, owned by whoever came first.
     assert env.get_npc(npc_id).errand.requester_id == "a1"
 
@@ -349,8 +349,7 @@ async def test_a_bare_look_brings_back_both_what_is_there_and_what_just_happened
     assert "宫门" in report and "旌旗" in report          # what's there
     assert "两名守卒起了争执" in report                   # what just happened there
     assert "王二" not in report                          # he isn't news there himself
-    # Say so even if nothing happened; a blank would read as "he didn't look".
-    assert "刚发生的事" in report
+    assert "当时发生的事" in report
 
 
 @pytest.mark.asyncio
@@ -791,7 +790,7 @@ async def test_every_cell_of_the_space_reads_as_its_own_errand() -> None:
     """
     cells = [
         # (carries item, names person, carries message) → the line that must appear in the report
-        ((False, False, False), "刚发生的事"),   # "go look": what he saw comes back
+        ((False, False, False), "到达时所见"),   # "go look": what he saw comes back
         ((False, False, True),  "当着"),
         ((False, True,  False), "在宫门。"),
         ((False, True,  True),  "话已带到"),
@@ -843,7 +842,7 @@ def test_the_judge_and_the_runner_read_the_same_errand_the_same_way() -> None:
 
     # The phrase the judge side must name in each cell, matching the runner-side test cell by cell.
     for (carry, name, speak), must_say in [
-        ((False, False, False), "去宫门走一趟"),   # destination-only is a task too
+        ((False, False, False), "前往宫门"),   # destination-only is a task too
         ((False, False, True),  "宫门当众"),
         ((False, True,  False), "在不在宫门"),
         ((False, True,  True),  "带一句话"),
@@ -1024,14 +1023,21 @@ async def test_the_report_says_where_the_words_end_and_the_scene_begins() -> Non
     runner, messages = _runner(env)
     env.assign_errand(ErrandOrder(npc_id, "gate", ()), requester_id="a1")
     for step in (1, 2, 3):
+        env.begin_step(step=step, world_time=_world_time(step))
         await runner.advance(step)
 
     report = (await messages.collect(step=4))[0]
     spoken = report.metadata["spoken"]
     assert spoken and spoken != report.content
     assert report.content.startswith(spoken)     # spoken line first, then attachment
-    assert "那里的情形是这样" in report.content   # the scene is in the full text
-    assert "那里的情形是这样" not in spoken       # but not in the spoken line
+    assert f"到达时所见（{_world_time(1).time_label}）：" in report.content
+    assert _world_time(3).time_label not in report.content
+    assert "到达时所见" not in spoken
+    assert report.content.startswith(f"{spoken}\n\n 到达时所见")
+    assert "\n  - 地点：宫门" in report.content
+    assert "\n  - 在场的其他人：无" in report.content
+    assert "\n  - 现场物件：无" in report.content
+    assert "当时发生的事" not in report.content
 
 
 def test_the_wire_carries_both_halves_and_an_ordinary_letter_has_only_one() -> None:

@@ -291,7 +291,7 @@ export default function CharacterBody({
     ),
     mood: live ? (
       <>
-        <Section label="此刻情绪">
+        <Section label="当前情绪">
           <span className={`text-sm font-semibold ${emotionColor(live.private.emotion_valence)}`}>{live.private.emotion_label}</span>
         </Section>
         {live.private.emotion_intensity != null && (
@@ -314,9 +314,9 @@ export default function CharacterBody({
     ),
     heart:
       ties == null ? (
-        <span className="text-slate-500 animate-pulse">读取关系…</span>
+        <span className="text-slate-500 animate-pulse">正在加载关系…</span>
       ) : ties.length === 0 ? (
-        <span className="text-slate-600">尚无关系</span>
+        <span className="text-slate-600">暂无关系</span>
       ) : (
         <div className="space-y-2.5">
           {ties.map(({ edge, to }) => (
@@ -330,10 +330,10 @@ export default function CharacterBody({
                 <span className="text-slate-500 truncate">{edge.labels.join(" · ")}</span>
               </div>
               <div className="grid grid-cols-[3rem_1fr_2rem] items-center gap-x-2 gap-y-1 text-[10px] text-slate-500">
-                <span>信任</span>
+                <span>信任度</span>
                 <Meter value={edge.trust} tone="bg-emerald-400/80" />
                 <span className="font-mono text-right">{pct(edge.trust)}</span>
-                <span>好感</span>
+                <span>好感度</span>
                 <Meter value={edge.affection} min={-1} tone={edge.affection < 0 ? "bg-rose-400/80" : "bg-pink-400/80"} />
                 <span className="font-mono text-right">{pct(edge.affection)}</span>
               </div>
@@ -459,7 +459,7 @@ export default function CharacterBody({
               className="absolute grid place-items-center text-xs text-slate-500"
               style={{ left: figX, top: figY, width: figW, height: figH }}
             >
-              {figureFailed || castStatus === "error" ? "形象图不可用" : <span className="animate-pulse">描绘中…</span>}
+              {figureFailed || castStatus === "error" ? "角色形象不可用" : <span className="animate-pulse">正在加载角色图像…</span>}
             </div>
           )}
           {dead && (

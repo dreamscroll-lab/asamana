@@ -51,6 +51,7 @@ def encode_agent_state(world_id: str, agent_id: str, state: StateLayer) -> Agent
         short_term_goal_entities=[_goal_entity_to_dict(g) for g in state.short_term_goal_entities],
         need_intensities=dict(state.need_intensities),
         vitality=state.vitality,
+        death_step=state.death_step,
         condition=condition_to_dict(state.condition),
         # 0 at world init = "never decided": the scheduler's cadence gate treats every agent as
         # starved on step 1, so a fresh world does not open on a step where nobody thought.
@@ -112,6 +113,7 @@ def decode_agent_state(agent_id: str, stored: AgentState, *, orphaned: bool) -> 
         ],
         need_intensities=dict(stored.need_intensities),
         vitality=stored.vitality,
+        death_step=stored.death_step,
         # Stored as a dict (see the AgentState.condition comment), rebuilt into a BodyCondition here.
         condition=condition_from_dict(stored.condition),
         # Without it everyone's starvation resets to zero after restore and they all flood the

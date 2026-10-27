@@ -87,12 +87,12 @@ function Direction({
           />
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400">
             <label className="flex items-center gap-1.5">
-              <span className="shrink-0 whitespace-nowrap">信任</span>
+              <span className="shrink-0 whitespace-nowrap">信任度</span>
               <input type="range" min={0} max={1} step={0.05} value={trust} disabled={busy} onChange={(e) => onChange({ trust: Number(e.target.value) })} />
               <span className="tabular-nums w-7">{pct(trust)}</span>
             </label>
             <label className="flex items-center gap-1.5">
-              <span className="shrink-0 whitespace-nowrap">好感</span>
+              <span className="shrink-0 whitespace-nowrap">好感度</span>
               <input type="range" min={-1} max={1} step={0.05} value={affection} disabled={busy} onChange={(e) => onChange({ affection: Number(e.target.value) })} />
               <span className="tabular-nums w-8">{pct(affection)}</span>
             </label>
@@ -100,7 +100,7 @@ function Direction({
         </>
       ) : (
         <p className="text-[11px] text-slate-500">
-          {labels || "无标签"} · 信任 {pct(trust)} · 好感 {pct(affection)}
+          {labels || "无标签"} · 信任度 {pct(trust)} · 好感度 {pct(affection)}
         </p>
       )}
     </div>
@@ -112,10 +112,12 @@ export default function RelationPanel({
   cast,
   editable,
   onSave,
+  onEditingChange,
 }: {
   relations: SetupRelationView[];
   cast: Cast;
   editable: boolean;
+  onEditingChange: (editing: boolean) => void;
   // Rejects with the backend's reason; the drafts stay so they can be fixed.
   onSave: (relations: SetupRelationView[]) => Promise<void>;
 }) {
@@ -131,12 +133,13 @@ export default function RelationPanel({
     setDrafts((d) => d && d.map((r, j) => (j === i ? { ...r, ...patch } : r)));
 
   async function save() {
-    if (!drafts || problem) return;
+    if (!drafts || problem || busy) return;
     setBusy(true);
     setError("");
     try {
       await onSave(drafts.map(relationOf));
       setDrafts(null);
+      onEditingChange(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -158,7 +161,7 @@ export default function RelationPanel({
           <span className="inline-flex items-center rounded-full bg-slate-800/60 border border-slate-700/60 px-4 py-1.5">🤝 初始关系</span>
         </h4>
         {editable && !drafts && (
-          <button onClick={() => setDrafts(relations.map(draftOf))} className={BTN}>✎ 编辑</button>
+          <button onClick={() => { setDrafts(relations.map(draftOf)); onEditingChange(true); }} className={BTN}>✎ 编辑</button>
         )}
       </div>
 
@@ -234,7 +237,7 @@ export default function RelationPanel({
           </button>
           {(problem || error) && <p className="text-[11px] text-rose-400">{problem ?? error}</p>}
           <div className="flex justify-end gap-2">
-            <button onClick={() => { setDrafts(null); setError(""); }} disabled={busy} className={BTN}>取消</button>
+            <button onClick={() => { setDrafts(null); setError(""); onEditingChange(false); }} disabled={busy} className={BTN}>取消</button>
             <button onClick={() => void save()} disabled={busy || !!problem} className={BTN_PRIMARY}>{busy ? "保存中…" : "保存"}</button>
           </div>
         </>

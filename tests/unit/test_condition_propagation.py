@@ -262,10 +262,10 @@ def test_every_prompt_that_narrates_a_body_is_told_its_condition() -> None:
         "agent/memory.py":                 "体验记忆散文（被 embedding）",
         "engine/executors/social.py":      "对白转录 + 两处会话记忆",
         "engine/executors/work.py":        "劳作自评 + 被打断的记忆",
-        "engine/narrative_editor.py":                 "事件编辑的人物简报（与体力并列）",
+        "engine/narrative_editor.py":                 "事件编辑的人物简报（与生命值并列）",
         "engine/executors/physical.py":    "物理裁决双方 + 承受方第一人称反应",
         # ② Rules on whether this body can do it
-        "engine/executors/covert.py":      "潜行/窥探的可行性",
+        "engine/executors/covert.py":      "暗中探查的可行性",
         "engine/scene.py":                 "裁决现场的在场者（四个 executor 共用）",
         "engine/world_pressure.py":        "外部压力评估的目标与同处者",
         "engine/presence.py":              "感知包的身份+处境唯一装配点",

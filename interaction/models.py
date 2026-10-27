@@ -284,6 +284,8 @@ class SetupView:
     """A world's complete revisable setup, read-only after confirmation."""
 
     seconds_per_step: int
+    narrative_theme: str = ""
+    opening_time: dict[str, Any] = field(default_factory=dict)
     characters: list[CharacterSetupView] = field(default_factory=list)
     entities: list[EntitySetupView] = field(default_factory=list)
     npcs: list[NpcSetupView] = field(default_factory=list)
@@ -745,6 +747,8 @@ class AgentView:
     # None: not known to this viewer (the actor's view, ``interaction.actor_view``).
     is_main_character: bool | None = False
     is_active: bool = True
+    # The step he died in; None while alive. Public, like the body lying there.
+    death_step: int | None = None
     public: AgentPublicView = field(default_factory=lambda: AgentPublicView(activity_status=""))
     private: AgentPrivateView = field(default_factory=lambda: AgentPrivateView(emotion=""))
 
@@ -1142,6 +1146,7 @@ class _StepAssembler:
             is_main_character=bool(record.get("is_main_character", False)),
             # Vitality is the single source of truth for alive/dead.
             is_active=vitality is None or vitality > 0.0,
+            death_step=coerce_optional_int(record.get("death_step")),
             public=AgentPublicView(
                 activity_status=visible_activity,
                 activity_label=_member_label(AgentActivityStatus, visible_activity),

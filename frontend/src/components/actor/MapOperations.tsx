@@ -73,8 +73,8 @@ export default function MapOperations({ worldId, turn, selection, onClose }: {
         onClick={() => { setOperation(o.operation); setParameters({}); setDescription(""); setError(""); }}>{OPERATION_LABEL[o.operation] ?? o.operation}</button>)}</div>
       {capability && <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
         {operation === "broadcast" && <label className="block">{fieldLabel("message", "广播内容")}<textarea required={isRequired("message")} maxLength={500} className="block w-full bg-slate-900 rounded p-2" rows={2} value={parameters.message ?? ""} onChange={(e) => setParameters({ ...parameters, message: e.target.value })} onKeyDown={confirmOnEnter} /></label>}
-        {operation === "broadcast" && <label className="flex items-center gap-2"><input type="checkbox" checked={parameters.anonymous ?? false} onChange={(e) => setParameters({ ...parameters, anonymous: e.target.checked })} />匿名发送</label>}
         {operation !== "broadcast" && <label className="block">{fieldLabel("description", "描述")}<textarea maxLength={500} required={isRequired("description")} rows={2} className="block w-full bg-slate-900 rounded p-2" placeholder="描述希望如何行动" value={description} onChange={(e) => setDescription(e.target.value)} onKeyDown={confirmOnEnter} /></label>}
+        {(operation === "broadcast" || operation === "send_message") && <label className="flex items-center gap-2"><input type="checkbox" checked={parameters.anonymous ?? false} onChange={(e) => setParameters({ ...parameters, anonymous: e.target.checked || undefined })} />匿名发送</label>}
         <div className="flex justify-end"><button className={BTN_PRIMARY} disabled={busy || !capability.available || missingParameters(capability, parameters, description)}>{busy ? "处理中…" : "确认"}</button></div>
       </form>}
       {error && <p role="alert" className="text-rose-300">{error}</p>}

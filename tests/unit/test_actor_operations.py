@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.actor_operations import actor_operations, build_actor_decision_summary, build_actor_operation, requires_actor_interpretation
-from agent.decision import DecisionEngine
+from agent.decision import DecisionEngine, candidate_lists
 from agent.personality import ActionStatus
 from core.interfaces.action import ActionType, Ref
 from core.interfaces.actor import (
@@ -42,6 +42,7 @@ def _intent(operation: str, target: Ref, *, description: str = "", **parameters)
     (_intent("rest", Ref.agent("self"), description="休息一会儿"), True),
     (_intent("work", Ref.agent("self"), description="整理账册"), True),
     (_intent("covert", Ref.agent("self"), description="观察此处的谈话"), True),
+    (_intent("send_message", Ref.agent("self"), description="写信告诉他今晚别出门"), True),
 ])
 def test_interpretation_policy_follows_operation_semantics(intent: ActorIntent, expected: bool) -> None:
     assert requires_actor_interpretation(intent) is expected
@@ -158,7 +159,7 @@ def test_move_summary_duration_uses_scheduled_travel_time(travel_seconds: int, e
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["work", "covert"])
+@pytest.mark.parametrize("operation", ["work", "covert", "send_message"])
 @pytest.mark.parametrize("description", ["", " \n "])
 async def test_self_operations_reject_missing_description_without_parsing(container, operation: str, description: str) -> None:
     runtime, _messages, agents = _setup(container, "operations-description-required")
@@ -744,9 +745,9 @@ def test_self_capabilities_are_distinct_from_other_people() -> None:
     packet = _packet()
     capabilities = actor_operations("turn", Ref.agent(packet.agent_id), packet)
     assert [(c.operation.value, c.available) for c in capabilities.operations] == [
-        ("work", True), ("rest", True), ("covert", True),
+        ("work", True), ("rest", True), ("covert", True), ("send_message", True),
     ]
-    assert not {"work", "rest", "covert"}.intersection(
+    assert not {"work", "rest", "covert", "send_message"}.intersection(
         c.operation.value for c in actor_operations("turn", Ref.agent(HERE), packet).operations
     )
     assert [c.operation.value for c in actor_operations("turn", Ref.agent(HERE), packet).operations] == ["talk", "physical"]
@@ -769,7 +770,7 @@ def test_self_operations_preserve_targetless_execution_and_public_identity(conta
     assert decision_summary.target == Ref.agent(packet.agent_id) and decision_summary.operation == operation
     assert "某人" not in decision_summary.description
     if operation == "covert":
-        assert decision_summary.description == "我暗中观察"
+        assert decision_summary.description == "我暗中探查"
         assert "前往" not in decision_summary.description and "潜行" not in decision_summary.description
 
 
@@ -835,6 +836,45 @@ async def test_self_operation_ignores_unrelated_target_slots(container, operatio
         intent.description, personality=_make_personality(), packet=packet, intent=intent, base=base)
     bound = engine.bind_actor_action(decision.action, personality=_make_personality(), packet=packet)
     assert not bound.target.acts_on and not bound.target.claims and not bound.target.reaches
+
+
+async def _read_self_message(container, packet, *, reading_anonymous: bool, **parameters):
+    intent = _intent("send_message", Ref.agent(packet.agent_id), description="告诉他今晚别出门", **parameters)
+    base = build_actor_operation(intent, packet)
+    recipient = candidate_lists(packet).roster_ids.index(AWAY) + 1
+    container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps({
+        "decision": "act", "action_description": "我给他递话", "person_indices": [recipient],
+        "message_content": "今晚别出门", "anonymous": reading_anonymous,
+    })
+    engine = DecisionEngine(container.llm_router)
+    decision, _reason = await engine.interpret_actor_decision(
+        intent.description, personality=_make_personality(), packet=packet, intent=intent, base=base)
+    return intent, decision, engine
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("anonymous", [False, True])
+async def test_self_send_message_reads_recipients_words_and_an_unset_signature(container, anonymous: bool) -> None:
+    packet = _packet()
+    intent, decision, engine = await _read_self_message(container, packet, reading_anonymous=anonymous)
+    bound = engine.bind_actor_action(decision.action, personality=_make_personality(), packet=packet)
+    assert bound.action_type is ActionType.SEND_MESSAGE
+    assert bound.target.acts_on == [Ref.agent(AWAY)]
+    assert bound.content == "今晚别出门" and bound.anonymous is anonymous
+    summary = build_actor_decision_summary(decision, packet, seconds_per_step=3600, intent=intent)
+    assert summary.operation == "send_message" and summary.target == Ref.agent(packet.agent_id)
+    assert summary.parameters["person_ids"] == [AWAY] and summary.parameters["anonymous"] is anonymous
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("anonymous", [False, True])
+async def test_self_send_message_keeps_a_set_signature(container, anonymous: bool) -> None:
+    packet = _packet()
+    _, decision, _ = await _read_self_message(
+        container, packet, reading_anonymous=anonymous, anonymous=anonymous)
+    assert decision.action.anonymous is anonymous
+    with pytest.raises(ActorAnswerRejected, match="operation_constraint_conflict"):
+        await _read_self_message(container, packet, reading_anonymous=not anonymous, anonymous=anonymous)
 
 
 @pytest.mark.asyncio

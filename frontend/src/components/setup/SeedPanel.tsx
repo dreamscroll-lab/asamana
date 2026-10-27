@@ -108,7 +108,7 @@ export default function SeedPanel(props: Props) {
   const editor = editing && <form onSubmit={(event) => void save(event)} className="space-y-2 text-xs">
     <h5 className="m-0 text-xs font-semibold text-slate-300">{isNew ? addLabel : `编辑 · ${editing.draft.name}`}</h5>
     <fieldset disabled={busy} className="m-0 min-w-0 border-0 p-0 space-y-2">
-      {isNew && <label className="block text-[11px] text-slate-400">名字 <span className="text-slate-500">· 添加后不可修改</span>
+      {isNew && <label className="block text-[11px] text-slate-400">名称 <span className="text-slate-500">· 添加后不可修改</span>
         <input required autoFocus className={INPUT} value={editing.draft.name} onChange={(e) => update({ name: e.target.value })} />
       </label>}
       {editing.kind === "entity" ? <>
@@ -176,7 +176,7 @@ export default function SeedPanel(props: Props) {
       </h4>
       <span className="text-xs text-slate-500">{props.npcs.length} 人</span>
     </div>
-    <p className="text-[11px] leading-relaxed text-slate-500">NPC 没有心智，不能说话，世界中的任何角色都可以指派他去别的地方做传话，观察，移动物品等任务</p>
+    <p className="text-[11px] leading-relaxed text-slate-500">NPC 可由角色指派执行传话、现场查看和物品运送等任务。执行时按指定内容行动，不自主交谈或临场改变任务。</p>
     {!props.npcs.length && <p className="text-xs text-slate-500">暂无 NPC</p>}
     {props.npcs.map((npc) => <article key={npc.npc_id} className="bg-slate-950/50 border border-slate-800/70 rounded-lg p-3 text-xs space-y-2">
       {editing?.kind === "npc" && editing.draft.npc_id === npc.npc_id ? editor : <>

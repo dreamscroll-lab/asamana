@@ -77,7 +77,7 @@ export default function HomeView() {
         } else {
           setBuilding(null);
           await refresh();
-          if (job.status === "failed") setError(job.error ?? "构建失败");
+          if (job.status === "failed") setError(job.error ?? "世界创建失败");
           else if (job.world_id) navigate(`/worlds/${job.world_id}/review`);
         }
       } catch (e) {
@@ -102,7 +102,7 @@ export default function HomeView() {
     setError("");
     const t = theme.trim();
     if (!t) {
-      setError("请先输入一个世界主题！");
+      setError("请输入世界主题。");
       return;
     }
     try {
@@ -138,7 +138,7 @@ export default function HomeView() {
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter") create();
             }}
-            placeholder="输入叙事主题，例如：嘉靖时期的内阁…"
+            placeholder="输入世界主题..."
             className="w-full bg-slate-900 border border-slate-800 focus:border-indigo-500/80 focus:ring-1 focus:ring-indigo-500/40 rounded-2xl p-4 pr-4 pb-14 text-slate-200 placeholder-slate-600 text-sm focus:outline-none transition resize-none shadow-2xl"
           />
           {templates.length > 0 && (
@@ -165,7 +165,7 @@ export default function HomeView() {
                 d="M13 10V3L4 14h7v7l9-11h-7z"
               />
             </svg>
-            构建
+            创建
           </button>
         </div>
 
@@ -178,7 +178,7 @@ export default function HomeView() {
             than stacked so they read as a compact set of options. */}
         {presets.length > 0 && (
           <div className="mt-5">
-            <p className="text-xs text-slate-600 mb-2 font-medium">试试这些</p>
+            <p className="text-xs text-slate-600 mb-2 font-medium">主题示例</p>
             <div className="flex flex-wrap gap-2">
               {presets.map((p) => (
                 <button

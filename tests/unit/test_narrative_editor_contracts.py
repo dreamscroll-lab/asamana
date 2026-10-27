@@ -57,7 +57,6 @@ def _make_narrative_editor(
         ),
         directory=directory,
         settings=NarrativeEditorSettings(
-            core_tension="t",
             narrative_theme="m",
             max_injections_per_window=10,
             check_interval=1,  # checks allowed every step

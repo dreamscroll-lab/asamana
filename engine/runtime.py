@@ -1444,7 +1444,7 @@ class NarrativeRuntime:
             # perception that drove it lasts one step). None if his decision failed. Before the
             # join, so his own act comes to nothing before the one he is drawn into begins.
             if plan.action is not None:
-                agent.defer_decided_intent(plan.action, plan.step)
+                await agent.defer_decided_intent(plan.action, plan.step, invited_by=resolved.invited_by)
             await agent.join_ongoing_action(
                 # His own line (``participant_action_desc``), never the join record's outcome:
                 # that names him in the third person and quotes the initiator's purpose.

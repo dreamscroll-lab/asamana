@@ -213,7 +213,7 @@ def assemble_scene_context(
     # In the world an Npc is a person; its tier is a code-layer notion, so the line only says he
     # does things when told. Not numbered: a #N with no index contract invites made-up indices.
     if npcs_here:
-        lines.append("- 此处还有(听人吩咐做事的)：" + "、".join(
+        lines.append("- 此处可接受任务指派的人：" + "、".join(
             render_npc(scene_npc_view(npc)) for npc in npcs_here
         ))
 
@@ -277,10 +277,10 @@ def _person_background(agent: "Agent | None", name: str) -> str:
     parts: list[str] = []
     traits = "、".join(getattr(soul, "core_traits", []) or [])
     if traits:
-        parts.append(f"核心性格特点：{traits}")
+        parts.append(f"性格特点：{traits}")
     values = "、".join(getattr(soul, "core_values", []) or [])
     if values:
-        parts.append(f"核心价值观：{values}")
+        parts.append(f"价值观：{values}")
     bg = (getattr(soul, "background", "") or "").strip()
     if bg:
         parts.append(f"背景：{bg}")

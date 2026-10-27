@@ -133,7 +133,7 @@ class SimpleExecutor(ActionExecutor):
         # go only into 1p memory. Don't append the purpose: it's a first-person sentence and
         # after his name reads as if he said it aloud.
         outcome = scene_line(
-            location, f"{self._directory.agent_name(state.initiator_id)}歇息，前后歇了{duration_label}。",
+            location, f"{self._directory.agent_name(state.initiator_id)}休息了{duration_label}。",
         )
         stub = AgentAction(
             agent_id=state.initiator_id,
@@ -193,8 +193,8 @@ class SimpleExecutor(ActionExecutor):
         signature = ANONYMOUS_SENDER_NAME if action.anonymous else ""
         if directed:
             recipient_text = "、".join(self._directory.agent_name(aid) for aid in recipient_ids)
-            factual = f"我成功在{place}{signature}传讯给{recipient_text}：「{message_text}」"
-            outcome = scene_line(place, f"{doer_name}成功{signature}向{recipient_text}传讯：「{message_text}」")
+            factual = f"我成功在{place}{signature}向{recipient_text}发送消息：「{message_text}」"
+            outcome = scene_line(place, f"{doer_name}成功{signature}向{recipient_text}发送消息：「{message_text}」")
         else:
             # Name everyone: the memory must later answer "who heard this".
             heard_text = "、".join(self._directory.agent_name(aid) for aid in receivers)
@@ -241,8 +241,8 @@ class SimpleExecutor(ActionExecutor):
         signature = ANONYMOUS_SENDER_NAME if action.anonymous else ""
         if directed:
             reason = "没有能送到的人"
-            factual = f"我在{place}{signature}传讯：「{message_text}」，但没有一个人收得到"
-            outcome = scene_line(place, f"{doer_name}发出{signature}传讯「{message_text}」，但没有一个人收得到。")
+            factual = f"我在{place}{signature}发送消息：「{message_text}」，但没有一个人收得到"
+            outcome = scene_line(place, f"{doer_name}{signature}发送消息「{message_text}」，但没有一个人收得到。")
         else:
             reason = "此处无人"
             verb = "匿名发送通知" if action.anonymous else "宣告"

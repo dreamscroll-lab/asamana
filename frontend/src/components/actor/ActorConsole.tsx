@@ -109,16 +109,21 @@ export default function ActorConsole({
   // with. When the character speaks first it has no turn in the thread yet, so its place is the
   // next one; until it is there it is not over. Kept until the actor closes the window, unless
   // another conversation goes live.
-  const [windowed, setWindowed] = useState<{ index: number; otherId: string } | null>(null);
+  const [windowed, setWindowed] = useState<{ index: number; otherId: string; listenerIds: string[] } | null>(null);
   const shown = windowed ? conversations[windowed.index] ?? null : null;
   const shownOver = shown?.over ?? false;
   useEffect(() => {
     if (!speaking && !live) return;
-    if (windowed && !shownOver) return;
+    if (windowed && !shownOver) {
+      if (speaking && speaking.listener_ids !== windowed.listenerIds) {
+        setWindowed({ ...windowed, listenerIds: speaking.listener_ids });
+      }
+      return;
+    }
     const otherId =
       speaking?.other.agent_id ?? live?.dialogue.find((t) => t.speaker_id !== selfId)?.speaker_id;
     if (!otherId) return;
-    setWindowed({ index: live ? conversations.indexOf(live) : conversations.length, otherId });
+    setWindowed({ index: live ? conversations.indexOf(live) : conversations.length, otherId, listenerIds: speaking?.listener_ids ?? [] });
   }, [speaking, live, windowed, shownOver, selfId, conversations]);
 
   const { cast } = useCast(worldId);
@@ -193,6 +198,10 @@ export default function ActorConsole({
           ink={ink}
           dialogue={shown?.dialogue ?? []}
           conversation={speaking}
+          listeners={(speaking?.listener_ids ?? windowed.listenerIds).flatMap((id) => {
+            const person = identityOf(id, cast);
+            return person ? [person] : [];
+          })}
           over={!speaking && shownOver}
           onAnswer={speak}
           onClose={() => setWindowed(null)}
@@ -227,14 +236,14 @@ export default function ActorConsole({
               收起 ⌄
             </button>
           </div>
-          <label className="flex items-center gap-1.5 text-[11px] text-slate-400" title="打开后，角色闲着时只在有事找上门、或手上的事刚结束时才问你">
+          <label className="flex items-center gap-1.5 text-[11px] text-slate-400" title="启用后，角色空闲时仅在有新事件或当前行动结束时请求你的决定">
             <input
               type="checkbox"
               checked={pace === "when_reached"}
               disabled={busy}
               onChange={(e) => void switchPace(e.target.checked ? "when_reached" : "every_step")}
             />
-            有事才问我
+            仅在需要时询问
           </label>
         </div>
 
@@ -278,7 +287,7 @@ export default function ActorConsole({
             disabled={!deciding}
             maxLength={MAX_WORDS}
             rows={2}
-            placeholder={deciding ? "做你想做的任何事儿～" : "别着急，再等等，世界很忙的～～"}
+            placeholder={deciding ? "做你想做的任何事儿～" : "别着急，再等等，世界很忙的～"}
             className={CONSOLE_INPUT}
           />
           <div className="flex items-center gap-2">
@@ -347,9 +356,9 @@ function Line({
 }
 
 const CHOICE_TEXT: Record<Extract<ThreadItem, { kind: "chose" }>["choice"], string> = {
-  idle: "⏸ 这次先不动",
-  carry_on: "▶ 继续手上的事",
-  break_off: "✋ 停下手上的事",
+  idle: "⏸ 本步不行动",
+  carry_on: "▶ 继续当前行动",
+  break_off: "✋ 中断当前行动",
   accept: "✔ 接受",
   refuse: "✘ 拒绝",
 };
@@ -414,8 +423,8 @@ function Asked({
         <p>
           <span style={inviter ? { color: ink(inviter.agent_id) } : undefined}>{who}</span>
           {turn.invitation?.action_type === ActionType.talk ? "想与你交谈。" : "邀你一起行动。"}
-          {turn.invitation?.talk_topic && <span>来意：{turn.invitation.talk_topic}。</span>}
-          {turn.decided && <span className="text-slate-400">接受邀请就要放下：{turn.decided}。</span>}
+          {turn.invitation?.talk_topic && <span>交谈主题：{turn.invitation.talk_topic}。</span>}
+          {turn.decided && <span className="text-slate-400">接受邀请将中断：{turn.decided}。</span>}
         </p>
         {open && (
           <div className="flex gap-2">
@@ -433,7 +442,7 @@ function Asked({
         <p>{turn.reason && `${turn.reason}。`}想做什么？</p>
         {choices.length > 0 && (
           <div className="space-y-1">
-            <p className="text-[11px] text-slate-500">也可以继续这些事 · 选择后确认行动</p>
+            <p className="text-[11px] text-slate-500">可继续的目标 · 选择后确认行动</p>
             {choices.map((g, i) => (
               <button key={g.id ?? `new-${i}`} className={`${BTN} block w-full text-left whitespace-normal break-words`}
                 disabled={busy || [...g.text].length > MAX_WORDS} onClick={() => onChoose(g.text)}>
@@ -446,7 +455,7 @@ function Asked({
           </div>
         )}
         <button className={BTN} disabled={busy} onClick={() => onAnswer({ idle: true })}>
-          ⏸ 这次先不动
+          ⏸ 本步不行动
         </button>
         {turn.briefing && <Reference briefing={turn.briefing} />}
       </div>
@@ -528,7 +537,7 @@ function DecisionSummaryCard({
           <button className={BTN_PRIMARY} disabled={busy} onClick={onConfirm}>确认</button>
         )}
         {state === "confirmed" && <span className="text-[12px] text-teal-400">☑ 已确认</span>}
-        {state === "declined" && <span className="text-[12px] text-slate-500">☐ 没接受</span>}
+        {state === "declined" && <span className="text-[12px] text-slate-500">☐ 已拒绝</span>}
       </div>
     </div>
   );
@@ -550,7 +559,7 @@ function Act({
     <div className={CONSOLE_WORLD_MESSAGE}>
       <div>
         {!item.ended && <span className="text-slate-400">正在：</span>}
-        {item.description || "（一件事）"}
+        {item.description || "（行动描述未提供）"}
       </div>
       <div className="mt-1.5 flex items-center gap-2">
         <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800">
@@ -560,20 +569,20 @@ function Act({
           />
         </div>
         {canBreakOff && (
-          <button className={BTN} disabled={busy} onClick={onBreakOff} title="在下一刻停下手上的事">
+          <button className={BTN} disabled={busy} onClick={onBreakOff} title="在下一步中断当前行动">
             ✋ 中断
           </button>
         )}
-        {item.breakingOff && !item.ended && <span className="text-[11px] text-amber-400">即将停下</span>}
+        {item.breakingOff && !item.ended && <span className="text-[11px] text-amber-400">即将中断</span>}
       </div>
     </div>
   );
 }
 
 function Ended({ item }: { item: Extract<ThreadItem, { kind: "ended" }> }) {
-  if (!item.fact) return <div className={`${CONSOLE_WORLD_MESSAGE} text-slate-500`}>（没有下文）</div>;
+  if (!item.fact) return <div className={`${CONSOLE_WORLD_MESSAGE} text-slate-500`}>（暂无结果）</div>;
   const mark = !item.happened
-    ? <span className="text-slate-500">未成事 · </span>
+    ? <span className="text-slate-500">未做成 · </span>
     : item.succeeded
       ? <span className="text-teal-400">✓ </span>
       : <span className="text-rose-400">✗ </span>;
@@ -611,7 +620,7 @@ function ConversationCard({
               <span className="font-semibold" style={{ color: ink(id) }}>{name}</span>
             </span>
           ))}
-          {sides.length === 0 && <span className="text-slate-400">一场没说出话的交谈</span>}
+          {sides.length === 0 && <span className="text-slate-400">本次交谈没有发言</span>}
         </span>
         <span className="ml-auto text-[11px] text-slate-500">
           {item.over ? `${item.dialogue.length} 轮` : "交谈中"}
@@ -639,8 +648,8 @@ function Reference({ briefing: b }: { briefing: ActorBriefing }) {
       </button>
       {open && (
         <div className="mt-1 space-y-1 text-[12px] leading-relaxed text-slate-300">
-          {places.length > 0 && <div><span className="text-slate-500">能去的地方：</span>{places.join("、")}</div>}
-          {absent.length > 0 && <div><span className="text-slate-500">能传信的人：</span>{absent.join("、")}</div>}
+          {places.length > 0 && <div><span className="text-slate-500">可前往地点：</span>{places.join("、")}</div>}
+          {absent.length > 0 && <div><span className="text-slate-500">可接收消息的角色：</span>{absent.join("、")}</div>}
         </div>
       )}
     </div>

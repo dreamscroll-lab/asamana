@@ -15,8 +15,8 @@ from config.models import MAX_CAST_SIZE
 from core.prompts import canonical_relation_label
 from agent.personality import EmotionState, EmotionType
 from world.setup import (
-    CharacterRevision, EntityRevision, MapPlaces, NpcRevision, SetupHistoricalEvent, SetupRejected, SetupRelation,
-    WorldSetup,
+    OPENING_TIME_FIELDS, CharacterRevision, EntityRevision, MapPlaces, NpcRevision, SetupHistoricalEvent,
+    SetupRejected, SetupRelation, WorldSetup,
 )
 
 from interaction.api.app import ApiServices
@@ -45,6 +45,9 @@ _CHARACTER_FIELDS = frozenset({
 def setup_view(setup: WorldSetup) -> SetupView:
     return SetupView(
         seconds_per_step=setup.lore.seconds_per_step,
+        narrative_theme=setup.lore.narrative_theme,
+        # Every setup passed WorldSetup.validate, so each field is there.
+        opening_time={key: setup.lore.world_time_config[key] for key in OPENING_TIME_FIELDS},
         entities=[EntitySetupView(**asdict(seed)) for seed in setup.entity_seeds],
         npcs=[NpcSetupView(**asdict(seed)) for seed in setup.npc_seeds],
         characters=[
@@ -90,6 +93,27 @@ def setup_view(setup: WorldSetup) -> SetupView:
             )
             for r in setup.relations
         ],
+    )
+
+
+
+def lore_revision(payload: dict[str, Any]) -> tuple[str, dict[str, Any], int]:
+    allowed = {"narrative_theme", "opening_time", "seconds_per_step"}
+    if unknown := sorted(set(payload) - allowed):
+        raise ValueError(f"Unknown lore fields: {unknown}")
+    opening = _field(payload, "opening_time")
+    if not isinstance(opening, dict):
+        raise ValueError("opening_time must be an object")
+    if unknown := sorted(set(opening) - set(OPENING_TIME_FIELDS)):
+        raise ValueError(f"Unknown opening_time fields: {unknown}")
+    time = {
+        key: _integer(_field(opening, key), key)
+        for key in ("start_year", "start_month", "start_day", "start_hour")
+    }
+    time["era_name"] = _text(_field(opening, "era_name"), "era_name")
+    return (
+        _text(_field(payload, "narrative_theme"), "narrative_theme"), time,
+        _integer(_field(payload, "seconds_per_step"), "seconds_per_step"),
     )
 
 
@@ -314,11 +338,11 @@ def build_setup_router(services: ApiServices) -> Any:
         setup = await _revise(world_id, lambda s, places: s.with_history(events, places=places))
         return to_wire_json(setup_view(setup))
 
-    @router.put("/seconds-per-step")
-    async def revise_seconds_per_step(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
-        seconds = _parsed(lambda p: _integer(_field(p, "seconds_per_step"), "seconds_per_step"), payload)
+    @router.put("/lore")
+    async def revise_lore(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
+        theme, time, seconds = _parsed(lore_revision, payload)
         setup = await _revise(
-            world_id, lambda s, places: s.with_seconds_per_step(seconds, places=places),
+            world_id, lambda s, places: s.with_lore(theme, time, seconds, places=places),
         )
         return to_wire_json(setup_view(setup))
 

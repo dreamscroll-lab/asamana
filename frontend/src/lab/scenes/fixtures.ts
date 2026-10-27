@@ -335,7 +335,7 @@ export const aimPlace = (id: string, claims: string[] = []): ActionTarget => ({
   reaches: [],
 });
 
-/** Aimed at a thing. `reaches` lists who receives it in a hand-off. */
+/** Aimed at a thing. `reaches` lists who it lands on: the receiver of a hand-off, or its holder. */
 export const aimThing = (
   id: string, kind: string = RefKind.item, reaches: string[] = [],
 ): ActionTarget => ({
@@ -439,6 +439,17 @@ interface StepParts {
 }
 
 let stepCounter = 0;
+// Who lay dead on the step built last, and since which step. A scene's steps are consecutive, so a
+// body dead on the step before keeps that death's step, as the engine records it once.
+let deaths = new Map<string, { since: number; seen: number }>();
+
+function deathStep(s: BodyRecord, n: number): number | null {
+  if (s.vitality !== 0 && s.is_active) return null;
+  const prior = deaths.get(s.agent_id);
+  const since = prior && prior.seen === n - 1 ? prior.since : n;
+  deaths.set(s.agent_id, { since, seen: n });
+  return since;
+}
 
 const entityView = ({ presence: _p, presence_ref: _r, ...e }: PlacedEntity): EntityView => e;
 
@@ -541,6 +552,7 @@ export function step({
       agent_id: s.agent_id,
       is_main_character: s.is_main_character,
       is_active: s.is_active,
+      death_step: deathStep(s, n),
       public: {
         // Someone acting covertly doesn't look like it, as the read model has it.
         activity_status: s.activity_status === "covert" ? "" : s.activity_status,
@@ -626,6 +638,29 @@ export function step({
   };
 }
 
+/**
+ * Steps as the performed character `viewer` sees them: of everyone else only the outside
+ * (interaction/actor_view.py). The steps given must already hold only what reaches him.
+ */
+export function seenBy(viewer: string, steps: StepView[]): StepView[] {
+  return steps.map((view) => ({
+    ...view,
+    locations: Object.fromEntries(Object.entries(view.locations).map(([id, scope]) => [id, {
+      ...scope,
+      agents: scope.agents.map((a) => a.agent_id === viewer ? a : {
+        ...a,
+        is_main_character: null,
+        private: {
+          emotion: "", emotion_label: "", emotion_intensity: null, emotion_valence: null,
+          dominant_need: null, dominant_need_label: "", vitality: null, activity_status: "",
+          activity_label: "", transit: null, long_term_goals: [], short_term_goals: [],
+          relations: [], carrying: {},
+        },
+      }),
+    }])),
+  }));
+}
+
 export interface LabScene {
   id: string;
   group: string;
@@ -705,6 +740,7 @@ export const GATE = "seed_2b70df1c85";
  */
 export function resetFixtures(): void {
   stepCounter = 0;
+  deaths = new Map();
   seqCounter = 0;
   execCounter = 0;
 }

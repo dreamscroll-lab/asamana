@@ -106,7 +106,7 @@ describe("map operation backend-owned requirements", () => {
     expect(operationForm("broadcast", ["message"], { message: "请留步" }).confirm.props.disabled).toBe(false);
     expect(required.markup).not.toContain("描述");
   });
-  it.each(["work", "covert"] as const)("requires the backend-declared description for %s", (operation) => {
+  it.each(["work", "covert", "send_message"] as const)("requires the backend-declared description for %s", (operation) => {
     const missing = operationForm(operation, ["description"]);
     expect(missing.field("描述").props.required).toBe(true);
     expect(missing.confirm.props.disabled).toBe(true);
@@ -143,9 +143,12 @@ describe("map operation backend-owned requirements", () => {
   });
 });
 
-describe("broadcast signature", () => {
-  it.each([false, true])("shows the selected anonymity state (%s)", (anonymous) => {
-    const { markup } = operationForm("broadcast", ["message"], { message: "请留步", anonymous });
+describe("message signature", () => {
+  it.each([
+    ["broadcast", false, ["message"], { message: "请留步" }], ["broadcast", true, ["message"], { message: "请留步" }],
+    ["send_message", false, ["description"], {}], ["send_message", true, ["description"], {}],
+  ] as const)("shows the selected anonymity state for %s (%s)", (operation, anonymous, required, parameters) => {
+    const { markup } = operationForm(operation, [...required], { ...parameters, anonymous });
     expect(markup).toContain("匿名发送");
     expect(markup).toContain('type="checkbox"');
     expect(markup.includes('checked=""')).toBe(anonymous);

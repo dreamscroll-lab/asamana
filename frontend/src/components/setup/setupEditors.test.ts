@@ -54,7 +54,7 @@ describe("a new character", () => {
   const blank = blankDraft(vocabulary);
 
   it("names what it still lacks", () => {
-    expect(missingForNew(blank)).toContain("名字");
+    expect(missingForNew(blank)).toContain("名称");
     expect(missingForNew({ ...blank, name: "丁", gender: "女", age: "40", role: "商人", initial_location: "garden" })).toBeNull();
   });
 

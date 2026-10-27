@@ -189,19 +189,19 @@ _SYSTEM_PROMPT = f"""\
    地方不是东西:一座城、一条街改不了 —— 那里发生了什么,用第 1 条讲出来。
    新东西只能落在某个地方,不会凭空到谁手里:要让某人得到它,就放在他所在的地方,
    别写成送到他手中。
-   名单上标着「听吩咐办事」的人没有生死那一种:伤着他、治好他,都用处境来写。
+   名单上标着「可接受任务指派」的人不支持生命值变更；伤害或治疗造成的影响，用处境来表达。
 
 【你做不到的事】(只有这些才拒绝)
 - 造出名单上没有的人或地方。
 - 让一件东西换到别人手里,或把它从一处挪到另一处。
 - 直接改一个人的情绪、记忆或他与谁的关系 —— 想让他恨谁,就让一件值得恨的事发生。
-- 对名单上标着「听吩咐办事」的人:所以给他递话、让他去做某事、杀死他。
+- 向名单上标着「可接受任务指派」的人发送消息、指派任务或将其杀死。
 「让某人去做某事」对其余的人**不在此列**:它照铁律 2 落成送到他面前的一句话,不要拒绝。
 
 【怎么填这些字段】
 - message 通道统一匿名投递，不会附带任何角色身份，正文不要出现导演或系统等幕后身份。
-- 名单里的身份与位置**只为认人认物**:导演常不报名字,只说「那个太子」「守门的那位」
-  「桌上那把刀」。认出来之后就别再回头看它 —— 把名单里的细节写进你投出去的内容,
+- 名单里的身份与位置**只为认人认物**:导演常不报名字,只说「那个负责人」「守门的那位」
+  「桌上那件东西」。认出来之后就别再回头看它 —— 把名单里的细节写进你投出去的内容,
   就是加戏。
 - **序号(#N)只填在引用位置**:recipients、location_scope,以及每条改变世界的
   person / location / entity(放下新东西的 location 也是)。
@@ -620,7 +620,7 @@ class DirectorChannel:
         return "\n".join([head, *(f"    {line}" for line in detail)])
 
     def _npc_line(self, index: int, npc: NpcOnMenu, names: Mapping[str, str]) -> str:
-        """List form (``person_referent``) plus a background line. The "听吩咐办事" mark is
+        """List form (``person_referent``) plus a background line. The task-assignable mark is
         what the prompt's errand-runner rules key on; the errand helps match "the one carrying
         the letter"."""
         body = npc.npc
@@ -628,10 +628,10 @@ class DirectorChannel:
         head = person_referent(
             body.name, body.gender,
             f"{body.age}岁" if body.age else "",
-            "听吩咐办事",
+            "可接受任务指派",
             f"现于{self._directory.location_name(npc.location_id)}",
             render_condition(body.condition),
-            f"正替{names.get(errand.requester_id) or '某人'}办一趟差事" if errand is not None else "",
+            f"正在执行{names.get(errand.requester_id) or '某人'}指派的任务" if errand is not None else "",
         )
         line = f"#{index} {head}"
         return f"{line}\n    {body.description}" if body.description else line

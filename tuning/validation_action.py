@@ -147,7 +147,7 @@ def _deterministic_checks(phase: dict, agent_ids: set[str]) -> dict[str, Any]:
         orders = r.get("errand_orders") or []
         if str(r.get("action_type") or "") == "errand" and not r.get("adjudication_failed"):
             if r.get("succeeded") and not orders:
-                v.append("判为接下却没有 errand_order(世界里不会有这趟差事)")
+                v.append("判为接下却没有 errand_order(世界里不会有这项任务)")
             if not r.get("succeeded") and orders:
                 v.append("判为不接却下了 errand_order(没人托的人上了路)")
         # What was entrusted is privileged: onlookers can see he went over and said a few words, not what

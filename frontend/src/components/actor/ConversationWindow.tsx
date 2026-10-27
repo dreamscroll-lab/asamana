@@ -31,6 +31,7 @@ export default function ConversationWindow({
   ink,
   dialogue,
   conversation,
+  listeners,
   over,
   onAnswer,
   onClose,
@@ -45,6 +46,7 @@ export default function ConversationWindow({
   dialogue: DialogueTurn[];
   // The open SPEAK turn's conversation; null while it is not the character's line.
   conversation: Conversation | null;
+  listeners: CharacterIdentity[];
   over: boolean;
   // Resolves to a refusal's text, "" when the dialogue turn was taken.
   onAnswer: (line: ActorDialogueTurn) => Promise<string>;
@@ -144,6 +146,14 @@ export default function ConversationWindow({
             {over && <button type="button" className={`${BTN} shrink-0 self-start`} aria-label="关闭" title="关闭" onClick={onClose}><span aria-hidden="true">×</span></button>}
           </div>
           <RelationStrip relation={relation} />
+          {listeners.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px]">
+              <span className="text-slate-500">旁听</span>
+              {listeners.map((person) => (
+                <span key={person.agent_id} style={{ color: ink(person.agent_id) }}>{person.name}</span>
+              ))}
+            </div>
+          )}
         </header>
 
         <div
@@ -179,7 +189,7 @@ export default function ConversationWindow({
           {over && (
             <div className="flex items-center gap-3 pt-1 text-[11px] tracking-[0.2em] text-slate-500">
               <span className="h-px flex-1 bg-slate-800" />
-              对话结束
+              交谈结束
               <span className="h-px flex-1 bg-slate-800" />
             </div>
           )}
@@ -226,7 +236,7 @@ export default function ConversationWindow({
                   className={`${BTN} ml-auto`}
                   disabled={!speaking}
                   onClick={() => void send(true)}
-                  title="说出框里的话（可以不写）后结束对话"
+                  title="说出框里的话（可以不写）后结束交谈"
                 >
                   结束
                 </button>
@@ -310,7 +320,7 @@ function Typewriter({ text, onType }: { text: string; onType: () => void }) {
   useEffect(onType, [shown, onType]);
 
   return (
-    <span onClick={() => setShown(chars.length)} className={done ? "" : "cursor-pointer"} title={done ? undefined : "点一下看全句"}>
+    <span onClick={() => setShown(chars.length)} className={done ? "" : "cursor-pointer"} title={done ? undefined : "点击显示完整内容"}>
       {chars.slice(0, shown).join("")}
       {!done && <span className="ml-px inline-block h-[1em] w-[2px] translate-y-[2px] animate-pulse bg-slate-300/80" />}
     </span>
@@ -337,13 +347,13 @@ function Thinking({ id, name, color }: { id: string; name: string; color: string
 
 /** How much of the conversation is left, this turn included. */
 function turnsHint(c: Conversation): string {
-  return c.last ? "最后一轮：说完对话就结束" : `还剩 ${c.turns_left} 轮`;
+  return c.last ? "最后一轮：说完交谈就结束" : `还剩 ${c.turns_left} 轮`;
 }
 
 /** What the other side is to the character: its own labels, and where trust and affection stand. */
 function RelationStrip({ relation }: { relation: BriefRelation | null }) {
   if (!relation) {
-    return <div className="mt-3 text-[12px] text-slate-500">与我 · 素不相识</div>;
+    return <div className="mt-3 text-[12px] text-slate-500">与我 · 暂无关系</div>;
   }
   return (
     <div className="mt-3 space-y-1.5">
@@ -356,8 +366,8 @@ function RelationStrip({ relation }: { relation: BriefRelation | null }) {
         ))}
       </div>
       <div className="grid grid-cols-2 gap-3">
-        <Meter label="信任" value={relation.trust} min={0} max={1} tone="bg-teal-400/80" />
-        <Meter label="好感" value={relation.affection} min={-1} max={1} tone={relation.affection >= 0 ? "bg-rose-400/80" : "bg-slate-400/80"} />
+        <Meter label="信任度" value={relation.trust} min={0} max={1} tone="bg-teal-400/80" />
+        <Meter label="好感度" value={relation.affection} min={-1} max={1} tone={relation.affection >= 0 ? "bg-rose-400/80" : "bg-slate-400/80"} />
       </div>
       {relation.summary && <p className="text-[11px] leading-relaxed text-slate-500">{relation.summary}</p>}
     </div>

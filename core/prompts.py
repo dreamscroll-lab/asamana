@@ -40,7 +40,7 @@ EMOTION_INTENSITY_DEFINITION: str = (
 )
 
 EMOTION_VALENCE_DEFINITION: str = (
-    "valence（情绪基调）: 浮点数 [-1.0, 1.0]，情绪的正负质感。"
+    "valence（情绪正负值）: 浮点数 [-1.0, 1.0]，情绪的正负质感。"
     ">0 愉快/积极，<0 痛苦/消极，≈0 中性"
 )
 
@@ -51,7 +51,7 @@ EMOTION_VALENCE_DEFINITION: str = (
 
 #: Cause-agnostic, like VITALITY_RELIEF_DEFINITION: otherwise exhaustion would have nowhere to land.
 VITALITY_DAMAGE_DEFINITION: str = (
-    "damage（生命力损耗）: 浮点数 [0.0, 1.0]，一次行动耗去对方多少生命力"
+    "damage（生命值损耗）: 浮点数 [0.0, 1.0]，一次行动耗去对方多少生命值"
     "——不论损在哪里（负伤、力竭、精神耗尽等等皆可）。"
     "0.0=分毫未损 | 0.3=损耗明显 | 0.7=危及生命 | 1.0=致命"
 )
@@ -64,10 +64,10 @@ VITALITY_RELIEF_CAP: float = 0.2
 
 #: Cause-agnostic: degree, not cause. Tied to healing wounds, feeding someone starving would score 0.
 VITALITY_RELIEF_DEFINITION: str = (
-    f"relief（生命力挽回）: 浮点数 [0.0, {VITALITY_RELIEF_CAP}]，一次行动为对方挽回多少生命力"
+    f"relief（生命值恢复）: 浮点数 [0.0, {VITALITY_RELIEF_CAP}]，一次行动为对方恢复多少生命值"
     f"——不论他亏在哪里（负伤、力竭、饥渴、寒冷等等皆可）。"
     f"0.0=没帮上什么 | 0.05=稍微缓解一点点 | {VITALITY_RELIEF_CAP}=从濒死边上被拉了回来。"
-    f"它只管当场挽回，不管整个生命力是否真的完全挽回。"
+    f"它只管当场恢复的量，不代表生命值已完全恢复。"
 )
 
 
@@ -102,7 +102,7 @@ def vitality_label(vitality: float) -> str:
     0 = spent), thresholds 0.7/0.3. Neutral wording; ``vitality_line`` adds the per-person prefix.
     """
     if vitality <= 0:
-        return "无生命力"
+        return "生命值耗尽"
     if vitality > VITALITY_FULL:
         return "充沛"
     if vitality > 0.3:
@@ -177,13 +177,13 @@ NEED_TYPE_DEFINITION: str = (
 )
 
 NEED_INTENSITY_DEFINITION: str = (
-    "intensity（需求紧迫度）: 浮点数 [0.0, 1.0]，该需求当前的内在驱力强度，"
+    "intensity（需求强度）: 浮点数 [0.0, 1.0]，该需求当前的内在驱力强度，"
     "与该 agent 是否能立即行动无关。"
     "0.0=已满足/无感 | 0.3=可感知但不紧迫 | 0.6=明显在意 | 0.8=主导思维 | 1.0=压倒一切"
 )
 
 NEED_WEIGHT_DEFINITION: str = (
-    "weight（需求固有权重）: 浮点数 [0.1, 2.0]，该需求在该 agent 一生中的固有重要程度，"
+    "weight（在意程度）: 浮点数 [0.1, 2.0]，该需求在该 agent 一生中固有的在意程度，"
     "塑造了 agent 是什么样的人。"
     "1.0=典型重要 | <1.0=该 agent 不太在意此类 | >1.0=该 agent 特别看重此类。"
     "intensity 反映此刻状态，weight 反映长期倾向。"
@@ -202,7 +202,7 @@ TRUST_SCALE_DESCRIPTION: str = (
 )
 
 AFFECTION_SCALE_DESCRIPTION: str = (
-    "-1.0=憎恶 | -0.3=反感 | 0.0=平淡 | 0.3=亲近 | 1.0=深爱"
+    "-1.0=憎恶 | -0.3=反感 | 0.0=平淡 | 0.3=亲近 | 1.0=强烈好感"
 )
 
 RELATION_SCALE_LEGEND: str = (
@@ -264,9 +264,9 @@ EXTERNAL_DRIVE_TYPE_DEFINITION: str = (
 )
 
 URGENCY_SCALE_DESCRIPTION: str = (
-    "urgency（紧迫度）: 4 档枚举（字符串）。"
-    "low=可留意（背景信号） | normal=值得响应（需排入计划） | "
-    "high=应当优先（其它事都先放） | critical=必须立即响应（生死攸关 / 不可错过）"
+    "urgency（紧急程度）: 4 档枚举（字符串）。"
+    "low=不紧急（可留意的背景信号） | normal=一般（值得响应，需排入计划） | "
+    "high=紧急（应当优先，其它事都先放） | critical=非常紧急（必须立即响应，生死攸关 / 不可错过）"
 )
 
 # urgency → signal_strength: used when PerceptionLayer folds heterogeneous inputs into [0,1] salience
@@ -284,10 +284,10 @@ def urgency_label(urgency: Urgency) -> str:
 
 
 _URGENCY_LABELS: dict[Urgency, str] = {
-    Urgency.LOW:      "【留意】",
+    Urgency.LOW:      "【不紧急】",
     Urgency.NORMAL:   "【一般】",
     Urgency.HIGH:     "【紧急】",
-    Urgency.CRITICAL: "【危急】",
+    Urgency.CRITICAL: "【非常紧急】",
 }
 
 
@@ -483,7 +483,7 @@ def render_npc(npc, *, index: int | None = None) -> str:
     age = getattr(who, "age", None)
     marks = [f"{age}岁"] if age else []
     if getattr(npc, "busy", False):
-        marks.append("正在忙")
+        marks.append("正在执行任务")
     if condition := (getattr(npc, "condition", "") or "").strip():
         marks.append(condition)
     head = person_referent(getattr(who, "name", "") or "", getattr(who, "gender", "") or "", *marks)
@@ -677,9 +677,9 @@ def condition_line(
 
 
 _VITALITY_PREFIX: dict[SituationVoice, str] = {
-    SituationVoice.FIRST:  "我此刻的体力",
-    SituationVoice.SECOND: "你此刻的体力",
-    SituationVoice.THIRD:  "体力状况",
+    SituationVoice.FIRST:  "我此刻的生命值",
+    SituationVoice.SECOND: "你此刻的生命值",
+    SituationVoice.THIRD:  "生命值状态",
 }
 
 
@@ -690,7 +690,7 @@ def vitality_line(
     lead: str = "\n",
     omit_when_full: bool = False,
 ) -> str:
-    """The full "<person>此刻的体力：X" line; the only place vitality enters a prompt.
+    """Render vitality in the prompt's voice through the shared vitality labels.
 
     Only cognition should set ``omit_when_full`` (a constant "full" is noise); the judge must
     always see the doer's vitality.

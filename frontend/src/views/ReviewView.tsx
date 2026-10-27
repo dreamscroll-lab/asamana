@@ -4,7 +4,7 @@
 //
 // The choice comes first because the director's review shows everything: every character's
 // dossier, secrets and relations. Someone who will live in the world as one character must not
-// see that, so the page shows only the world's premise until the user picks:
+// see that, so the page shows only the world's title and pace until the user picks:
 //   - as the director: the whole cast, their relationship web and the world's historical events, then
 //     confirm. The setup shown here (dossiers, historical events, the relations the world starts
 //     with, the story's pace) is revisable until confirming. One way: the world takes no actor afterwards (the
@@ -24,7 +24,8 @@ import RelationshipGraph from "../components/RelationshipGraph";
 import SeedPanel from "../components/setup/SeedPanel";
 import HistoryPanel from "../components/setup/HistoryPanel";
 import RelationPanel from "../components/setup/RelationPanel";
-import StepLengthEditor from "../components/setup/StepLengthEditor";
+import LorePanel from "../components/setup/LorePanel";
+import { durationLabel } from "../lib/duration";
 import CharacterEditor, {
   blankDraft, draftOf, newCharacterOf, revisionOf, type Draft,
 } from "../components/setup/CharacterEditor";
@@ -128,6 +129,7 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
   // Picking whom to perform; chosen with the confirmation and locked by it.
   const [casting, setCasting] = useState(false);
   const [seedEditing, setSeedEditing] = useState(false);
+  const [loreEditing, setLoreEditing] = useState(false);
   const cast: Cast = useMemo(() => !meta.confirmed && setup
     ? Object.fromEntries(setup.characters.map((c) => [c.agent_id, {
       agent_id: c.agent_id, name: c.name, gender: c.gender, age: c.age, role: c.role,
@@ -136,6 +138,9 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
     : identities, [meta.confirmed, setup, identities]);
   const candidates = Object.values(cast);
   const [castId, setCastId] = useState("");
+  const [historyEditing, setHistoryEditing] = useState(false);
+  const [relationEditing, setRelationEditing] = useState(false);
+  const setupEditing = editing !== null || seedEditing || loreEditing || historyEditing || relationEditing;
 
   // The whole cast is the director's: once reviewed (or once the world is confirmed without an
   // actor) nobody can be cast, and only then is it shown.
@@ -250,7 +255,7 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
   }
 
   async function discard() {
-    if (!window.confirm(`丢弃世界「${meta.world_name || id}」？此操作不可恢复。`)) return;
+    if (!window.confirm(`删除世界「${meta.world_name || id}」？此操作不可恢复。`)) return;
     setBusy(true);
     try {
       await api.deleteWorld(id);
@@ -260,6 +265,40 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
       setBusy(false);
     }
   }
+
+  const loreHeader = (pace: ReactNode) => (
+    <div className="flex items-start md:items-center justify-between flex-col md:flex-row gap-4 border-b border-slate-800 pb-4 mb-4">
+      <div>
+        <h3 className="text-2xl font-black text-slate-100">
+          {meta ? (
+            <EditableWorldName
+              worldId={id}
+              name={
+                worlds.find((w) => w.world_id === id)?.world_name || meta.world_name || id
+              }
+              onRenamed={(m) => {
+                setMeta(m);
+                void refreshWorlds();
+              }}
+            />
+          ) : (
+            id
+          )}
+        </h3>
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        {stage === "director" && (
+          <div className="flex items-center space-x-2 text-xs bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 text-slate-400">
+            <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+            <span>
+              {roster.length} 名角色 · {graph?.edges.length ?? 0} 条关系
+            </span>
+          </div>
+        )}
+        {pace}
+      </div>
+    </div>
+  );
 
   return (
     <div className="text-slate-100 space-y-6 p-4 lg:p-6 animate-[fadeIn_0.4s_ease-out]">
@@ -283,7 +322,7 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
               disabled={busy}
               className="text-xs text-slate-400 hover:text-white px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 hover:border-slate-700 transition disabled:opacity-40"
             >
-              ← 换个方式
+              ← 重新选择模式
             </button>
           )}
           <button
@@ -291,17 +330,17 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
             disabled={busy}
             className="text-xs px-4 py-2 rounded-lg bg-slate-950 border border-rose-900/60 text-rose-400 hover:bg-rose-950/30 transition disabled:opacity-40"
           >
-            丢弃
+            删除
           </button>
           {(stage === "director" || stage === "casting") && (
             <button
               onClick={confirm}
-              disabled={busy || seedEditing || (stage === "casting" && !castId)}
+              disabled={busy || setupEditing || (stage === "casting" && !castId)}
               className="text-xs font-semibold px-5 py-2 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 border border-indigo-500 shadow-lg shadow-indigo-600/30 transition disabled:opacity-40"
             >
               {/* Confirming materializes the world (its backstory memories embedded), which takes a moment. */}
               {busy && !meta.confirmed
-                ? "正在生成世界…"
+                ? "正在准备世界…"
                 : stage === "casting"
                   ? <><ActorIcon /> 我是{candidates.find((c) => c.agent_id === castId)?.name ?? "所选角色"} →</>
                   : meta.confirmed ? "进入叙事 →" : "确认并进入叙事 →"}
@@ -321,53 +360,16 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
       {/* World lore card */}
       <div className="bg-slate-900 border border-slate-800/80 rounded-2xl p-6 relative overflow-hidden shadow-lg">
         <div className="absolute top-0 right-0 w-64 h-64 bg-violet-600/5 rounded-full blur-3xl pointer-events-none" />
-        <div className="flex items-start md:items-center justify-between flex-col md:flex-row gap-4 border-b border-slate-800 pb-4 mb-4">
-          <div>
-            <h3 className="text-2xl font-black text-slate-100">
-              {meta ? (
-                <EditableWorldName
-                  worldId={id}
-                  name={
-                    worlds.find((w) => w.world_id === id)?.world_name || meta.world_name || id
-                  }
-                  onRenamed={(m) => {
-                    setMeta(m);
-                    void refreshWorlds();
-                  }}
-                />
-              ) : (
-                id
-              )}
-            </h3>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            {stage === "director" && (
-              <div className="flex items-center space-x-2 text-xs bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 text-slate-400">
-                <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
-                <span>
-                  {roster.length} 名角色 &amp; {graph?.edges.length ?? 0} 个关系连接
-                </span>
-              </div>
-            )}
-            {/* The story's own pace, chosen for it at build and frozen by confirming —
-                a story told a day at a time is a different story from one told hour by
-                hour, so it belongs here, next to the cast, before the user locks it. */}
-            {(setup?.seconds_per_step ?? meta.seconds_per_step) ? (
-              <StepLengthEditor
-                secondsPerStep={setup?.seconds_per_step ?? meta.seconds_per_step}
-                editable={revisable}
-                onSave={async (seconds) => {
-                  setSetup(await api.reviseSecondsPerStep(id, seconds));
-                }}
-              />
-            ) : null}
-          </div>
-        </div>
-        {(meta.description || meta.theme) && (
-          <p className="text-slate-300 text-sm leading-relaxed max-w-4xl italic">
-             {meta.description || meta.theme}
-          </p>
-        )}
+        {stage === "director" && setup ? <LorePanel setup={setup} editable={revisable && !busy && !setupEditing}
+          renderHeader={loreHeader}
+          onEditingChange={setLoreEditing}
+          onSave={async (lore) => setSetup(await api.reviseLore(id, lore))} />
+          : loreHeader(meta.seconds_per_step ? (
+            <div className="flex items-center gap-2 text-xs bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 text-slate-400">
+              <span>⏳</span>
+              <span>叙事节奏 · 每步 {durationLabel(meta.seconds_per_step)}</span>
+            </div>
+          ) : null)}
       </div>
 
       {stage === "choose" && (
@@ -375,14 +377,14 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
           <EntryChoice
             icon="🎬"
             title="导演模式"
-            description="可以以导演的视角去观察世界，操控世界，可以看到完整的世界。"
+            description="可以以导演的视角去观察世界，操控世界，也可以看到完整的世界。"
             disabled={busy}
             onClick={openDirectorReview}
           />
           <EntryChoice
             icon={<ActorIcon />}
             title="演员模式"
-            description="扮演世界中的一个角色，以第一视角与世界中的其他角色共同叙事。"
+            description="扮演一个角色，从角色的视角深入参与并探索世界。"
             disabled={busy}
             onClick={() => setCasting(true)}
           />
@@ -439,7 +441,7 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
                     roster={roster}
                     activeId={effectiveId}
                     onActiveChange={setActiveId}
-                    {...(revisable && vocabulary && setup ? {
+                    {...(revisable && !busy && !setupEditing && vocabulary && setup ? {
                       onEdit: (agentId: string) => startEdit(agentId),
                       onRemove: (agentId: string) => void removeCharacter(agentId),
                       ...(roster.length < MAX_CAST_SIZE && {
@@ -462,10 +464,10 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
             >
               <div className="flex items-center justify-between mb-3 shrink-0">
                 <h4 className="text-sm font-semibold tracking-wider text-slate-400 uppercase">
-                  <span className="inline-flex items-center rounded-full bg-slate-800/60 border border-slate-700/60 px-4 py-1.5">🕸️ 角色关系网图谱</span>
+                  <span className="inline-flex items-center rounded-full bg-slate-800/60 border border-slate-700/60 px-4 py-1.5">🕸️ 关系图谱</span>
                 </h4>
                 <div className="flex items-center gap-3">
-                  <span className="text-xs text-slate-500">提示: 点击节点可高亮该角色关系链</span>
+                  <span className="text-xs text-slate-500">点击角色节点可高亮相关关系</span>
                   <button
                     onClick={() => setGraphExpanded((v) => !v)}
                     title={graphExpanded ? "退出全屏 (Esc)" : "全屏"}
@@ -489,11 +491,12 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
             <HistoryPanel
               events={setup.historical_events}
               cast={cast}
-              editable={revisable}
+              editable={revisable && !busy && !setupEditing}
+              onEditingChange={setHistoryEditing}
               onSave={async (events) => setSetup(await api.replaceHistory(id, events))}
             />
             <SeedPanel kind="entity" entities={setup.entities} places={places}
-              editable={revisable && !busy && !seedEditing} onEditingChange={setSeedEditing}
+              editable={revisable && !busy && !setupEditing} onEditingChange={setSeedEditing}
               onSave={async (entityId, revision) => setSetup(await api.reviseEntity(id, entityId, revision))}
               onAdd={async (entity) => setSetup((await api.addEntity(id, entity)).setup)}
               onRemove={async (entityId) => setSetup(await api.removeEntity(id, entityId))} />
@@ -502,11 +505,12 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
             <RelationPanel
               relations={setup.relations}
               cast={cast}
-              editable={revisable}
+              editable={revisable && !busy && !setupEditing}
+              onEditingChange={setRelationEditing}
               onSave={async (relations) => setSetup(await api.replaceRelations(id, relations))}
             />
             <SeedPanel kind="npc" npcs={setup.npcs} places={places}
-              editable={revisable && !busy && !seedEditing} onEditingChange={setSeedEditing}
+              editable={revisable && !busy && !setupEditing} onEditingChange={setSeedEditing}
               onSave={async (npcId, revision) => setSetup(await api.reviseNpc(id, npcId, revision))}
               onAdd={async (npc) => setSetup((await api.addNpc(id, npc)).setup)}
               onRemove={async (npcId) => setSetup(await api.removeNpc(id, npcId))} />

@@ -145,6 +145,26 @@ async def test_sample_recent_events_pairs_streams_and_includes_factual_only(cont
 
 
 @pytest.mark.asyncio
+async def test_sample_recent_events_keeps_newer_on_importance_tie(container: object) -> None:
+    """When the top_k cut falls inside one importance tier, the newer events survive it, and a
+    newer but less important event still doesn't displace an older, more important one."""
+    system = _make_memory_system(container, provider=SequentialMockLLM([]), is_main_character=True)
+    personality = _make_personality()
+    await system.write("要事一桩。", MemoryStream.FACTUAL, personality=personality,
+                       importance=MemoryImportance.HIGH, current_step=1, event_group_id="old_high")
+    for step in (2, 3, 4):
+        await system.write(f"第{step}件事。", MemoryStream.FACTUAL, personality=personality,
+                           importance=MemoryImportance.MEDIUM, current_step=step,
+                           event_group_id=f"mid_{step}")
+    await system.write("琐事一桩。", MemoryStream.FACTUAL, personality=personality,
+                       importance=MemoryImportance.LOW, current_step=5, event_group_id="new_low")
+
+    events = system.sample_recent_events(current_step=6, lookback=10, top_k=3)
+
+    assert [(f or e).event_group_id for f, e in events] == ["old_high", "mid_4", "mid_3"]
+
+
+@pytest.mark.asyncio
 async def test_record_event_creates_dual_streams_with_event_group_id(container: object) -> None:
     """The factual and experiential entries of one event share event_group_id."""
     provider = SequentialMockLLM(["A messenger arrived.", "I felt alarmed by the messenger."])

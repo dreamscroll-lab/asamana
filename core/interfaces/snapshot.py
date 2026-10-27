@@ -39,6 +39,7 @@ class AgentState:
     short_term_goal_entities: list[dict[str, object]] = field(default_factory=list)
     need_intensities: dict[str, float] = field(default_factory=dict)
     vitality: float = 1.0
+    death_step: int | None = None
     # A dict, not a BodyCondition, so the file and in-memory snapshots agree (see
     # condition_to_dict); agent.state_codec.decode_agent_state rebuilds it.
     condition: dict[str, object] | None = None

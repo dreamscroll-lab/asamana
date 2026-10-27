@@ -966,7 +966,6 @@ class NarrativeApplication:
             environment=world.environment,
             message_system=message_system,
             narrative_editor_settings=NarrativeEditorSettings(
-                core_tension=world.setup.lore.core_tension,
                 narrative_theme=world.setup.lore.narrative_theme,
                 enabled=self._config.engine.narrative_editor_enabled,
                 check_interval=self._config.engine.injection_check_interval,

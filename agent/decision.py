@@ -114,13 +114,13 @@ _ACTION_SPACE: List[ActionCandidate] = [
     ActionCandidate(ActionType.SEND_MESSAGE, "向特定角色发送异步消息（对方下一步收到），或向场景内所有人广播通知（当步生效）；适合单边传达任意意图，收件人不在场也能送达"),
     ActionCandidate(ActionType.MOVE,         "移动到一个可前往的地点；若这一动还要把在场的某人强行一并带走（不问他愿不愿意），另填 move_carry_indices"),
     ActionCandidate(ActionType.WORK,         "专注完成某一件自身的事情（写作、练习、制作、经营、整理等）"),
-    ActionCandidate(ActionType.PHYSICAL,     "对特定目标施加直接的、即时的物理干预或身体动作（攻击、推倒、搀扶、保护、制止、夺取、使用、拿起、放下、破坏等，可有益可有害）；对人动手填 physical_person_index，对物动手填 physical_entity_index，对此处听人吩咐做事的动手另有专属的一栏（见输出格式），三者必居其一；若是把手里的东西交给在场某人，另填 physical_recipient_index"),
+    ActionCandidate(ActionType.PHYSICAL,     "对特定目标施加直接的、即时的物理干预或身体动作（攻击、推倒、搀扶、保护、制止、夺取、使用、拿起、放下、破坏等，可有益可有害）；对人动手填 physical_person_index，对物动手填 physical_entity_index，对此处可接受任务指派的人动手另有专属的一栏（见输出格式），三者必居其一；若是把手里的东西交给在场某人，另填 physical_recipient_index"),
     # State only what it can do and its hard constraints. Don't say it may fail, and don't say it
     # "changes nothing". That is a code-layer fact (the executor has no world write access), and
     # to the character it reads as "this option is useless", so models almost stop picking it.
-    ActionCandidate(ActionType.COVERT,       "藏在暗处观察此处的某人某事，探听我本来无从得知的情形和情况——听清他们谈的是什么、看清他们做的是什么、看清此处发生了什么事、读到写着的是什么；须与目标同在一地"),
-    ActionCandidate(ActionType.REST,         "暂时搁置外部事务进行休息（生理疲劳、情绪耗尽、心情低落、生命力亏损均可）；需要多个步骤，休息得越久，恢复的生命力越多"),
-    ActionCandidate(ActionType.ERRAND,       "派一个听人吩咐做事的替我跑一趟别处：先定他去哪，再看要不要让他带上东西、指名一个人、**替我把一句话原样说出去**（指了人就说给那人听，没指人就在那处当众说）——填了哪几样就办哪几样。他没有心智：只会走到、交到、把那句话一字不改地说出口、把**眼睛看得见的**（谁在场、有什么东西、刚出了什么事）带回来；他不会打听、不会问话、不会看人脸色，更不会替我劝人、引开人、盯梢。我这一拍交代完就自由，不必等他回来"),
+    ActionCandidate(ActionType.COVERT,       "暗中探查此处的某人某事，探听我本来无从得知的情形和情况——听清他们谈的是什么、看清他们做的是什么、看清此处发生了什么事、读到写着的是什么；须与目标同在一地"),
+    ActionCandidate(ActionType.REST,         "暂时搁置外部事务进行休息（生理疲劳、情绪耗尽、心情低落、生命值亏损均可）；需要多个步骤，休息得越久，恢复的生命值越多"),
+    ActionCandidate(ActionType.ERRAND,       "向此处可接受任务指派的人指派任务，让他替我去一趟别处：先定他去哪，再看要不要让他带上东西、指名一个人、**替我把一句话原样说出去**（指了人就说给那人听，没指人就在那处当众说）——填了哪几样就办哪几样。他按指定内容前往目的地、交付物品、把那句话一字不改地说出口、把**眼睛看得见的**（谁在场、有什么东西、刚出了什么事）带回来；他不会打听、不会问话、不会看人脸色，更不会替我劝人、引开人、盯梢。我这一拍交代完就自由，不必等他回来"),
 ]
 
 # Fixed expectation for SEND_MESSAGE: an async action can only confirm "the message went out"
@@ -198,6 +198,8 @@ class _Slots:
     reachable_ids: List[str]    # adjacent locations: destination_index / errand_destination_index
     entity_ids: List[str]       # things within reach: physical_entity_index
     entity_types: dict[str, str]
+    # Who holds each thing within reach: a code-layer key from perception, never a prompt line.
+    entity_holders: dict[str, str]
     npc_ids: List[str]          # people here with no mind of their own: errand_npc_index / physical_npc_index
     # What I'm holding: a membership set, not an indexed list (see ``_own_item_ids``).
     own_item_ids: List[str]
@@ -343,12 +345,17 @@ def _bind_physical(slots: _Slots) -> "_Bound | None":
     Never fall back across namespaces: retrying an out-of-range person index against the entity
     list turns "pin someone down" into "grab something" while the description still names a person.
 
-    The recipient is a modifier on the entity channel, not a fourth channel; unresolved, it rejects
-    the step, since the recipient is the substance of a hand-over. A PHYSICAL with no target is a
-    broken decision, not a weaker act.
+    The recipient is a modifier on the entity channel, not a fourth channel; unresolved, or named
+    for a thing not in my hands, it rejects the step, since the recipient is the substance of a
+    hand-over. A PHYSICAL with no target is a broken decision, not a weaker act.
+
+    A thing in someone else's hands reaches its holder: taking or working it lands on him. Holder
+    and recipient never meet in one act, since only what I hold can be handed over; the executor
+    relies on that to tell them apart.
     """
     acted_on: "Ref | None" = None
     recipient_id: str | None = None
+    holder_id: str | None = None
     if slots.filled("physical_person_index"):
         person_id = slots.one("physical_person_index", slots.roster_ids)
         if person_id is not None and person_id in slots.visible_ids:   # a person must be present
@@ -361,10 +368,15 @@ def _bind_physical(slots: _Slots) -> "_Bound | None":
         entity_id = slots.one("physical_entity_index", slots.entity_ids)
         if entity_id is not None:
             acted_on = Ref.entity(entity_id, slots.entity_types.get(entity_id) or KIND_ITEM)
+            holder = slots.entity_holders.get(entity_id)
+            if holder and entity_id not in slots.own_item_ids and holder in slots.visible_ids:
+                holder_id = holder
         if slots.filled("physical_recipient_index"):
             recipient_id = slots.one("physical_recipient_index", slots.roster_ids)
             if recipient_id is None or recipient_id not in slots.visible_ids:
                 return slots.reject("physical_recipient_unresolvable")
+            if slots.grounded and entity_id is not None and entity_id not in slots.own_item_ids:
+                return slots.reject("physical_recipient_not_held")
     else:
         abstract = _text(slots.payload, "item_name")
         if abstract:
@@ -374,11 +386,12 @@ def _bind_physical(slots: _Slots) -> "_Bound | None":
         return slots.reject("physical_recipient_without_entity")
     if slots.grounded and acted_on is None:
         return slots.reject("physical_without_target")
-    # The recipient goes into reaches, not acts_on: the act is on the thing (it changes hands)
-    # and he is only affected. Not claims either — handing something over doesn't spend his turn.
+    # Recipient and holder go into reaches, not acts_on: the act is on the thing (it changes hands
+    # or is worked) and they are only affected. Not claims either — neither spends his turn.
+    affected = recipient_id or holder_id
     return _Bound(ActionTarget(
         acts_on=[acted_on] if acted_on else [],
-        reaches=[Ref.agent(recipient_id)] if recipient_id else [],
+        reaches=[Ref.agent(affected)] if affected else [],
     ))
 
 
@@ -441,7 +454,7 @@ def _bind_errand(slots: _Slots) -> "_Bound | None":
     # ErrandOrder.message always has a real listener.
     suffix = ""
     if message and not slots.flag("errand_announce") and not recipient_id:
-        suffix, message = f"（我吩咐他：{message}）", ""
+        suffix, message = f"（我向他指派任务：{message}）", ""
     order = (
         ErrandOrder(
             npc_id=npc_id, destination_id=destination,
@@ -539,6 +552,10 @@ def _slots_for(payload: dict, packet: PerceptionPacket | None) -> _Slots:
         entity_ids=lists.entity_ids if lists else [],
         entity_types=(
             {e.entity_id: e.entity_type for e in packet.spatial.visible_entities}
+            if packet else {}
+        ),
+        entity_holders=(
+            {e.entity_id: e.holder_id for e in packet.spatial.visible_entities if e.holder_id}
             if packet else {}
         ),
         npc_ids=lists.npc_ids if lists else [],
@@ -999,7 +1016,7 @@ class DecisionEngine:
 - 只用所给的：名单上找不到的对象就留空，不猜一个相近的；不臆造他不知道的人和事。
 - 序号只取自对应名单，各份名单各自从 1 数起，不混用。
 - TALK 只能找标(在场)的人；SEND_MESSAGE 可以发给标(不在场)的人。
-- 拿起、使用、毁坏等等是不同的事，不能互换。派人时，去处必须是已定下的或意图里说明的，不替他猜。
+- 拿起、使用、毁坏等等是不同的事，不能互换。指派任务时，去处必须是已定下的或意图里说明的，不替他猜。
 - 有【已定下的】时，decision 只能是 act 或 unclear：意图与已定下的冲突，或超出了它，就填 unclear，不把要求悄悄删掉。
 
 【行动类型】
@@ -1027,11 +1044,11 @@ class DecisionEngine:
             "destination_index": '<MOVE 的去处，"我可前往"的序号>',
             "move_carry_indices": '<最多10个整数，MOVE 时强行带走的在场者，"我能触及的人"的序号>',
             "physical_person_index": '<PHYSICAL 对人，"我能触及的人"里标(在场)者的序号>',
-            "physical_npc_index": '<PHYSICAL 对"此处听人吩咐做事的"人，其序号>',
+            "physical_npc_index": '<PHYSICAL 对"此处可接受任务指派的人"中的人，其序号>',
             "physical_entity_index": '<PHYSICAL 对物，"我够得着的东西"的序号>',
             "physical_recipient_index": '<把手里的东西交给某个在场者时，"我能触及的人"的序号>',
             "item_name": '"<PHYSICAL 的对象不在任何名单上时，写它的名称，≤10字>"',
-            "errand_npc_index": '<ERRAND 派谁，"此处听人吩咐做事的"序号>',
+            "errand_npc_index": '<ERRAND 执行任务的人，"此处可接受任务指派的人"中的序号>',
             "errand_destination_index": '<ERRAND 去哪，"我可前往"序号>',
             "errand_item_index": '<ERRAND 让他带上的、我手里的东西，"我够得着的东西"序号>',
             "errand_recipient_index": '<ERRAND 交给或说给谁，"我能触及的人"序号>',
@@ -1151,7 +1168,7 @@ class DecisionEngine:
         facts.add("外部驱动", [getattr(eg, "text", "")
                               for eg in getattr(awareness.need_evaluation, "external_goals", [])])
         for eg in getattr(awareness.need_evaluation, "external_goals", []):
-            # Neutral prefix; urgency_label ("【留意】"/"【一般】"/"【紧急】"/"【危急】") carries the
+            # Neutral prefix; urgency_label ("【不紧急】"/"【一般】"/"【紧急】"/"【非常紧急】") carries the
             # urgency, so don't presume it's pressing.
             lines.append(f"外部驱动：{urgency_label(eg.urgency)} {eg.text}")
         lines.append("")
@@ -1220,7 +1237,7 @@ class DecisionEngine:
         )
         if _self_vitality:
             lines.append(_self_vitality)
-            facts.add("我的体力", _self_vitality)
+            facts.add("我的生命值", _self_vitality)
         if personality.soul.hard_constraints:
             lines.append("我绝不逾越的底线：")
             for constraint in personality.soul.hard_constraints:
@@ -1241,8 +1258,8 @@ class DecisionEngine:
         if not present_ids:
             talk_out = "无人可当面交谈：不可选 TALK。"
             restrictions.append(
-                talk_out + "此处只有听人吩咐做事的，动手仍可以落到他们身上（physical_npc_index）"
-                "——但动手是拦住、按住、夺他手里的东西，**不是差遣**：按住他并不会让他替我跑一趟。"
+                talk_out + "此处只有可接受任务指派的人，动手仍可以落到他们身上（physical_npc_index）"
+                "——但动手是拦住、按住、夺他手里的东西，**不是指派任务**：按住他并不会让他替我执行任务。"
                 if spatial.visible_npcs
                 else talk_out + "COVERT / PHYSICAL 也不能以人为对象。"
             )
@@ -1251,7 +1268,7 @@ class DecisionEngine:
         if not spatial.visible_entities and not touchable:
             restrictions.append("我够不着任何东西、也无人在场：不可选 PHYSICAL。")
         # Busy or restrained runners are excluded here, not just marked: senders pick them anyway
-        # despite the "正忙" mark, and this hard-rule block is where the model excludes options
+        # despite the busy mark, and this hard-rule block is where the model excludes options
         # first. Must agree with ``ErrandExecutor.start`` (rejects on busy and condition). They stay
         # on the list (they are here); each line's marks say why (``render_npc``).
         free_npcs = [
@@ -1259,12 +1276,12 @@ class DecisionEngine:
             if not seen.busy and not seen.condition
         ]
         if not spatial.visible_npcs:
-            restrictions.append("此处没有听人吩咐做事的：不可选 ERRAND。")
+            restrictions.append("此处没有可接受任务指派的人：不可选 ERRAND。")
         elif not free_npcs:
             restrictions.append(
-                "此处听人吩咐做事的都腾不出身，这一拍谁也派不出去：不可选 ERRAND。"
-                "**别改用传讯去够他** —— 他不在「我能触及的人」名单上，传讯到不了他；"
-                "硬挑一个序号，话就落到名单上那个不相干的人头上。要么等他回来，要么我自己跑一趟。"
+                "此处可接受任务指派的人都正在执行任务或行动受限，此刻不能接受新任务：不可选 ERRAND。"
+                "**别改用发送消息去联系他** —— 他不在「我能触及的人」名单上，消息到不了他；"
+                "硬挑一个序号，话就落到名单上那个不相干的人头上。要么等他回来，要么我自己去找他。"
             )
         if restrictions:
             lines.append("【此刻够不着的行动】（硬规则：先据此排除，再在剩下的里挑；若都够不着，就 act:false 什么都不做）")
@@ -1295,7 +1312,7 @@ class DecisionEngine:
 
 【我要做的】
 - 此刻我要为接下来定一件事：从【我能做的】里挑出**恰好一个**最该做的行动，作为我推进需求与目标的下一步；这一动若指向外部的人 / 地点 / 物，就把它落到具体对象上，若只关乎我自己，就没有对象可落。
-- 选之前我先逐条看清【我能做的】里每个选项的**说明**——别只看类型名，要按它实际能做什么来挑那个真正贴合我此刻需求和目标的（比如对方在不在场、是同步当面还是异步传讯、是改变状态还是只是观察等等）。
+- 选之前我先逐条看清【我能做的】里每个选项的**说明**——别只看类型名，要按它实际能做什么来挑那个真正贴合我此刻需求和目标的（比如对方在不在场、是同步当面还是异步发送消息、是改变状态还是只是观察等等）。
 - 动手前我先把【我所处的现实】里那几份带 #序号 的名单看清楚——“我能触及的人”有谁(标了在场/不在场)、“可前往”何处、“我够得着的东西”有哪些；我要落到的对象，必须用对应名单里的 #序号来指认，名单上没有的，我此刻就够不着、绝不凭空写一个名字或编号。
 - 想清楚该行动是否需要持续做，如果是，estimated_steps表示的是持续这个行动的时长，可以大些，否则，estimated_steps表示完成该行动的时长。对于单次行动和持续行动都符合的条件下，优先选择持续行动。
 - 选择地点，物品，人物时可以先理解它们的描述并做出合理的选择。如果没有合理的选择，宁愿不选也不要乱选。
@@ -1303,10 +1320,10 @@ class DecisionEngine:
 【我被约束的】
 - 我想说话/动手的人、想去的地方、想用的东西，只能从【我所处的现实】里带#序号的名单里挑，用序号指认——没列出的，我此刻够不着。
 - “我可前往”的每一处都是一大片地方，里头还有许多具体的去处。我想去的地方若不在名单上，多半就落在其中某一处里头——我照名单上各处的说明判断它最可能在哪一处，就去那一处；若我心里本没有非去不可的地方，就不必硬挑一个。
-- 当面说话/动手（TALK/COVERT/PHYSICAL-对人）只能挑“我能触及的人”里标(在场)的；只有传讯（SEND_MESSAGE）可以发给标(不在场)的人。
-- 动手（PHYSICAL）必须指认出下手的对象，且**只指认一个**：对“我能触及的人”里的人就填 physical_person_index，对“此处听人吩咐做事的”里的人就填 physical_npc_index（两份名单各数各的序号，拿错名单就打到别人身上了），对物就填 physical_entity_index，名单外的抽象之物才自填 item_name——四者填其一，一个都不填等于没动手，这一拍就白费了。
+- 交谈/暗中探查/动手（TALK/COVERT/PHYSICAL-对人）只能挑“我能触及的人”里标(在场)的；只有发送消息（SEND_MESSAGE）可以发给标(不在场)的人。
+- 动手（PHYSICAL）必须指认出下手的对象，且**只指认一个**：对“我能触及的人”里的人就填 physical_person_index，对“此处可接受任务指派的人”里的人就填 physical_npc_index（两份名单各数各的序号，拿错名单就打到别人身上了），对物就填 physical_entity_index，名单外的抽象之物才自填 item_name——四者填其一，一个都不填等于没动手，这一拍就白费了。
 - 唯一的例外是「把手里的东西交出去」：这一动受动的仍是那样东西（照填 physical_entity_index），只是另可填 physical_recipient_index 指认我要交给谁——他必须是“我能触及的人”里标(在场)的。我只是把东西放下、不交给谁，就不填它。
-- 派人跑腿（ERRAND）时我交代他的话——去看什么、看完回来报我、别惊动人——写进 action_description，绝不写进 errand_message：那一栏他会一字不改说出口，我的交代一旦写进去，就等于我自己把此行的目的喊了出来。
+- 指派任务（ERRAND）时我交代他的话——去看什么、看完回来报我、别惊动人——写进 action_description，绝不写进 errand_message：那一栏他会一字不改说出口，我的交代一旦写进去，就等于我自己把此行的目的喊了出来。
 - 如果要进行的行动涉及到人，行动一定要与下面「相关人物的关系」中描述的关系符合常识，除非有特殊情况。
 - 不要脱离我此刻的需求与目标空转，也别被与我无关的事带跑。
 - 不要重复我刚刚做完的事，要往前推进。
@@ -1316,8 +1333,8 @@ class DecisionEngine:
 - 行动前需要分析清楚此刻的自身处境，做出的行动选择需要符合常理，比如我正在被别人攻击，行动选择却是我现在要偷偷观察别人怎么打我，这是明显的不符合常理的。
 - 如果近期经历连续的行动失败，可以考虑换一种行动方式，不要过于一直执着于一种行动方式。比如如果交谈持续失败，可以采用物理方式等等。改变策略的建议：换行动方式，换地点，换目标等等。
 - 选person_indices的时候要注意谁会知道什么：SEND_MESSAGE的收件人会读到message_content；TALK的对象和旁听的人会知道talk_topic。不想让谁知道的，就别选他、也别写进去，否则会造成信息泄漏，比如我现在想与A讨论关于B的坏事，那person_indices应该选择是A，而不是B。
-- 只传一句话就用 SEND_MESSAGE：一拍即达、不占人手、对方在哪儿都收得到。派人跑一趟值得占用一个人，是因为它能做 SEND_MESSAGE 做不到的事——把东西送到某人手上、把那边的情形看回来。只为传一句话就派人跑腿，是白费一个人和一个来回；而要打听消息、要人回答我、要说服或引开谁，派人跑腿办不到，他只会走到、说出、看见。
-- 行动前我先认准此刻是什么时候（下面会说明此刻是何年何月何日、几时）：眼下的时辰决定这一行动合不合时宜。如果出现时间错乱，需要先思考为什么会出现时间错乱，同时也会有可能付出必要的行动。
+- 只传一句话就用 SEND_MESSAGE：一拍即达、不占人手、对方在哪儿都收得到。指派任务值得占用一个人，是因为它能做 SEND_MESSAGE 做不到的事——把东西送到某人手上、把那边的情形看回来。只为传一句话就指派任务，是白费一个人和一个来回；而要打听消息、要人回答我、要说服或引开谁，指派任务办不到，他只会走到、说出、看见。
+- 行动前我先认准此刻是什么时候（下面会说明此刻是何年何月何日、几时）：当前时刻决定这一行动合不合时宜。如果出现时间错乱，需要先思考为什么会出现时间错乱，同时也会有可能付出必要的行动。
 - 对于人的生死我要特别关注，如果出现死者复现的情况，我需要分析是什么原因，比如某人之前已经死亡了，但是现在又感知到他在场，这个我需要特别关注，如果有必要可以做出相应的行动。
 - 在此处无事可做或陷入僵局时，换个地方也是一个选择：所在之处不同，能看到、听到的也不同。
 - 我综合所有信息后，如果存在明显的事实性冲突，我必须要思考为什么会有这样的冲突，同时也会有可能付出必要的行动。
@@ -1337,16 +1354,16 @@ class DecisionEngine:
   "act": <true=我要行动；false=我通盘想过，此刻确实没有任何值得行动的事（比如没有该回应的、该推进的等等），于是什么都不做——这是正当选择，不为填满这一拍硬编一个行动，也不用它逃避该面对的抉择。填 false 时，下面 selected_index 及其余字段一律省略>,
   "selected_index": <仅当 act=true：我选的行动，【我能做的】里 0 到 N 的整数>,
   "person_indices": <最多10个整数，序号取自"我能触及的人"(1起)。SEND_MESSAGE 可填**多个**序号群发给指定多人；TALK 只填一个(多填只取第一个)，TALK 只能选标(在场)。SEND_MESSAGE 可选(不在场)的>,
-  "message_announce": <仅当 SEND_MESSAGE 且我不指名任何人、就是要向我此刻所在地的众人发送通知：填 true，同时 person_indices 留空。定向传讯给指定的人则省略此字段。**SEND_MESSAGE 这两条通道必须走一条**：既没填 person_indices、又没写 true，这一行动就作废了——我要找的人若不在"我能触及的人"名单上，那就是此刻传不到他，我该改做别的，而不是把话说给空气听>,
+  "message_announce": <仅当 SEND_MESSAGE 且我不指名任何人、就是要向我此刻所在地的众人发送通知：填 true，同时 person_indices 留空。定向发送消息给指定的人则省略此字段。**SEND_MESSAGE 这两条通道必须走一条**：既没填 person_indices、又没写 true，这一行动就作废了——我要找的人若不在"我能触及的人"名单上，那就是此刻传不到他，我该改做别的，而不是把话说给空气听>,
   "destination_index": <若我选 MOVE，填"我可前往"里的序号(1起)，不过如果没有合理的地点，也可以省略，不要乱填；否则省略>,
   "move_carry_indices": <最多10个整数，仅当我选 MOVE 且要把人强行一并带走：填"我能触及的人"里那些标(在场)者的序号(1起)；我独自走，或没有非带不可的人，就省略此字段>,
-  "physical_person_index": <若我选 PHYSICAL 且要**对"我能触及的人"里的人**动手：填其中某个标(在场)者的序号(1起)；对此处听人吩咐做事的动手改填 physical_npc_index，其他情况则省略>,
-  "physical_npc_index": <若我选 PHYSICAL 且要对**此处听人吩咐做事的**那些人动手(拦下、按住、夺他手里的东西)：填"此处听人吩咐做事的"里的序号(1起)；否则省略>,
+  "physical_person_index": <若我选 PHYSICAL 且要**对"我能触及的人"里的人**动手：填其中某个标(在场)者的序号(1起)；对此处可接受任务指派的人动手改填 physical_npc_index，其他情况则省略>,
+  "physical_npc_index": <若我选 PHYSICAL 且要对**此处可接受任务指派的人**动手(拦下、按住、夺他手里的东西)：填"此处可接受任务指派的人"里的序号(1起)；否则省略>,
   "physical_entity_index": <若我选 PHYSICAL 且要**对物**动手：填"我够得着的东西"里那样东西的序号(1起)；对人动手则省略>,
   "physical_recipient_index": <仅当我这一动是把手中之物交到某人手上：填"我能触及的人"里某个标(在场)者的序号(1起)；只是把东西放下、或这一动与交付无关，一律省略>,
   "item_name": "<仅当 PHYSICAL 的目标不在上面两份名单里(抽象之物，如'门'、'地面')才自填名称，≤10字；能用序号就别用它；非 PHYSICAL 省略>",
-  "errand_npc_index": <若我选 ERRAND：填"此处听人吩咐做事的"里那个人的序号(1起)；否则省略。**必填**——这一动就是吩咐他去办，没有他就不成立>,
-  "errand_destination_index": <若我选 ERRAND：填"我可前往"里他要去的那个地方的序号(1起)；否则省略。**必填**——一趟不去别处的差事不成立，那种事我自己伸手就够得到>,
+  "errand_npc_index": <若我选 ERRAND：填"此处可接受任务指派的人"里那个人的序号(1起)；否则省略。**必填**——这一动就是向他指派任务，没有执行任务的人就不成立>,
+  "errand_destination_index": <若我选 ERRAND：填"我可前往"里他要去的那个地方的序号(1起)；否则省略。**必填**——不去别处的任务不成立，那种事我自己伸手就够得到>,
   "errand_item_index": <仅当我要让他带上某样东西：填"我够得着的东西"里那一件的序号(1起)，**只能选标了「由我持有」的**——不能带别人手上、也带不了在地上的东西，得先拿到手才托得出去。不带东西就省略>,
   "errand_recipient_index": <仅当这一趟是**只限于对某个人的**：填"我能触及的人"里的序号(1起)。**这一栏决定东西和话落到哪儿**——填了就是交到他手上、只说给他听；不填就是把东西搁在那处、把话在那处当众说出。只是去看看情形则省略>,
   "errand_announce": <仅当我要他到了那处把 errand_message *当众*广播宣告给在场的所有听时：填 true。我看不见那处有谁，所以公开是我主动选的，不是默认；只说给某个人听、或那只是我对他的交代，就省略此字段>,
@@ -1354,7 +1371,7 @@ class DecisionEngine:
   "talk_topic": "<仅当 TALK：我找对方谈的来意，谈话一开始对方和旁听的人就都知道；不想让他们事先知道我的来意，就省略此字段。≤30字>",
   "message_content": "<仅当 SEND_MESSAGE：我此刻要对**上面 person_indices 指认的那些收件人**(或在场众人)传达的**原话**，第一人称直接对其说，像真的在对他们传话——不是对我自己动作的描述，也不要以第三人称提到对方；20-60字。SEND_MESSAGE 必填：没有原话，这一动就作废。其他行动一律省略此字段>",
   "anonymous": <仅当 SEND_MESSAGE：我是否隐藏自己的名字，让接收人不知道我是谁，true 为匿名，false 为实名；我按自己的目的与处境选择。>,
-  "errand_message": "<他到了那头**说出口**的原话。**先定听众**：填了 errand_recipient_index 就只说给那一个人听；填了 errand_announce=true 就是当众宣告。两个都没有，那这句话就不会被他说出口——它会被当成我打发他时的交代收起来。写成能照着说出口的话：第一人称，对听的人说，20-60字。这趟差事是干什么的已经写在 action_description 里，不必在这儿重复。不带话就省略>",
+  "errand_message": "<他到了那头**说出口**的原话。**先定听众**：填了 errand_recipient_index 就只说给那一个人听；填了 errand_announce=true 就是当众宣告。两个都没有，那这句话就不会被他说出口——它会被当成我指派任务时的交代收起来。写成能照着说出口的话：第一人称，对听的人说，20-60字。这次任务是干什么的已经写在 action_description 里，不必在这儿重复。不带话就省略>",
   "expected_outcome": "<我期望这一步带来什么，10-30字>",
   "estimated_steps": <整数，>=1；每步{step_hint}，完成某件事情或者持续做某件事的时长，MOVE 由距离自动决定，填 1 即可；若选 REST，休息时长看两头——身体亏空越深(越接近垮掉)越要久，手头待办越多/越急则越短(只够缓口气)，在两者间权衡取值。>,
   "urgency": <"low"|"normal"|"high"|"critical"，仅 SEND_MESSAGE 有效；照我上面写下的原话有多急来定，对方据此判断是否中断手头事>
@@ -1528,7 +1545,7 @@ def _render_candidate_lists(
     # from this list — its object lives in action_description.)
     roster = candidate_lists(packet).roster
     if roster:
-        lines.append(f"我能触及的人（默认都是有生命力的人，除非明确标识{DECEASED_MARK}）：")
+        lines.append(f"我能触及的人（默认都是有生命值的人，除非明确标识{DECEASED_MARK}）：")
         for idx, (aid, who) in enumerate(roster, 1):
             here = "在场" if aid in spatial.visible_agent_ids else "不在场"
             # Condition shares the parentheses with gender and presence (person_referent's
@@ -1550,14 +1567,15 @@ def _render_candidate_lists(
         # be sent but can be stopped: errands exclude them, while stopping a runner only makes
         # sense while he's busy.
         lines.append(
-            "此处听人吩咐做事的（不自己拿主意，也不会推辞：没在忙的我吩咐一声就去办；"
-            "正在忙的派不出去，但拦得住。**他们不在上面「我能触及的人」名单里** —— "
-            "跟他们打交道只有当面吩咐(ERRAND)或动手(PHYSICAL)这两条路，SEND_MESSAGE, TALK等其他行动不能选这个名单的人）："
+            "此处可接受任务指派的人（按指定内容执行任务，不自行变更任务，也不会拒绝任务："
+            "空闲且行动未受限制时，我可以向其指派任务；正在执行任务或行动受限时，不能接受新任务，"
+            "但仍可成为动手的对象。**他们不在上面「我能触及的人」名单里** —— "
+            "跟他们打交道只有指派任务(ERRAND)或动手(PHYSICAL)这两条路，SEND_MESSAGE, TALK等其他行动不能选这个名单的人）："
         )
         for idx, npc_id in enumerate(spatial.visible_npc_ids, 1):
             rendered = render_npc(spatial.visible_npcs[npc_id], index=idx)
             lines.append(f"  {rendered}")
-            facts.add("此处听人吩咐做事的", rendered.split(" ", 1)[-1])
+            facts.add("此处可接受任务指派的人", rendered.split(" ", 1)[-1])
     if spatial.reachable_locations:
         # Reachable = every location reachable by shortest path (not just adjacent), with travel
         # time so distance can be weighed.
@@ -1671,7 +1689,7 @@ def _fixed_intent_payload(packet: PerceptionPacket, intent: ActorIntent, base: A
     """The fixed part of an intent as the slots the reading must keep."""
     payload = _actor_payload(base, candidate_lists(packet))
     payload["selected_index"] = next(i for i, c in enumerate(_ACTION_SPACE) if c.action_type is base.action_type)
-    if base.action_type is ActionType.SEND_MESSAGE:
+    if intent.parameters.anonymous is not None:
         payload["anonymous"] = base.anonymous
     if intent.parameters.announce is not None:
         payload["errand_announce"] = intent.parameters.announce
@@ -1751,5 +1769,4 @@ def _own_item_ids(packet: PerceptionPacket) -> List[str]:
 
 def _format_candidate_line(index: int, candidate: ActionCandidate) -> str:
     action_type = candidate.action_type
-    label = action_type.value.upper() if hasattr(action_type, "value") else str(action_type).upper()
-    return f"{index}. [{label}] {candidate.description}"
+    return f"{index}. [{action_type.value.upper()}] {action_type.label}：{candidate.description}"

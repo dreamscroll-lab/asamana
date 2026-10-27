@@ -6,6 +6,7 @@ the cache, and later record_event calls build a dict[str, str] via _resolve_agen
 
 from __future__ import annotations
 
+import pytest
 
 from agent.agent import Agent
 from agent.decision import DecisionEngine
@@ -63,33 +64,37 @@ def test_remember_agent_overwrites(container) -> None:
     assert agent._known_agents["a2"].name == "秦王李世民"
 
 
-def test_resolve_agent_names_uses_cache(container) -> None:
+@pytest.mark.asyncio
+async def test_resolve_agent_names_uses_cache(container) -> None:
     agent = _make_agent(container)
     agent.remember_agent("a2", PerceivedIdentity(name="李世民"))
     agent.remember_agent("a3", PerceivedIdentity(name="李建成"))
-    result = agent._resolve_agent_names(["a2", "a3"])
+    result = await agent._resolve_agent_names(["a2", "a3"])
     assert result == {"a2": "李世民", "a3": "李建成"}
 
 
-def test_resolve_agent_names_falls_back_to_descriptive(container) -> None:
+@pytest.mark.asyncio
+async def test_resolve_agent_names_falls_back_to_descriptive(container) -> None:
     """Unknown id → descriptive referent "某人", never a bare id (the value goes into
     embedded memory prose)."""
     agent = _make_agent(container)
-    result = agent._resolve_agent_names(["unknown_agent"])
+    result = await agent._resolve_agent_names(["unknown_agent"])
     assert result == {"unknown_agent": "某人"}
 
 
-def test_resolve_agent_names_empty_input(container) -> None:
+@pytest.mark.asyncio
+async def test_resolve_agent_names_empty_input(container) -> None:
     agent = _make_agent(container)
-    assert agent._resolve_agent_names([]) == {}
+    assert await agent._resolve_agent_names([]) == {}
 
 
-def test_resolve_agent_names_mixed(container) -> None:
+@pytest.mark.asyncio
+async def test_resolve_agent_names_mixed(container) -> None:
     """Partly known + partly unknown → known ones use name, unknown fall back to the descriptive
     "某人" (no id leak)."""
     agent = _make_agent(container)
     agent.remember_agent("a2", PerceivedIdentity(name="李世民"))
-    result = agent._resolve_agent_names(["a2", "a99"])
+    result = await agent._resolve_agent_names(["a2", "a99"])
     assert result == {"a2": "李世民", "a99": "某人"}
 
 
@@ -102,9 +107,35 @@ def test_remember_agent_keeps_gender_when_a_later_sighting_omits_it(container) -
     assert agent._known_agents["a2"] == PerceivedIdentity(name="秦王李世民", gender="男")
 
 
-def test_resolve_agent_names_gives_bare_names_not_referents(container) -> None:
+@pytest.mark.asyncio
+async def test_resolve_agent_names_gives_bare_names_not_referents(container) -> None:
     """Memory prose is natural narration: only names here; gender tags belong only to lists
     (person_referent)."""
     agent = _make_agent(container)
     agent.remember_agent("a2", PerceivedIdentity(name="李世民", gender="男"))
-    assert agent._resolve_agent_names(["a2"]) == {"a2": "李世民"}
+    assert await agent._resolve_agent_names(["a2"]) == {"a2": "李世民"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_names_falls_back_to_the_relation_s_name(container) -> None:
+    """Someone I know but haven't perceived this run (away, or after a restore) keeps the name my
+    relation holds; only a stranger becomes "某人"."""
+    agent = _make_agent(container)
+    relation = await agent.relation_system.get_or_create("a2")
+    relation.to_name = "李建成"
+    assert await agent._resolve_agent_names(["a2", "a99"]) == {"a2": "李建成", "a99": "某人"}
+
+
+@pytest.mark.asyncio
+async def test_relation_context_names_people_by_the_same_rule(container) -> None:
+    """The relations block names people as memory prose does: a perceived name, its missing gender
+    filled from my relation, and the relation's name for someone not perceived this run."""
+    agent = _make_agent(container)
+    agent.remember_agent("a2", PerceivedIdentity(name="李建成"))
+    for aid, name, gender in (("a2", "", "男"), ("a3", "李元吉", "男")):
+        relation = await agent.relation_system.get_or_create(aid)
+        relation.to_name, relation.to_gender = name, gender
+        relation.interaction_count = 1
+    block = await agent._resolve_relation_context(["a2", "a3"])
+    assert "李建成（男）" in block
+    assert "李元吉（男）" in block

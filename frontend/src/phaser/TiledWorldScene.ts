@@ -379,8 +379,11 @@ export class TiledWorldScene
     for (const [id, tok] of bodies) {
       // A figure on ground the map's art hides fades — the only occlusion handling. The test is
       // the backend's `standable` grid, the same one A* tolls (HIDDEN_STEP_TOLL) and findStanding
-      // refuses: one truth, no second opinion about the art.
-      const want = tok.baseAlpha * (this.map.hiddenGround(tok.container.x, tok.container.y) ? HIDDEN_ALPHA : 1);
+      // refuses: one truth, no second opinion about the art. The fade and the focus dim (baseAlpha)
+      // both mean "less prominent", so the dimmer one wins; don't multiply them: a background
+      // figure under a canopy (0.3 × 0.42) vanishes.
+      const hidden = this.map.hiddenGround(tok.container.x, tok.container.y);
+      const want = hidden ? Math.min(tok.baseAlpha, HIDDEN_ALPHA) : tok.baseAlpha;
       tok.container
         .setDepth(sortDepth(tok.container.y, geometry))
         .setAlpha(tok.container.alpha + (want * tok.presenceAlpha - tok.container.alpha) * fadeStep)
@@ -944,11 +947,12 @@ export class TiledWorldScene
     for (const a of actions) for (const eid of a.created_entity_ids) createdEntityIds.add(eid);
     const shownEntities = this.entities.beginStep(entities, causedEntityIds, createdEntityIds, cut, isWholeWorld(this.viewer));
 
-    // Clear corpses shown dead in a prior step (a backward scrub re-creates them below). Runs
-    // before layout so "has a token" means "has a body on this map" for the rest of the render
-    // — see gone().
+    // Clear corpses shown dead in a prior step, and anyone a seek carried past his death, still
+    // standing as last drawn. Only one dying this step gets a token below (see gone()), so a
+    // backward scrub onto his death step draws him falling again.
+    const goneIds = new Set(states.filter((s) => this.gone(s)).map((s) => s.agent_id));
     for (const [id, tok] of [...this.tokens]) {
-      if (!tok.dead) continue;
+      if (!tok.dead && !goneIds.has(id)) continue;
       this.body.removeToken(tok);
       this.tokens.delete(id);
       this.placed.delete(id);
@@ -984,19 +988,22 @@ export class TiledWorldScene
         for (const t of actedOnAgents(a.target)) physicalTargetIds.add(t);
       }
     }
-    // Reads the previous step's token (ensureToken runs below); an unplaced body simply appears.
+    // Reads the previous step's token (ensureToken runs below). A body first seen on this step
+    // shows as reported, except a death this step: he first stands, then falls to its cause.
     const withheldAgents = new Set<string>();
     states.forEach((state) => {
-      const tok = this.tokens.get(state.agent_id);
-      if (!tok || !this.placed.has(state.agent_id)) return;
       const hasVisibleCause = agentIdsWithActions.has(state.agent_id) || physicalTargetIds.has(state.agent_id);
-      if (hasVisibleCause && this.body.bodyChanged(tok, state)) withheldAgents.add(state.agent_id);
+      if (!hasVisibleCause) return;
+      const tok = this.tokens.get(state.agent_id);
+      const changed = tok && this.placed.has(state.agent_id)
+        ? this.body.bodyChanged(tok, state)
+        : state.death_step === step.step;
+      if (changed) withheldAgents.add(state.agent_id);
     });
 
     // Instant state (no animation): body, chip slots, entity markers.
     const stateById = new Map<string, Figure>();
     states.forEach((state) => {
-      // Creating a token here would resurrect a corpse every other step. See gone().
       if (this.gone(state)) return;
       const tok = this.ensureToken(state);
       if (this.entering.has(state.agent_id)) tok.presenceAlpha = 0;
@@ -1007,7 +1014,11 @@ export class TiledWorldScene
       // A dead man's pocket closes: an open panel over a corpse reads as a live control.
       if (reportedDead(state.is_active, state.vitality)) this.pockets.close(state.agent_id);
       // Withheld → leave the body exactly as it stands; playTrack lands it after the beat.
-      if (!withheldAgents.has(state.agent_id)) this.body.applyBodyState(tok, state, this.placed.has(state.agent_id));
+      if (!withheldAgents.has(state.agent_id)) {
+        // First seen falling with no visible cause: put him where he lies first, so he falls there.
+        if (this.fallsNow(state) && !this.placed.has(state.agent_id)) this.placeAgent(state, states);
+        this.body.applyBodyState(tok, state, this.fallsNow(state));
+      }
       stateById.set(state.agent_id, state);
     });
     this.staging.layoutLabels(states);
@@ -1056,7 +1067,7 @@ export class TiledWorldScene
     for (const id of withheldAgents) {
       const tok = this.tokens.get(id);
       const state = stateById.get(id);
-      if (tok && state) this.body.applyBodyState(tok, state, this.placed.has(state.agent_id));
+      if (tok && state) this.body.applyBodyState(tok, state, this.fallsNow(state));
     }
     // Same net for withheld entity changes: if the causing beat was focus-gated out, land
     // the change now rather than leave the map showing a stale world.
@@ -1200,7 +1211,7 @@ export class TiledWorldScene
         if (beat !== actIdx) continue;
         const tok = this.tokens.get(id);
         const state = stateById.get(id);
-        if (tok && state) this.body.applyBodyState(tok, state, this.placed.has(state.agent_id));
+        if (tok && state) this.body.applyBodyState(tok, state, this.fallsNow(state));
       }
       this.entities.revealEntities(
         [...entityBeat].filter(([, beat]) => beat === actIdx).map(([eid]) => eid),
@@ -1216,10 +1227,10 @@ export class TiledWorldScene
       if (!tok) continue;
       // An interrupt shows the cut, never the deed it cut (no effect, no intent caption). It is a
       // float note, not a result chip: he did nothing this step, and a note also stays out of the
-      // end-of-step chip dwell. The gist only — the reason is in the feed as "心声" — and the
+      // end-of-step chip dwell. The gist only — the reason is in the feed as inner monologue — and the
       // fallback must not be the doer's own description, which is the deed again.
       if (act.phase === Phase.interrupt) {
-        const said = act.shared?.gist || "行动被打断";
+        const said = act.shared?.gist || "行动已中断";
         const chars = [...said];
         this.hud.floatNote(
           tok.container.x,
@@ -1422,9 +1433,18 @@ export class TiledWorldScene
     return this.walker.walkAlong(tok, route).then(() => footDust(this, pos.x, pos.y + 8));
   }
 
-  /** Reported dead and no token left on the map: a body an earlier step already showed falling. */
+  /**
+   * Died before the step being drawn: no body on the map. A body is drawn only on the step it
+   * falls. Keyed on the death's step, not on whether he has a token: someone first seen on the
+   * step he dies has none yet and must still be seen falling.
+   */
   gone(state: Figure): boolean {
-    return reportedDead(state.is_active, state.vitality) && !this.tokens.has(state.agent_id);
+    return state.death_step !== null && state.death_step < (this.drawnStep ?? 0);
+  }
+
+  /** Dies on the step being drawn: his fall is the death's one-time visual, wherever he was first seen. */
+  private fallsNow(state: Figure): boolean {
+    return state.death_step === this.drawnStep;
   }
 
   // FxHost: a point outward along the ray from the world's center through (x,y), off the map.

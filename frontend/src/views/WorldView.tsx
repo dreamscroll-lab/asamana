@@ -234,7 +234,7 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
   // The actor steps out for good. Remounted afterwards: every step held here was filtered to the
   // character.
   async function exitActor() {
-    if (!confirm("退出演员模式？退出后这个角色交还给 AI，你回到导演视角，且不能再扮演。")) return;
+    if (!confirm("退出演员模式？退出后这个角色交还给 AI，你回到导演模式，且不能再扮演。")) return;
     await control(async () => {
       await api.exitActor(id);
       await refreshWorlds();
@@ -275,18 +275,18 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
   // back before it).
   const isolatedFeed = isolatedStep === null ? feed : feed.filter((ev) => ev.step === isolatedStep);
   const feedList = npcStatus === "error" ? (
-    <button className="text-sm text-rose-300" onClick={() => { void loadNpcs(id).catch(() => {}); }}>NPC 身份加载失败，点击重试</button>
+    <button className="text-sm text-rose-300" onClick={() => { void loadNpcs(id).catch(() => {}); }}>NPC 资料加载失败，点击重试</button>
   ) : npcStatus === "loading" ? (
-    <p className="text-sm text-slate-500">正在加载 NPC 身份…</p>
+    <p className="text-sm text-slate-500">正在加载 NPC 资料…</p>
   ) : !feed.length ? (
     <p className="text-slate-500 text-sm">
-      {mode === "live" ? "运行世界以生成叙事，每步实时追加。" : "该世界暂无历史步可回放。"}
+      {mode === "live" ? "运行世界以生成叙事，每步实时追加。" : "该世界暂无历史记录可回放。"}
     </p>
   ) : !isolatedFeed.length ? (
     <p className="text-slate-500 text-sm">
       第 {isolatedStep} 步已不在叙事流中。
       <button className="ml-2 text-indigo-300 hover:text-indigo-200" onClick={() => setIsolatedStep(null)}>
-        看全部 ›
+        查看全部 ›
       </button>
     </p>
   ) : (
@@ -362,7 +362,7 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
                   connected ? "text-teal-400 border-teal-700/60" : "text-rose-400 border-rose-700/60"
                 }`}
               >
-                {connected ? "● 实时" : "○ 断开"}
+                {connected ? "● 已连接" : "○ 未连接"}
               </span>
             </div>
             {/* Both layers of "when", side by side — see WorldClock for why they are two
@@ -378,7 +378,7 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
               // No spinner arrows (they'd eat half a narrow box for no use); type=number stays
               // for the numeric keypad and the min guard.
               className="w-24 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-indigo-500/70 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-              placeholder="步数(默认1)"
+              placeholder="运行步数（默认 1）"
               type="number"
               min={1}
             />
@@ -411,7 +411,7 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
               onClick={() => control(() => api.stepOnce(id))}
               title={modelKeys ? "推进一步后停下" : NO_MODEL_KEYS_HINT}
             >
-              ⏭ 推一步
+              ⏭ 推进一步
             </button>
             {/* Resetting rewrites the story: the director's power, not the actor's. */}
             {!viewer && (
@@ -469,7 +469,7 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
               onClick={() => setImmersive(true)}
               title="沉浸模式（地图铺满，Esc 退出）"
             >
-              ⛶ 沉浸
+              ⛶ 沉浸模式
             </button>
             {viewer ? (
               // Like reset, only on a stopped world: the backend takes no exit mid-run.
@@ -477,7 +477,7 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
                 className="ml-auto px-3 py-1.5 rounded-lg text-xs bg-slate-950 border border-amber-900/60 text-amber-300 hover:bg-amber-950/30 transition disabled:opacity-40 disabled:cursor-not-allowed"
                 disabled={isBusy || !modelKeys}
                 onClick={exitActor}
-                title={isBusy ? "先停止运行再退出" : modelKeys ? "把角色交还给 AI，回到导演视角" : NO_MODEL_KEYS_HINT}
+                title={isBusy ? "先停止运行再退出" : modelKeys ? "把角色交还给 AI，回到导演模式" : NO_MODEL_KEYS_HINT}
               >
                 <ActorIcon /> 退出演员模式
               </button>
@@ -530,7 +530,7 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
           <Suspense
             fallback={
               <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-6 text-slate-400 text-sm animate-pulse h-full">
-                加载 2D 渲染器…
+                正在加载地图…
               </div>
             }
           >
@@ -600,7 +600,7 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
           {bodyOpen && activeAgent && (
             <div className="absolute inset-0 z-40 flex flex-col rounded-2xl overflow-hidden border border-slate-800 bg-slate-950/90 backdrop-blur-sm">
               <div className="flex items-center justify-between px-3 py-2 border-b border-slate-800/70 shrink-0">
-                <h3 className="text-sm font-semibold tracking-wider text-slate-400 uppercase inline-flex items-center rounded-full bg-slate-800/60 border border-slate-700/60 px-4 py-1.5">🩺 认知体检</h3>
+                <h3 className="text-sm font-semibold tracking-wider text-slate-400 uppercase inline-flex items-center rounded-full bg-slate-800/60 border border-slate-700/60 px-4 py-1.5">🩺 认知状态</h3>
                 <button className={BTN} onClick={() => setBodyOpen(false)} title="关闭认知体检">
                   关闭 ✕
                 </button>
@@ -664,7 +664,7 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
             )}
             {/* In immersive the top bar is gone — offer a quick exit here too. */}
             {immersive && (
-              <button className={BTN} onClick={() => setImmersive(false)} title="退出沉浸 (Esc)">
+              <button className={BTN} onClick={() => setImmersive(false)} title="退出沉浸模式（Esc）">
                 ⤢ 退出沉浸
               </button>
             )}

@@ -746,7 +746,7 @@ async def test_npcs_follow_the_agents_on_the_one_cast_menu(container) -> None:
 
     assert prompt.menus["cast"] == {"1": "李世民", "2": "李建成", "3": "王二"}
     line = next(ln for ln in prompt.user.splitlines() if ln.startswith("#3 "))
-    assert "听吩咐办事" in line and "现于西市" in line and "正替李建成办一趟差事" in line
+    assert "可接受任务指派" in line and "现于西市" in line and "正在执行李建成指派的任务" in line
 
 
 @pytest.mark.asyncio

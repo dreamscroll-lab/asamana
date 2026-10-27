@@ -91,7 +91,7 @@ _THEME_PROMPT_SCHEMA = {
         ),
         "start_month": "<整数 1-12：开局月份，与主题季节相称>",
         "start_day": "<整数 1-30：开局日期>",
-        "start_hour": "<整数 0-23：开局时辰，与开局情境相称（如紧张夜戏取深夜、晨间集会取早时）>",
+        "start_hour": "<整数 0-23：开局小时，与开局情境相称（如紧张夜戏取深夜、晨间集会取早时）>",
         "hours_per_step": (
             "<整数 1-24：这个故事每推进一步跨过多少小时。判据见上方约束；由你据 core_tension 的"
             "时间尺度定，不要照抄默认值>"
@@ -124,7 +124,7 @@ _THEME_PROMPT_SCHEMA = {
                 "同一世界内同一类型请使用一致措辞，不要用近义词。至多 3 个。>"
             ],
             "trust": "<浮点数 0.0-1.0：A 对 B 的信任度，0=完全不信任，0.5=中立，1=完全信任。先看上面写定的 labels，这个数值要与那层关系相称>",
-            "affection": "<浮点数 -1.0-1.0：A 对 B 的好感度，-1=憎恶，0=平淡，1=深爱。同样要与上面写定的 labels 相称>",
+            "affection": "<浮点数 -1.0-1.0：A 对 B 的好感度，-1=憎恶，0=平淡，1=强烈好感。同样要与上面写定的 labels 相称>",
             "reverse_labels": [
                 "<A 是 B 的谁：持有者换成 B，角色写的是 A 的位置。必填不可省略，结构同 labels。"
                 "非对称关系务必反转角色：labels=[\"父子:儿子\"]（B 是 A 的儿子）则 reverse_labels=[\"父子:父亲\"]（A 是 B 的父亲）；"
@@ -136,7 +136,7 @@ _THEME_PROMPT_SCHEMA = {
     ],
     "historical_events": [
         {
-            "event": "历史事件描述（一句话，≤50字，需要注意时间顺序，这是已经发生过的事情，如果内容中提到时间，那时间必须是在开局时间（world_time_config）之前。）",
+            "event": "过往事件描述（一句话，≤50字，需要注意时间顺序，这是已经发生过的事情，如果内容中提到时间，那时间必须是在开局时间（world_time_config）之前。）",
             "hours_before_start": "<正整数，事件发生于故事开始前多少小时，如48表示两天前>",
             "related_figures": ["涉及的人物姓名，至多 4 人"],
             "importance": MEMORY_IMPORTANCE_SCORE_DEFINITION,
@@ -285,7 +285,7 @@ def _cast_size_constraint(min_agents: int | None, max_agents: int | None) -> str
         size = f"总数不超过 {max_agents} 个"
     else:
         size = f"总数不少于 {min_agents} 个"
-    line = f"- 数量：key_figures {size}，优先保留主要角色。"
+    line = f"- 数量：key_figures {size}，优先保留主角。"
     if min_agents is not None:
         line += (
             "凑不满下限说明这个主题里真正牵涉其中的人你还没找齐——回到 core_tension "
@@ -508,10 +508,10 @@ class ThemeAnalyzer:
         # constraints unrelated to max_agents live here; the count constraint carries the per-call max_agents value and stays in user.
         constraint_lines = ["【约束】"]
         constraint_lines.append(
-            "- 角色重要度（importance）：main = 在 core_tension 中具备独立判断与抉择能力、"
+            "- 角色叙事层级（importance）：main = 在 core_tension 中具备独立判断与抉择能力、"
             "其决定能改变张力走向的角色（包括握有裁决权、否决权或最终决断权的角色，即使其"
-            "当前态度消极或被动）；background = 主要服从他人意志、认知自主性低、只需构成可信"
-            "世界背景的角色。判定依据是叙事中心性与认知自主性，而非角色是否激进活跃。"
+            "当前态度消极或被动）；background = 在叙事中处于次要位置、构成可信世界背景的角色，"
+            "同样具有独立意志与判断能力。判定依据是叙事中心性，而非认知能力或角色是否激进活跃。"
             "角色不必都有「对立面」——根据 core_tension 的形态，角色可以是寻找者、等待者、"
             "改变中的人、目击者、抉择者等任一形态。"
         )
@@ -635,6 +635,23 @@ class ThemeAnalyzer:
             **world_time_defaults,
             **world_time_config,
         }
+        # Repair the model's loose values here: WorldSetup.validate is strict, so a "20" or a 31st
+        # day passed through would fail the build after every LLM call has been paid for.
+        merged_time_config.update(
+            era_name=coerce_str(merged_time_config.get("era_name")),
+            start_month=coerce_int(
+                merged_time_config.get("start_month"),
+                default=world_time_defaults["start_month"], minimum=1, maximum=12,
+            ),
+            start_day=coerce_int(
+                merged_time_config.get("start_day"),
+                default=world_time_defaults["start_day"], minimum=1, maximum=30,
+            ),
+            start_hour=coerce_int(
+                merged_time_config.get("start_hour"),
+                default=world_time_defaults["start_hour"], minimum=0, maximum=23,
+            ),
+        )
         # The starting year has no fallback: maps carry no year (WorldConfig contract), and an arbitrary
         # one would put the wrong year on every timestamp ("1年9月1日"). Per Rule 2, fail and retry
         # instead; analyze() has one retry.

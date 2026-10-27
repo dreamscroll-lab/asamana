@@ -220,9 +220,9 @@ _DIALOGUE_SYSTEM: str = f"""\
 - **两栏说法相左时，那不是要你调和的错漏**——那正是这场交谈的关节。他们各自都当自己那套是真的，
   把这个演出来，别把它抹平成一套说得通的说法。允许双方误解、话不投机乃至不欢而散。
 - 不要说教、不要把心事直白说尽、不要背景信息倾倒、不要书面腔。
-- 对于人物的生死问题，需要特别关注，如果出现死者复现的问题，比如某人已经死亡了，但是现在感知到他在场，这个我需要关注并思考什么这样。
+- 注意人物生死信息的一致性：若材料同时描述某人已经死亡和此刻仍然在场，应结合给定上下文处理这一矛盾，不凭空补充解释。比如某人已经死亡了，但是现在看到他就在眼前。
 - 语言简练口语，长短随情境，不必每句等长。
-- 如果对话中要提及某人，一定要符合逻辑和常量和地理空间规则，比如双方不能命令一个不在场的人攻击对方。
+- 对话中涉及他人时，应符合逻辑、常识和地理空间限制，不能把不在场的人写成当场参与交谈或执行行动。比如不能命令一个不在场的人攻击对方。
 - 谈完即止；轮数上限由输入给出。
 - 落笔前先看清【现场】给的当前时间与当前地点，避免在对白里的时间和处所错乱。同时有一点必须要注意时间已经过了并不代表某件之前约定好的事情一定发生，它是否发生需要以给定的上下文为准。
 {CLOSED_WORLD_FACT_RULE}
@@ -516,6 +516,7 @@ class SocialExecutor(ActionExecutor):
                         _LiveSide(initiator, initiator_name, initiator_ctx, is_initiator=True),
                         _LiveSide(target, target_name, target_ctx, is_initiator=False),
                     ),
+                    listener_ids=state.listener_ids,
                     purpose=state.purpose,
                     talk_topic=state.talk_topic,
                     expected_outcome=state.expected_outcome,
@@ -1094,6 +1095,7 @@ class SocialExecutor(ActionExecutor):
         self,
         *,
         sides: "tuple[_LiveSide, _LiveSide]",
+        listener_ids: list[str],
         purpose: str,
         talk_topic: str,
         expected_outcome: str,
@@ -1122,6 +1124,11 @@ class SocialExecutor(ActionExecutor):
                 turns_left=_LIVE_MAX_TURNS - spoken,
                 last=spoken == _LIVE_MAX_TURNS - 1,
                 max_turn_chars=_LIVE_ACTOR_TURN_CHARS,
+                listener_ids=tuple(_present_listeners(
+                    listener_ids, environment=environment, agents=agents,
+                    anchor_id=me.agent.agent_id,
+                    exclude={side.agent.agent_id for side in sides},
+                )),
             )
             if me.agent.is_performed:
                 answer = await me.agent.actor_dialogue_turn(step=step, conversation=conversation)

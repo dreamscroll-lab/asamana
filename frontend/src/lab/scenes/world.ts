@@ -1,9 +1,9 @@
 import { ActionType, Deed } from "../../lib/contract";
 import type { LabPlaces } from "../places";
-import { CHE, Emotion, LAN, LIN, MO, Need, SHI, YAN, aimAgents, did, nextSeq, step, type LabScene, who } from "./fixtures";
+import { CHE, Emotion, LAN, LIN, MO, Need, SHI, YAN, aimAgents, aimPlace, did, nextSeq, seenBy, step, type LabScene, who } from "./fixtures";
 
 /** The channels nobody owns: seeding, injected events, broadcasts, deaths, the clock. */
-export function buildWorldScenes({ se: SE, far: FAR, open: OPEN, tight: TIGHT }: LabPlaces): LabScene[] {
+export function buildWorldScenes({ se: SE, far: FAR, open: OPEN, tight: TIGHT, next: NEXT }: LabPlaces): LabScene[] {
   return [
     // ---- world-level channels ------------------------------------------------
     {
@@ -126,6 +126,42 @@ export function buildWorldScenes({ se: SE, far: FAR, open: OPEN, tight: TIGHT }:
       ],
     },
     {
+      id: "death-on-arrival",
+      group: "世界",
+      title: "演员视角 · 到达时正逢一死",
+      viewer: MO.id,
+      watch:
+        "阿墨走进隔壁，同一拍阿霖刺死了阿石——阿墨此前从没见过阿石。阿石必须**先站着出现、挨了这一刀再倒下**，" +
+        "不能整个不出现，也不能一出现就已躺倒。下一步他消失，且不再回来。",
+      steps: seenBy(MO.id, [
+        step({ states: [who(MO, TIGHT)] }),
+        step({
+          states: [
+            who(MO, NEXT),
+            who(LIN, NEXT, { emotion: Emotion.anger, emotion_valence: -0.8, emotion_intensity: 1 }),
+            who(SHI, NEXT, { vitality: 0, is_active: false, emotion: Emotion.fear }),
+          ],
+          actions: [
+            did(MO, {
+              action_type: ActionType.move,
+              deed: Deed.move,
+              target: aimPlace(NEXT.id),
+              action_description: `从${TIGHT.name}前往${NEXT.name}`,
+              outcome: `在${NEXT.name}，${MO.name}自${TIGHT.name}行至${NEXT.name}。`,
+            }),
+            did(LIN, {
+              action_type: ActionType.physical,
+              deed: Deed.strike,
+              target: aimAgents(SHI.id),
+              action_description: "拔刀刺向阿石。",
+              outcome: `在${NEXT.name}，阿霖一刀刺中阿石的要害。`,
+            }),
+          ],
+        }),
+        step({ states: [who(MO, NEXT), who(LIN, NEXT), who(SHI, NEXT, { vitality: 0, is_active: false })] }),
+      ]),
+    },
+    {
       id: "injection",
       group: "世界",
       title: "全城通告（注入记录不上图）",
@@ -174,7 +210,7 @@ export function buildWorldScenes({ se: SE, far: FAR, open: OPEN, tight: TIGHT }:
     {
       id: "place-broadcast",
       group: "世界",
-      title: "地点传讯（只惊动一处）",
+      title: "地点广播（只惊动一处）",
       watch:
         "同一条广播落在某个地点作用域里就不再上顶部横幅，而是落在那个地点上：字幕贴在地点名之上、地面荡开涟漪。" +
         `看字幕与「${OPEN.name}」二字是否互不挤压——它们是两样东西，不该叠在一起。`,

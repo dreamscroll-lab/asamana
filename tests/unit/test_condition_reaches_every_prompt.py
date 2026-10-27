@@ -198,7 +198,7 @@ def test_event_brief_lists_condition_beside_vitality() -> None:
         type("S", (), {"directory": _directory()})(), {"a2": main}, {},
     )
     assert MARK in brief
-    assert "体力" in brief  # alongside it, same granularity
+    assert "生命值" in brief  # alongside it, same granularity
 
 
 def test_event_brief_omits_condition_when_unencumbered() -> None:

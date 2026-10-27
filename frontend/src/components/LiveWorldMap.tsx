@@ -137,10 +137,10 @@ export default function LiveWorldMap({
         </h3>
         {/* The two fetches loadMapSource refuses to carry on without — a missing
             tileset or no derived ground still draws, so neither lands here. */}
-        <p className="text-slate-500 text-sm">取不到这个世界的地图文件或人物资产。</p>
-        {placeError && <button className="absolute bottom-20 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadPlaces(worldId).catch(() => {}); }}>地点身份加载失败，点击重试</button>}
-        {npcError && <button className="absolute bottom-10 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadNpcs(worldId).catch(() => {}); }}>NPC 身份加载失败，点击重试</button>}
-        {castError && <button className="absolute bottom-2 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
+        <p className="text-slate-500 text-sm">地图或角色形象加载失败。</p>
+        {placeError && <button className="absolute bottom-20 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadPlaces(worldId).catch(() => {}); }}>地点资料加载失败，点击重试</button>}
+        {npcError && <button className="absolute bottom-10 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadNpcs(worldId).catch(() => {}); }}>NPC 资料加载失败，点击重试</button>}
+        {castError && <button className="absolute bottom-2 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色资料加载失败，点击重试</button>}
         {children}
       </div>
     );
@@ -224,9 +224,9 @@ export default function LiveWorldMap({
             </button>
           </div>
         )}
-        {placeError && <button className="absolute bottom-20 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadPlaces(worldId).catch(() => {}); }}>地点身份加载失败，点击重试</button>}
-        {npcError && <button className="absolute bottom-10 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadNpcs(worldId).catch(() => {}); }}>NPC 身份加载失败，点击重试</button>}
-        {castError && <button className="absolute bottom-2 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
+        {placeError && <button className="absolute bottom-20 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadPlaces(worldId).catch(() => {}); }}>地点资料加载失败，点击重试</button>}
+        {npcError && <button className="absolute bottom-10 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadNpcs(worldId).catch(() => {}); }}>NPC 资料加载失败，点击重试</button>}
+        {castError && <button className="absolute bottom-2 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色资料加载失败，点击重试</button>}
         {children}
       </div>
       <div className="shrink-0 flex items-center justify-end gap-1 px-3 py-2 border-t border-slate-800/70 bg-slate-950/50">
@@ -248,17 +248,17 @@ export default function LiveWorldMap({
         ))}
         <button
           onClick={() => sceneRef.current?.resetView()}
-          title="复位视角（回到整图）"
+          title="重置地图视角（显示完整地图）"
           className="ml-1 text-[11px] px-2 py-0.5 rounded-md border bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white transition"
         >
-          ⟳ 复位
+          ⟳ 重置视角
         </button>
         <button
           onClick={onToggleImmersive}
-          title={immersive ? "退出沉浸 (Esc)" : "沉浸模式（地图铺满）"}
+          title={immersive ? "退出沉浸（Esc）" : "沉浸模式（地图铺满）"}
           className="ml-1 text-[11px] px-2 py-0.5 rounded-md border bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white transition"
         >
-          {immersive ? "⤢ 退出" : "⛶ 沉浸"}
+          {immersive ? "⤢ 退出沉浸" : "⛶ 沉浸模式"}
         </button>
       </div>
     </div>

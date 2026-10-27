@@ -174,7 +174,7 @@ export class PostLayer {
       }).setOrigin(0, 0).setResolution(TEXT_RES));
     }
     if (letters.length > shown.length) {
-      parts.push(this.host.add.text(0, 0, `…另 ${letters.length - shown.length} 封`, {
+      parts.push(this.host.add.text(0, 0, `…另 ${letters.length - shown.length} 条消息`, {
         fontFamily: FONT, fontSize: "12px", color: "#8894a8", padding: { x: 11, y: 0 },
       }).setOrigin(0, 0).setResolution(TEXT_RES));
     }

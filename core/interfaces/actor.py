@@ -160,6 +160,7 @@ class Conversation:
     turns_left: int
     last: bool
     max_turn_chars: int
+    listener_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -243,6 +244,7 @@ class ActorOperation(str, Enum):
     WORK = "work"
     REST = "rest"
     COVERT = "covert"
+    SEND_MESSAGE = "send_message"
 
 
 @dataclass(frozen=True)
@@ -298,6 +300,7 @@ class ActorIntent:
             allowed = {
                 ActorOperation.ERRAND: {"destination_id", "item_id", "recipient_id", "message", "announce"},
                 ActorOperation.BROADCAST: {"message", "anonymous"},
+                ActorOperation.SEND_MESSAGE: {"anonymous"},
             }.get(self.operation, set())
             for name in ("destination_id", "item_id", "recipient_id", "message", "announce", "anonymous"):
                 if getattr(self.parameters, name) is not None and name not in allowed:

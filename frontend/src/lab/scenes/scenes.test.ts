@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { indexStep } from "../../lib/step";
 import { buildScenes } from "./index";
-import { fixtureCast, fixtureNpcs } from "./fixtures";
+import { SHI, fixtureCast, fixtureNpcs } from "./fixtures";
 import { DEED_BODY } from "../../phaser/deedPose";
 import type { LabPlaces } from "../places";
 
@@ -91,6 +91,16 @@ describe("lab scenes", () => {
     const staged = new Set(scenes.flatMap((s) => s.steps.flatMap((st) => indexStep(st).actions.map((a) => a.deed))));
     for (const deed of Object.keys(DEED_BODY)) {
       expect(staged.has(deed), `no scene stages deed "${deed}"`).toBe(true);
+    }
+  });
+
+  it.each(["death", "death-offscreen", "death-on-arrival"])("dates %s's death to the step he falls on", (id) => {
+    // The map draws a body only on its death step; a death re-dated each step would draw him again.
+    const { steps } = scenes.find((s) => s.id === id)!;
+    const shi = steps.map((st) => indexStep(st).agents[SHI.id]);
+    const falls = steps.findIndex((_st, i) => shi[i]?.is_active === false);
+    for (const [i, a] of shi.entries()) {
+      expect(a?.death_step ?? null).toBe(i < falls ? null : steps[falls].step);
     }
   });
 });

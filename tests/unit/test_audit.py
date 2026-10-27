@@ -201,7 +201,7 @@ def test_init_shows_the_world_s_things_and_errand_hands(trace_dir: str) -> None:
     view = reconstruct_world(WORLD, trace_dir=trace_dir)
     block = init_block(view)
     assert "[物] 虎符（item，初始状态 intact）　在 北营：调兵之信物" in block
-    assert "[差役] 营门卒（男28岁）　在 北营：守营门，认符不认人" in block
+    assert "[NPC] 营门卒（男28岁）　在 北营：守营门，认符不认人" in block
 
 
 def test_init_reads_each_label_as_who_the_other_party_is(trace_dir: str) -> None:
@@ -568,7 +568,7 @@ def test_mams_says_which_emotion_it_is_showing() -> None:
               _call("decision", out={"selected_index": 0, "action_description": "我去找丙"},
                     extra={"action_menu": {"0": "TALK"}, "verdict": "conscripted"})])
     block = "\n".join(_mams_lines("甲", s, sps=3600))
-    assert "情绪（他此刻所感；本步还没有结果的反应）：fear（强度0.8，效价-0.7）" in block
+    assert "情绪（他此刻所感；本步还没有结果的反应）：fear（强度0.8，情绪正负值-0.7）" in block
 
 
 def test_a_long_term_goal_revision_shows_what_the_engine_kept() -> None:
@@ -1064,7 +1064,7 @@ def test_every_scale_the_audit_renders_has_its_definition_in_the_same_block() ->
     sv = AgentStepView(step=1, world_time="t", summary={
             "relations": [{"name": "乙", "labels": "君臣:君主", "trust": 0.7, "affection": 0.3}],
             "emotion": {"primary": "anger", "intensity": 0.8, "valence": -0.9},
-            "perceived": ["外部压力（threat，紧迫度【紧急】）：提防东宫"],
+            "perceived": ["外部压力（threat，紧急程度【紧急】）：提防东宫"],
             "need_activation": {"safety": 0.9},
             "dominant_need": "safety",
             "prior_goals": ["去北营取兵符（约定时刻已过约4小时）"],
@@ -1078,12 +1078,12 @@ def test_every_scale_the_audit_renders_has_its_definition_in_the_same_block() ->
 
     # (token appearing in the rendering, definition snippet that must appear in the same block)
     scales = [
-        ("信任0.7", "0.7=信任"),                    # trust
-        ("好感0.3", "0.3=亲近"),                    # affection
+        ("信任度0.7", "0.7=信任"),                    # trust
+        ("好感度0.3", "0.3=亲近"),                    # affection
         ("「君臣:君主」", "「关系类型:角色」格式"),      # labels
         ("强度0.8", "0.8=强烈"),                    # emotion intensity
-        ("效价-0.9", "<0 痛苦/消极"),                # emotion valence
-        ("紧迫度【紧急】", "【紧急】=应当优先"),         # urgency
+        ("情绪正负值-0.9", "<0 痛苦/消极"),                # emotion valence
+        ("紧急程度【紧急】", "【紧急】=应当优先"),         # urgency
         ("（threat，", "threat=威胁安全"),            # drive_type
         ("激活需求", "need_activation（需求激活度）"),  # activation
         ("主导需求 safety", "safety: 减少不确定性"),    # need type
@@ -1112,7 +1112,7 @@ def test_every_scale_the_audit_renders_has_its_definition_in_the_same_block() ->
     # anchors go first).
     assert "0.3=可感知但不紧迫" in _need_legend()      # anchor of NEED_INTENSITY_DEFINITION
     assert "1.0=典型重要" in _need_legend()            # anchor of NEED_WEIGHT_DEFINITION
-    assert "【危急】" in _pressure_legend() and "event=世界事件" in _pressure_legend()
+    assert "【非常紧急】" in _pressure_legend() and "event=世界事件" in _pressure_legend()
     assert "neutral/joy/sadness" in _emotion_legend()
 
 
@@ -1123,7 +1123,7 @@ def test_what_the_audit_renders_has_something_to_judge_it_by() -> None:
     from tuning.audit_metrics import SCOPES
 
     init_c = " ".join(c for m in SCOPES["initialization"].metrics for c in m.criteria)
-    assert "差役" in init_c                       # init_block shows the errand-runner list
+    assert "NPC" in init_c                       # init_block shows the errand-runner list
     sams_c = " ".join(c for m in SCOPES["single_agent_multi_step"].metrics for c in m.criteria)
     assert "约定时刻已过" in sams_c                # goal lines show the overdue marker
     assert "人设基线" in sams_c or "人设漂移" in sams_c   # the full persona baseline is shown at the top of the trajectory
@@ -1583,13 +1583,27 @@ def test_maintenance_products_render_readably_without_bare_indices() -> None:
     })
     block = "\n".join(lines)
     assert "⟳关系演化：对 李世民 「姻亲:妹夫、君臣:君主」信任上升（他亲口允诺，默契加深）" in block
-    assert "⟳反思（重要度0.95）：我才明白他等的不是准信。" in block
+    assert "⟳反思（重要程度0.95）：我才明白他等的不是准信。" in block
     assert "target_index" not in block and "source_indices" not in block   # bare indices stay out of the context
     # When the list is missing (an older trace, or the annotation wasn't attached), fall back to a
     # descriptive referent, not a bare index.
     fallback = "\n".join(_step_level_lines(
         {"relation_evolution": {"updates": [{"target_index": 2, "summary": "疏远了"}]}}))
     assert "对 某人 疏远了" in fallback
+
+
+@pytest.mark.parametrize("goals", [None, [], ["完成一项长期研究"]])
+def test_persona_baseline_keeps_life_goal_separate_from_long_term_goals(goals: list[str] | None) -> None:
+    from tuning.judge_audit import _persona_baseline_lines
+
+    persona: dict[str, str | list[str]] = {"life_goal": "理解世界"}
+    if goals is not None:
+        persona["long_term_goals"] = goals
+    block = "\n".join(_persona_baseline_lines("甲", {}, persona))
+    assert "人生目标：理解世界" in block
+    long_term = block.split("长期目标：", 1)[1]
+    assert "理解世界" not in long_term
+    assert ("完成一项长期研究" if goals else "未提供") in long_term
 
 
 def test_init_keys_on_the_cast_and_shows_the_tier() -> None:
@@ -1608,7 +1622,7 @@ def test_init_keys_on_the_cast_and_shows_the_tier() -> None:
               "initial_relations": [], "historical_events": [], "cast_roles": []})
     block = init_block(view)
     assert "【甲】（主角）" in block
-    assert "【乙】（背景）" in block, "persona 缺失的角色仍要出现在名册里"
+    assert "【乙】（背景角色）" in block, "persona 缺失的角色仍要出现在名册里"
     assert "没有生成人设" in block   # and says what it's missing
 
 
@@ -1665,7 +1679,7 @@ def test_a_step_settled_without_a_decision_call_reads_its_decision_from_the_beat
     block = "\n".join(_step_lines(sv, name="甲", sps=3600))
     # The amendment is the input of the decision it landed before.
     assert block.index("内心变化") < block.index("决策｜输出：[TALK] 我找乙问个明白")
-    assert "新的感悟：乙不可信" in block
+    assert "新的洞察：乙不可信" in block
 
 
 def test_a_break_off_he_chose_reads_as_his_own_stop_not_an_unprompted_one(tmp_path: Path) -> None:
@@ -1728,3 +1742,28 @@ def test_a_talk_is_laid_out_once_in_the_world_view_and_the_other_side_points_to_
         "      · 对话：", "          乙：何事？", "          甲：北营的火",
     ]
     assert _mams_script_lines("乙", addressee, shown) == ["      · 对话：同一场，见 甲 处"]
+
+
+def test_a_mind_change_lists_goals_one_per_line() -> None:
+    """Goals the actor amended are listed one per item under their label, the short changes stay
+    on the heading line, and an emptied list reads "（无）"."""
+    from tuning.judge_audit import _mind_lines
+
+    s = {"mind": [{
+        "before": "decision",
+        "emotion": {"emotion": "anger", "intensity": 0.8, "valence": -0.7},
+        "long_term_goals": ["查清内鬼", "保住U盘里的东西"],
+        "short_term_goals": [],
+        "removed_short_term_goals": ["去小吃街等吴凡"],
+    }]}
+    lines = _mind_lines(s, "decision")
+    assert lines[0].startswith("  内心变化（此后各拍以此为准）：心境变为 ")
+    assert lines[1:] == [
+        "    长期目标变为：",
+        "      - 查清内鬼",
+        "      - 保住U盘里的东西",
+        "    短期目标变为：（无）",
+        "    放下了：",
+        "      - 去小吃街等吴凡",
+    ]
+    assert _mind_lines(s, "perception") == []

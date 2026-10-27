@@ -858,7 +858,9 @@ class MemorySystem:
         self, current_step: int, *, lookback: int = RECENT_EVENT_LOOKBACK_STEPS, top_k: int = 10
     ) -> list[tuple[Memory | None, Memory | None]]:
         """Top-k recent EVENTS (last ``lookback`` steps), each paired as
-        ``(factual, experiential)`` by ``event_group_id``, ranked by max importance.
+        ``(factual, experiential)`` by ``event_group_id``, ranked by max importance, newer first
+        on a tie: in an event-dense window the cut otherwise drops the latest equal-importance
+        events, the very anchors decide's recent supplement exists for.
 
         Short-term goals need both what happened and how the agent read it: with only the feeling
         stream they repeat or drift with emotion. Experiential may be None; factual is None only in
@@ -875,7 +877,10 @@ class MemorySystem:
             groups.setdefault(m.event_group_id or m.id, {})[m.stream] = m
         ranked = sorted(
             groups.values(),
-            key=lambda slot: max(float(m.importance) for m in slot.values()),
+            key=lambda slot: (
+                max(float(m.importance) for m in slot.values()),
+                max(m.created_step for m in slot.values()),
+            ),
             reverse=True,
         )[:top_k]
         return [
@@ -1627,11 +1632,11 @@ class MemorySystem:
 
 【我是谁】
 我是{soul.name}。
-核心性格：{soul.traits_text()}
-核心价值观：{soul.values_text()}
-行为底线：{soul.constraints_text()}{secret_line}
+性格特点：{soul.traits_text()}
+价值观：{soul.values_text()}
+底线：{soul.constraints_text()}{secret_line}
 自我认知：{soul.self_image or '无'}
-毕生追求：{life_goal}
+人生目标：{life_goal}
 
 【此刻我的心绪】
 {emotion.summary()}{condition_block}

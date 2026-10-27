@@ -102,7 +102,10 @@ export const actedOnAgents = (t: ActionTarget | undefined): string[] =>
 export const actedOnNpcs = (t: ActionTarget | undefined): string[] =>
   (t?.acts_on ?? []).filter((r) => r.kind === RefKind.npc).map((r) => r.id);
 
-/** Who RECEIVES it, their turn untouched: a hand-over's receiver, a conversation's listeners. */
+/**
+ * Who it LANDS ON passively, their turn untouched: a hand-over's receiver, the holder of a thing
+ * taken or worked, a conversation's listeners.
+ */
 export const reachedAgents = (t: ActionTarget | undefined): string[] =>
   (t?.reaches ?? []).filter((r) => r.kind === RefKind.agent).map((r) => r.id);
 

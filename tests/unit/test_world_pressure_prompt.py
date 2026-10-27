@@ -129,7 +129,7 @@ def test_agent_prompt_separates_reference_from_perceived_and_carries_relations()
     assert "当前时间：辰时；当前地点：玄武门——皇城北门。" in prompt
     # Gender shares the identity parenthesis: the third-party assessment writes about the pressure he or she is under, and gender decides the pronouns and forms of address.
     assert "李世民（男，秦王，" in prompt and "位于" not in prompt
-    assert "性格：果决" in prompt
+    assert "性格特点：果决" in prompt
     # perceived content is framed as the only pressure source
     assert "【该角色此刻感知到的内容（外部压力的唯一来源）】" in prompt
     # The severity code enum is translated into a natural word; "severity=high" must not leak
@@ -140,7 +140,7 @@ def test_agent_prompt_separates_reference_from_perceived_and_carries_relations()
     # co-located: role + relation (via shared format_relation_block) + personality + background
     assert "#1 李建成（男，太子）" in prompt
     assert "[兄弟:敌对]" in prompt and "信任度0.10" in prompt and "好感度-0.60" in prompt
-    assert "其性格：隐忍、权谋" in prompt
+    assert "其性格特点：隐忍、权谋" in prompt
     assert "其背景：正统储君。" in prompt
 
 

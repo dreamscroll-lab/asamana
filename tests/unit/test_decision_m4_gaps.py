@@ -193,7 +193,7 @@ def test_main_prompt_contains_role_section(main_engine) -> None:
     prompt = _decision_prompt(main_engine, personality, packet, candidates=[])
     assert "【我是谁】" in prompt
     assert "李世民" in prompt
-    assert "核心性格：" in prompt  # the persona block has no person; the 【我是谁】 heading carries it
+    assert "性格特点：" in prompt  # the persona block has no person; the 【我是谁】 heading carries it
 
 
 def test_main_prompt_contains_motivation_section(main_engine) -> None:
@@ -206,7 +206,7 @@ def test_main_prompt_contains_motivation_section(main_engine) -> None:
 
 
 def test_main_prompt_external_goals_labeled_by_urgency(main_engine) -> None:
-    """external_goals fall into three urgency bands: 【紧急】≥0.75, 【一般】≥0.45, 【留意】<0.45."""
+    """external_goals fall into three urgency bands: 【紧急】≥0.75, 【一般】≥0.45, 【不紧急】<0.45."""
     egs = [
         ExternalGoal(text="紧急任务", source_id="world", urgency=Urgency.HIGH,
                      drive_type=ExternalDriveType.THREAT),
@@ -221,7 +221,7 @@ def test_main_prompt_external_goals_labeled_by_urgency(main_engine) -> None:
     assert "外部驱动" in prompt
     assert "【紧急】 紧急任务" in prompt
     assert "【一般】 重要任务" in prompt
-    assert "【留意】 留意任务" in prompt
+    assert "【不紧急】 留意任务" in prompt
 
 
 def test_main_prompt_external_goals_section_omitted_when_empty(main_engine) -> None:
@@ -861,7 +861,7 @@ def test_parse_person_index_resolves_absent_recipient(container) -> None:
     """
     engine = DecisionEngine(container.llm_router)
     packet = _make_packet(visible_agent_ids=[], inbox=[_absent_sender_msg()])
-    candidates = [ActionCandidate(ActionType.SEND_MESSAGE, "传讯")]
+    candidates = [ActionCandidate(ActionType.SEND_MESSAGE, ActionType.SEND_MESSAGE.label)]
     raw = json.dumps({
         "selected_index": 0, "person_indices": [1],
         "action_description": "回信尉迟恭：按计划即刻行事", "message_content": "按计划即刻行事。",
@@ -877,7 +877,7 @@ def test_parse_send_message_stray_item_id_not_bound(container) -> None:
     recipient."""
     engine = DecisionEngine(container.llm_router)
     packet = _make_packet(visible_agent_ids=[])
-    candidates = [ActionCandidate(ActionType.SEND_MESSAGE, "传讯")]
+    candidates = [ActionCandidate(ActionType.SEND_MESSAGE, ActionType.SEND_MESSAGE.label)]
     raw = json.dumps({
         "selected_index": 0, "item_name": "禁军统领", "message_announce": True,
         "action_description": "通告全军戒备", "message_content": "全军戒备。", "estimated_steps": 1,

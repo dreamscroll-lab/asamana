@@ -99,7 +99,7 @@ describe("actor goal panel", () => {
     ]);
     const html = renderToStaticMarkup(<GoalPanel mind={m} draft={null} removedIds={[]} onChange={() => {}} />);
     expect(html).toContain(text);
-    for (const label of ["短期目标", "约定时刻已过约两小时", "尚未收到回信", "很久未完成", "近期记录", "已经送出的信", "已完成"])
+    for (const label of ["短期目标", "约定时刻已过约两小时", "尚未收到回信", "该目标已长期未完成，是否继续？", "近期记录", "已经送出的信", "已完成"])
       expect(html).toContain(label);
     expect(html).not.toContain("待办");
     expect(html).not.toContain("<textarea");

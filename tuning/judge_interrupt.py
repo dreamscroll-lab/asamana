@@ -48,14 +48,14 @@ def _scene_block(inputs: dict[str, Any], outputs: dict[str, Any]) -> str:
     traits = "、".join(inputs.get("core_traits") or []) or "—"
     values = "、".join(inputs.get("core_values") or []) or "—"
     emo = inputs.get("emotion") or {}
-    emo_str = (f"{emo.get('primary')}（强度{emo.get('intensity')}，效价{emo.get('valence')}）"
+    emo_str = (f"{emo.get('primary')}（强度{emo.get('intensity')}，情绪正负值{emo.get('valence')}）"
                if emo else "—")
     goals = "；".join(inputs.get("short_term_goals") or []) or "—"
     si = outputs.get("should_interrupt")
     si_str = "中断（放下手头的事）" if si is True else ("不中断（继续手头的事）" if si is False else "—")
     return (
         f"### 角色：{inputs.get('agent_name')}（{inputs.get('role') or '—'}）\n"
-        f"  性格：{traits}\n"
+        f"  性格特点：{traits}\n"
         f"  价值观：{values}\n"
         f"  此刻情绪：{emo_str}\n"
         f"  短期目标：{goals}\n"

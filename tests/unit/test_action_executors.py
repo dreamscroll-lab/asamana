@@ -741,8 +741,8 @@ class TestSimpleExecutor:
             opening_outcome="开始",
         )
         results = await executor.complete(state, 3, agents={}, environment=env, message_system=None)
-        # 3p outcome uses the default wording "歇息" (no specific activity)
-        assert "歇息" in results[0].outcome
+        # 3p outcome uses the default wording "休息" (no specific activity)
+        assert "休息" in results[0].outcome
         assert "rest" not in results[0].outcome
         # 1p factual_memory keeps "休息了", a natural duration and the recovery detail
         assert "休息了" in results[0].factual_memory
@@ -3278,6 +3278,7 @@ class TestPhysicalExecutor:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("holder, recipient, expected_role", [
         ("agent-b", None, "持有者"),       # in someone else's hands: take it from him
+        ("agent-b", "agent-b", "持有者"),  # bound as the binding does it: the holder in reaches
         ("agent-a", "agent-b", "接收人"),  # in the doer's hands, to be given to him
         ("agent-a", None, None),           # in the doer's hands, just being put down
         (None, None, None),                # lying on the ground
@@ -3859,22 +3860,22 @@ class TestPhysicalExecutor:
         judge_prompt = _joined(provider.call_history[0])
         assert "【裁决任务】" in judge_prompt and "【目标】" in judge_prompt
         assert "乙" in judge_prompt                         # target persona (name)
-        assert "体力状况" in judge_prompt                   # both sides' vitality
+        assert "生命值状态" in judge_prompt                   # both sides' vitality
         assert "目标对行动者的关系" in judge_prompt          # relation in both directions
         # The legend is static: once, in system, not beside the per-call relation lines.
         from core.prompts import relation_legend
         judge_system, judge_user = (m.content for m in provider.call_history[0])
         assert judge_system.count(relation_legend()) == 1 and "【输入说明】" in judge_system
         assert relation_legend() not in judge_user and "关系数值含义" not in judge_user
-        assert "生命力损耗" in judge_prompt                 # VITALITY_DAMAGE_DEFINITION scale
+        assert "生命值损耗" in judge_prompt                 # VITALITY_DAMAGE_DEFINITION scale
         assert "梁柱森然" in judge_prompt                   # scene (location description)
         assert "agent-b" not in judge_prompt                # no id leak
 
     @pytest.mark.asyncio
     async def test_judge_relation_legend_follows_the_shape(self, container) -> None:
         """The relation legend sits once in the judge's system exactly when 【目标】 carries
-        relation lines, and never beside them in user. A thing with both a holder and a recipient
-        shows two people's relations and still one legend; a thing nobody holds shows none."""
+        relation lines, and never beside them in user. A thing someone holds shows his relations
+        and one legend; a thing nobody holds shows none."""
         from core.prompts import relation_legend
         from engine.executors.physical import PhysicalExecutor
 
@@ -3904,14 +3905,12 @@ class TestPhysicalExecutor:
         llm = _Capture()
         executor = PhysicalExecutor(llm, _directory(agents))  # type: ignore[arg-type]
 
-        async def judge(target: Ref, recipient_id: str = "") -> tuple[str, str]:
+        async def judge(target: Ref) -> tuple[str, str]:
             state = ActionExecutionState.create(
                 action_type=ActionType.PHYSICAL, initiator_id="agent-a", participant_ids=["agent-a"],
                 purpose="做点什么", started_step=1, estimated_steps=1, opening_outcome="",
                 target=ActionTarget(acts_on=[target]),
             )
-            if recipient_id:
-                state.extra["recipient_id"] = recipient_id
             subject = await executor._resolve_subject(  # noqa: SLF001
                 state, agents=agents, environment=env, step=1)
             await executor._judge(  # noqa: SLF001
@@ -3925,9 +3924,9 @@ class TestPhysicalExecutor:
             return system, user
 
         legend = relation_legend()
-        held_system, held_user = await judge(Ref.entity("seal"), recipient_id="agent-c")
-        assert "【持有者】" in held_user and "【接收人】" in held_user
-        assert held_user.count("对行动者的关系") == 2
+        held_system, held_user = await judge(Ref.entity("seal"))
+        assert "【持有者】" in held_user and "【接收人】" not in held_user
+        assert held_user.count("对行动者的关系") == 1
         assert held_system.count(legend) == 1 and legend not in held_user
 
         ground_system, ground_user = await judge(Ref.entity("stone"))
@@ -4207,7 +4206,7 @@ class TestPhysicalExecutor:
             container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).call_history[-1]
         )
         assert "【你是谁】" in reaction_prompt
-        assert "你身上的变化：生命力大损" in reaction_prompt   # 0.3 ≤ 0.4 < 0.7; the line states how bad it is, not what caused it
+        assert "你身上的变化：生命值大损" in reaction_prompt   # 0.3 ≤ 0.4 < 0.7; the line states how bad it is, not what caused it
         assert "伤" not in _damage_label(0.4)                # depletion labels don't assume a cause (exhaustion and hunger fall in the same band)
         from core.prompts import relation_legend
 
@@ -4220,7 +4219,7 @@ class TestPhysicalExecutor:
         assert relation_legend() not in reaction_user and "关系数值含义" not in reaction_user
         assert "你与甲的关系：[未明确]，信任度" in reaction_user
         assert "情绪强度" in reaction_prompt                  # emotion_legend scale
-        assert "情绪基调" in reaction_prompt
+        assert "情绪正负值" in reaction_prompt
 
     @pytest.mark.asyncio
     async def test_target_reaction_attributed_to_target_not_initiator(self, container, monkeypatch) -> None:
@@ -4394,7 +4393,7 @@ class TestPhysicalExecutor:
         # The harm comes first: being hurt still matters most to him, even if it was offset in the
         # same beat.
         reaction_prompt = _joined(container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).call_history[-1])
-        assert "你身上的变化：生命力大损" in reaction_prompt   # 0.3≤0.5<0.7
+        assert "你身上的变化：生命值大损" in reaction_prompt   # 0.3≤0.5<0.7
 
     @pytest.mark.asyncio
     async def test_reaction_tells_the_rescued_what_changed_on_him(self, container, monkeypatch) -> None:
@@ -4560,7 +4559,7 @@ class TestPhysicalExecutor:
         # told about his wounds.
         assert "伤" not in _relief_label(0.08)
         reaction_prompt = _joined(container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).call_history[-1])
-        assert "你身上的变化：生命力回了一些" in reaction_prompt
+        assert "你身上的变化：生命值恢复了一些" in reaction_prompt
 
     @pytest.mark.asyncio
     async def test_relief_slot_only_exists_in_the_person_shape(self, container) -> None:
@@ -4588,7 +4587,7 @@ class TestPhysicalExecutor:
         await executor.complete(state, 1, agents=agents, environment=env, message_system=None)
         person_prompt = _joined(provider.call_history[0])
         assert "target_relief" in person_prompt
-        assert "生命力挽回" in person_prompt                     # VITALITY_RELIEF_DEFINITION scale
+        assert "生命值恢复" in person_prompt                     # VITALITY_RELIEF_DEFINITION scale
         assert "不得凭空挽回" in person_prompt                   # means gate
         # Relief isn't tied to a cause; if the judge only recognized wounds, losses from anything
         # else could never be relieved.
@@ -4608,7 +4607,7 @@ class TestPhysicalExecutor:
         results = await executor.complete(state, 2, agents=agents, environment=env, message_system=None)
         entity_prompt = _joined(provider.call_history[0])
         assert "target_relief" not in entity_prompt
-        assert "生命力挽回" not in entity_prompt
+        assert "生命值恢复" not in entity_prompt
         # The same goes for harm, in every form: requiring an injury would score pure physical
         # exhaustion as 0, contradicting the next rule that plain exertion may be ≤0.099.
         for prompt in (person_prompt, entity_prompt):
@@ -4972,7 +4971,7 @@ class TestCovertExecutor:
         )
         assert isinstance(result, ActionResult)
         assert result.detected is detected
-        assert result.happening == "", "秘密行动绝不把自己的 outcome 交给别人的见闻轨"
+        assert result.happening == "", "暗中探查绝不把自己的 outcome 交给别人的见闻轨"
         # what he found stays in his own memory channel
         assert "三日后动手" in result.factual_memory
         assert "三日后动手" not in result.happening
@@ -5114,7 +5113,7 @@ class TestCovertExecutor:
         )
 
         prompt = _joined(provider.call_history[-1])
-        assert "密信" not in prompt, "在场者打算做什么,秘密行动的裁决不该看见"
+        assert "密信" not in prompt, "在场者打算做什么,暗中探查的裁决不该看见"
         assert "此刻意图" not in prompt
         assert "此刻正忙着手上的事" in prompt, "忙/闲这一维要留着——判 detected 靠它"
 

@@ -110,10 +110,9 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(revision),
     }),
-  reviseSecondsPerStep: (id: string, secondsPerStep: number) =>
-    req<SetupView>(`/api/worlds/${id}/setup/seconds-per-step`, {
-      method: "PUT",
-      body: JSON.stringify({ seconds_per_step: secondsPerStep }),
+  reviseLore: (id: string, lore: Pick<SetupView, "narrative_theme" | "opening_time" | "seconds_per_step">) =>
+    req<SetupView>(`/api/worlds/${id}/setup/lore`, {
+      method: "PUT", body: JSON.stringify(lore),
     }),
   addEntity: (id: string, entity: NewEntity) =>
     req<{ entity_id: string; setup: SetupView }>(`/api/worlds/${id}/setup/entities`, { method: "POST", body: JSON.stringify(entity) }),

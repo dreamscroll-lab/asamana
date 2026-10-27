@@ -316,7 +316,7 @@ def _needs(ns: Any) -> str:
     for n in ns or []:
         if isinstance(n, dict):
             lab = f"·{n['label']}" if n.get("label") else ""
-            out.append(f"    - {n.get('type')}{lab}（强度{n.get('intensity')}，权重{n.get('weight')}）")
+            out.append(f"    - {n.get('type')}{lab}（强度{n.get('intensity')}，在意程度{n.get('weight')}）")
     return "\n".join(out)
 
 
@@ -361,7 +361,7 @@ def _time_legend(sps: Any) -> str:
 
 
 def _pressure_legend() -> str:
-    """Two scales for external pressure: category + urgency. A judge reading "外部压力（threat，紧迫度【紧急】）"
+    """Two scales for external pressure: category + urgency. A judge reading "外部压力（threat，紧急程度【紧急】）"
     without knowing what threat means or which of the four levels 【紧急】 is can't judge whether it
     should override the dominant need.
 
@@ -376,7 +376,7 @@ def _pressure_legend() -> str:
             (Urgency.CRITICAL, "必须立即响应（生死攸关 / 不可错过）"),
         )
     )
-    return f"{EXTERNAL_DRIVE_TYPE_DEFINITION}；紧迫度 4 档：{tiers}"
+    return f"{EXTERNAL_DRIVE_TYPE_DEFINITION}；紧急程度 4 档：{tiers}"
 
 
 # Scales are defined in one place and requested by name from each renderer. Rendering a scale
@@ -476,7 +476,7 @@ def init_block(view: WorldAuditView) -> str:
         # Give the tier (main/background): this audit judges whether there are detached, interchangeable
         # characters unrelated to the core tension, and a background character needn't carry the main plot.
         # Without the tier, the judge measures everyone with the same ruler.
-        tier = "主角" if f.get("importance") == "main" else "背景"
+        tier = "主角" if f.get("importance") == "main" else "背景角色"
         # Where they stand at the start: like the placement of things and errand-runners, a build-time
         # opening fact. Judging whether placement fits their situation, and whether the factions start
         # crowded together or each in their own place, needs it; without it the initialization audit sees
@@ -489,7 +489,7 @@ def init_block(view: WorldAuditView) -> str:
         if c.get("narrative_role") or c.get("arc_summary"):
             lines.append(f"  叙事角色：{c.get('narrative_role', '')}　弧线：{c.get('arc_summary', '')}")
         if p.get("core_traits"):
-            lines.append(f"  性格：{_join(p['core_traits'])}")
+            lines.append(f"  性格特点：{_join(p['core_traits'])}")
         if p.get("core_values"):
             lines.append(f"  价值观：{_join(p['core_values'])}")
         if p.get("self_image"):
@@ -497,12 +497,12 @@ def init_block(view: WorldAuditView) -> str:
         if p.get("background"):
             lines.append(f"  背景：{p['background']}")
         if p.get("life_goal"):
-            lines.append(f"  毕生追求：{p['life_goal']}")
+            lines.append(f"  人生目标：{p['life_goal']}")
         if p.get("long_term_goals"):
             lines.append("  长期目标：")
             lines.append(_bullets(p["long_term_goals"]))
         if p.get("hard_constraints"):
-            lines.append("  硬约束（绝不为之）：")
+            lines.append("  底线（不可逾越）：")
             lines.append(_bullets(p["hard_constraints"]))
         if p.get("initial_needs"):
             lines.append("  初始需求：")
@@ -511,7 +511,7 @@ def init_block(view: WorldAuditView) -> str:
             lines.append("  隐藏需求：")
             lines.append(_needs(p["hidden_needs"]))
 
-    lines.append(_sub_sep("初始关系（就地带年龄 + 双向 label + 信任/好感；判 年龄↔称谓 与 正反向对应）"))
+    lines.append(_sub_sep("初始关系（就地带年龄 + 双向 label + 信任度/好感度；判 年龄↔称谓 与 正反向对应）"))
     # Inject the project's own relation_legend() at the start of the relation definitions (authoritative,
     # single source of truth): it states the label's role is the other party's position relative to
     # the holder ("父子:父亲" = B is A's father), which keeps the seniority direction from being read backwards.
@@ -525,13 +525,13 @@ def init_block(view: WorldAuditView) -> str:
         ab = (kf.get(b) or {}).get("age", "?")
         lines.append(
             f"- {a}({aa}岁) — {b}({ab}岁)：\n"
-            f"    {a} 视 {b} 为「{_join(r.get('labels'))}」（信任{r.get('trust')}／好感{r.get('affection')}）\n"
-            f"    {b} 视 {a} 为「{_join(r.get('reverse_labels'))}」（信任{r.get('reverse_trust')}／好感{r.get('reverse_affection')}）")
+            f"    {a} 视 {b} 为「{_join(r.get('labels'))}」（信任度{r.get('trust')}／好感度{r.get('affection')}）\n"
+            f"    {b} 视 {a} 为「{_join(r.get('reverse_labels'))}」（信任度{r.get('reverse_trust')}／好感度{r.get('reverse_affection')}）")
 
-    lines.append(_sub_sep("历史事件（距开局小时数；判时间线是否倒错）"))
+    lines.append(_sub_sep("过往事件（故事开始前的小时数；判时间线是否倒错）"))
     for h in init.get("historical_events", []):
         if isinstance(h, dict):
-            lines.append(f"- [开局前 {h.get('hours_before_start')}h] {h.get('event')}（涉及 {_join(h.get('related_figures'))}）")
+            lines.append(f"- [故事开始前 {h.get('hours_before_start')}h] {h.get('event')}（涉及 {_join(h.get('related_figures'))}）")
 
     # Opening things and errand-runners: like personas, fixed at build time for the whole run. They are
     # the affordances the world gives its characters: things to seize or hand over, people to send or ask.
@@ -541,7 +541,7 @@ def init_block(view: WorldAuditView) -> str:
     entities = init.get("world_entity_seeds") or []
     npcs = init.get("npcs") or []
     if entities or npcs:
-        lines.append(_sub_sep("开局的物与差役（判是否与核心张力咬合、落位是否自洽；纯装饰即为问题）"))
+        lines.append(_sub_sep("开局的物与NPC（判是否与核心张力咬合、落位是否自洽；纯装饰即为问题）"))
     for e in entities:
         if isinstance(e, dict):
             where = f"　在 {e.get('location_name')}" if e.get("location_name") else ""
@@ -550,7 +550,7 @@ def init_block(view: WorldAuditView) -> str:
     for n in npcs:
         if isinstance(n, dict):
             where = f"　在 {n.get('location_name')}" if n.get("location_name") else ""
-            lines.append(f"- [差役] {n.get('name')}（{n.get('gender') or ''}{n.get('age')}岁）"
+            lines.append(f"- [NPC] {n.get('name')}（{n.get('gender') or ''}{n.get('age')}岁）"
                          f"{where}：{n.get('description') or ''}")
     return "\n".join(lines)
 
@@ -780,26 +780,25 @@ def _persona_baseline_lines(name: str, k: dict[str, Any], persona: dict[str, Any
     reversal is reasonable (whether "persecuting a teammate" is abrupt depends on each agent's stance
     and faction). Shared by both, so it can't drift.
     """
-    tier = "主角" if k.get("importance") == "main" else "背景"
+    tier = "主角" if k.get("importance") == "main" else "背景角色"
     lines = [f"  {name}（{tier}）　{k.get('role') or persona.get('role') or ''}　"
              f"{k.get('age')}岁　{k.get('gender') or ''}"]
     if persona.get("core_traits"):
-        lines.append(f"  性格：{_join(persona['core_traits'])}")
+        lines.append(f"  性格特点：{_join(persona['core_traits'])}")
     if persona.get("core_values"):
         lines.append(f"  价值观：{_join(persona['core_values'])}")
     if persona.get("self_image"):
         lines.append(f"  自我认知：{persona['self_image']}")
     if persona.get("life_goal"):
-        lines.append(f"  毕生追求：{persona['life_goal']}")
+        lines.append(f"  人生目标：{persona['life_goal']}")
     if persona.get("background"):
         lines.append(f"  背景：{persona['background']}")
     if persona.get("hard_constraints"):
-        lines.append("  硬约束（绝不为之）：")
+        lines.append("  底线（不可逾越）：")
         lines.append(_bullets(persona["hard_constraints"]))
-    ltg = persona.get("long_term_goals") or ([persona["life_goal"]] if persona.get("life_goal") else [])
-    if ltg:
-        lines.append("  长期目标：")
-        lines.append(_bullets(ltg))
+    ltg = persona.get("long_term_goals") or []
+    lines.append("  长期目标：")
+    lines.append(_bullets(ltg) if ltg else "    未提供")
     return lines
 
 
@@ -866,14 +865,14 @@ def _phase_lines(s: dict[str, Any], *, name: str, sps: Any) -> list[str]:
         lines.append("  关系(此刻)：")
         lines.extend(
             f"    - {name} 视 {r['name']} 为「{r['labels'] or '未明确'}」"
-            f"（信任{_num(r['trust'])}/好感{_num(r['affection'])}）" for r in s["relations"])
+            f"（信任度{_num(r['trust'])}/好感度{_num(r['affection'])}）" for r in s["relations"])
     if s.get("perceived"):
         lines.append("  感知｜输入(此刻感知到)：")
         lines.append(_bullets(s["perceived"]))
     emo = s.get("emotion") or {}
     po = [x for x in (
         f"触动：{s['perception_reason']}" if s.get("perception_reason") else "",
-        f"情绪 {emo.get('primary')}(强度{emo.get('intensity')},效价{emo.get('valence')})"
+        f"情绪 {emo.get('primary')}(强度{emo.get('intensity')},情绪正负值{emo.get('valence')})"
         if emo.get("primary") else "",
         f"激活需求 {_fmt_output(s['need_activation'])}" if s.get("need_activation") else "",
     ) if x]
@@ -891,7 +890,7 @@ def _phase_lines(s: dict[str, Any], *, name: str, sps: Any) -> list[str]:
     for ap in s.get("appraisal") or []:
         before = emo.get("primary")
         arrow = f"{before}→{ap['emotion']}" if before and ap.get("emotion") else ap.get("emotion")
-        lines.append(f"  反馈｜输出：情绪 {arrow}(强度{ap.get('intensity')},效价{ap.get('valence')})")
+        lines.append(f"  反馈｜输出：情绪 {arrow}(强度{ap.get('intensity')},情绪正负值{ap.get('valence')})")
     lines.extend(_numbered(s.get("goal_progress") or [],
                            lambda g, tag: _goal_progress_lines(g, tag)))
     for res in s.get("residue") or []:
@@ -911,30 +910,48 @@ def _interrupt_context(itr: dict[str, Any]) -> str:
 
 
 def _mind_text(m: dict[str, Any]) -> str:
-    """What changed in his mind, in one line: the input of the beat that follows it."""
+    """The short changes in his mind (emotion, relations, insights), in one line."""
     parts: list[str] = []
     if isinstance(emo := m.get("emotion"), dict):
         parts.append(f"心境变为 {_emo(emo.get('emotion'), emo.get('intensity'), emo.get('valence'))}")
     for r in m.get("relations") or []:
-        vals = "/".join(x for x in (f"信任{_num(r['trust'])}" if r.get("trust") is not None else "",
-                                    f"好感{_num(r['affection'])}" if r.get("affection") is not None else "") if x)
+        vals = "/".join(x for x in (f"信任度{_num(r['trust'])}" if r.get("trust") is not None else "",
+                                    f"好感度{_num(r['affection'])}" if r.get("affection") is not None else "") if x)
         parts.append(f"对 {r.get('to') or '某人'} 变为 {vals}")
-    if m.get("long_term_goals") is not None:
-        parts.append(f"长期目标变为：{_join(m['long_term_goals']) or '（无）'}")
-    if m.get("short_term_goals") is not None:
-        parts.append(f"短期目标变为：{_join(m['short_term_goals']) or '（无）'}")
-    if m.get("removed_short_term_goals"):
-        parts.append(f"放下了：{_join(m['removed_short_term_goals'])}")
     if m.get("insights"):
-        parts.append(f"新的感悟：{_join(m['insights'])}")
+        parts.append(f"新的洞察：{_join(m['insights'])}")
     return "｜".join(parts)
+
+
+def _mind_goal_lines(m: dict[str, Any], indent: str) -> list[str]:
+    """The goal changes, one goal per item (§4: the judge checks each against the beats after it).
+    An emptied list reads "（无）"; a list he didn't touch is left out."""
+    lines: list[str] = []
+    for key, label in (("long_term_goals", "长期目标变为"), ("short_term_goals", "短期目标变为"),
+                       ("removed_short_term_goals", "放下了")):
+        goals = m.get(key)
+        if goals is None or (key == "removed_short_term_goals" and not goals):
+            continue
+        items = [str(g) for g in goals if str(g).strip()]
+        lines.append(f"{indent}{label}：" if items else f"{indent}{label}：（无）")
+        lines.extend(f"{indent}  - {g}" for g in items)
+    return lines
 
 
 def _mind_lines(s: dict[str, Any], before: str, pad: str = "  ") -> list[str]:
     """Changes in his mind that landed before the *before* beat. They have no beat of their own:
     the beat after them already reads the new state, and this says where it came from."""
-    return [f"{pad}内心变化（此后各拍以此为准）：{text}"
-            for m in s.get("mind") or [] if m.get("before") == before and (text := _mind_text(m))]
+    indent = " " * (len(pad) + 2)
+    lines: list[str] = []
+    for m in s.get("mind") or []:
+        if m.get("before") != before:
+            continue
+        goal_lines = _mind_goal_lines(m, indent)
+        text = _mind_text(m)
+        if text or goal_lines:
+            lines.append(f"{pad}内心变化（此后各拍以此为准）：{text}")
+            lines.extend(goal_lines)
+    return lines
 
 
 def _decision_lines(s: dict[str, Any], sps: Any) -> list[str]:
@@ -1044,7 +1061,7 @@ def _step_level_lines(s: dict[str, Any]) -> list[str]:
     ref = s.get("reflection")
     for ins in (ref.get("insights") or []) if isinstance(ref, dict) else []:
         if isinstance(ins, dict) and ins.get("text"):
-            lines.append(f"  ⟳反思（重要度{ins.get('importance')}）：{ins['text']}")
+            lines.append(f"  ⟳反思（重要程度{ins.get('importance')}）：{ins['text']}")
     return lines
 
 
@@ -1096,7 +1113,7 @@ def _goal_gist(text: Any) -> str:
 
 def _emo(pri: Any, i: Any, v: Any) -> str:
     tail = "，".join(x for x in ((f"强度{i}" if i is not None else ""),
-                                 (f"效价{v}" if v is not None else "")) if x)
+                                 (f"情绪正负值{v}" if v is not None else "")) if x)
     return f"{pri}（{tail}）" if tail else str(pri)
 
 
@@ -1124,7 +1141,7 @@ def _mams_lines(name: str, s: dict[str, Any], *, sps: Any) -> list[str]:
         for r in relations or []:
             if r.get("name") == tc:
                 lb = f"{r.get('labels')}，" if r.get("labels") else ""
-                rel = f"（{lb}信任{_num(r.get('trust'))}/好感{_num(r.get('affection'))}）"
+                rel = f"（{lb}信任度{_num(r.get('trust'))}/好感度{_num(r.get('affection'))}）"
                 break
     tgt = ((t if t.startswith("→") else f"→{t}") + rel) if t else ""
     has_act = bool(at or dec.get("action_description") or results
@@ -1285,7 +1302,7 @@ def _rel_deltas(name: str, relations: Any, prior: dict[str, dict[str, tuple[floa
         prev = prior.setdefault(name, {}).get(tgt)
         if prev is not None and (abs(tr - prev[0]) >= 0.1 or abs(af - prev[1]) >= 0.1):
             lb = f"「{r.get('labels')}」" if r.get("labels") else ""
-            out.append(f"{name}→{tgt}{lb} 信任{_num(prev[0])}→{_num(tr)} 好感{_num(prev[1])}→{_num(af)}")
+            out.append(f"{name}→{tgt}{lb} 信任度{_num(prev[0])}→{_num(tr)} 好感度{_num(prev[1])}→{_num(af)}")
         prior[name][tgt] = (tr, af)
     return out
 
@@ -1313,7 +1330,7 @@ def world_block(view: WorldAuditView) -> str:
     # Persona baseline (shared with sams/mass): to judge OOC / the dead reappearing / everyone going their own way; long-term ambitions = convergence target.
     kf = {str(f.get("name")): f for f in init.get("key_figures", []) if isinstance(f, dict)}
     personas = _personas_by_id(view)
-    lines.append(_sub_sep("人设基线（判是否 OOC / 死者复现 / 各行其是；长期志向=朝其收敛的靶子）"))
+    lines.append(_sub_sep("人设基线（判是否 OOC / 死者复现 / 各行其是；长期目标=朝其收敛的靶子）"))
     for i, (aid, name) in enumerate(view.agent_names.items()):
         if i:  # dotted separator between agents' personas so boundaries are clear (this section has no character header; without it they run together)
             lines.append("  ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈")

@@ -1123,7 +1123,7 @@ async def test_covert_undetected_carries_nothing_detected_exposes_publicly(conta
     """COVERT has no private perception channel: the doer knows what it did from factual_memory,
     not perception.
     - not exposed → bystanders get no ambient (observation is empty, nothing carried);
-    - exposed → bystanders get a public "[秘密行动暴露] …" ambient; the exposed doer filters itself out
+    - exposed → bystanders get a public "[暗中探查暴露] …" ambient; the exposed doer filters itself out
       via doer_ids."""
     from engine.clock import WorldTime
     world_id = "world-covert-carry"
@@ -1157,7 +1157,7 @@ async def test_covert_undetected_carries_nothing_detected_exposes_publicly(conta
              "outcome": "在vault，李世民窃取了密信，被撞见。",
              "observations": [{
                  "location_id": "vault",
-                 "text": "[秘密行动暴露] 在vault，李世民窃取了密信，被撞见。",
+                 "text": "[暗中探查暴露] 在vault，李世民窃取了密信，被撞见。",
                  "strength": SALIENT_AMBIENT_STRENGTH,
              }],
              "adjudication_failed": False, "detected": True},
@@ -1165,7 +1165,7 @@ async def test_covert_undetected_carries_nothing_detected_exposes_publicly(conta
         tick_records=[],
     )
     env.begin_step(step=3, world_time=WorldTime(step=3, elapsed_seconds=10800))
-    assert any("[秘密行动暴露]" in ev.content for ev in env.spatial_for(agent_id="agent-b").ambient_events)
+    assert any("[暗中探查暴露]" in ev.content for ev in env.spatial_for(agent_id="agent-b").ambient_events)
     assert env.spatial_for(agent_id="agent-a").ambient_events == [], "暴露者不应读到自己的暴露 ambient"
 
 
@@ -1243,6 +1243,7 @@ async def test_enrolling_action_is_arbitrated_before_independent_ones_in_same_ph
     arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     # B is conscripted as a passive participant instead of doing its own COVERT
     assert arb["agent-b"].is_passive_join is True
+    assert arb["agent-b"].invited_by == "agent-a"           # TALK invites: B accepted A's invitation
     a_exec = rt._executor_registry.get_active_for_agent("agent-a")  # noqa: SLF001
     assert a_exec is not None and a_exec.action_type == ActionType.TALK
     assert "agent-b" in a_exec.participant_ids
@@ -1281,7 +1282,7 @@ async def test_enrolling_reorder_never_crosses_phases(container) -> None:
     assert arb["agent-a"].action_result.action.action_description == "批阅文书"
     b_exec = rt._executor_registry.get_active_for_agent("agent-b")  # noqa: SLF001
     assert b_exec is not None and b_exec.participant_ids == ["agent-b"]
-    assert "李世民正埋头忙着手上的事" in b_exec.extra["completed_result"].outcome
+    assert "李世民正在做事" in b_exec.extra["completed_result"].outcome
 
 
 @pytest.mark.asyncio
@@ -1423,7 +1424,7 @@ def test_busy_reason_says_what_the_body_is_visibly_doing(container) -> None:
         return rt._arbiter._busy_reason(pid, {}, {})  # noqa: SLF001
 
     assert reason("agent-a") == "李世民正与常何交谈"
-    assert reason("agent-c") == "尉迟恭正在歇息"
+    assert reason("agent-c") == "尉迟恭正在休息"
     assert reason("agent-d") == f"侯君集{_BUSY_UNSEEN}"
 
 
@@ -1510,6 +1511,7 @@ async def test_a_carry_still_takes_a_body_that_means_to_leave(container) -> None
     arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
 
     assert arb["agent-a"].is_passive_join is True
+    assert arb["agent-a"].invited_by == ""                  # carried off, not invited
     assert rt._executor_registry.get_active_for_agent("agent-b").participant_ids == ["agent-b", "agent-a"]  # noqa: SLF001
 
 
@@ -1559,7 +1561,7 @@ async def test_critical_pressure_keeps_own_body_against_conscription(container) 
     assert a_exec is not None and a_exec.participant_ids == ["agent-a"]
     rejection = a_exec.extra["completed_result"]
     assert rejection.succeeded is False
-    assert "李建成正埋头忙着手上的事" in rejection.outcome
+    assert "李建成正在做事" in rejection.outcome
 
 
 @pytest.mark.asyncio
@@ -3464,7 +3466,7 @@ async def test_happenings_track_drops_an_exposed_covert_it_adds_nothing(containe
              "outcome": "在hall，己在帘后窥探，被人瞧见了。",
              # Covert actions never declare this layer (see CovertExecutor), exposed or not.
              "observations": [{"location_id": "hall",
-                               "text": "[秘密行动暴露] 在hall，己在帘后窥探，被人瞧见了。"}],
+                               "text": "[暗中探查暴露] 在hall，己在帘后窥探，被人瞧见了。"}],
              "adjudication_failed": False, "detected": True},
         ],
         tick_records=[],

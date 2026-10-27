@@ -109,15 +109,13 @@ class _InjectionPlan:
 class NarrativeEditorSettings:
     """Pacing and narrative anchors for editing one world.
 
-    ``core_tension`` / ``narrative_theme`` go only into the editor's briefing, never into agent
-    cognition. The quota is a sliding window (``max_injections_per_window`` per ``quota_window``
-    steps): it bounds density, not a lifetime total that a long world would spend early.
+    ``narrative_theme`` goes only into the editor's briefing, never into agent cognition.
+    The quota is a sliding window (``max_injections_per_window`` per ``quota_window`` steps): it bounds density, not a lifetime total that a long world would spend early.
     """
 
-    core_tension: str = ""
     narrative_theme: str = ""
     enabled: bool = True
-    max_injections_per_window: int = 2
+    max_injections_per_window: int = 3
     quota_window: int = 20
     check_interval: int = 5
 
@@ -438,8 +436,6 @@ class NarrativeEditor:
 
     def _brief_premise(self) -> str:
         lines = []
-        if self.settings.core_tension:
-            lines.append(f"核心张力:{self.settings.core_tension}")
         if self.settings.narrative_theme:
             lines.append(f"故事主题:{self.settings.narrative_theme}")
         if not lines:
@@ -467,7 +463,7 @@ class NarrativeEditor:
                 location_id = agent_locations.get(aid)
                 now: list[str] = [DECEASED_MARK] if not agent.is_active else [
                     *([f"现位于{self.directory.location_name(location_id)}"] if location_id else []),
-                    f"体力{vitality_label(state.vitality)}",
+                    f"生命值{vitality_label(state.vitality)}",
                 ]
                 # Without it the editor might broadcast a bound man bursting out of the gate.
                 if agent.is_active and (_cond := render_condition(state.condition)):
@@ -480,11 +476,11 @@ class NarrativeEditor:
                 if soul.secret:
                     attrs.append(f"{SECRET_LABEL}：{soul.secret}")
                 if soul.core_traits:
-                    attrs.append(f"核心性格{soul.traits_text()}")
+                    attrs.append(f"性格特点{soul.traits_text()}")
                 if soul.core_values:
-                    attrs.append(f"核心价值观{soul.values_text()}")
+                    attrs.append(f"价值观{soul.values_text()}")
                 if soul.life_goal:
-                    attrs.append(f"毕生追求{soul.life_goal}")
+                    attrs.append(f"人生目标{soul.life_goal}")
                 # Strip each field's own punctuation, or joining gives "。；".
                 profile = f"{'；'.join(strip_end_punct(a) for a in attrs)}。" if attrs else ""
                 main_lines.append(f"- {head}：{'；'.join(now)}。{profile}")
@@ -496,13 +492,13 @@ class NarrativeEditor:
 
         parts: list[str] = []
         if main_lines:
-            parts.append("主要人物:\n" + "\n".join(main_lines))
+            parts.append("主角:\n" + "\n".join(main_lines))
         if bg_count:
             dist = "、".join(f"{loc}{n}人" for loc, n in Counter(bg_locations).items())
-            parts.append(f"背景人物:共{bg_count}人" + (f"，分布于 {dist}" if dist else ""))
+            parts.append(f"背景角色:共{bg_count}人" + (f"，分布于 {dist}" if dist else ""))
         if not parts:
             return ""
-        return "【主要人物】\n" + "\n".join(parts)
+        return "【角色】\n" + "\n".join(parts)
 
     def _brief_relations(
         self,

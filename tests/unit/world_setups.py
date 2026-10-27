@@ -29,8 +29,8 @@ def setup_of(profiles: dict[str, dict[str, Any]]) -> WorldSetup:
             initial_emotion=EmotionState(primary=EmotionType.NEUTRAL),
         ))
     lore = WorldLore(
-        world_name="测试", era_description="", core_tension="", narrative_theme="",
-        narrative_pitch="", world_time_config={"seconds_per_step": 3600},
+        world_name="测试", era_description="", core_tension="", narrative_theme="人物在选择中探索彼此的关系",
+        narrative_pitch="", world_time_config={"era_name": "", "start_year": 1, "start_month": 1, "start_day": 1, "start_hour": 6, "seconds_per_step": 3600},
     )
     return WorldSetup(theme="测试", lore=lore, characters=tuple(characters), relations=(), historical_events=())
 

@@ -79,10 +79,10 @@ def test_urgency_to_strength_anchors_aligned() -> None:
 
 
 def test_urgency_label_maps_each_enum_to_chinese_tag() -> None:
-    assert urgency_label(Urgency.LOW)      == "【留意】"
+    assert urgency_label(Urgency.LOW)      == "【不紧急】"
     assert urgency_label(Urgency.NORMAL)   == "【一般】"
     assert urgency_label(Urgency.HIGH)     == "【紧急】"
-    assert urgency_label(Urgency.CRITICAL) == "【危急】"
+    assert urgency_label(Urgency.CRITICAL) == "【非常紧急】"
 
 
 # ---------------------------------------------------------------------------
@@ -215,9 +215,9 @@ def test_situation_header_is_empty_when_both_axes_are_unknown() -> None:
 def test_vitality_line_uses_the_voice_of_the_prompt_it_lands_in() -> None:
     from core.prompts import SituationVoice, vitality_line
 
-    assert vitality_line(0.5, voice=SituationVoice.FIRST, lead="") == "我此刻的体力：不济"
-    assert vitality_line(0.5, voice=SituationVoice.SECOND, lead="") == "你此刻的体力：不济"
-    assert vitality_line(0.5, voice=SituationVoice.THIRD, lead="") == "体力状况：不济"
+    assert vitality_line(0.5, voice=SituationVoice.FIRST, lead="") == "我此刻的生命值：不济"
+    assert vitality_line(0.5, voice=SituationVoice.SECOND, lead="") == "你此刻的生命值：不济"
+    assert vitality_line(0.5, voice=SituationVoice.THIRD, lead="") == "生命值状态：不济"
 
 
 def test_vitality_line_omits_a_full_tank_only_where_the_caller_asked() -> None:
@@ -226,7 +226,7 @@ def test_vitality_line_omits_a_full_tank_only_where_the_caller_asked() -> None:
 
     assert vitality_line(1.0, voice=SituationVoice.FIRST, omit_when_full=True) == ""
     assert "充沛" in vitality_line(1.0, voice=SituationVoice.THIRD)          # not omitted by default
-    # "不济" / "将竭" / "无生命力" always appear, even with omit on.
+    # "不济" / "将竭" / "生命值耗尽" always appear, even with omit on.
     for v in (0.5, 0.1, 0.0):
         assert vitality_line(v, voice=SituationVoice.FIRST, omit_when_full=True)
 

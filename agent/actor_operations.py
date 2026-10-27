@@ -33,7 +33,7 @@ _OPERATIONS = (
     _OperationDefinition(ActorOperation.BROADCAST, ActionType.SEND_MESSAGE, ("location",),
                          "我向这里的人广播", ("message",)),
     _OperationDefinition(ActorOperation.TALK, ActionType.TALK, ("agent",), "我和{target}交谈"),
-    _OperationDefinition(ActorOperation.ERRAND, ActionType.ERRAND, ("npc",), "我派{target}跑一趟", ("description",)),
+    _OperationDefinition(ActorOperation.ERRAND, ActionType.ERRAND, ("npc",), "我向{target}指派任务", ("description",)),
     _OperationDefinition(ActorOperation.TAKE, ActionType.PHYSICAL, ("item",), "我拿起{target}"),
     _OperationDefinition(ActorOperation.USE, ActionType.PHYSICAL, ("item", "landmark"), "我使用{target}"),
     _OperationDefinition(ActorOperation.DESTROY, ActionType.PHYSICAL, ("item", "landmark"), "我毁坏{target}"),
@@ -41,7 +41,9 @@ _OPERATIONS = (
                          "我处理{target}", ("description",)),
     _OperationDefinition(ActorOperation.WORK, ActionType.WORK, ("agent",), "我处理手头的事务", ("description",), self_only=True),
     _OperationDefinition(ActorOperation.REST, ActionType.REST, ("agent",), "我休息片刻", self_only=True),
-    _OperationDefinition(ActorOperation.COVERT, ActionType.COVERT, ("agent",), "我暗中观察", ("description",), self_only=True),
+    _OperationDefinition(ActorOperation.COVERT, ActionType.COVERT, ("agent",), "我暗中探查", ("description",), self_only=True),
+    _OperationDefinition(ActorOperation.SEND_MESSAGE, ActionType.SEND_MESSAGE, ("agent",), "我发送消息",
+                         ("description",), self_only=True),
 )
 
 
@@ -160,6 +162,8 @@ def build_actor_operation(intent: ActorIntent, packet: "PerceptionPacket") -> Ac
     definition = next(d for d in _OPERATIONS if d.operation is operation)
     name = _target_name(target, packet)
     description = definition.description.format(target=name)
+    if operation is ActorOperation.SEND_MESSAGE:
+        return ActorAction(definition.action_type, description, anonymous=params.anonymous is True)
     if definition.self_only:
         return ActorAction(definition.action_type, description)
     if operation is ActorOperation.MOVE:
@@ -174,7 +178,7 @@ def build_actor_operation(intent: ActorIntent, packet: "PerceptionPacket") -> Ac
             raise ActorAnswerRejected("errand_address_conflict")
         if params.destination_id is not None:
             destination = _target_name(Ref.place(params.destination_id), packet)
-            description = f"我派{name}前往{destination}"
+            description = f"我向{name}指派任务：前往{destination}"
         return ActorAction(
             definition.action_type, description, errand_npc_id=target.id,
             errand_destination_id=params.destination_id, errand_item_id=params.item_id,
@@ -199,6 +203,11 @@ def check_actor_operation(action: ActorAction, base: ActorAction, intent: ActorI
         mutable.update(("person_ids", "message_content", "talk_topic"))
         if not action.person_ids or action.person_ids[0] != base.person_ids[0]:
             raise ActorAnswerRejected("operation_constraint_conflict")
+    elif intent.operation is ActorOperation.SEND_MESSAGE:
+        # Recipients and words come from the description; so does the signature unless it was set.
+        mutable.update(("person_ids", "message_announce", "message_content"))
+        if intent.parameters.anonymous is None:
+            mutable.add("anonymous")
     elif base.action_type is ActionType.PHYSICAL:
         mutable.add("physical_recipient_id")
     elif intent.operation is ActorOperation.ERRAND:
@@ -268,6 +277,9 @@ def build_actor_decision_summary(
             target = Ref.place(packet.spatial.location_id)
     if intent is not None and intent.target == Ref.agent(packet.agent_id):
         target = intent.target
+        # Recipients are no longer the target then: every one of them is listed.
+        if action.person_ids:
+            params["person_ids"] = list(action.person_ids)
     operation = intent.operation.value if intent is not None and intent.operation else action.action_type.value
     if action.action_type is ActionType.MOVE:
         destination = next(place for place in packet.spatial.reachable_locations

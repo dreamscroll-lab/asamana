@@ -59,7 +59,7 @@ def _agent_block(per_agent: list[dict[str, Any]]) -> str:
                 f"{c.get('name')}"
                 + (f"({c.get('role')})" if c.get("role") else "")
                 + f"[{'、'.join(c.get('labels') or []) or '关系未明'}"
-                + (f",信任{c.get('trust')},好感{c.get('affection')}]" if c.get("trust") is not None else "]")
+                + (f",信任度{c.get('trust')},好感度{c.get('affection')}]" if c.get("trust") is not None else "]")
                 for c in co
             ))
         elif inp.get("visible_agents"):
@@ -99,8 +99,8 @@ def _build_prompt(scenario_meta: dict, per_agent: list[dict], det_findings: dict
         "   - 生命威胁→高 urgency 的 threat/自保；权威命令→应响应（authority/obligation），除非情境本身即将"
         "颠覆该权威；单纯告知→低 urgency 或无；无信号的角色不应凭空生成压力。\n"
         "   - **urgency 必须锚定信号本身的烈度**：把模糊、遥远、未指向该角色的迹象判成 critical = 不合理，扣分。\n"
-        "   - **关系一致性**：不得把**与该角色关系亲近、信任度高的人**当作需要控制、威慑、防范的对象"
-        "（参考每个角色列出的「同处一地 + 关系」）；把关系亲近者当威胁 = 不合理，扣分。\n"
+        "   - **关系一致性**：仅因某人在场或双方关系亲近就推断威胁，应扣分；亲近和信任度高并不排除威胁。"
+        "若该角色实际感知到对方背叛、胁迫或伤害等具体信号，据此作出相称的防范反应不扣分；不得虚构敌意或事件。\n"
         "   - 不得凭空虚构信号中不存在的对象、关系或事件。\n"
         "3. fields（字段符合度）：drive_type∈{authority,threat,obligation,event}、urgency∈{low,normal,"
         "high,critical} 与情境匹配、text 是**当下可执行的祈使**而非预测未来或事后命名。\n\n"

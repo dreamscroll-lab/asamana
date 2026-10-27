@@ -773,7 +773,9 @@ async def test_accepting_an_invitation_tells_the_actor_their_own_act_came_to_not
     acts = [e for e in await _thread(container, runtime, world_id) if e["kind"] in ("began", "ended")]
     own_began, own_ended, joined = acts[:3]
     assert own_began["description"] == "亲自誊抄奏章"
-    assert own_ended["happened"] is False and "卷入他人的事" in own_ended["fact"]
+    # Accepting was the actor's own choice: told as taking up the invitation, not being dragged in.
+    assert own_ended["happened"] is False and "的邀请，这件事没有去做" in own_ended["fact"]
+    assert "卷入他人的事" not in own_ended["fact"]
     assert joined["kind"] == "began" and joined["description"].endswith("的邀请交谈")
     # What the inviter set out to do is his own; the one invited only knows who asked.
     assert "找二郎说话" not in joined["description"]

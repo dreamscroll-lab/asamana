@@ -34,7 +34,7 @@ from core.prompts import (
     canonical_relation_label, relation_labels,
 )
 from core.validate import require_at_least, require_in_range, require_member, require_text
-from engine.clock import STEP_SECONDS_RANGE, resolve_step_seconds
+from engine.clock import STEP_SECONDS_RANGE, WorldTimeConfig, resolve_step_seconds
 from world.identity_color import free_identity_color
 from world.models import (
     AgentDefinition,
@@ -77,10 +77,14 @@ class SetupRejected(Exception):
     apart from a world whose setup is closed to revision."""
 
 
+# The part of world_time_config a review can revise; seconds_per_step is revised beside it.
+OPENING_TIME_FIELDS: tuple[str, ...] = ("era_name", "start_year", "start_month", "start_day", "start_hour")
+
+
 @dataclass(frozen=True)
 class WorldLore:
-    """What the world is, for every character alike: the build's narrative anchors (also read by
-    the runtime's world pressure) and the clock the story starts on."""
+    """What the world is, for every character alike: the build's narrative anchors (the runtime's
+    narrative editor reads narrative_theme) and the clock the story starts on."""
 
     world_name: str
     era_description: str
@@ -413,12 +417,7 @@ class WorldSetup:
 
     def validate(self, places: MapPlaces) -> None:
         """Refuse (``ValueError``) a setup a world can't start from. ``places``: the world's map."""
-        require_text(self.lore.world_name, "world_name")
-        # The authored value, not ``lore.seconds_per_step``: that falls back to the default.
-        seconds = self.lore.world_time_config.get("seconds_per_step")
-        if isinstance(seconds, bool) or not isinstance(seconds, int):
-            raise ValueError("seconds_per_step must be an integer")
-        require_in_range(seconds, STEP_SECONDS_RANGE, "seconds_per_step")
+        _validate_lore(self.lore)
         if not self.characters:
             raise ValueError("A world needs at least one character")
         # The scheduler and the narrative lean on main characters; a cast without one has no lead.
@@ -597,11 +596,17 @@ class WorldSetup:
             seed for seed in self.npc_seeds if seed.npc_id != npc_id
         ))._validated(places)
 
-    def with_seconds_per_step(self, seconds: int, *, places: MapPlaces) -> WorldSetup:
-        """Set how much world time one step spans. Durations in the setup are kept in narrative
-        units (``SetupHistoricalEvent.hours_before_start``), so nothing else needs rewriting."""
-        time_config = {**self.lore.world_time_config, "seconds_per_step": seconds}
-        return replace(self, lore=replace(self.lore, world_time_config=time_config))._validated(places)
+    def with_lore(
+        self, narrative_theme: str, opening_time: dict[str, Any], seconds_per_step: int,
+        *, places: MapPlaces,
+    ) -> WorldSetup:
+        if unknown := sorted(set(opening_time) - set(OPENING_TIME_FIELDS)):
+            raise ValueError(f"Unknown opening_time fields: {unknown}")
+        time_config = {**self.lore.world_time_config, **opening_time, "seconds_per_step": seconds_per_step}
+        return replace(self, lore=replace(
+            self.lore, narrative_theme=narrative_theme,
+            world_time_config=time_config,
+        ))._validated(places)
 
     def with_history(self, events: Sequence[SetupHistoricalEvent], *, places: MapPlaces) -> WorldSetup:
         return replace(self, historical_events=tuple(events))._validated(places)
@@ -638,6 +643,27 @@ class WorldSetup:
     def _validated(self, places: MapPlaces) -> WorldSetup:
         self.validate(places)
         return self
+
+
+def _validate_lore(lore: WorldLore) -> None:
+    require_text(lore.world_name, "world_name")
+    require_text(lore.narrative_theme, "narrative_theme")
+    time_config = lore.world_time_config
+    for key in ("start_year", "start_month", "start_day", "start_hour", "seconds_per_step"):
+        value = time_config.get(key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{key} must be an integer")
+    if not isinstance(time_config.get("era_name"), str):
+        raise ValueError("era_name must be a string")
+    require_in_range(time_config["seconds_per_step"], STEP_SECONDS_RANGE, "seconds_per_step")
+    WorldTimeConfig(
+        era_name=time_config["era_name"],
+        start_year=time_config["start_year"],
+        start_month=time_config["start_month"],
+        start_day=time_config["start_day"],
+        start_hour=time_config["start_hour"],
+        seconds_per_step=time_config["seconds_per_step"],
+    )
 
 
 def _validate_entity(seed: WorldEntitySeed, places: MapPlaces) -> None:

@@ -105,6 +105,10 @@ def test_a_target_the_character_does_not_perceive_is_refused(engine) -> None:
     # No words to deliver: the description is never sent in their place.
     (ActorAction(action_type=ActionType.SEND_MESSAGE, action_description="给四弟捎话", person_ids=(AWAY,)),
      "message_required"),
+    # Only what I hold can be handed over: the memorial lies here.
+    (ActorAction(action_type=ActionType.PHYSICAL, action_description="把奏章递给大哥",
+                 physical_entity_id="memorial", physical_recipient_id=HERE),
+     "physical_recipient_not_held"),
 ])
 def test_the_types_own_rules_apply(engine, action, reason) -> None:
     with pytest.raises(ActorAnswerRejected) as refused:

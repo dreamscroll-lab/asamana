@@ -21,7 +21,7 @@ from agent.personality import PersonalityLayer, SoulLayer, StateLayer, EmotionSt
 from agent.relation import RelationSystem
 from core.interfaces.action import ActionResult, ActionTarget, ActionType, AgentAction, Ref
 from core.interfaces.llm import LLMRouter, LLMScene
-from core.interfaces.perception import LocationView, SpatialPerception
+from core.interfaces.perception import LocationView, PerceivedIdentity, SpatialPerception
 from providers.llm.mock import MockLLMProvider
 from core.interfaces.urgency import Urgency
 
@@ -1477,3 +1477,24 @@ async def test_llm_emotion_injects_standing_condition_as_backdrop(container: obj
     prompt = "\n".join(m.content for m in mock_provider.call_history[0])
     assert "我此刻的处境：双手被反绑（已持续约1小时）" in prompt
     assert prompt.index("我此刻在朝堂") < prompt.index("我此刻的处境") < prompt.index("【我是谁】")
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_intent_says_whether_the_character_accepted_or_was_dragged_in(container: object) -> None:
+    """An accepted invitation is the character's own choice and is told as one, naming the inviter
+    as the character knows him; only a compelled join is "drawn into someone else's matter"."""
+    agent = _make_agent(container)
+    agent.remember_agent("agent-2", PerceivedIdentity(name="李建成", gender="男"))
+    action = AgentAction(
+        action_type=ActionType.WORK, action_description="我批阅文书", agent_id="agent-1",
+        target=ActionTarget(), step=3,
+    )
+    await agent.defer_decided_intent(action, 3, invited_by="agent-2")
+    await agent.defer_decided_intent(
+        AgentAction(action_type=ActionType.REST, action_description="我歇一会儿", agent_id="agent-1",
+                    target=ActionTarget(), step=3),
+        3,
+    )
+    foiled = agent.memory_system.recent_foiled_attempts(3)
+    assert any(f.endswith("我批阅文书——后来接受了李建成的邀请，这件事没有去做。") for f in foiled)
+    assert any(f.endswith("我歇一会儿——却被卷入他人的事，行动没能做成。") for f in foiled)

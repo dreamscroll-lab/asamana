@@ -92,7 +92,7 @@ def build_perception_emotion_prompt(
         if goal.urgency >= Urgency.NORMAL:
             has_pressure = True
             signals.append(
-                f"外部压力（{goal.drive_type.value}，紧迫度{urgency_label(goal.urgency)}）：{goal.text}"
+                f"外部压力（{goal.drive_type.value}，紧急程度{urgency_label(goal.urgency)}）：{goal.text}"
             )
     if not signals:
         return None

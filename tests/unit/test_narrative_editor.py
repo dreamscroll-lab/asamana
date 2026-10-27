@@ -149,7 +149,6 @@ def _narrative_editor(
         ),
         directory=directory,
         settings=NarrativeEditorSettings(
-            core_tension=kwargs.get("core_tension", "皇位之争,手足相残"),
             narrative_theme=kwargs.get("narrative_theme", "权力与亲情的撕扯"),
             enabled=kwargs.get("enabled", True),
             max_injections_per_window=kwargs.get("max_injections_per_window", 2),
@@ -926,7 +925,7 @@ async def test_brief_carries_premise_and_dossier_no_step_or_id_leak(container) -
     )])
     system = _narrative_editor(container, router=router, world_id=world_id,
                             directory=directory,
-                            core_tension="秦王功高震主,太子忌惮",
+                            narrative_theme="亲情与抉择",
                             check_interval=1)
 
     await _run_check(system, 
@@ -947,7 +946,8 @@ async def test_brief_carries_premise_and_dossier_no_step_or_id_leak(container) -
         assert "「父子:父亲」表示对方是持有者的父亲" not in messages[-1].content
     for prompt in (gate_prompt, plan_prompt):
         assert "【故事前提】" in prompt
-        assert "秦王功高震主" in prompt
+        assert "亲情与抉择" in prompt
+        assert "核心张力" not in prompt
         assert "李世民" in prompt
         assert "Step " not in prompt
         assert "palace_throne" not in prompt
@@ -967,11 +967,11 @@ async def test_characters_block_excludes_first_person_state(container) -> None:
     main.personality.state.short_term_goals = ["夺取兵权"]
     agents = {"a1": main}
     system = _narrative_editor(container, world_id=world_id, agents=agents,
-                            core_tension="边境危局", narrative_theme="忠义抉择")
+                            narrative_theme="忠义抉择")
 
     brief = await system._build_narrative_summary(world_id, 5, agents, _locations_of(agents))
 
-    assert "【主要人物】" in brief
+    assert "【角色】" in brief
     assert "李世民" in brief
     assert "求生欲" not in brief
     assert "夺取兵权" not in brief
@@ -1004,10 +1004,10 @@ async def test_characters_block_marks_the_dead_and_drops_their_living_attrs(cont
 
     dead_line = next(line for line in brief.splitlines() if "李建成" in line)
     assert "已死亡" in dead_line
-    assert "现位于" not in dead_line and "体力" not in dead_line and "生命垂危" not in dead_line
+    assert "现位于" not in dead_line and "生命值" not in dead_line and "生命垂危" not in dead_line
     alive_line = next(line for line in brief.splitlines() if "李世民" in line)
     assert "已死亡" not in alive_line and "现位于" in alive_line
-    assert "背景人物" not in brief
+    assert "背景角色" not in brief
 
 
 @pytest.mark.asyncio
@@ -1025,9 +1025,9 @@ async def test_an_unplaced_body_names_no_place(container) -> None:
     brief = await system._build_narrative_summary(world_id, 5, agents, unplaced)  # noqa: SLF001
 
     line = next(line for line in brief.splitlines() if "李建成" in line)
-    assert "现位于" not in line and "体力" in line
+    assert "现位于" not in line and "生命值" in line
     assert "某地" not in brief and "此处" not in brief
-    assert "背景人物:共1人" in brief and "分布于" not in brief
+    assert "背景角色:共1人" in brief and "分布于" not in brief
     roster_line = system._person_line(main, None)  # noqa: SLF001
     assert roster_line.startswith("李建成") and "在" not in roster_line
 
@@ -1050,7 +1050,7 @@ async def test_characters_block_puts_where_and_how_they_are_before_the_profile(c
     brief = await system._build_narrative_summary(world_id, 5, agents, {"a1": "东宫"})
 
     line = next(line for line in brief.splitlines() if "李建成" in line)
-    for now in ("现位于", "体力", "处境双手被反绑"):
+    for now in ("现位于", "生命值", "处境双手被反绑"):
         assert line.index(now) < line.index("背景"), line
     # When profile fields end with their own full stop (common in build-time prose), the joined
     # text must not contain "。；" or "。。".

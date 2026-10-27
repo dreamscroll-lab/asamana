@@ -119,7 +119,7 @@ describe("buildThread · 行动", () => {
     expect(done[1]).toMatchObject({ kind: "ended", fact: "我抄完了奏章" });
   });
 
-  it("只有跨步且没结束的事能中断;要求过停下就显示即将停下", () => {
+  it("只有跨步且没结束的事能中断;要求过中断就显示即将中断", () => {
     expect(breakableAct(buildThread([began(1, 1)], null))).toBeNull();
     expect(breakableAct(buildThread([began(1, 3), ended(2)], null))).toBeNull();
     expect(breakableAct(buildThread([began(1, 3)], null))).not.toBeNull();

@@ -10,14 +10,14 @@ import type { StepCast } from "./cast";
 // looked up.
 //
 // One row per column, not one sentence: the four readings are independent and each can hold
-// a whole cast. As a label column and a name column, 「打断」 is found at a glance and a name
+// a whole cast. As a label column and a name column, the interrupt row is found at a glance and a name
 // in "送达" but not in "压力" shows as a gap.
 function ReceiptLine({ receipt, cast }: { receipt: InjectionReceipt; cast: StepCast }) {
   const { delivered_to, pressure, decided, interrupted } = receipt;
   if (!delivered_to.length && !pressure.length) {
     return (
       <div className="mt-1.5 text-[11px] text-slate-500">
-        未落到任何人身上（无人可感知）
+        无角色感知到此事件
       </div>
     );
   }
@@ -31,8 +31,8 @@ function ReceiptLine({ receipt, cast }: { receipt: InjectionReceipt; cast: StepC
       pressure.map((p) => `${nameOf(p.agent_id)}（${URGENCY_LABEL[p.urgency] ?? p.urgency}）`).join("、"),
     ]);
   }
-  if (decided.length) rows.push(["因此决策", names(decided)]);
-  if (interrupted.length) rows.push(["打断", names(interrupted)]);
+  if (decided.length) rows.push(["触发决策", names(decided)]);
+  if (interrupted.length) rows.push(["中断", names(interrupted)]);
   return (
     <div className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-[11px] leading-snug">
       {rows.map(([label, value]) => (
@@ -44,7 +44,7 @@ function ReceiptLine({ receipt, cast }: { receipt: InjectionReceipt; cast: StepC
       {/* Delivered, but the world shrugged. Its own row, unlabeled — it is the verdict on
           the rows above, not a fifth column of names. */}
       {!pressure.length && (
-        <span className="col-span-2 text-indigo-300/50">无人为此改变行止</span>
+        <span className="col-span-2 text-indigo-300/50">无角色因此改变行动</span>
       )}
     </div>
   );
@@ -72,7 +72,7 @@ export default function InjectionRow({ injection, cast }: { injection: Injection
           tells a badly worded intervention from a world that doesn't care. */}
       {injection.directive_text && (
         <div className="mt-1.5 text-[11px] text-indigo-300/60 italic">
-          导演说：{injection.directive_text}
+          导演指令：{injection.directive_text}
         </div>
       )}
       {injection.receipt && <ReceiptLine receipt={injection.receipt} cast={cast} />}

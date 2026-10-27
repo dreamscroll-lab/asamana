@@ -77,7 +77,7 @@ export default function NarrativeStep({
           type="button"
           onClick={() => onToggleIsolate?.(step.step)}
           disabled={!onToggleIsolate}
-          title={isolated ? "退出，看全部步" : "只看这一步"}
+          title={isolated ? "退出筛选，查看全部步骤" : "仅查看本步"}
           className="group w-full flex items-baseline gap-1.5 text-left text-[11px] font-medium tracking-wide rounded transition enabled:hover:bg-slate-800/40 disabled:cursor-default focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-500/50"
         >
           <span className="text-amber-200/70">{step.world_time.label}</span>
@@ -88,7 +88,7 @@ export default function NarrativeStep({
                 isolated ? "text-indigo-300" : "text-slate-700 group-hover:text-slate-400"
               }`}
             >
-              {isolated ? "只看此步 ✕" : "只看此步"}
+              {isolated ? "仅查看本步 ✕" : "仅查看本步"}
             </span>
           )}
         </button>

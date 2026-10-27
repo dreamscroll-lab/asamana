@@ -96,7 +96,8 @@ _SYSTEM_PROMPT = f"""\
 
 【依据关系判断】
  - 每个同处者都附带"该角色对其的关系"及其身份/性格/背景；收到的消息也会附上"该角色对发送者的关系"。据此判断亲疏：
- - **与该角色关系亲近、信任度高的人，通常不是其威胁来源**，不要生成针对这类亲近者的"控制 / 威慑 / 防范"目标。
+ - 不得仅因某人在场或双方关系亲近，就推断其完全可信任，也不能因为关系不亲近，就推断一定产生威胁。好感度和信任度是判断背景依据，具体的压力需要结合具体的上下文判定。
+ - 若该角色实际感知到对方背叛、胁迫或伤害等具体信号，可以据此判断威胁并生成相称的防范目标；不得虚构敌意或事件。
 
 【信息边界】你只会看到该角色能感知的内容；绝不替它推断它无从得知的信息。
 
@@ -108,7 +109,7 @@ _SYSTEM_PROMPT = f"""\
 【说明】
 关系各栏的含义：{relation_legend()}
 
-每个角色最多 3 个目标，按紧迫度降序。每个目标包含：
+每个角色最多 3 个目标，按紧急程度降序。每个目标包含：
 - text: 指引该角色行动的一句话（中文，≤{_GOAL_TEXT_MAX_CHARS}字，用该角色当下视角；**不得使用事件的事后命名，也不要预测未来走向，也不要臆想当前情景。**）
 - {URGENCY_SCALE_DESCRIPTION}
 - {EXTERNAL_DRIVE_TYPE_DEFINITION}，取值之一：{_DRIVE_TOKENS}
@@ -332,7 +333,7 @@ class WorldPressureEvaluator:
         lines: list[str] = [f"""\
 {header_part}【目标角色（仅供识人参考，不是压力来源）】
 {person_referent(soul.name, soul.gender, soul.role or '无', activity, condition)}
-  性格：{traits}
+  性格特点：{traits}
   价值观：{values}
   背景：{background}{secret_line}
 
@@ -369,7 +370,7 @@ class WorldPressureEvaluator:
                 )
                 lines.append(f"    #{i} {who} — 关系：{self._format_relation(c)}")
                 if c.get("traits"):
-                    lines.append(f"        其性格：{'、'.join(c['traits'])}")
+                    lines.append(f"        其性格特点：{'、'.join(c['traits'])}")
                 if c.get("values"):
                     lines.append(f"        其价值观：{'、'.join(c['values'])}")
                 if c.get("background"):

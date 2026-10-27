@@ -10,6 +10,7 @@ vi.mock("./hud", () => ({ inkOn: vi.fn() }));
 
 Object.assign(globalThis, { window: { devicePixelRatio: 2 } });
 const { EntityLayer } = await import("./entities");
+const { flyMessageArc } = await import("./effects");
 
 function setup(entityType: string) {
   const floatNote = vi.fn();
@@ -95,5 +96,24 @@ describe("entity note positions", () => {
     expect(layer.withheld.size).toBe(0);
     expect(layer.effectiveEntities().letter).toEqual(entity);
     expect(floatNote).not.toHaveBeenCalled();
+  });
+});
+
+describe("a thing changing hands", () => {
+  it("flies as a gold star from the old holder to the new, never as a letter", () => {
+    const { layer, entity } = setup("item");
+    const tokens: Record<string, unknown> = {
+      a: { container: { x: 10, y: 20 } },
+      b: { container: { x: 70, y: 80 } },
+    };
+    Object.assign((layer as unknown as { host: object }).host, { token: (id: string) => tokens[id] });
+    layer.entityMarkers.delete("letter"); // held things have no marker
+    const held = (by: string): PlacedEntity => ({ ...entity, presence: "held", presence_ref: by });
+    layer.applyEntities(layer.beginStep({ letter: held("a") }, new Set(), new Set(), true));
+    layer.applyEntities(layer.beginStep({ letter: held("b") }, new Set(), new Set(), false));
+
+    expect(flyMessageArc).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(), 10, 20, 70, 80, { color: 0xd9a441, glyph: "✦", ripple: 0xd9a441 },
+    );
   });
 });

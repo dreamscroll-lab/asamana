@@ -746,7 +746,7 @@ async def test_invite_gives_up_when_the_body_is_already_committed(container) -> 
     assert seized == [], "邀请制不拆任何人的行动"
     stub = registry.get_active_for_agent("talker")
     assert stub is not None and stub.extra.get("completed_result") is not None
-    assert "正在歇息" in stub.extra["completed_result"].failure_reason   # what he visibly is doing
+    assert "正在休息" in stub.extra["completed_result"].failure_reason   # what he visibly is doing
     assert registry.get_active_for_agent("busy").action_type == ActionType.REST, "他手上的事没被动"
 
 
@@ -941,7 +941,9 @@ async def test_same_step_compel_gives_a_listener_whose_turn_has_passed_his_own_t
     decision, with no join recorded and no intent lost."""
     runtime, registry, env, agents = _same_step_compel_world(container, with_x=True)
     kept: list = []
-    agents["listener"].defer_decided_intent = lambda action, step: kept.append(action)  # type: ignore[method-assign]
+    async def _keep(action, step, *, invited_by=""):
+        kept.append(action)
+    agents["listener"].defer_decided_intent = _keep  # type: ignore[method-assign]
     plans = [
         ("main", agents["talker"], _plan_for(agents["talker"], env, step=2, action=_talk("talker", "listener"))),
         ("main", agents["listener"], _plan_for(agents["listener"], env, step=2, action=_talk("listener", "x"))),

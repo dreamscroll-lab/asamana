@@ -3,5 +3,5 @@
  */
 
 export const URGENCY_LABEL: Record<string, string> = {
-  low: "不急", normal: "一般", high: "急", critical: "十万火急",
+  low: "不紧急", normal: "一般", high: "紧急", critical: "非常紧急",
 };

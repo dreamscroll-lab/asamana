@@ -199,7 +199,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
     {
       id: "send-message",
       group: "言语",
-      title: "send_message · 传信（定向）",
+      title: "send_message · 发送消息（定向）",
       watch:
         "一封信两拍，隔一步，各说各的事：第 2 拍是 show（递出）姿势 + 信封飞向阿霖，**不带字**（他此刻还不知道）；" +
         "第 3 拍才是「读到」——信在阿霖头上打开，标题 ✉ 阿墨、穿阿墨的身份色（和信封火漆同色），正文是信的内容。" +
@@ -241,7 +241,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
     {
       id: "mail-many-readers",
       group: "言语",
-      title: "传信 · 一封信两个收件人",
+      title: "发送消息 · 一封信两个收件人",
       watch:
         "一封信同时指名阿石和阿霖。**两个人都要持有**——两颗头顶各挂一个 ✉ 徽标，各自点开都是同一封信的全文。" +
         "指名私信的每一个收件人都是真的私下收到了，地图不得替其中一个判定「你没真收到」（「别把一封公告变成 N 封私信」" +
@@ -270,7 +270,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
     {
       id: "mail-to-the-dead",
       group: "言语",
-      title: "传信 · 收信人已倒下",
+      title: "发送消息 · 收信人已倒下",
       watch:
         "信寄到时阿石已经倒下。**他不该挂 ✉ 徽标，也不该展开气泡**——读信是活人才做的事，" +
         "一具尸体顶着徽标、在自己遗体上摊开一封信，是地图在断言一次没发生过的认知。" +
@@ -304,7 +304,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
     {
       id: "mail-overflow",
       group: "言语",
-      title: "传信 · 五封一起到",
+      title: "发送消息 · 五封一起到",
       watch:
         "五个人同一步写到阿霖手上。气泡**只列前三封**，剩下的收成一行「…另 2 封」——" +
         "过了三行，要紧的已经不是「哪几封」而是「有多少封」，而数目用报的比用列的说得清（全文在叙事流里）。" +
@@ -330,7 +330,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
     {
       id: "mail-off-map",
       group: "言语",
-      title: "传信 · 收信人不在图上",
+      title: "发送消息 · 收信人不在图上",
       watch:
         "阿墨写给一个不在这张图上的人。信**离开**：沿弧线飞出世界的边缘、消失在视野外（`departingMessage`），" +
         "而不是原地什么都不画。信寄出去了，就要看见它走——去了哪里则正确地看不见。" +
@@ -355,7 +355,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
     {
       id: "mail-pile",
       group: "言语",
-      title: "传信 · 同一步收到三封",
+      title: "发送消息 · 同一步收到三封",
       watch:
         "三个人在同一步写到阿霖手上。①头顶挂一个「✉ 3」徽标——**不是红点**（红色在这张图上只归死亡标记，且红点意味「未读」这个本图不保存的状态）；" +
         "②三封都落在阿霖一个人手里，所以**只开一个气泡**、不是弹三次：标题条是**阿霖自己的名字和身份色**" +
@@ -407,7 +407,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
     {
       id: "announce",
       group: "言语",
-      title: "send_message · 传信（当众）",
+      title: "send_message · 发送消息（当众）",
       watch:
         "一条规则贯穿三种 scope：**送出画空间、不带字；送达画内容、带字**。" +
         "第 2 拍（送出）没有具名收信人，所以是向四周扩散的告示动效——涟漪说的是「他的声音传出去多远」，不出字；" +

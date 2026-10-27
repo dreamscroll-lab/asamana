@@ -1,7 +1,7 @@
 import type { ActorAmendments, ActorMind, BriefGoal, GoalAmendment } from "../../types";
 
 export const GOAL_STATUS: Record<BriefGoal["status"], string> = {
-  active: "进行中", interrupted: "受阻", completed: "已完成", failed: "已放下 / 未完成",
+  active: "进行中", interrupted: "受阻", completed: "已完成", failed: "未完成",
 };
 
 export function liveGoal(g: BriefGoal): boolean {

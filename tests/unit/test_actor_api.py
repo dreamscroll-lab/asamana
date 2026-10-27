@@ -558,10 +558,10 @@ async def test_self_operations_use_turn_identity_and_follow_description_requirem
             "turn_id": turn["turn_id"], "target_kind": "agent", "target_id": character_id,
         })
         assert capabilities.status_code == 200
-        assert [capability["operation"] for capability in capabilities.json()["operations"]] == ["work", "rest", "covert"]
+        assert [capability["operation"] for capability in capabilities.json()["operations"]] == ["work", "rest", "covert", "send_message"]
         assert all(capability["available"] for capability in capabilities.json()["operations"])
         requirements = {c["operation"]: c["required_parameters"] for c in capabilities.json()["operations"]}
-        assert requirements == {"work": ["description"], "rest": [], "covert": ["description"]}
+        assert requirements == {"work": ["description"], "rest": [], "covert": ["description"], "send_message": ["description"]}
         target = {"kind": "agent", "id": character_id}
         payload = {"turn_id": turn["turn_id"], "operation": operation, "target": target, "parameters": {}}
         if operation != "rest":

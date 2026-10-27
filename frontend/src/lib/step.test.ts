@@ -12,7 +12,7 @@ const thing = (is_public = true): EntityView => ({
 });
 
 const agent = (agent_id: string, carrying: { open?: Record<string, EntityView>; hidden?: Record<string, EntityView> } = {}): AgentView => ({
-  agent_id, is_main_character: false, is_active: true,
+  agent_id, is_main_character: false, is_active: true, death_step: null,
   public: { activity_status: "", activity_label: "", condition: "", displaced: false, carrying: carrying.open ?? {} },
   private: {
     emotion: "", emotion_label: "", emotion_intensity: null, emotion_valence: null, dominant_need: null,

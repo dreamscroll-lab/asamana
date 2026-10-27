@@ -100,7 +100,7 @@ class Situation:
 class AmbientEvent:
     """A public, location-level ambient event; the element type of SpatialPerception.ambient_events.
 
-    content: the text onlookers see (already includes any readable prefix, e.g. "[秘密行动暴露] ...")
+    content: the text onlookers see (already includes any readable prefix, e.g. "[暗中探查暴露] ...")
     strength:
         None          → PerceptionLayer uses the default ambient strength (0.2, a weak background signal)
         float ∈ [0,1] → strength set by the producer, e.g. a strong social signal like covert exposure

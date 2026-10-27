@@ -98,7 +98,8 @@ class ActionTarget:
 
     Which relation carries the real subject is the action's business: a MOVE acts on a PLACE and
     claims those it drags along; a handover acts on the THING and reaches the receiver, or the
-    record reads as an assault with no object.
+    record reads as an assault with no object. Taking or working a thing someone else holds acts
+    on the thing and reaches its holder.
     """
 
     acts_on: list[Ref] = field(default_factory=list)
@@ -162,7 +163,7 @@ class ActionType(str, Enum):
     - MOVE         — change the agent's location
     - WORK         — turn personal will into a tangible result
     - PHYSICAL     — apply immediate force to a person or object
-    - COVERT       — gather information about others or other places unnoticed
+    - COVERT       — uncover otherwise unavailable information unnoticed at the current location
     - REST         — actively restore the agent's vitality
     - ERRAND       — have another body act elsewhere on your behalf and bring back what it saw.
                      Unlike MOVE (only your own body), SEND_MESSAGE (words one way, no return,
@@ -178,6 +179,22 @@ class ActionType(str, Enum):
     PHYSICAL = "physical"
     COVERT = "covert"
     ERRAND = "errand"
+
+    @property
+    def label(self) -> str:
+        return _ACTION_TYPE_LABELS[self]
+
+
+_ACTION_TYPE_LABELS: dict[ActionType, str] = {
+    ActionType.TALK: "交谈",
+    ActionType.MOVE: "移动",
+    ActionType.PHYSICAL: "动手",
+    ActionType.COVERT: "暗中探查",
+    ActionType.WORK: "做事",
+    ActionType.REST: "休息",
+    ActionType.SEND_MESSAGE: "发送消息",
+    ActionType.ERRAND: "指派任务",
+}
 
 
 class Deed(str, Enum):

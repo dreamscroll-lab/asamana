@@ -33,7 +33,8 @@ export interface Room {
   // `inRect` counts the leading entries that lie inside the room's own rectangle;
   // anything past it came from widening the search, which a room drawn entirely over
   // rooftops needs — better its people stand on the street outside than on the roofs.
-  stand: { x: number; y: number }[];
+  // `rank` is how well the cell reads as being here (see StandRank); staging seats by it.
+  stand: { x: number; y: number; rank: StandRank }[];
   inRect: number;
 }
 
@@ -49,6 +50,14 @@ const ROOM_STAND_REACH = 10;
 // How many standable cells to keep per room. A room never stages more figures than it
 // has cells here in practice; past this the layout is hopeless anyway and they double up.
 const ROOM_STAND_CELLS = 64;
+
+/**
+ * How well a stand cell reads as being in its room, best first: its own ground, the open street
+ * outside it, then ground inside another place's rectangle (a figure there reads as being in
+ * that place), each reachable before unreachable. Ranked, not dropped: a room whose street band
+ * lies wholly in its neighbors' rectangles still needs reachable ground once its own is full.
+ */
+export type StandRank = 0 | 1 | 2 | 3 | 4 | 5;
 
 export class WorldMap {
   /** The location regions this map declares, by id. */
@@ -325,8 +334,14 @@ export class WorldMap {
    * pulls route endpoints onto, so "reachable" means the same thing in both places.
    */
   findStanding(room: Room, roadNet: ReadonlySet<number>): void {
-    const inRect = (x: number, y: number): boolean =>
-      x + 0.5 >= room.gx0 && x + 0.5 <= room.gx0 + room.gw && y + 0.5 >= room.gy0 && y + 0.5 <= room.gy0 + room.gh;
+    const within = (r: Room, x: number, y: number): boolean =>
+      x + 0.5 >= r.gx0 && x + 0.5 <= r.gx0 + r.gw && y + 0.5 >= r.gy0 && y + 0.5 <= r.gy0 + r.gh;
+    const inRect = (x: number, y: number): boolean => within(room, x, y);
+    const others = [...this.rooms.values()].filter((r) => r.id !== room.id);
+    const rankOf = (x: number, y: number, net: boolean): StandRank => {
+      const where = inRect(x, y) ? 0 : others.some((r) => within(r, x, y)) ? 2 : 1;
+      return (net ? where : 3 + where) as StandRank;
+    };
     const onNet = (x: number, y: number): boolean => !this.blocked[y]?.[x] && roadNet.has(y * this.cols + x);
     const x0 = Math.max(0, Math.floor(room.gx0 - ROOM_STAND_REACH));
     const x1 = Math.min(this.cols - 1, Math.ceil(room.gx0 + room.gw + ROOM_STAND_REACH));
@@ -341,7 +356,7 @@ export class WorldMap {
       }
     }
     found.sort((a, b) => Number(b.net) - Number(a.net) || Number(b.rect) - Number(a.rect) || a.d - b.d);
-    room.stand = found.slice(0, ROOM_STAND_CELLS).map(({ x, y }) => ({ x, y }));
+    room.stand = found.slice(0, ROOM_STAND_CELLS).map(({ x, y, net }) => ({ x, y, rank: rankOf(x, y, net) }));
     // The LEADING run, not the total: with reachability ranked above the rectangle, a cell
     // outside it can outrank one inside, and layoutFixtures reads this as an index bound.
     const outside = room.stand.findIndex((c) => !inRect(c.x, c.y));

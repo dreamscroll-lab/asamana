@@ -68,7 +68,7 @@ def _render_errand(
             else f"去{destination}当众说出：「{order.message}」"
         )
     # All four axes empty = go take a look. That is a task, not "no instructions".
-    return lines or [f"去{destination}走一趟"]
+    return lines or [f"前往{destination}"]
 
 
 class ErrandExecutor(ActionExecutor):
@@ -96,9 +96,9 @@ class ErrandExecutor(ActionExecutor):
         # Objective feasibility only ("can it be spared"), never "is it willing".
         reason = ""
         if not isinstance(order, ErrandOrder) or npc is None:
-            reason = "此处没有可派的人手"
+            reason = "此处没有可接受任务指派的人"
         elif npc.errand is not None:
-            reason = f"{npc.name or '那人'}正为旁人跑一趟，一时抽不开身"
+            reason = f"{npc.name or '那人'}正在执行别人指派的任务"
         elif npc.condition is not None:
             reason = f"{npc.name or '那人'}此刻动弹不得"
         elif order.item_id:
@@ -123,7 +123,7 @@ class ErrandExecutor(ActionExecutor):
             action_type=ActionType.ERRAND,
             initiator_id=action.agent_id,
             participant_ids=[action.agent_id],
-            purpose=action.action_description or "派人办事",
+            purpose=action.action_description or "给别人指派任务",
             started_step=step,
             # Giving an order takes one beat however far the bearer goes (see
             # test_executor_duration_authority). Don't trust the doer's estimate: one sentence
@@ -172,8 +172,8 @@ class ErrandExecutor(ActionExecutor):
             )
             # Asserts neither that it was sent nor that it wasn't.
             return [adjudication_failed_result(state, step, outcome=scene_line(location, (
-                f"{self._directory.agent_name(state.initiator_id)}想派人办一件事，"
-                "一时未能确知派没派出去。"
+                f"{self._directory.agent_name(state.initiator_id)}想给人指派任务，"
+                "一时未能确定是否指派成功。"
             )))]
 
         if order.item_id:
@@ -200,7 +200,7 @@ class ErrandExecutor(ActionExecutor):
         ) else []
 
         # Three channels written separately: the observation must not contain what was ordered.
-        outcome = scene_line(location, f"{doer_name}派{bearer}{errand_clause}。")
+        outcome = scene_line(location, f"{doer_name}向{bearer}指派任务：{errand_clause}。")
         item = environment.get_entity(order.item_id) if order.item_id else None
         handover_clause = f"把{(item.name if item is not None else '') or '某物'}交到他手上，" if (
             order.item_id
@@ -217,7 +217,7 @@ class ErrandExecutor(ActionExecutor):
             observations=observed_here(environment, state.initiator_id, observation),
             # A lurker nearby hears what was ordered.
             happening=outcome,
-            factual_memory=f"我派{bearer}{errand_clause}。",
+            factual_memory=f"我向{bearer}指派任务：{errand_clause}。",
             # A receipt, not an instruction: ``start`` already sent this errand out.
             errand_orders=[order],
             entity_state_changes=handover,
@@ -241,7 +241,7 @@ class ErrandExecutor(ActionExecutor):
         world event, remembered normally; ``reason`` is a structured fact."""
         location = observe_location(environment, action.agent_id)
         doer_name = self._directory.agent_name(action.agent_id)
-        outcome = scene_line(location, f"{doer_name}本想派人跑一趟，却因{reason}未能成行。")
+        outcome = scene_line(location, f"{doer_name}本想给别人指派任务，却因{reason}未能完成指派。")
         return ActionExecutionState.create_failed(
             action_type=ActionType.ERRAND,
             initiator_id=action.agent_id,
@@ -252,8 +252,8 @@ class ErrandExecutor(ActionExecutor):
                 observations=observed_here(environment, action.agent_id, outcome),
                 succeeded=False,
                 failure_reason=reason,
-                factual_memory=f"想派人跑一趟未果：{reason}",
+                factual_memory=f"给别人指派任务没有成功：{reason}",
             ),
             started_step=step,
-            purpose=action.action_description or "派人办事",
+            purpose=action.action_description or "给别人指派任务",
         )

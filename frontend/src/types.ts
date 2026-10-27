@@ -89,8 +89,8 @@ export interface TargetRef {
  * An action's three relations to the world — the same three the backend files.
  *
  * `acts_on` is what the act is done to (one kind per action, guaranteed by the backend);
- * `claims` is whose turn it spends (e.g. a carried companion); `reaches` is who receives it
- * passively. All three carry kinded refs. Read them through lib/contract's accessors.
+ * `claims` is whose turn it spends (e.g. a carried companion); `reaches` is who it lands on
+ * passively (a hand-over's receiver, the holder of a thing taken). All three carry kinded refs. Read them through lib/contract's accessors.
  */
 export interface ActionTarget {
   acts_on: TargetRef[];
@@ -161,7 +161,7 @@ export interface ActionSharedView {
 }
 
 // One participant's own part of a beat, which only they know: what they set out to do in their
-// own words, and the deliberation behind it (the feed's "心声"; the map never shows it).
+// own words, and the deliberation behind it (the feed's inner monologue; the map never shows it).
 export interface ActionPrivateView {
   agent_id: string;
   action_description: string;
@@ -201,7 +201,7 @@ export interface ActionSummary {
   // Whether a COVERT act was noticed. Independent of `shared.succeeded`.
   detected: boolean;
   // The action never engaged the world (target absent or busy, no path): a non-event, not a
-  // failure. The renderer mutes it (gray chip / "未成事" badge, no ✗).
+  // failure. The renderer mutes it (gray chip / unexecuted badge, no ✗).
   not_executed: boolean;
   // What onlookers here saw; null when the act showed nothing here.
   public: ObservedView | null;
@@ -358,6 +358,8 @@ export interface AgentView {
   // null: not known to this viewer (the actor's view).
   is_main_character: boolean | null;
   is_active: boolean;
+  // The step he died in; null while alive.
+  death_step: number | null;
   public: AgentPublicView;
   private: AgentPrivateView;
 }
@@ -632,7 +634,17 @@ export type NewNpc = Omit<NpcSetupView, "npc_id">;
 export type EntityRevision = Partial<Omit<EntitySetupView, "entity_id" | "name">>;
 export type NpcRevision = Partial<Omit<NpcSetupView, "npc_id" | "name">>;
 
+export interface OpeningTime {
+  era_name: string;
+  start_year: number;
+  start_month: number;
+  start_day: number;
+  start_hour: number;
+}
+
 export interface SetupView {
+  narrative_theme: string;
+  opening_time: OpeningTime;
   seconds_per_step: number;
   characters: CharacterSetupView[];
   entities: EntitySetupView[];
@@ -796,7 +808,7 @@ export interface ActorTarget {
 }
 
 export interface MapOperationTarget { target: ActorTarget; x: number; y: number }
-export type ActorOperation = "move" | "broadcast" | "talk" | "errand" | "take" | "use" | "destroy" | "physical" | "work" | "rest" | "covert";
+export type ActorOperation = "move" | "broadcast" | "talk" | "errand" | "take" | "use" | "destroy" | "physical" | "work" | "rest" | "covert" | "send_message";
 export interface ActorOperationParameters {
   message?: string;
   destination_id?: string;
@@ -958,6 +970,7 @@ export interface Conversation {
   turns_left: number;
   last: boolean;
   max_turn_chars: number;
+  listener_ids: string[];
 }
 
 export interface ActorTurn {

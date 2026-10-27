@@ -103,9 +103,9 @@ engine:
   max_concurrent_llm: 15      # Tier1's concurrency cap is 15; higher only buys 429s
   decay_interval: 5
   narrative_editor_enabled: true
-  max_injections_per_window: 2
+  max_injections_per_window: 3
   injection_quota_window: 20
-  injection_check_interval: 6
+  injection_check_interval: 5
   main_max_idle_steps: 2
   background_max_idle_steps: 6
   max_npcs: 6                  # the cost is prompt space, not memory: each takes a line in main-character decision prompts

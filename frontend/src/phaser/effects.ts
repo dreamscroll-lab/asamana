@@ -7,7 +7,7 @@ import Phaser from "phaser";
 
 import type { Beat } from "./figures";
 import { toHex } from "../lib/color";
-import { Deed, actedOnAgents } from "../lib/contract";
+import { Deed, actedOnAgents, reachedAgents } from "../lib/contract";
 import type { Dir } from "./skins";
 import { type AgentToken, FONT, TEXT_RES } from "./types";
 
@@ -243,7 +243,8 @@ export function joltNearbyEntities(host: FxHost, x: number, y: number, radius = 
   }
 }
 
-// A ✉ lofted along a quadratic Bézier arc, with a faint dashed trail and a ripple on arrival.
+// A glyph lofted along a quadratic Bézier arc, with a faint dashed trail and a ripple on arrival:
+// a ✉ for a letter, or whatever the caller passes (a thing changing hands flies as itself).
 //
 // Everything it spawns fades on its own; pushEphemeral is only a safety net for a scrub, and
 // relying on clearEphemeral would CUT the effect mid-air. Resolves only once the letter has
@@ -254,8 +255,9 @@ export function flyMessageArc(
   y0: number,
   x1: number,
   y1: number,
-  // The sender's identity color. Omitted → an unsigned letter (see arrivingMessage).
-  seal?: { color: number; glyph?: string },
+  // A letter's sender color (omitted → an unsigned letter, see arrivingMessage), or the color of
+  // the thing flown. `ripple` defaults to correspondence blue, which is a letter's arrival only.
+  seal?: { color: number; glyph?: string; ripple?: number },
 ): Promise<void> {
   const inkInt = seal?.color ?? 0x8fbfe6;                                  // correspondence blue
   const ink = toHex(inkInt);
@@ -301,7 +303,7 @@ export function flyMessageArc(
       },
       onComplete: () => {
         host.removeCanceler(cancel);
-        emanateRings(host, x1, y1, 0x8fbfe6, { count: 2, maxR: 30, ground: false, duration: 640, stagger: 100, width: 2.5 });
+        emanateRings(host, x1, y1, seal?.ripple ?? 0x8fbfe6, { count: 2, maxR: 30, ground: false, duration: 640, stagger: 100, width: 2.5 });
         // Delivered into the recipient's hands; the beat ends only once it is gone.
         host.tweens.add({
           targets: env,
@@ -382,7 +384,9 @@ export function localAnnounce(host: FxHost, tok: AgentToken): Promise<void> {
 export function physicalEffect(host: FxHost, tok: AgentToken, act: Beat): void {
   const verdict = act.shared?.succeeded ?? null;
   if (verdict === false) {
-    missEffect(host, tok, actedOnAgents(act.target));
+    // A thing in someone's hands is defended by him, so a failed snatch rings off its holder.
+    const people = actedOnAgents(act.target);
+    missEffect(host, tok, people.length ? people : reachedAgents(act.target));
     return;
   }
   switch (act.deed) {
@@ -399,7 +403,7 @@ export function physicalEffect(host: FxHost, tok: AgentToken, act: Beat): void {
       seizeEffect(host, tok, act);
       break;
     case Deed.operate:
-      operateEffect(host, act);
+      operateEffect(host, tok, act);
       break;
     case Deed.exert:
       // Force spent on nothing in particular: no victim, no debris.
@@ -411,11 +415,30 @@ export function physicalEffect(host: FxHost, tok: AgentToken, act: Beat): void {
   }
 }
 
-// Take a thing: no violence. A gold gleam gathers INWARD onto the doer, the opposite of a smash.
-function seizeEffect(host: FxHost, tok: AgentToken, act: Beat): void {
+/**
+ * Where each thing a deed changed stands on screen: its marker, or, for a thing in someone's
+ * hands (held things have no marker), its holder — the person the act reaches.
+ * `marker` is set only for a marker, the one point that can itself be shaken.
+ */
+function thingPoints(
+  host: FxHost, tok: AgentToken, act: Beat,
+): { x: number; y: number; marker?: Phaser.GameObjects.Container }[] {
+  const holder = reachedAgents(act.target).map((id) => host.token(id)).find((t) => !!t && t !== tok);
+  const points: { x: number; y: number; marker?: Phaser.GameObjects.Container }[] = [];
   for (const eid of act.affected_entity_ids) {
     const m = host.entityMarkers.get(eid);
-    if (!m || !m.visible) continue;
+    if (m?.visible) points.push({ x: m.x, y: m.y, marker: m });
+    else if (holder) points.push({ x: holder.container.x, y: holder.container.y - 6 });
+  }
+  return points;
+}
+
+// Take a thing: no violence. A gold gleam gathers INWARD onto the doer, the opposite of a smash.
+// Only from a marker: a thing taken from someone's hands already flies from him to the doer when
+// its change is revealed (entities.ts), so don't gleam it from the holder as well.
+function seizeEffect(host: FxHost, tok: AgentToken, act: Beat): void {
+  for (const m of thingPoints(host, tok, act)) {
+    if (!m.marker) continue;
     const gleam = host.add.circle(m.x, m.y, 12).setStrokeStyle(2.5, 0xd9a441).setDepth(31);
     host.pushEphemeral(gleam);
     host.tweens.add({ targets: gleam, x: tok.container.x, y: tok.container.y - 6, scale: 0.3, alpha: 0, duration: 480, ease: "Cubic.easeIn" });
@@ -425,14 +448,12 @@ function seizeEffect(host: FxHost, tok: AgentToken, act: Beat): void {
 
 // Work a thing where it stands: it pulses in place. No shards (nothing broke), no gleam (nothing
 // changed hands).
-function operateEffect(host: FxHost, act: Beat): void {
-  for (const eid of act.affected_entity_ids) {
-    const m = host.entityMarkers.get(eid);
-    if (!m || !m.visible) continue;
-    const pulse = host.add.circle(m.x, m.y, 9).setStrokeStyle(2.5, 0x7fb4c9).setDepth(31);
+function operateEffect(host: FxHost, tok: AgentToken, act: Beat): void {
+  for (const { x, y, marker } of thingPoints(host, tok, act)) {
+    const pulse = host.add.circle(x, y, 9).setStrokeStyle(2.5, 0x7fb4c9).setDepth(31);
     host.pushEphemeral(pulse);
     host.tweens.add({ targets: pulse, scale: 2.2, alpha: 0, duration: 560, ease: "Quad.easeOut" });
-    host.tweens.add({ targets: m, y: m.y - 3, duration: 140, yoyo: true, ease: "Sine.easeInOut" });
+    if (marker) host.tweens.add({ targets: marker, y: y - 3, duration: 140, yoyo: true, ease: "Sine.easeInOut" });
   }
 }
 
@@ -440,13 +461,13 @@ function operateEffect(host: FxHost, act: Beat): void {
 function smashEffect(host: FxHost, tok: AgentToken, act: Beat): void {
   // As in combatStrike: debris erupts from the THING along the blow, never from the man.
   let struck = false;
-  for (const eid of act.affected_entity_ids) {
-    const m = host.entityMarkers.get(eid);
-    if (!m || !m.visible) continue;
+  for (const { marker, ...m } of thingPoints(host, tok, act)) {
     struck = true;
     const axis = Math.atan2(m.y - tok.container.y, m.x - tok.container.x);
     lunge(host, tok, axis, 9, 100); // he drives into it
-    host.tweens.add({ targets: m, angle: 9, duration: 55, yoyo: true, repeat: 3, onComplete: () => m.setAngle(0) });
+    if (marker) {
+      host.tweens.add({ targets: marker, angle: 9, duration: 55, yoyo: true, repeat: 3, onComplete: () => marker.setAngle(0) });
+    }
     impactArc(host, m.x, m.y, axis + Math.PI, 0xe0c090);
     directionalBurst(host, m.x, m.y, axis, 0x8a7a5a, { count: 14, speed: 84, size: 4, duration: 700 });
     directionalBurst(host, m.x, m.y, axis, 0xcabfa0, { count: 7, speed: 50, size: 3, duration: 640, spread: 1.9 });
@@ -461,8 +482,8 @@ function smashEffect(host: FxHost, tok: AgentToken, act: Beat): void {
   }
 }
 
-// ANY deed that failed: no red, shards, gleam or shockwave. A person aimed at gets a cold clank
-// ring and pale sparks; a thing gets silence. It must not say WHICH deed failed: the body
+// ANY deed that failed: no red, shards, gleam or shockwave. A person aimed at, or holding the
+// thing aimed at, gets a cold clank ring and pale sparks; a thing nobody holds gets silence. It must not say WHICH deed failed: the body
 // already performs that.
 function missEffect(host: FxHost, tok: AgentToken, targetIds: string[]): void {
   const victims = targetIds.map((id) => host.token(id)).filter((v): v is AgentToken => !!v && v !== tok);

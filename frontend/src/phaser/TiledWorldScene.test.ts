@@ -14,7 +14,9 @@ import type { AmbientLight } from "./ambient";
 import type { Announcer } from "./announce";
 import type { PostLayer } from "./post";
 import type { HoverTip } from "./hoverTip";
-import { MO, SHI, WANG, fixtureNpcs, mindless, step, walking, who } from "../lab/scenes/fixtures";
+import { LIN, MO, SHI, WANG, aimAgents, did, fixtureNpcs, mindless, step, walking, who } from "../lab/scenes/fixtures";
+import { ActionType, Deed } from "../lib/contract";
+import type { StepView } from "../types";
 import { HIDDEN_ALPHA, HIDDEN_FADE_MS } from "./isoDepth";
 
 vi.mock("phaser", () => ({ default: {
@@ -261,7 +263,7 @@ describe("director rendering isolation", () => {
     vi.spyOn(scene.map, "hiddenGround").mockReturnValue(true);
     scene.update(0, 16);
     const fade = 1 - Math.exp((-0.016 * 3000) / HIDDEN_FADE_MS);
-    expect(tok.container.setAlpha).toHaveBeenCalledWith(0.8 + (baseAlpha * HIDDEN_ALPHA - 0.8) * fade);
+    expect(tok.container.setAlpha).toHaveBeenCalledWith(0.8 + (Math.min(baseAlpha, HIDDEN_ALPHA) - 0.8) * fade);
     expect(internal.presence.departing.size).toBe(0);
   });
 
@@ -319,5 +321,93 @@ describe("director rendering isolation", () => {
       expect(scene.token(SHI.id)).toBe(arrivingGuest);
       expect(arrivingGuest!.container.destroy).not.toHaveBeenCalled();
     }
+  });
+});
+
+function landings(internal: Internals, tok: AgentToken): { fallsNow: boolean; order: number }[] {
+  const { calls, invocationCallOrder } = vi.mocked(internal.body.applyBodyState).mock;
+  return calls.flatMap(([t, , fallsNow], i) => t === tok ? [{ fallsNow, order: invocationCallOrder[i] }] : []);
+}
+
+// The fixtures date a death from consecutive steps; a viewer away meanwhile needs it set.
+function diedAt(view: StepView, agentId: string, deathStep: number): StepView {
+  for (const scope of Object.values(view.locations)) {
+    for (const a of scope.agents) if (a.agent_id === agentId) a.death_step = deathStep;
+  }
+  return view;
+}
+
+describe("a body is drawn only on the step it falls", () => {
+  const dead = { vitality: 0, is_active: false };
+
+  it("shows someone first seen on the step he dies standing, then falling to the blow", async () => {
+    const { scene, internal } = setup();
+    scene.setViewer(MO.id);
+    // The blow doesn't play under this focus, so the withheld fall lands in the safety net.
+    scene.setFocus({ agents: [MO.id], place: null, follow: false });
+    await scene.renderStep(step({ at: 1, states: [who(MO, far)] }));
+    await scene.renderStep(step({
+      at: 2,
+      states: [who(MO, near), who(LIN, near), who(SHI, near, dead)],
+      actions: [did(LIN, { action_type: ActionType.physical, deed: Deed.strike, target: aimAgents(SHI.id) })],
+    }));
+    const victim = scene.token(SHI.id)!;
+    expect(victim).toBeDefined();
+    expect(victim.container.setPosition).toHaveBeenCalledWith(100, 0);
+    // Withheld: the fall lands once, after he was put in place, as this step's death.
+    const landed = landings(internal, victim);
+    expect(landed).toHaveLength(1);
+    expect(landed[0].fallsNow).toBe(true);
+    expect(landed[0].order).toBeGreaterThan(vi.mocked(victim.container.setPosition).mock.invocationCallOrder[0]);
+  });
+
+  it("puts someone first seen already down, with no visible cause, where he lies", async () => {
+    const { scene, internal } = setup();
+    vi.mocked(internal.body.applyBodyState).mockImplementation((tok, state) => {
+      tok.dead = state.vitality === 0 || !state.is_active;
+    });
+    scene.setViewer(MO.id);
+    await scene.renderStep(step({ at: 1, states: [who(MO, far)] }));
+    await scene.renderStep(step({ at: 2, states: [who(MO, near), who(SHI, near, dead)] }));
+    const body = scene.token(SHI.id)!;
+    expect(body.dead).toBe(true);
+    expect(body.container.setPosition).toHaveBeenCalledWith(100, 0);
+    // He falls where he lies, with the death's visual like anyone dying on this step.
+    const landed = landings(internal, body);
+    expect(landed[0].fallsNow).toBe(true);
+    expect(landed[0].order).toBeGreaterThan(vi.mocked(body.container.setPosition).mock.invocationCallOrder[0]);
+    await scene.renderStep(step({ at: 3, states: [who(MO, near), who(SHI, near, dead)] }));
+    expect(scene.token(SHI.id)).toBeUndefined();
+  });
+
+  it("gives a death the one-time visual on its step only, to someone long in view as well", async () => {
+    const { scene, internal } = setup();
+    vi.mocked(internal.body.applyBodyState).mockImplementation((tok, state) => {
+      tok.dead = state.vitality === 0 || !state.is_active;
+    });
+    await scene.renderStep(step({ at: 1, states: [who(MO, near), who(SHI, near)] }));
+    const tok = scene.token(SHI.id)!;
+    await scene.renderStep(step({ at: 2, states: [who(MO, near), who(SHI, near, dead)] }));
+    await scene.renderStep(step({ at: 3, states: [who(MO, near), who(SHI, near, dead)] }));
+    expect(landings(internal, tok).map((l) => l.fallsNow)).toEqual([false, true]);
+    expect(scene.token(SHI.id)).toBeUndefined();
+  });
+
+  it("removes someone a seek carried past his death, not leaving him standing", async () => {
+    const { scene, internal } = setup();
+    await scene.renderStep(step({ at: 1, states: [who(MO, near), who(SHI, near)] }));
+    const tok = scene.token(SHI.id)!;
+    await scene.renderStep(diedAt(step({ at: 9, states: [who(MO, near), who(SHI, near, dead)] }), SHI.id, 5));
+    expect(internal.body.removeToken).toHaveBeenCalledExactlyOnceWith(tok);
+    expect(scene.token(SHI.id)).toBeUndefined();
+    expect(landings(internal, tok).map((l) => l.fallsNow)).toEqual([false]);
+  });
+
+  it("never draws the long dead, even to a viewer who never saw them", async () => {
+    const { scene } = setup();
+    scene.setViewer(MO.id);
+    await scene.renderStep(step({ at: 4, states: [who(MO, far)] }));
+    await scene.renderStep(diedAt(step({ at: 5, states: [who(MO, near), who(SHI, near, dead)] }), SHI.id, 2));
+    expect(scene.token(SHI.id)).toBeUndefined();
   });
 });

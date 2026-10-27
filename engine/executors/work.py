@@ -301,7 +301,7 @@ class WorkExecutor(ActionExecutor):
             given_facts=GivenFacts()  # same source as user above
             .add("此刻何时何地", situation_header)
             .add("我的处境", doer_condition)
-            .add("我的体力", doer_vitality)
+            .add("我的生命值", doer_vitality)
             .add("刚刚发生的事", happened),
             action_owner=agent.personality.soul.name,
         ):
@@ -496,7 +496,7 @@ class WorkExecutor(ActionExecutor):
             given_facts=GivenFacts()  # same source as user above
             .add("此刻何时何地", situation_header)
             .add("我的处境", doer_condition)
-            .add("我的体力", doer_vitality)
+            .add("我的生命值", doer_vitality)
             .add("现场", scene)
             .add("我动手前打算做的", purpose)
             .add("花掉的时间", duration_label)

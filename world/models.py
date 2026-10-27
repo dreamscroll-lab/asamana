@@ -149,12 +149,12 @@ class ThemeFigure:
 
     def as_prompt(self) -> str:
         """Single-line self-describing render for prompt injection; Chinese field names make each field's meaning clear without a legend."""
-        importance_cn = "叙事主角" if self.tier is AgentTier.MAIN else "背景角色"
+        importance_cn = "主角" if self.tier is AgentTier.MAIN else "背景角色"
         secret = f"、{SECRET_LABEL}：{self.secret}" if self.secret else ""
         return (
             f"名字：{self.name}、角色定位：{self.role}{secret}、"
             f"当前处境与动机：{self.brief}、年龄：{self.age}、"
-            f"性别：{self.gender}、重要性：{importance_cn}"
+            f"性别：{self.gender}、叙事层级：{importance_cn}"
         )
 
 

@@ -11,7 +11,7 @@
  * One button, not 注入 + 推一步: whether a step is needed depends on the run loop, which
  * only the backend knows for certain, so it decides and an accepted directive always lands.
  *
- * 1. A refusal is an answer, not an error: "落实不了" is a normal 200 with a reason, shown
+ * 1. A refusal is an answer, not an error: it is a normal 200 with a reason, shown
  *    as advice about the sentence.
  * 2. Never leave a submitted sentence unaccounted for — accepted, refused or transport
  *    failure, something is said about it.
@@ -192,7 +192,7 @@ export default function DirectorBar({ worldId, step }: { worldId: string; step: 
                 <div className={`${CONSOLE_WORLD_MESSAGE} whitespace-pre-wrap`}>{state.preview}</div>
               )}
               {state.kind === "refused" && (
-                <div className={`${CONSOLE_WORLD_MESSAGE} whitespace-pre-wrap text-amber-300/80`}>落实不了：{state.reason}</div>
+                <div className={`${CONSOLE_WORLD_MESSAGE} whitespace-pre-wrap text-amber-300/80`}>无法执行：{state.reason}</div>
               )}
               {state.kind === "failed" && (
                 <div className={`${CONSOLE_WORLD_MESSAGE} whitespace-pre-wrap text-rose-300`}>未能确认注入结果：{state.reason}</div>
@@ -227,7 +227,7 @@ export default function DirectorBar({ worldId, step }: { worldId: string; step: 
             disabled={!modelKeys || !text.trim()}
             busy={working}
             onClick={() => void submit()}
-            title={modelKeys ? "注入这句话；世界若没在跑，会就地推进一步让它落定" : NO_MODEL_KEYS_HINT}
+            title={modelKeys ? "提交导演指令；世界未运行时将推进一步以执行指令" : NO_MODEL_KEYS_HINT}
           />
         </div>
       </div>

@@ -46,12 +46,12 @@ _FOILED_MISS_PRIORITY_THRESHOLD = 3
 # isn't listed: naming it would expose it, so it falls through to the vague phrase. TALK is
 # built in _busy_reason (it names the partner).
 _BUSY_WITH: dict[ActionType, str] = {
-    ActionType.REST: "正在歇息",
-    ActionType.WORK: "正埋头忙着手上的事",
+    ActionType.REST: f"正在{ActionType.REST.label}",
+    ActionType.WORK: f"正在{ActionType.WORK.label}",
     ActionType.MOVE: "正要动身离开",
     ActionType.PHYSICAL: "正在动手做别的事",
-    ActionType.SEND_MESSAGE: "正忙着传讯",
-    ActionType.ERRAND: "正在吩咐人办事",
+    ActionType.SEND_MESSAGE: f"正在{ActionType.SEND_MESSAGE.label}",
+    ActionType.ERRAND: f"正在{ActionType.ERRAND.label}",
 }
 _BUSY_UNSEEN = "正忙于他事"
 
@@ -67,6 +67,9 @@ class ArbitratedAction:
     message_ids: List[str] = field(default_factory=list)
     ongoing_execution_id: str | None = None  # None means immediate completion
     is_passive_join: bool = False
+    # A passive join the joiner accepted: the inviter's id. "" when compelled or not a join; the
+    # joiner's dropped intent is told differently for each (``Agent.defer_decided_intent``).
+    invited_by: str = ""
     # The invitee refused: a failure that happened to the doer, unlike a rejection.
     refused: bool = False
 
@@ -688,7 +691,8 @@ class ExecutionArbiter:
         participant_name = self._directory.agent_name(plan.agent_id)
         # Wording follows the mode: "invited" for someone dragged off would launder compulsion
         # into consent.
-        joined = "邀入" if self._mode_of_execution(exec_state) is Conscription.INVITE else "强制拉入"
+        invited = self._mode_of_execution(exec_state) is Conscription.INVITE
+        joined = "邀入" if invited else "强制拉入"
         outcome = f"{participant_name}被{initiator_name}{joined}「{purpose}」"
         joined_at = self._environment.get_body_location(plan.agent_id)
         # No onlooker narration for joining: the starting execution already named both sides,
@@ -719,6 +723,7 @@ class ExecutionArbiter:
             message_ids=[m.id for m in plan.inbox],
             ongoing_execution_id=exec_id,
             is_passive_join=True,
+            invited_by=exec_state.initiator_id if (invited and exec_state) else "",
         )
 
     def _busy_reason(

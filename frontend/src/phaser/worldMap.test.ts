@@ -92,6 +92,23 @@ describe("findStanding", () => {
     expect(plaza.stand.slice(0, plaza.inRect).every(onNet)).toBe(true);
   });
 
+  it("别的地点矩形里的地照样保留,只是排位在路边空地之后", () => {
+    // The courtyard's nearest reachable ground is the street at y6, part of which is the plaza.
+    const m = makeMap();
+    const yard = makeRoom("courtyard", 2, 1, 7, 4);
+    const square = makeRoom("plaza", 4, 6, 2, 4);
+    m.rooms.set(yard.id, yard);
+    m.rooms.set(square.id, square);
+    m.findStanding(yard, roadNet);
+    const at = (x: number, y: number) => yard.stand.find((c) => c.x === x && c.y === y)!;
+    // The list itself is what it was: only the ranks tell the plaza's street from the open one.
+    expect(yard.stand.map(({ x, y }) => [x, y])).toEqual(courtyard.stand.map(({ x, y }) => [x, y]));
+    expect(yard.inRect).toBe(courtyard.inRect);
+    expect(at(4, 6).rank).toBe(2);
+    expect(at(3, 6).rank).toBe(1);
+    expect(at(5, 2).rank).toBe(3);
+  });
+
   it("一格可站的地都没有的房间,给空名单而不是瞎给一格", () => {
     const sealed = makeRoom("sealed", 100, 100, 2, 2);
     map.findStanding(sealed, roadNet);

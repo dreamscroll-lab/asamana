@@ -114,7 +114,7 @@ export function ObservedCharacterCard({ worldId, ...props }: Omit<CharacterCardP
 
   return (
     <div className="space-y-3">
-      {castError && <button className="text-xs text-rose-300" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色身份加载失败，点击重试</button>}
+      {castError && <button className="text-xs text-rose-300" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色资料加载失败，点击重试</button>}
       {active && privateKnown && failed.includes(active.id) && <button className="text-xs text-rose-300" onClick={() => setLoaded((prev) => ({ ...prev, failed: prev.failed.filter((id) => id !== active.id) }))}>角色资料加载失败，点击重试</button>}
       <CharacterCard {...props} cast={cast} places={places} profile={active && privateKnown ? profiles[active.id] : undefined} />
     </div>

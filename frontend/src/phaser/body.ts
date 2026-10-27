@@ -285,9 +285,9 @@ export class BodyRig {
    * Must stay single: a deferred path landing only death sends the rest through the instant
    * path, ahead of the blow that caused it (the vitality bar drains a beat early).
    */
-  applyBodyState(tok: AgentToken, state: Figure, wasPlaced: boolean): void {
+  applyBodyState(tok: AgentToken, state: Figure, fallsNow: boolean): void {
     if (reportedDead(state.is_active, state.vitality)) {
-      this.applyDeathVisual(tok, state.emotion_valence, !tok.dead && wasPlaced);
+      this.applyDeathVisual(tok, state.emotion_valence, !tok.dead && fallsNow);
       return;
     }
     // Revive on a scrub back before the death. Keyed on tok.dead, not the sprite's angle:
@@ -319,7 +319,7 @@ export class BodyRig {
 
   // A corpse is swept at the start of the step after its death (the scene drops it from its
   // token map first). A body is drawn only on the step it falls: later steps still report him
-  // dead, so the scene's gone() tests for a token, not the report, or the corpse would be
+  // dead, so the scene's gone() tests the death's step, not the report, or the corpse would be
   // recreated each step, blinking and wandering.
   removeToken(tok: AgentToken): void {
     const c = tok.container;

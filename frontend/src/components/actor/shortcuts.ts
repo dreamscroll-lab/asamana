@@ -1,10 +1,10 @@
+import { ACTION_IDENTITY } from "../../lib/actionIdentity";
 import type { ActorOperationCapability, ActorOperationParameters } from "../../types";
 
 export const OPERATION_LABEL: Record<string, string> = {
-  move: "🚶 移动", broadcast: "📣 广播", talk: "💬 交谈",
-  work: "🔨 行事", rest: "💤 歇息", covert: "🥷 潜行",
-  errand: "派人", take: "拿起", use: "使用", destroy: "毁坏", physical: "动手",
-  idle: "⏸ 这次先不动",
+  ...Object.fromEntries(Object.entries(ACTION_IDENTITY).map(([type, { icon, label }]) => [type, `${icon} ${label}`])),
+  broadcast: "📣 广播", take: "拿起", use: "使用", destroy: "毁坏",
+  idle: "⏸ 本步不行动",
 };
 
 export function missingParameters(capability: ActorOperationCapability, parameters: ActorOperationParameters, description: string): boolean {

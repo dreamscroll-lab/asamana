@@ -15,6 +15,8 @@ describe("setupGraph", () => {
   it("draws each relation of the setup as both its directions", () => {
     const setup: SetupView = {
       entities: [], npcs: [],
+      narrative_theme: "",
+      opening_time: { era_name: "", start_year: 1, start_month: 1, start_day: 1, start_hour: 6 },
       seconds_per_step: 3600,
       characters: [character("a", true), character("b", false)],
       historical_events: [],

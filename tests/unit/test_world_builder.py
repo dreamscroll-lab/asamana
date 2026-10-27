@@ -95,7 +95,7 @@ def _analysis() -> ThemeAnalysis:
         core_tension="A and B want different outcomes; what each will choose is open.",
         narrative_theme="The weight of unspoken positions.",
         narrative_pitch="A and B are about to choose; what each chooses is undecided.",
-        world_time_config={"era_name": "Audit Era", "start_month": 1, "start_day": 1, "start_hour": 6, "seconds_per_step": 3600},
+        world_time_config={"era_name": "Audit Era", "start_year": 1, "start_month": 1, "start_day": 1, "start_hour": 6, "seconds_per_step": 3600},
         key_figures=[
             ThemeFigure("A", role="leader", importance="main", brief="Acts first."),
             ThemeFigure("B", role="rival", importance="main", brief="Answers pressure."),
@@ -669,6 +669,19 @@ def test_a_world_without_a_year_fails_the_build_rather_than_being_dated_by_defau
     """
     with pytest.raises(ValueError, match="ThemeAnalyzer failed"):
         _analyze(_theme_payload(world_time_config=time_config))
+
+
+def test_loose_opening_time_is_repaired_at_the_llm_boundary() -> None:
+    """WorldSetup.validate is strict about the opening time, so the analysis must hand it clean
+    values: a stringly-typed or out-of-range answer is repaired here, never a failed build."""
+    analysis = _analyze(_theme_payload(world_time_config={
+        "era_name": None, "start_year": 2023, "start_month": "9", "start_day": 31, "start_hour": 20.0,
+    }))
+
+    time_config = analysis.world_time_config
+    assert time_config["era_name"] == ""
+    assert (time_config["start_month"], time_config["start_day"], time_config["start_hour"]) == (9, 30, 20)
+    assert all(type(time_config[key]) is int for key in ("start_month", "start_day", "start_hour"))
 
 
 def test_a_missing_social_graph_or_prehistory_stays_empty_instead_of_being_invented(caplog) -> None:

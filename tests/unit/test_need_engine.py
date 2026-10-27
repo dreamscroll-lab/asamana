@@ -2743,7 +2743,7 @@ async def test_short_term_generation_carries_vitality_when_it_is_failing() -> No
         emotion=EmotionState(primary="neutral", intensity=0.3, valence=0.0),
     )
 
-    assert "我此刻的体力：将竭" in captured["user"]
+    assert "我此刻的生命值：将竭" in captured["user"]
 
 
 def test_the_goal_text_field_itself_asks_for_a_concrete_date() -> None:

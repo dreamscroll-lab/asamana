@@ -61,7 +61,7 @@ export default function ActionRow({
   const isInterrupt = act.phase === Phase.interrupt;
   // The MIDDLE beat of a multi-step act. Don't give it a bespoke light row: it would read as a
   // stray tail of the card above and drift from the shared markup. It shows only a 进行中 badge
-  // and a progress bar, never dialogue, 心声 or outcome (those play at the opening and close).
+  // and a progress bar, never dialogue, inner monologue or outcome (those play at the opening and close).
   const tick = act.phase === Phase.ongoing_tick;
   const tickPct = tick && shared && shared.total_steps > 0
     ? Math.min(100, Math.round((shared.elapsed_steps / shared.total_steps) * 100))
@@ -168,10 +168,10 @@ export default function ActionRow({
         )}
         {/* An interrupt adds WHO CUT IT, which matters for a joint action (the initiator
             walking out differs from the other man walking out). A solo action omits it: the
-            interrupter is the doer himself. The why is his 心声 below. */}
+            interrupter is the doer himself. The reason is in his inner monologue below. */}
         {isInterrupt && breaker && parts.length > 1 && (
           <span className="text-[10px] px-1.5 py-0.5 rounded-md text-slate-300 bg-slate-800/50 border border-slate-600/60">
-            被 <Who cast={cast} id={breaker} name={cast.nameOf(breaker) || "某人"} /> 打断
+            被 <Who cast={cast} id={breaker} name={cast.nameOf(breaker) || "某人"} /> 中断
           </span>
         )}
         {/* Taken along. Not on the name line (the deed isn't theirs), but their face stays in
@@ -195,23 +195,23 @@ export default function ActionRow({
                 {i > 0 && " · "}
                 <Who cast={cast} id={o.id} name={o.name} />
               </span>
-            ))} 在旁听着
+            ))} 旁听
           </span>
         )}
         {/* not_executed = the intent never engaged the world (target absent/busy,
-            no path) → a muted gray "未成事", NOT the rose "未果" of a real defeat. */}
+            no path) → a muted gray "未执行", NOT the rose "未成功" of a real defeat. */}
         {act.not_executed && !isInterrupt ? (
           <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md text-slate-400 bg-slate-800/50 border border-slate-700/50">
-            未成事
+            未执行
           </span>
         ) : (
           shared?.succeeded === false && !isInterrupt && (
             <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md text-rose-300 bg-rose-950/50 border border-rose-900/60">
-              未果
+              未成功
             </span>
           )
         )}
-        {/* Was he seen: a covert act's second question, independent of 未果, so amber
+        {/* Was he seen: a covert act's second question, independent of 未成功, so amber
             rather than rose. Only COVERT sets it, and only being noticed gets a mark. */}
         {act.detected && (
           <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md text-amber-300 bg-amber-950/50 border border-amber-900/60">
@@ -228,15 +228,6 @@ export default function ActionRow({
         </p>
       )}
 
-      {/* A talk's stated topic: known to everyone in it, unlike the doer's description, so the
-          one invited reads why he was asked. Once, where the talk starts. */}
-      {shared?.talk_topic && (opening || act.phase === Phase.settled) && (
-        <p className="mt-1 text-[13px] leading-relaxed text-slate-400">
-          <span className="text-slate-600">来意 · </span>
-          {shared.talk_topic}
-        </p>
-      )}
-
       {/* How far along: the middle beat's only payload beyond the description. */}
       {tick && shared && (
         <div className="mt-2 h-1 rounded-full bg-slate-800/80 overflow-hidden">
@@ -248,7 +239,7 @@ export default function ActionRow({
           Not filtered by is_main_character: every agent decides through the same LLM
           cognition (CLAUDE.md §5).
 
-          Unlike the outcome, 心声 is per person (two people in one conversation think
+          Unlike the outcome, inner monologue is per person (two people in one conversation think
           different things), named when there is more than one. Empty on every beat that
           did not decide: a tick, a later completion, a conscripted participant, an
           interrupt (its reason lives in its outcome). */}
@@ -257,11 +248,20 @@ export default function ActionRow({
         .map((t) => (
           <p key={t.agent_id} className="mt-1.5 text-[13px] italic leading-relaxed text-slate-400">
             <span className="not-italic text-slate-600">
-              心声{parts.length > 1 ? ` · ${cast.nameOf(t.agent_id) || "某人"}` : ""} ·{" "}
+              内心独白{parts.length > 1 ? ` · ${cast.nameOf(t.agent_id) || "某人"}` : ""} ·{" "}
             </span>
             {t.inner_monologue}
           </p>
         ))}
+
+      {/* A talk's stated topic: known to everyone in it, unlike the doer's description, so the
+          one invited reads why he was asked. Once, where the talk starts. */}
+      {shared?.talk_topic && (opening || act.phase === Phase.settled) && (
+        <p className="mt-1 text-[13px] leading-relaxed text-slate-400">
+          <span className="text-slate-600">交谈主题 · </span>
+          {shared.talk_topic}
+        </p>
+      )}
 
       {showConversation && <Transcript turns={turns} inkOf={cast.inkOf} />}
 

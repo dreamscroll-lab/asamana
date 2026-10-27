@@ -240,7 +240,7 @@ def test_an_index_outside_the_roster_is_recorded_not_just_dropped() -> None:
 
     slots = _Slots(payload={"person_indices": [1, 9], "destination_index": 7},
                    packet=object(), visible_ids=[], roster_ids=["a1", "a2"],
-                   reachable_ids=["loc1"], entity_ids=[], entity_types={}, npc_ids=[],
+                   reachable_ids=["loc1"], entity_ids=[], entity_types={}, entity_holders={}, npc_ids=[],
                    own_item_ids=[])
     assert slots.many("person_indices", slots.roster_ids) == ["a1"]     # #9 is outside the list
     assert slots.one("destination_index", slots.reachable_ids) is None  # #7, same
@@ -250,7 +250,7 @@ def test_an_index_outside_the_roster_is_recorded_not_just_dropped() -> None:
 
     # Record nothing when everything is in range; a silent channel shouldn't make noise.
     clean = _Slots(payload={"person_indices": [1]}, packet=object(), visible_ids=[],
-                   roster_ids=["a1"], reachable_ids=[], entity_ids=[], entity_types={},
+                   roster_ids=["a1"], reachable_ids=[], entity_ids=[], entity_types={}, entity_holders={},
                    npc_ids=[], own_item_ids=[])
     assert clean.many("person_indices", clean.roster_ids) == ["a1"] and clean.dropped == []
 
@@ -449,7 +449,7 @@ def test_send_message_falls_back_to_the_spoken_words(container: object) -> None:
     right next to each other, and a field readable from its neighbor isn't worth losing the whole
     decision over."""
     engine = _make_engine(container)
-    candidates = [ActionCandidate(action_type=ActionType.SEND_MESSAGE, description="传讯")]
+    candidates = [ActionCandidate(action_type=ActionType.SEND_MESSAGE, description=ActionType.SEND_MESSAGE.label)]
     payload = json.dumps(
         {
             "selected_index": 0,
@@ -928,9 +928,9 @@ def test_decision_prompt_carries_my_own_vitality_when_it_is_failing(container: o
 
     hurt = _make_personality()
     hurt.apply_vitality_damage(0.8)
-    assert "我此刻的体力：将竭" in _decision_prompt(engine, hurt, packet, candidates)
+    assert "我此刻的生命值：将竭" in _decision_prompt(engine, hurt, packet, candidates)
 
-    assert "我此刻的体力" not in _decision_prompt(engine, _make_personality(), packet, candidates)
+    assert "我此刻的生命值" not in _decision_prompt(engine, _make_personality(), packet, candidates)
 
 
 def test_parse_llm_selection_rejects_talk_without_any_target(container: object) -> None:
@@ -1343,7 +1343,9 @@ def test_a_handover_needs_both_the_thing_and_the_hand(container: object) -> None
     engine = _make_engine(container)
     packet = _make_packet(
         visible_agent_ids=["agent-2"],
-        visible_entities=[VisibleEntity(entity_id="seal", name="印玺", entity_type="item")],
+        visible_entities=[VisibleEntity(
+            entity_id="seal", name="印玺", entity_type="item", holder_id="agent-1",
+        )],
     )
     # Recipient out of range → rejected
     assert _sel(engine, {"physical_entity_index": 1, "physical_recipient_index": 99},
@@ -1358,6 +1360,44 @@ def test_a_handover_needs_both_the_thing_and_the_hand(container: object) -> None
     assert ok is not None
     assert ok.target.acted_on_ids == ["seal"] and [r.id for r in ok.target.reaches] == ["agent-2"]
     assert ok.target.claims == []
+
+
+def test_only_what_i_hold_can_be_handed_over(container: object) -> None:
+    """A recipient named for a thing lying here or in someone else's hands rejects the step: there
+    is nothing of mine to hand over, and the executor reads reaches by whose hands it is in."""
+    engine = _make_engine(container)
+    for holder in (None, "agent-2"):
+        packet = _make_packet(
+            visible_agent_ids=["agent-2", "agent-3"],
+            visible_entities=[VisibleEntity(
+                entity_id="seal", name="印玺", entity_type="item", holder_id=holder,
+            )],
+        )
+        assert _sel(engine, {"physical_entity_index": 1, "physical_recipient_index": 2},
+                    ActionType.PHYSICAL, packet) is None
+
+
+def test_a_thing_in_someone_elses_hands_reaches_its_holder(container: object) -> None:
+    """Taking or working what someone present holds acts on the thing and reaches its holder. A
+    thing on the ground, in my own hands, or held by someone not here reaches nobody."""
+    engine = _make_engine(container)
+
+    def reached(holder: str | None, visible: list[str]) -> list[str]:
+        packet = _make_packet(
+            visible_agent_ids=visible,
+            visible_entities=[VisibleEntity(
+                entity_id="seal", name="印玺", entity_type="item", holder_id=holder,
+            )],
+        )
+        sel = _sel(engine, {"physical_entity_index": 1}, ActionType.PHYSICAL, packet)
+        assert sel is not None and sel.target.acted_on_ids == ["seal"]
+        assert sel.target.claims == []
+        return sel.target.reached_agents
+
+    assert reached("agent-2", ["agent-2"]) == ["agent-2"]
+    assert reached(None, ["agent-2"]) == []
+    assert reached("agent-1", ["agent-2"]) == []
+    assert reached("agent-9", ["agent-2"]) == []
 
 
 def test_a_carried_body_must_be_here_and_never_costs_the_whole_beat(container: object) -> None:
@@ -1409,7 +1449,7 @@ def test_a_runner_already_out_is_excluded_not_merely_labeled(container: object) 
 
     The "busy" tag on the list doesn't stop the person giving orders. With a single errand-runner
     at a location, every errand from that location fails while he's out, and each failure only
-    returns "一时抽不开身", so the same order is retried unchanged next beat.
+    returns "正在执行别人指派的任务", so the same order is retried unchanged next beat.
     """
     from agent.decision import _ACTION_SPACE
 
@@ -1423,11 +1463,11 @@ def test_a_runner_already_out_is_excluded_not_merely_labeled(container: object) 
 
     out = _make_packet(visible_npcs={"npc_a": _runner("老宦", busy=True)})
     prompt = _decision_prompt(engine, personality, out, _ACTION_SPACE)
-    assert "这一拍谁也派不出去：不可选 ERRAND" in prompt
+    assert "此刻不能接受新任务：不可选 ERRAND" in prompt
     assert "老宦" in prompt          # he's really standing here; he just can't be sent
 
     empty = _make_packet()
-    assert "此处没有听人吩咐做事的：不可选 ERRAND" in _decision_prompt(
+    assert "此处没有可接受任务指派的人：不可选 ERRAND" in _decision_prompt(
         engine, personality, empty, _ACTION_SPACE
     )
 
@@ -1444,7 +1484,7 @@ def test_a_runner_who_cannot_move_is_excluded_on_the_same_footing(container: obj
 
     held = _make_packet(visible_npcs={"npc_a": _runner("老宦", condition="双手被反绑")})
     prompt = _decision_prompt(engine, personality, held, _ACTION_SPACE)
-    assert "这一拍谁也派不出去：不可选 ERRAND" in prompt
+    assert "此刻不能接受新任务：不可选 ERRAND" in prompt
     assert "老宦" in prompt and "双手被反绑" in prompt      # he's present and his condition is visible
 
     # One restrained and one idle → errands are still possible, so don't exclude the whole block.
@@ -1501,7 +1541,7 @@ def test_the_runner_list_shown_and_the_list_bound_are_one_list(container: object
     shown = [line for line in prompt.splitlines() if line.strip().startswith("#")]
     listed = [line for line in shown if "老宦" in line or "小黄门" in line]
     assert [l.strip()[:2] for l in listed] == ["#1", "#2"]        # both present, original order
-    assert "老宦" in listed[0] and "正在忙" in listed[0]          # the busy one is printed with a tag
+    assert "老宦" in listed[0] and "正在执行任务" in listed[0]          # the busy one is printed with a tag
     assert list(packet.spatial.visible_npc_ids) == ["npc_out", "npc_idle"]  # same list, same order, used for binding
     assert "不可选 ERRAND" not in prompt                          # someone is still idle → errands stay open
 
@@ -1550,7 +1590,7 @@ def test_a_busy_runner_is_not_answered_by_pointing_at_a_letter(container: object
     block = prompt.split("【此刻够不着的行动】")[1].split("【")[0]
     assert "不可选 ERRAND" in block
     assert "改用 SEND_MESSAGE" not in block      # don't present messaging as an alternative way to reach him
-    assert "传讯到不了他" in block
+    assert "消息到不了他" in block
     # The list itself must be clear too, so nobody takes it for a second list of message
     # recipients
     assert "不在上面「我能触及的人」名单里" in prompt
@@ -1588,7 +1628,7 @@ def test_a_room_holding_only_a_runner_can_still_lay_hands_on_him(container: obje
     assert "不可选 TALK" in prompt                      # talking still isn't possible
     assert "不可选 PHYSICAL" not in prompt              # but acting on him stays open
     assert "physical_npc_index" in prompt               # and there's a slot to put it in
-    assert "这一拍谁也派不出去" in prompt                # no one to send is still excluded
+    assert "此刻不能接受新任务" in prompt                # no one to send is still excluded
 
     # Only a truly empty room (no people and no things) excludes acting physically too.
     empty = _make_packet()
@@ -1616,4 +1656,4 @@ def test_a_hand_on_a_runner_is_not_a_way_to_send_him(container: object) -> None:
     )
     block = prompt.split("【此刻够不着的行动】")[1].split("【")[0]
     assert "physical_npc_index" in block      # the path to stop him is still there
-    assert "不是差遣" in block                 # but it isn't a substitute for an errand
+    assert "不是指派任务" in block                 # but it isn't a substitute for an errand

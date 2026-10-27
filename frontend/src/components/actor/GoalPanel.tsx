@@ -11,7 +11,7 @@ function GoalDetail({ goal: g }: { goal: BriefGoal | null }) {
     <span className="text-[11px] text-slate-500">
       {" · "}{GOAL_STATUS[g.status]}
       {g.time_hint && <span className={g.attention ? "text-amber-300" : ""}>{" "}{g.time_hint}</span>}
-      {g.attention && g.due_step === null && <span className="text-amber-300"> · 这件事已经很久未完成，是否还要继续？</span>}
+      {g.attention && g.due_step === null && <span className="text-amber-300"> · 该目标已长期未完成，是否继续？</span>}
       {g.progress_summary && <span className="text-slate-400"> · {g.progress_summary}</span>}
     </span>
   );
@@ -45,7 +45,7 @@ export default function GoalPanel({ mind, draft, removedIds, onChange }: {
               <span className="shrink-0 text-[12px] text-slate-500 tabular-nums">{index + 1}.</span>
               <textarea aria-label="目标文本" value={row.text} rows={2} className={EDIT_BOX}
                 onChange={(e) => onChange(values.map((g, i) => i === index ? { ...g, text: e.target.value } : g))} />
-              <button title="删除目标（放下）" className="text-slate-500 hover:text-rose-300"
+              <button title="删除目标" className="text-slate-500 hover:text-rose-300"
                 onClick={() => onChange(values.filter((_, i) => i !== index), row.id ?? undefined)}>×</button>
             </div>
           ) : (

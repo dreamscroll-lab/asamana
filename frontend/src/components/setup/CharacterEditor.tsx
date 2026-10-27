@@ -123,7 +123,7 @@ export function revisionOf(before: Draft, draft: Draft): CharacterRevision {
 /** What a new character still lacks before it can be added; null when nothing. */
 export function missingForNew(draft: Draft): string | null {
   const missing = [
-    !draft.name.trim() && "名字",
+    !draft.name.trim() && "名称",
     !draft.gender && "性别",
     !draft.age.trim() && "年龄",
     !draft.role.trim() && "身份",
@@ -200,7 +200,7 @@ export default function CharacterEditor({
     <div className="space-y-2.5">
       {isNew && (
         <label className="block space-y-1">
-          <span className={LABEL}>名字 <span className="font-normal text-slate-500">· 添加后不可修改</span></span>
+          <span className={LABEL}>名称 <span className="font-normal text-slate-500">· 添加后不可修改</span></span>
           <input value={draft.name} disabled={busy} onChange={(e) => set("name")(e.target.value)} className={INPUT} />
         </label>
       )}
@@ -270,10 +270,10 @@ export default function CharacterEditor({
                 {vocabulary.emotions.map((e) => <option key={e.value} value={e.value}>{e.label}</option>)}
               </select>
               <Slider label="强度" value={draft.emotion_intensity} min={0} max={1} step={0.05} disabled={busy} onChange={set("emotion_intensity")} />
-              <Slider label="基调" value={draft.emotion_valence} min={-1} max={1} step={0.05} disabled={busy} onChange={set("emotion_valence")} />
+              <Slider label="正负值" value={draft.emotion_valence} min={-1} max={1} step={0.05} disabled={busy} onChange={set("emotion_valence")} />
             </div>
             <div className="space-y-2">
-              <span className={LABEL}>内在需求 <span className="font-normal text-slate-500">· 描述留空则用通用描述</span></span>
+              <span className={LABEL}>需求 <span className="font-normal text-slate-500">· 描述留空则用通用描述</span></span>
               {draft.needs.map((n, i) => (
                 <div key={n.type} className="bg-slate-950/50 border border-slate-800/70 rounded-lg px-2.5 py-2 space-y-1.5">
                   <div className="flex items-center justify-between text-[11px]">

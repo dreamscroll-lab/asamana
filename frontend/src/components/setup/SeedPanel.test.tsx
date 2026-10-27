@@ -128,7 +128,7 @@ describe("setup entities and NPCs", () => {
     const p = panel();
     click(elements(p.render()).find((e) => e.type === "button" && renderToStaticMarkup(e).includes("添加物件"))!);
     expect(p.onEditingChange).toHaveBeenLastCalledWith(true);
-    changeField(p.render(), "名字", "新告示");
+    changeField(p.render(), "名称", "新告示");
     changeField(p.render(), "初始地点", "palace");
     changeField(p.render(), "内容", "今日闭门");
     submit(elements(p.render()).find((e) => e.type === "form")!);
@@ -146,7 +146,7 @@ describe("setup entities and NPCs", () => {
     const p = panel();
     p.onAddNpc.mockRejectedValueOnce(new Error("NPC quota reached"));
     click(elements(p.render()).find((e) => e.type === "button" && renderToStaticMarkup(e).includes("添加 NPC"))!);
-    changeField(p.render(), "名字", "新信使");
+    changeField(p.render(), "名称", "新信使");
     changeField(p.render(), "性别", "女");
     changeField(p.render(), "年龄", "25");
     changeField(p.render(), "初始地点", "palace");

@@ -23,13 +23,17 @@ import type { Room, WorldMap } from "./worldMap";
 // encounter settles; adjacency itself is guaranteed by assignSlots, which seats engaged groups
 // (and anyone acting on a fixture) first, since quantising onto cells can separate them.
 const ENGAGE_PULL = 0.55;
+// A cell's cost per step of StandRank: larger than any squared distance inside the
+// ROOM_STAND_REACH band, so every free cell of a better rank comes first.
+const RANK_COST = 1e6;
 // Unordered pair key, so a relation or an encounter is one entry however it is named.
 const pairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`);
 /**
  * The PEOPLE a beat is about — who its doer turns toward and stands beside, primary first.
  *
- * Agents before NPCs, so a deed naming both turns to the one who can answer; receivers last: a
- * hand-over is done to the thing, and its receiver is the only person it names.
+ * Agents before NPCs, so a deed naming both turns to the one who can answer; the people it reaches
+ * last: an act on a thing changing hands, or on a thing someone holds, is done to the thing, and
+ * its receiver or holder is the only person it names.
  */
 export const subjectPeopleIds = (act: Beat): string[] => [
   ...actedOnAgents(act.target), ...actedOnNpcs(act.target), ...reachedAgents(act.target),
@@ -50,7 +54,7 @@ export const subjectEntityIds = (act: Beat): string[] => {
 export interface StagingHost {
   readonly map: WorldMap;
   token(id: string): AgentToken | undefined;
-  /** Reported dead with no token left on the map — takes no room. */
+  /** Died before the step being drawn: no body on the map, so takes no room. */
   gone(state: Figure): boolean;
 }
 
@@ -115,7 +119,7 @@ export class Staging {
     for (const s of states) {
       if (s.transit) continue;
       // The long dead take no room, or each would hold a cell where he died for the rest of
-      // the run. Whoever is falling this step still has a token and is still seated.
+      // the run. Whoever is falling this step is still seated.
       if (this.host.gone(s)) continue;
       const roomId = s.location_id;
       if (!this.host.map.rooms.has(roomId)) continue;
@@ -254,8 +258,12 @@ export class Staging {
       taken.add(c);
       this.slotOf.set(ids[i], this.host.map.iso(cells[c].x + 0.5, cells[c].y + 0.5));
     };
+    // A cell of a worse rank (see StandRank) only once every better one is taken: the sim's wanted
+    // spot can sit on a roof, and the nearest open cell to a roof is often the street or the next
+    // place over, which would show him somewhere he is not.
     const cost = (c: number, i: number) =>
-      (cells[c].x + 0.5 - want[i].gx) ** 2 + (cells[c].y + 0.5 - want[i].gy) ** 2;
+      cells[c].rank * RANK_COST
+      + (cells[c].x + 0.5 - want[i].gx) ** 2 + (cells[c].y + 0.5 - want[i].gy) ** 2;
     const nearestFree = (i: number): number => {
       let best = -1;
       let bestD = Infinity;

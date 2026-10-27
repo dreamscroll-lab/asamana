@@ -23,6 +23,7 @@ export interface Figure {
   color: string;
   is_main_character: boolean;
   is_active: boolean;
+  death_step: number | null;
   condition: string;
   transit: Transit | null;
   // The route walked to arrive this step (from his MOVE's closing beat).
@@ -83,6 +84,7 @@ export function figuresOf(index: StepIndex, cast: Cast, identities: Npcs): Figur
     color: identityOf(a.agent_id, cast)?.color ?? "",
     is_main_character: a.is_main_character ?? false,
     is_active: a.is_active,
+    death_step: a.death_step,
     condition: a.public.condition,
     transit: a.private.transit,
     arrival: routes.get(a.agent_id) ?? null,
@@ -98,6 +100,7 @@ export function figuresOf(index: StepIndex, cast: Cast, identities: Npcs): Figur
     color: identityOf(n.npc_id, identities)?.color ?? "",
     is_main_character: false,
     is_active: true,
+    death_step: null,
     condition: n.public.condition,
     // An Npc's walk is inferred from its position; it reports no route.
     transit: null,

@@ -124,7 +124,7 @@ def _damage_label(damage: float) -> str:
     if damage < 0.3:
         return "略有损耗"
     if damage < 0.7:
-        return "生命力大损"
+        return "生命值大损"
     return "危及生命"
 
 
@@ -133,7 +133,7 @@ def _relief_label(relief: float) -> str:
     if relief < 0.05:
         return "稍稍缓过来一点"
     if relief < 0.15:
-        return "生命力回了一些"
+        return "生命值恢复了一些"
     return "从濒死边上被拉了回来"
 
 
@@ -173,7 +173,7 @@ class _Subject:
     shows_relations: bool                 # target_block carries relation lines (legend goes in system)
     item:            "WorldEntity | None"  # the registered entity this act affects, else None
     target_agent:    "Agent | None"        # non-empty only when acting on a person
-    recipient_id:    str                   # recipient of a handover (meaningful only on the entity slot)
+    recipient_id:    str                   # recipient of a handover: only while the doer holds the thing
     recipient_agent: "Agent | None"
 
     @property
@@ -298,8 +298,18 @@ class PhysicalExecutor(ActionExecutor):
             target_name = self._directory.agent_name(target_id)
             reason = f"{target_name}不在{location}，无法对其施加物理行动"
 
+        # Whom a thing reaches depends on whose hands it is in: the recipient of what I hold, the
+        # holder of what someone else holds (``_bind_physical``). The holder is read from the
+        # item itself in ``_resolve_subject``, so reaches only names a recipient while I hold it;
+        # read unconditionally, a holder would be judged as the one I hand it to.
+        recipient_id = ""
+        if item_type not in ("agent", "npc", "none") and not reason:
+            held = environment.find_item(
+                feasibility.resolved_id or target_id, environment.get_body_location(agent_id),
+            )
+            if held is not None and held.owner_id == agent_id:
+                recipient_id = next(iter(action.target.reached_agents), "")
         # The recipient may have walked off since planning; same check as a person target.
-        recipient_id = next(iter(action.target.reached_agents), "")
         if not reason and recipient_id:
             recipient_check = environment.check_physical_feasibility(agent_id, recipient_id, "agent")
             if not recipient_check.ok:
@@ -534,7 +544,7 @@ class PhysicalExecutor(ActionExecutor):
             and is_person
             and counterpart.personality.state.vitality - net_damage <= 0.0
         ):
-            effect.death_cause = f"被{doer_name}耗尽最后一滴生命力，已失去生命。"
+            effect.death_cause = f"被{doer_name}耗尽最后的生命值，已失去生命。"
         # Declared only; lands in Agent.apply_target_effect. Neither set = leave his condition alone.
         if verdict.target_condition_desc:
             effect.condition_set = BodyCondition(
@@ -809,7 +819,7 @@ class PhysicalExecutor(ActionExecutor):
             logger.warning("physical_judge_no_doer", extra={"description": description})
             return None
 
-        expected_part = f"\n- 期望结果：{expected_outcome}" if expected_outcome else ""
+        expected_part = f"\n- 预期结果：{expected_outcome}" if expected_outcome else ""
         # Evidence for the escape hatch: whether a bound man struggling gets free.
         doer_condition_line = condition_line(
             agent.personality.state.condition, voice=SituationVoice.THIRD,
@@ -840,14 +850,14 @@ class PhysicalExecutor(ActionExecutor):
                 "谁交出了什么。"
             )
             person_fields = (
-                ' "target_damage": 0.0到1.0之间的数字（目标受到的生命力损耗）,'
-                f' "target_relief": 0.0到{VITALITY_RELIEF_CAP}之间的数字（这一动当场为目标挽回的生命力，'
+                ' "target_damage": 0.0到1.0之间的数字（目标受到的生命值损耗）,'
+                f' "target_relief": 0.0到{VITALITY_RELIEF_CAP}之间的数字（这一动当场为目标挽回的生命值，'
                 '不论他亏在哪里；没有这样的举动一律为 0）,'
             )
             relief_definition = f"\n{VITALITY_RELIEF_DEFINITION}"
             relief_rules = (
-                "\n- 挽回生命力必有所凭借："
-                "行动确实可以挽回生命力或此人的身份本事确能如此，target_relief 才可以大于 0；否则一律 0，**不得凭空挽回**。\n"
+                "\n- 恢复生命值必有所凭借："
+                "行动确实可以恢复生命值或此人的身份本事确能如此，target_relief 才可以大于 0；否则一律 0，**不得凭空挽回**。\n"
                 "- 亏在哪里都算：负伤、力竭、饥渴、寒冷皆可，不要只认伤。相应地，"
                 "止血包扎、递食喂水、解开勒缚、生火取暖，只要符合常量，都算。\n"
                 "- target_relief 只管**当场挽回**（把眼下最要命的那一样解掉、让他缓过来），不管复元："
@@ -940,7 +950,7 @@ class PhysicalExecutor(ActionExecutor):
 你是中立的世界裁决者。根据下方材料客观裁定一次物理行动的结果：是否成功、造成了什么后果。
 {relation_input}
 【裁决原则】
-- 不得因行动者身份强势或性格果决就一律判成功；双方实力、体力、现场条件都必须计入。
+- 不得因行动者身份强势或性格果决就一律判成功；双方实力、生命值、现场条件都必须计入。
 - 在场旁人是裁决证据：结合各自的背景/性情，权衡他们对此事的立场（会阻拦、会协助、还是袖手旁观），
   据此影响成败与代价——但有人在场不机械地等于失败。
 - 在场者标注的「此刻意图」是他们此刻**同时**在试图做的事、结果**尚未落定**（引号内是各人自己的说法）：
@@ -950,9 +960,9 @@ class PhysicalExecutor(ActionExecutor):
   没有耗损的行动 target_damage 应为 0，切勿见「物理行动」就判出损耗。
 - 损耗数值必须与 fact 的描述一致：fact 里确实耗去了对方什么才给相应 damage，未遂/没落到实处则不应有损耗。**耗在哪里都算**：负伤、力竭、饥渴、寒冷皆可，不要只认伤——一场把人拖得脱力的纠缠同样是损耗。{relief_rules}
 - 不管是对于自己还是目标，损耗应该分致命和非致命，如果是致命损耗值会高些，如果是非致命，比如体力消耗等等，这些损耗值可以很小，比如单纯的体力消耗可以建议小于等于0.099。
-- 输出处境必须与生命力变化要符合认知常识，比如说如果说某个人的处境是“已经死亡”，但是生命力却还是满的，这种属于不符合认知常识。
+- 输出处境必须与生命值变化要符合认知常识，比如说如果说某个人的处境是“已经死亡”，但是生命值却还是满的，这种属于不符合认知常识。
 - 对人行动即便成功也未必零代价（对方反抗、自身消耗）。
-- 除非体力状态明确表示无生命力，否则不可以直接捏造死亡事实。
+- 除非生命值状态明确表示生命值已耗尽，否则不可以直接捏造死亡事实。
 - 对于行动动作是否成功和行动结果的客观事实一定要分开判断，动作成功并不代表客观事实一定成立，比如行动者想看清某物是不是一封信，「看」这个动作本身可能成功了，但那物到底是不是信，得结合现场情况综合判定。
 - 物件上写着、记着什么，你并不知道，材料里也没有给出：行动者要读、要看其中写了什么时，东西不在他手上就读不到；
   不论成败，都**不得**替他写出读到了什么，也不得从物件的描述里推想出它的内容。
@@ -969,7 +979,7 @@ class PhysicalExecutor(ActionExecutor):
 - outcome：**第三人称、点名行动者与目标**、客观描述实际发生与结果（发生了什么？结果是什么？旁观者会看到的，内容具体清晰，简洁明了，不超过40字）。
 - fact：**第一人称（行动者「我」视角）**一句话描述客观描述实际发生与结果（发生了什么？结果是什么？行动者自己会记住的，内容具体清晰，简洁明了，不超过60字）。
 - outcome 与 fact 都**只写「谁做了什么、结果如何」，不要带时间或地点前缀**（如「在书房，…」）——地点由系统统一标注，你再写一遍会重复。
-- damage 字段的值一定要于fact, outcome自洽合理，比如如果fact, outcome中说目标已经没有生命力了，那target_damage就应该是1。
+- damage 字段的值一定要于fact, outcome自洽合理，比如如果fact, outcome中说目标已经没有生命值了，那target_damage就应该是1。
 - deed：行动者**在做的动作本身**，与成败无关——就算没做成，他做的仍是那个动作。
 - why：**仅当 success 为 false**时给出没成的缘由，第三人称、≤20字、只写外部可陈述的（如对方早有防备、那东西比看上去沉得多），不写行动者的心绪或懊丧；success 为 true 时给空字符串。
 {target_condition_doc}{doer_condition_doc}{{"reason": "一两句裁断依据（≤100字）",{deed_field} "success": true或false, "outcome": "第三人称、点名行动者与目标、客观描述实际发生（≤40字）", "fact": "第一人称、行动者「我」视角描述客观描述实际发生与结果（≤60字）", "why": "没成的缘由（≤20字）；成了给空字符串",{relation_field}{person_fields}{entity_fields} "doer_damage": 行动者自身的损耗，按上方 damage 刻度{target_condition_fields}{doer_condition_fields}}}
@@ -992,12 +1002,12 @@ class PhysicalExecutor(ActionExecutor):
         # Same source as the user message above: every fact this adjudication can see.
         facts = (
             GivenFacts()
-            .add("行动者体力", doer_vitality_line)
+            .add("行动者生命值", doer_vitality_line)
             .add("行动者处境", doer_condition_line)
             .add("目标", target_block)
             .add("现场", scene or "情况不明")
             .add("意图", description)
-            .add("期望结果", expected_outcome)
+            .add("预期结果", expected_outcome)
             .add("受事", recipient_line.partition("：")[2])
         )
         with annotate_call(given_facts=facts):

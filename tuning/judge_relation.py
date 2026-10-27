@@ -62,7 +62,7 @@ def _target_block(t: dict[str, Any]) -> str:
     return (
         f"  - {t.get('name', '?')}（本次：{chg_text}）\n"
         f"    近期事件证据：\n{ev_text}\n"
-        f"    改前 labels：{before.get('labels')} ｜ 信任{before.get('trust')} 好感{before.get('affection')}"
+        f"    改前 labels：{before.get('labels')} ｜ 信任度{before.get('trust')} 好感度{before.get('affection')}"
         f" ｜ 概述：{before.get('summary') or '（空）'}\n"
         f"    改后 labels：{after.get('labels')} ｜ 概述：{after.get('summary') or '（空）'}"
     )

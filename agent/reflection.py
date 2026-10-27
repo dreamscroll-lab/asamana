@@ -271,7 +271,7 @@ class ReflectionEngine:
 {ABSOLUTE_TIME_RULE_FIRST_PERSON}
 
 【写出来】严格输出以下 JSON，不要任何多余内容。每条体悟都**先落到它扎根的那几件事上**（source_indices：「我回看的素材」里对应的整数编号，每条至少含一个 [event]），**再由这些事写出我想明白了什么**（text，用我的口吻）——认知是从具体的人和事里长出来的，不是先想出一句漂亮话、再回头翻编号给它找脚注；insights 最多 4 条、能少则少，**若确无可写，insights 直接给空数组 []**：
-{{"insights": [{{"source_indices": [..], "text": "一条体悟，≤150字", "importance": 0.0到1.0}}]}}"""
+{{"insights": [{{"source_indices": [..], "text": "一条洞察，≤150字", "importance": 0.0到1.0}}]}}"""
         user_prompt = f"""\
 {time_header}【这是我】
 {self._personality.to_prompt_context(include_goals=False,include_emotion=True)}

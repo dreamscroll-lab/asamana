@@ -57,7 +57,6 @@ def make_action_runtime(container, config, world_id, world, registry, message_sy
         environment=world.environment,
         message_system=message_system,
         narrative_editor_settings=NarrativeEditorSettings(
-            core_tension=world.setup.lore.core_tension,
             narrative_theme=world.setup.lore.narrative_theme,
             check_interval=99, max_injections_per_window=0,
         ),

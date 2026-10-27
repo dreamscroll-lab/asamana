@@ -57,7 +57,7 @@ describe("a reading of words awaiting confirmation", () => {
         decision_summary: { decision_summary_id: "d", description: "", operation: "idle", target: null,
           estimated_duration_seconds: 0, parameters: {} } },
     ]));
-    expect(markup).toContain("⏸ 这次先不动");
+    expect(markup).toContain("⏸ 本步不行动");
     expect(markup).not.toContain("预计耗时");
   });
 });
@@ -65,14 +65,14 @@ describe("a reading of words awaiting confirmation", () => {
 describe("actor intent rejection feedback", () => {
   it("emphasizes the recorded rejection once in the thread", () => {
     const markup = renderToStaticMarkup(consoleTree(rejected));
-    expect(markup.split("没读懂这句话，换个说法试试。")).toHaveLength(2);
+    expect(markup.split("无法理解该指令，请调整描述后重试。")).toHaveLength(2);
     expect(markup).toContain('role="alert"');
     expect(markup).toContain("border-rose-400/30");
   });
   it("shows where the reading got stuck under the rejection", () => {
     const [asked, said] = rejected;
     const markup = renderToStaticMarkup(consoleTree([asked, { ...said, reading: "只是一声叹息，没说要做什么" } as ActorEntry]));
-    expect(markup).toContain("没读懂这句话，换个说法试试。");
+    expect(markup).toContain("无法理解该指令，请调整描述后重试。");
     expect(markup).toContain("只是一声叹息，没说要做什么");
   });
   it.each(["unreadable", "stale_intent"])("only gives unrecorded %s rejections an immediate notice", async (reason) => {
@@ -97,7 +97,7 @@ describe("conversation close control", () => {
     const onClose = vi.fn();
     const tree = ConversationWindow({
       worldId: "world", selfId: "self", self: undefined, otherId: "other", other: undefined,
-      ink: () => "#ffffff", dialogue: [], conversation: null, over, onClose, onAnswer: vi.fn(),
+      ink: () => "#ffffff", dialogue: [], conversation: null, listeners: [], over, onClose, onAnswer: vi.fn(),
     });
     const controls = elements(tree).filter((element) => element.type === "button" && (element.props as { "aria-label"?: string })["aria-label"] === "关闭");
     expect(controls).toHaveLength(over ? 1 : 0);

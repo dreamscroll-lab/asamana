@@ -26,16 +26,16 @@ export function buildErrandScenes(places: LabPlaces): LabScene[] {
   return [
     {
       id: "errand-round-trip",
-      group: "跑腿",
-      title: "跑腿 · 一趟差事",
+      group: "指派任务",
+      title: "指派任务 · 执行流程",
       watch:
         `王二是没有认知的那一档：他该是统一的冷灰、不是任何人的身份色，身体按（男·34）选。` +
         `figure 上**没有**常驻标记。鼠标悬停在他身上应出现一张小卡：名字（男·34岁）、` +
         `他擅长什么、这一拍他在做什么；指针移开要收掉。` +
         `走路要沿路走、不穿墙、有行走帧。叙事流最下面应有一行「NPC …」。` +
-        `**接到差事那一拍他不动身、叙事流也没有他的行**——那一拍是**吩咐他的人**的行动：` +
-        `叙事流里一枚青柠色的「🏃 派人」，地图上阿墨转向王二、说一句话的姿势，说完就散——` +
-        `不该保持着交谈的姿势站在那里，跑腿的人已经走了。` +
+        `**接到任务那一拍他不动身、叙事流也没有他的行**——那一拍是**指派任务的人**的行动：` +
+        `叙事流里一枚青柠色的「🏃 指派任务」，地图上阿墨转向王二、说一句话的姿势，说完就散——` +
+        `不该保持着交谈的姿势站在那里，执行任务的人已经走了。` +
         `地图只在他**停下来**的两拍出声（走到东北办完事、走回出发地回完话）：那一句浮在` +
         `**他头顶**、随即淡去，不挂在房间上——一间屋里站着好几个人，挂在屋上就说不清是谁办的。` +
         `赶路那两拍地图静默，只有叙事流说他往哪去、去办什么。` +
@@ -101,12 +101,12 @@ export function buildErrandScenes(places: LabPlaces): LabScene[] {
               receiver_ids: [MO.id],
               // The backend sends both parts: the bubble shows `spoken` (short), the feed shows
               // `content` (the full text).
-              spoken: `我去了${FAR.name}一趟，回来了。\n- 书信已交到阿石手上。`,
+              spoken: `任务报告：我去了${FAR.name}执行任务，回来了。\n - 书信已交到阿石手上。`,
               content:
-                `我去了${FAR.name}一趟，回来了。\n- 书信已交到阿石手上。\n`
-                + `那里的情形是这样：\n时间：六月初一，下午两点；`
-                + `地点：${FAR.name}——百官官署所在。\n`
-                + `- 在场的其他人：阿石（男）\n- 现场物件：无\n- 刚发生的事：无`,
+                `任务报告：我去了${FAR.name}执行任务，回来了。\n - 书信已交到阿石手上。\n`
+                + ` 到达时所见（六月初一，下午两点）：\n`
+                + `  - 地点：${FAR.name}——百官官署所在。\n`
+                + `  - 在场的其他人：阿石（男）\n  - 现场物件：无`,
               scope: "direct",
               seq: nextSeq(),
             },
@@ -116,10 +116,10 @@ export function buildErrandScenes(places: LabPlaces): LabScene[] {
     },
     {
       id: "errand-held",
-      group: "跑腿",
-      title: "跑腿 · 被拦下",
+      group: "指派任务",
+      title: "指派任务 · 被拦下",
       watch:
-        `被制住的人办不了事，但差事不作废。琥珀色的处境标记应在头边。` +
+        `被制住的人办不了事，但任务不作废。琥珀色的处境标记应在头边。` +
         `叙事流那行应把处境放在前面：先说他为什么没在动。`,
       steps: [
         step({
@@ -136,8 +136,8 @@ export function buildErrandScenes(places: LabPlaces): LabScene[] {
     },
     {
       id: "errand-crowd",
-      group: "跑腿",
-      title: "跑腿 · 三个一起跑",
+      group: "指派任务",
+      title: "指派任务 · 三人同时执行",
       watch:
         `两个在办事、一个闲着：叙事流仍只有一行（各项以 · 分隔），不是三行——这行是折叠的` +
         `状态，不是三条事件。**闲着的李四完全不出现**。身体按各自的（性别·年龄）选：` +

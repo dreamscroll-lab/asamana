@@ -24,6 +24,8 @@ const STONE_CAP = 0x9aa2b6;     // cap: lightest, it catches the most sky
 const STONE_EDGE = 0x2b2f3a;
 const LANDMARK_ACCENT = 0x8f9bb0;
 const HALO_FLASH = 0.5;         // one-shot peak when a landmark's state changes
+// An item's gold: its marker, its state notes, and its flight when it changes hands.
+const ITEM_GOLD = 0xd9a441;
 
 /**
  * Did anything the map DRAWS about this thing change? Only the fields markers read: a change
@@ -218,7 +220,9 @@ export class EntityLayer {
         const holderId = e.presence_ref;
         // Changing hands is the only part of a hand-off the map can show; without this the
         // thing just blinks between pockets. Reuses the letter's arc (one gesture, one
-        // vocabulary). Fire and forget: a step that ends first just cuts it.
+        // vocabulary) but flies the thing as itself, the gold star it is on the ground and in
+        // the pocket: as a ✉ it would read as a letter. Fire and forget: a step that ends first
+        // just cuts it.
         const wasHeldBy = prevOf(eid)?.presence === "held" ? prevOf(eid)?.presence_ref : "";
         if (holderId && wasHeldBy && wasHeldBy !== holderId) {
           const from = this.host.token(wasHeldBy);
@@ -226,7 +230,7 @@ export class EntityLayer {
           if (from && to) {
             void flyMessageArc(
               this.host, from.container.x, from.container.y,
-              to.container.x, to.container.y, { color: to.color },
+              to.container.x, to.container.y, { color: ITEM_GOLD, glyph: "✦", ripple: ITEM_GOLD },
             );
           }
         }
@@ -324,7 +328,7 @@ export class EntityLayer {
     // Phaser doesn't drop a tween when its target is destroyed, and this one repeats forever.
     // Hooking DESTROY covers every removal path.
     glow.once(Phaser.GameObjects.Events.DESTROY, () => pulse.remove());
-    const icon = this.host.add.star(0, -3, 4, 5, 11, 0xd9a441).setStrokeStyle(1.5, 0x0a0e1a);
+    const icon = this.host.add.star(0, -3, 4, 5, 11, ITEM_GOLD).setStrokeStyle(1.5, 0x0a0e1a);
     return this.mountEntityMarker(eid, [shadow, glow, icon], 16, 0xe8c06a, new Phaser.Geom.Circle(0, 0, 16));
   }
 
@@ -427,7 +431,7 @@ export class EntityLayer {
     this.layoutEntityLabel(marker, e.name, e.state);
     const prev = this.lastEntityStates[eid];
     if (prev && prev.state !== e.state) {
-      this.host.floatNote(marker.x, marker.y - 26, `${e.name}：${prev.state}→${e.state}`, 0xd9a441);
+      this.host.floatNote(marker.x, marker.y - 26, `${e.name}：${prev.state}→${e.state}`, ITEM_GOLD);
       this.flashFixture(marker);
     }
   }
