@@ -16,7 +16,7 @@ from agent.perception_emotion import parse_perception_emotion_response
 from agent.reflection import ReflectionEngine
 from agent.relation_evolution import RelationEvolution
 from core.context import get_log_context, note_active_call_adoption, set_active_call, set_log_context
-from core.interfaces.llm import IndexedRef, LLMScene, extract_json
+from core.interfaces.llm import LLMScene, extract_json
 from core.interfaces.trace import Stage
 from interaction.application import NarrativeApplication
 from engine.world_pressure import WorldPressureEvaluator
@@ -233,7 +233,7 @@ async def test_world_pressure_distinguishes_no_pressure_from_invalid_pressure(tr
     _reply(container, LLMScene.WORLD_PRESSURE, payload)
     response = await container.llm_router.complete(LLMScene.WORLD_PRESSURE, [])
     WorldPressureEvaluator(llm_router=container.llm_router)._parse_agent_goals(  # noqa: SLF001
-        response.content, source_ref=IndexedRef([]), agent_id="agent-self",
+        response.content, signal_people=[], agent_id="agent-self",
     )
     assert sink.llm_calls[-1].adopted is adopted
 

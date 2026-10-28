@@ -109,6 +109,14 @@ _DECIDE_RECENT_EXPERIENTIAL_SUPPLEMENT_K = 2
 # intent brings up let a goal resolve into a first step he knows how to take.
 _INTENT_RECENT_K = 5
 _INTENT_RECALL_K = 3
+# The external-pressure judgment reads a signal against what he has been through: whether it answers
+# something he started, is already being dealt with, or repeats one he let pass. Recent memories
+# give the local arc; recall by the signals reaches the older thread a reply belongs to.
+_PRESSURE_RECENT_FACTUAL_K = 6
+_PRESSURE_RECALL_FACTUAL_K = 3
+# Per person present: what he knows of them is all the judge may weigh them by, so each gets its
+# own identity-scoped quota instead of competing with the signals for the shared one.
+_PRESSURE_RECALL_ABOUT_PRESENT_K = 2
 # Forgetting period for foiled counts: a key untouched for this many steps is dropped. Keep close to
 # _FOILED_LOOKBACK_STEPS (how long the same matter stays visible in the decision prompt).
 _FOILED_MISS_AGE_STEPS = 5
@@ -739,9 +747,8 @@ class Agent:
                     rel.deceased = True
         return perceived
 
-    def _recent_factual_lines(self, step: int, *, top_k: int, before_step: bool = False) -> list[str]:
-        """Recent factual memories as chronological lines; the one fetch-and-render shared by the
-        cognition prompts.
+    def _recent_factuals(self, step: int, *, top_k: int, before_step: bool = False) -> list[Memory]:
+        """Recent factual memories, by importance; the one fetch shared by the cognition prompts.
 
         ``before_step`` drops this step's entries (already in the signal block) and those lacking a
         factual; 8 extra are fetched so top_k survives the filter.
@@ -749,10 +756,65 @@ class Agent:
         fetched = self.memory_system.sample_recent_events(step, top_k=top_k + 8 if before_step else top_k)
         if before_step:
             fetched = [pair for pair in fetched if pair[0] is not None and pair[0].created_step < step][:top_k]
+        return [fact for fact, _exp in fetched if fact is not None]
+
+    def _recent_factual_lines(self, step: int, *, top_k: int, before_step: bool = False) -> list[str]:
+        """Recent factual memories as chronological lines (see ``_recent_factuals``)."""
         return [
             text
-            for fact, _exp in order_memories_chrono(fetched, key=lambda pair: pair[0] or pair[1])
+            for fact in order_memories_chrono(self._recent_factuals(step, top_k=top_k, before_step=before_step))
             if (text := self._render_recent_event(fact, None, current_step=step))
+        ]
+
+    async def pressure_recent_past(
+        self, step: int, *, cues: Sequence[str], present: Sequence[str] = (),
+    ) -> list[str]:
+        """His recent past (factual only) for judging the pressure this step's signals put on
+        him, oldest first: recent memories, what he remembers of each person ``present``, and
+        older ones the signals (``cues``) bring back.
+
+        Leaves out what reaches him as a signal this step: this step's entries, and acts that
+        landed on him, which arrive as ``acted_upon`` though remembered a step earlier.
+        """
+        landed = set(self.personality.state.acted_upon)
+        fetched = self._recent_factuals(step, top_k=_PRESSURE_RECENT_FACTUAL_K, before_step=True)
+        recent = [m for m in fetched if m.stored_content not in landed]
+        recalled: list[Memory] = []
+        # Joined like RetrievalQuery's parts: natural text, no machine separators.
+        query = "，".join(c for c in cues if c)
+        # Excludes the whole recent fetch, landed acts included, so they don't take a recall slot
+        # and get touched unused; the filter below catches older landed ones. Run in order, each
+        # excluding what came before, so every quota fills.
+        seen = {m.id for m in fetched}
+        for person_id in present if query else ():
+            try:
+                about = await self.memory_system.recall_about_agent(
+                    person_id, query, current_step=step, top_k=_PRESSURE_RECALL_ABOUT_PRESENT_K,
+                    stream=MemoryStream.FACTUAL, exclude_ids=seen, before_step=step,
+                )
+            except Exception as exc:  # noqa: BLE001 — read failed: judge without this person's past
+                logger.warning(
+                    "pressure_recall_failed",
+                    extra={"agent_id": self.agent_id, "target_id": person_id, "error": str(exc)},
+                )
+                continue
+            recalled.extend(about)
+            seen |= {m.id for m in about}
+        if query:
+            try:
+                recalled.extend(await self.memory_system.retrieve(
+                    query, current_step=step, top_k=_PRESSURE_RECALL_FACTUAL_K,
+                    stream=MemoryStream.FACTUAL, before_step=step, exclude_ids=seen,
+                ))
+            except Exception as exc:  # noqa: BLE001 — read failed: judge on recent memories alone
+                logger.warning("pressure_recall_failed", extra={"agent_id": self.agent_id, "error": str(exc)})
+        return [
+            render_memory(
+                m, now_step=step, seconds_per_step=self.seconds_per_step,
+                world_start_second_of_day=self.world_start_second_of_day)
+            for m in order_memories_chrono([
+                *recent, *(m for m in recalled if m.stored_content not in landed),
+            ])
         ]
 
     def _render_recent_event(

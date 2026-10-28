@@ -35,7 +35,7 @@ def _ext(urgency: Urgency = Urgency.NORMAL) -> ExternalGoal:
     must be a real ExternalGoal — the pressure evaluator never emits bare strings."""
     return ExternalGoal(
         text="someone is at the gate",
-        source_id="world",
+        source_ids=(),
         urgency=urgency,
         drive_type=ExternalDriveType.EVENT,
     )
@@ -386,7 +386,7 @@ async def test_pressure_is_rewritten_every_step_and_never_goes_stale(container) 
                 return {}
             return {"agent-a": [ExternalGoal(
                 text="有人在殿外求见",
-                source_id="agent-b",
+                source_ids=("agent-b",),
                 urgency=Urgency.HIGH,
                 drive_type=ExternalDriveType.OBLIGATION,
             )]}

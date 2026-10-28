@@ -24,7 +24,7 @@ class ExternalGoal:
     """A single external pressure surface produced by WorldPressureEvaluator."""
 
     text: str                              # action imperative shown to the LLM
-    source_id: str                         # agent_id or event_id that produced this goal
+    source_ids: tuple[str, ...]            # agents/npcs its signals name, in signal order; () = no one
     urgency: Urgency
     drive_type: ExternalDriveType
     related_need: "NeedType | None" = None

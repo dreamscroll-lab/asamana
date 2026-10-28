@@ -51,7 +51,7 @@ from engine.death_handler import DeathHandler
 from engine.director import DirectorChannel
 from engine.injection import Author, InjectionDispatcher, serialize_injection
 from engine.intervention_receipt import build_receipt
-from engine.executors.base import action_semantics
+from engine.executors.base import action_semantics, participant_action_desc
 from engine.world_mutation import WorldMutationChannel
 from engine.execution_processor import ExecutionProcessor
 from engine.interrupt_coordinator import InterruptCoordinator
@@ -1208,11 +1208,19 @@ class NarrativeRuntime:
             )
             return 0.0
 
+        # Whether a signal is already being dealt with turns on what he is doing.
+        doings = {
+            agent_id: participant_action_desc(self._directory, agent_id, exec_state)
+            for agent_id in agents
+            if (exec_state := self._executor_registry.get_active_for_agent(agent_id)) is not None
+        }
         pressure_map = await self._pressure_evaluator.evaluate(
             agents=agents,
             signals=signals,
             world_time_label=world_time_label,
+            step=step,
             agent_spatials=agent_spatials,
+            doings=doings,
         )
 
         agents_with_pressure = 0

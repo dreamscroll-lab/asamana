@@ -196,7 +196,7 @@ def _bc(content: str, severity: str = "low") -> Broadcast:
 def _goal(text: str, urgency: Urgency, drive: ExternalDriveType = ExternalDriveType.THREAT) -> ExternalGoal:
     return ExternalGoal(
         text=text,
-        source_id="world",
+        source_ids=(),
         urgency=urgency,
         drive_type=drive,
         related_need=None,

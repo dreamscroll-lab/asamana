@@ -10,7 +10,7 @@ from core.interfaces.urgency import Urgency
 
 
 def _goal(urgency: Urgency, need: NeedType | None) -> ExternalGoal:
-    return ExternalGoal(text="x", source_id="s", urgency=urgency,
+    return ExternalGoal(text="x", source_ids=("s",), urgency=urgency,
                         drive_type=ExternalDriveType.THREAT, related_need=need)
 
 

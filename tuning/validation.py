@@ -130,6 +130,7 @@ def _deterministic_checks(
             perceivable.append(str(b.get("content", "")))
         for e in inp.get("injected_ambient", []) or []:
             perceivable.append(str(e.get("content", "")))
+        perceivable += [str(f) for f in inp.get("given_facts", []) or []]
         perceivable_grams = set().union(*(_ngrams(t) for t in perceivable)) if perceivable else set()
 
         forbidden: list[str] = []

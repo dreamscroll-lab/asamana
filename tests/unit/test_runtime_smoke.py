@@ -92,7 +92,7 @@ class _SignalPressure:
     agents never wake; this reproduces the path deterministically through the real channel.
     """
 
-    async def evaluate(self, *, agents, signals, world_time_label, agent_spatials):
+    async def evaluate(self, *, agents, signals, world_time_label, step, agent_spatials, doings=None):
         from agent.motivation import ExternalDriveType, ExternalGoal
         from core.interfaces.action import Urgency
 
@@ -101,7 +101,7 @@ class _SignalPressure:
             if signals.get(agent_id):
                 out[agent_id] = [ExternalGoal(
                     text="respond to what just happened",
-                    source_id="world",
+                    source_ids=(),
                     urgency=Urgency.NORMAL,
                     drive_type=ExternalDriveType.EVENT,
                 )]
@@ -819,7 +819,7 @@ def _pressure(urgency: Urgency, text: str = "即刻动身面圣，否则以抗�
     """An external pressure item: preemption only reads urgency; other fields just need valid
     values."""
     return ExternalGoal(
-        text=text, source_id="agent-sovereign", urgency=urgency,
+        text=text, source_ids=("agent-sovereign",), urgency=urgency,
         drive_type=ExternalDriveType.AUTHORITY, related_need=NeedType.SAFETY,
     )
 

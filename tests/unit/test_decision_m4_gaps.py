@@ -208,11 +208,11 @@ def test_main_prompt_contains_motivation_section(main_engine) -> None:
 def test_main_prompt_external_goals_labeled_by_urgency(main_engine) -> None:
     """external_goals fall into three urgency bands: 【紧急】≥0.75, 【一般】≥0.45, 【不紧急】<0.45."""
     egs = [
-        ExternalGoal(text="紧急任务", source_id="world", urgency=Urgency.HIGH,
+        ExternalGoal(text="紧急任务", source_ids=(), urgency=Urgency.HIGH,
                      drive_type=ExternalDriveType.THREAT),
-        ExternalGoal(text="重要任务", source_id="world", urgency=Urgency.NORMAL,
+        ExternalGoal(text="重要任务", source_ids=(), urgency=Urgency.NORMAL,
                      drive_type=ExternalDriveType.OBLIGATION),
-        ExternalGoal(text="留意任务", source_id="world", urgency=Urgency.LOW,
+        ExternalGoal(text="留意任务", source_ids=(), urgency=Urgency.LOW,
                      drive_type=ExternalDriveType.EVENT),
     ]
     need_eval = _make_need_eval(external_goals=egs)

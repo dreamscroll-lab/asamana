@@ -43,7 +43,7 @@ class _Agent:
 
 def _goal(urgency: Urgency) -> ExternalGoal:
     return ExternalGoal(
-        text="立刻离开", source_id="world", urgency=urgency,
+        text="立刻离开", source_ids=(), urgency=urgency,
         drive_type=ExternalDriveType.THREAT,
     )
 

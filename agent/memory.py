@@ -489,6 +489,7 @@ class MemorySystem:
         top_k: int = 5,
         stream: MemoryStream | None = None,
         exclude_ids: Collection[str] = (),
+        before_step: int | None = None,
     ) -> List[Memory]:
         """Identity-scoped retrieval of "what I know about someone", scoped by
         ``Memory.related_agents``.
@@ -507,6 +508,7 @@ class MemorySystem:
             stream=stream,
             related_agent_id=target_agent_id,
             exclude_ids=exclude_ids,
+            before_step=before_step,
         )
 
     async def retrieve(

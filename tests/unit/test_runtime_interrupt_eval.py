@@ -208,7 +208,7 @@ async def test_signals_aggregate_into_single_decision(container) -> None:
 
     deliveries = _delivery(2, _urgent_message("mc", "城门失守"), _urgent_message("mc", "粮仓起火"))
     agent.pending_external_goals = [
-        ExternalGoal(text="刺客逼近", source_id="scout", urgency=Urgency.CRITICAL,
+        ExternalGoal(text="刺客逼近", source_ids=("scout",), urgency=Urgency.CRITICAL,
                      drive_type=ExternalDriveType.THREAT),
     ]
 
@@ -223,7 +223,7 @@ async def test_signals_aggregate_into_single_decision(container) -> None:
     # Channel labels: the interrupt judgment must see each signal's source, not bare content.
     assert "急讯" in reason          # message channel
     assert "外部压力" in reason       # external THREAT driver channel
-    # No id leaks: neither sender_id="sender" nor source_id="scout" may appear in the reason fed to
+    # No id leaks: neither sender_id="sender" nor source_ids=("scout",) may appear in the reason fed to
     # the LLM.
     assert "sender" not in reason and "scout" not in reason
 
@@ -256,6 +256,31 @@ async def test_an_urgent_message_names_the_sender_it_carries(container) -> None:
     assert "收到宫娥的急讯：承天门无人" in reason
     assert "收到li的急讯：速来布政坊" in reason   # soul.name == agent_id in these fixtures
     assert "某人" not in reason and "narrator" not in reason and "npc_1" not in reason
+
+
+@pytest.mark.asyncio
+async def test_a_joint_threat_names_every_agent_behind_it(container) -> None:
+    """A pressure several people add up to names each agent among them; an Npc source stays
+    unnamed rather than rendered as 「某人」."""
+    runtime, registry = _build_runtime(container, "world-joint")
+    agent = _build_agent(container, world_id="world-joint", agent_id="mc", is_main=True)
+    li = _build_agent(container, world_id="world-joint", agent_id="li", is_main=False)
+    wang = _build_agent(container, world_id="world-joint", agent_id="wang", is_main=False)
+    agents = {"mc": agent, "li": li, "wang": wang}
+    runtime._interrupts._directory = LiveWorldDirectory.from_agents(agents, runtime._environment)
+    _start_rest([agent], registry)
+    spy = _DecisionSpy((False, ""))
+    agent.evaluate_interrupt = spy  # type: ignore[method-assign]
+    agent.pending_external_goals = [
+        ExternalGoal(text="两人合围", source_ids=("li", "npc_9", "wang"), urgency=Urgency.CRITICAL,
+                     drive_type=ExternalDriveType.THREAT),
+    ]
+
+    await runtime._interrupts.evaluate_interrupts(_delivery(2), [], agents, step=2)
+
+    reason = spy.reasons[0]
+    assert "我感受到的来自li、wang的外部压力：两人合围" in reason  # soul.name == agent_id here
+    assert "某人" not in reason and "npc_9" not in reason
 
 
 @pytest.mark.asyncio
@@ -435,7 +460,7 @@ async def test_path3_threat_is_edge_triggered(container) -> None:
     spy = _DecisionSpy((False, ""))  # decline so the action stays IN_PROGRESS
     agent.evaluate_interrupt = spy  # type: ignore[method-assign]
     agents = {"mc": agent}
-    threat = ExternalGoal(text="叛军压境", source_id="rebels", urgency=Urgency.HIGH,
+    threat = ExternalGoal(text="叛军压境", source_ids=("rebels",), urgency=Urgency.HIGH,
                           drive_type=ExternalDriveType.THREAT)
 
     # Step 1: newly appearing threat → evaluated.

@@ -57,12 +57,15 @@ def test_perception_emotion() -> None:
 
 
 def test_world_pressure() -> None:
-    user = _ev()._build_agent_prompt(  # noqa: SLF001
-        _stub_agent(name="李建成", role="太子", location="donggong"),
+    ev = _ev()
+    signals = ev._signals(  # noqa: SLF001
         inbox=[_msg("速来东宫", sender_id="a_shimin", sender_name="李世民")],
-        broadcasts=[], ambient=[], co_located=[],
-        sender_relations={"a_shimin": "[兄弟:敌对]，信任度0.10、好感度-0.60"},
-        situation_header="当前时间：辰时；当前地点：东宫。",
+        broadcasts=[], ambient=[],
+        sender_relations={"a_shimin": "[兄弟:敌对]，信任度0.10、好感度-0.60"}, visible_ids=set(),
+    )
+    user = ev._build_agent_prompt(  # noqa: SLF001
+        _stub_agent(name="李建成", role="太子", location="donggong"),
+        signals=signals, situation_header="当前时间：辰时；当前地点：东宫。",
     )
     assert LEGEND in _PRESSURE_SYSTEM and "【说明】" in _PRESSURE_SYSTEM
     assert LEGEND not in user and "信任度0.10" in user

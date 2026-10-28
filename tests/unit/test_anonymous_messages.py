@@ -167,10 +167,11 @@ async def test_mixed_letters_do_not_attach_signed_relation_to_anonymous_letter()
     assert await ev._sender_relations(agent, [anonymous], exclude_ids=set()) == {}
     agent.relation_system.load_existing.assert_not_awaited()
     signed = _msg("实名正文", sender_id="sender", sender_name="甲")
-    prompt = ev._build_agent_prompt(
-        agent, inbox=[signed, anonymous], broadcasts=[], ambient=[], co_located=[],
-        sender_relations={"sender": "仅限实名的关系"}, situation_header="",
+    signals = ev._signals(
+        inbox=[signed, anonymous], broadcasts=[], ambient=[],
+        sender_relations={"sender": "仅限实名的关系"}, visible_ids=set(),
     )
+    prompt = ev._build_agent_prompt(agent, signals=signals, situation_header="")
     assert prompt.count("仅限实名的关系") == 1
     anonymous_line = next(line for line in prompt.splitlines() if "匿名正文" in line)
     assert "关系" not in anonymous_line and "甲" not in anonymous_line and "sender" not in anonymous_line

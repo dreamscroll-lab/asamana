@@ -79,7 +79,7 @@ class InterruptCoordinator:
         # an agent that decided "finish first" would be re-asked each step and oscillate.
         # Accepted coarseness: the key omits goal.text (a new threat from the same source+drive
         # won't re-trigger), and it is not snapshotted (a restore re-asks once).
-        self._interrupt_seen_goals: Dict[str, set[tuple[str, ExternalDriveType]]] = {}
+        self._interrupt_seen_goals: Dict[str, set[tuple[frozenset[str], ExternalDriveType]]] = {}
 
     async def evaluate_interrupts(
         self,
@@ -129,17 +129,17 @@ class InterruptCoordinator:
                 self._interrupt_seen_goals.pop(agent_id, None)
                 continue
             seen = self._interrupt_seen_goals.get(agent_id, set())
-            qualifying: set[tuple[str, ExternalDriveType]] = set()
+            qualifying: set[tuple[frozenset[str], ExternalDriveType]] = set()
             for goal in agent.pending_external_goals:
                 if goal.drive_type != ExternalDriveType.THREAT or goal.urgency < URGENCY_INTERRUPT_THRESHOLD:
                     continue
-                key = (goal.source_id, goal.drive_type)
+                key = (frozenset(goal.source_ids), goal.drive_type)
                 qualifying.add(key)
                 if key not in seen:
-                    # Name the source only when it is an agent: it may be an event_id, which the
-                    # directory would render as "某人".
-                    if goal.source_id in agents:
-                        threat_reason = f"我感受到的来自{self._directory.agent_name(goal.source_id)}的外部压力：{goal.text}"
+                    # Name only the sources that are agents: the directory renders an Npc as "某人".
+                    names = [self._directory.agent_name(s) for s in goal.source_ids if s in agents]
+                    if names:
+                        threat_reason = f"我感受到的来自{'、'.join(names)}的外部压力：{goal.text}"
                     else:
                         threat_reason = f"我感受到的外部压力：{goal.text}"
                     _note(agent_id, threat_reason)

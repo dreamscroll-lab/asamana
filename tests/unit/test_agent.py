@@ -1498,3 +1498,110 @@ async def test_a_dropped_intent_says_whether_the_character_accepted_or_was_dragg
     foiled = agent.memory_system.recent_foiled_attempts(3)
     assert any(f.endswith("我批阅文书——后来接受了李建成的邀请，这件事没有去做。") for f in foiled)
     assert any(f.endswith("我歇一会儿——却被卷入他人的事，行动没能做成。") for f in foiled)
+
+
+@pytest.mark.asyncio
+async def test_pressure_recent_past_is_his_factual_past_without_what_reaches_him_as_a_signal(container) -> None:
+    """The pressure judgment reads signals against objective experience only: no experiential
+    readings, nothing from this step, and no act that arrives as a signal (``acted_upon``)."""
+    agent = _make_agent(container)
+    personality = agent.personality
+    await agent.memory_system.record_event(
+        current_step=2, raw_content="我托人给尉迟恭送去一封密信", personality=personality,
+        experiential_content="我心里七上八下，不知他会不会回信", importance=0.8,
+    )
+    await agent.memory_system.record_event(
+        current_step=4, raw_content="尉迟恭一把将我推开", personality=personality, importance=0.8,
+    )
+    await agent.memory_system.record_event(
+        current_step=5, raw_content="我听见殿外喊杀声", personality=personality, importance=0.8,
+    )
+    await agent.memory_system.drain_writes()
+    personality.note_acted_upon("尉迟恭一把将我推开")
+
+    lines = await agent.pressure_recent_past(5, cues=["尉迟恭：信收到了"])
+
+    assert len(lines) == 1 and lines[0].endswith("我托人给尉迟恭送去一封密信")
+    assert not any("七上八下" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_pressure_recent_past_recalls_an_older_thread_the_signal_belongs_to(container) -> None:
+    """A reply to a letter sent long ago reads right only with that letter; it lies outside the
+    recent window, so the signal itself has to bring it back."""
+    from agent.memory import RECENT_EVENT_LOOKBACK_STEPS
+
+    agent = _make_agent(container)
+    await agent.memory_system.record_event(
+        current_step=1, raw_content="我托人给尉迟恭送去一封密信", personality=agent.personality,
+        importance=0.8,
+    )
+    await agent.memory_system.drain_writes()
+    now = 2 + RECENT_EVENT_LOOKBACK_STEPS
+
+    # The in-memory embedding matches near-identical text only; the window reach is what's tested.
+    lines = await agent.pressure_recent_past(now, cues=["我托人给尉迟恭送去一封密信"])
+
+    assert any(line.endswith("我托人给尉迟恭送去一封密信") for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_pressure_recent_past_spends_no_recall_slot_on_an_act_that_landed_on_him(container) -> None:
+    """The recall excludes the landed act by id, so a signal that matches it still leaves the
+    recall's slots to other memories instead of touching one that is then thrown away."""
+    agent = _make_agent(container)
+    await agent.memory_system.record_event(
+        current_step=4, raw_content="尉迟恭一把将我推开", personality=agent.personality, importance=0.8,
+    )
+    await agent.memory_system.drain_writes()
+    agent.personality.note_acted_upon("尉迟恭一把将我推开")
+    seen: list[set[str]] = []
+    real = agent.memory_system.retrieve
+
+    async def spy(query, **kw):
+        seen.append(set(kw.get("exclude_ids") or ()))
+        return await real(query, **kw)
+
+    agent.memory_system.retrieve = spy  # type: ignore[method-assign]
+    lines = await agent.pressure_recent_past(5, cues=["尉迟恭一把将我推开", "殿外喊杀声"])
+
+    landed_id = agent.memory_system.sample_recent_events(5, top_k=1)[0][0].id
+    assert lines == []
+    assert seen == [{landed_id}]
+
+
+@pytest.mark.asyncio
+async def test_pressure_recent_past_brings_back_his_past_with_each_person_present(container) -> None:
+    """What he remembers of someone present is recalled by identity, with its own quota and
+    before this step, and the signals' recall then skips what that already brought back."""
+    from agent.memory import RECENT_EVENT_LOOKBACK_STEPS
+
+    agent = _make_agent(container)
+    await agent.memory_system.record_event(
+        current_step=1, raw_content="尉迟恭当众折辱了我", personality=agent.personality,
+        related_agents={"a_yuchi": "尉迟恭"}, importance=0.8,
+    )
+    await agent.memory_system.drain_writes()
+    now = 2 + RECENT_EVENT_LOOKBACK_STEPS
+    scoped: list[tuple[str, dict]] = []
+    general_excludes: list[set[str]] = []
+    real_about, real_retrieve = agent.memory_system.recall_about_agent, agent.memory_system.retrieve
+
+    async def spy_about(person_id, query, **kw):
+        scoped.append((person_id, kw))
+        return await real_about(person_id, query, **kw)
+
+    async def spy_retrieve(query, **kw):
+        if kw.get("related_agent_id") is None:
+            general_excludes.append(set(kw.get("exclude_ids") or ()))
+        return await real_retrieve(query, **kw)
+
+    agent.memory_system.recall_about_agent = spy_about  # type: ignore[method-assign]
+    agent.memory_system.retrieve = spy_retrieve  # type: ignore[method-assign]
+    # The in-memory embedding matches near-identical text only, hence the cue.
+    lines = await agent.pressure_recent_past(now, cues=["尉迟恭当众折辱了我"], present=["a_yuchi"])
+
+    [(person_id, kw)] = scoped
+    assert person_id == "a_yuchi" and kw["before_step"] == now and kw["stream"] is MemoryStream.FACTUAL
+    assert len(lines) == 1 and lines[0].endswith("尉迟恭当众折辱了我")
+    assert len(general_excludes) == 1 and len(general_excludes[0]) == 1

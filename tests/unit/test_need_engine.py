@@ -269,7 +269,7 @@ async def test_run_external_pressure_is_additive_and_dominant_is_argmax() -> Non
     base = await NeedEngine(_router()).run(
         current_step=0, personality=_two_need_personality((0.6, 1.0), (0.5, 1.0)),
         visible_agents=[], pending_messages=0)
-    goal = ExternalGoal(text="奉命即刻执行", source_id="s1", urgency=Urgency.HIGH,
+    goal = ExternalGoal(text="奉命即刻执行", source_ids=("s1",), urgency=Urgency.HIGH,
                         drive_type=ExternalDriveType.AUTHORITY, related_need=NeedType.ESTEEM)
     res = await NeedEngine(_router()).run(
         current_step=0, personality=_two_need_personality((0.6, 1.0), (0.5, 1.0)),
@@ -289,7 +289,7 @@ async def test_run_external_pressure_does_not_blindly_override_overwhelming_scor
     """A hard override would force dominant to related_need regardless of scores (so dom would
     contradict scores). Additively, one HIGH external pressure (boost≈1.33) can't beat an
     overwhelming safety (I×W=2.0) → dominant stays safety, and == argmax."""
-    goal = ExternalGoal(text="奉召入宫", source_id="s1", urgency=Urgency.HIGH,
+    goal = ExternalGoal(text="奉召入宫", source_ids=("s1",), urgency=Urgency.HIGH,
                         drive_type=ExternalDriveType.AUTHORITY, related_need=NeedType.ESTEEM)
     res = await NeedEngine(_router()).run(
         current_step=0, personality=_two_need_personality((1.0, 2.0), (0.3, 1.0)),

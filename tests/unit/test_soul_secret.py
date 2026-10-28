@@ -148,10 +148,12 @@ async def test_world_pressure_shows_the_target_s_secret_but_not_a_co_present_per
     target.relation_system = _Relations()
     other = _agent(agent_id="o")
     ev = WorldPressureEvaluator(llm_router=None)
-    co_located = await ev._co_located(target, {"t": target, "o": other}, None, ["o"])  # noqa: SLF001
+    co_located = await ev._co_located(target, None, [other.agent_id])  # noqa: SLF001
+    signals = ev._signals(  # noqa: SLF001
+        inbox=[], broadcasts=[], ambient=[], sender_relations={}, visible_ids=set(),
+    )
     prompt = ev._build_agent_prompt(  # noqa: SLF001
-        target, inbox=[], broadcasts=[], ambient=[], co_located=co_located,
-        sender_relations={}, situation_header="",
+        target, signals=signals, co_located=co_located, situation_header="",
     )
     assert "我欠了外人一大笔钱" in prompt
     assert co_located  # the co-present person is rendered

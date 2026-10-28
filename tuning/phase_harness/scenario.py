@@ -129,7 +129,7 @@ def presence_name(sp, agent_id: str) -> str:
 def external_goals_from_scenario(
     scenario: dict | None, agent_ids, name_by_id: dict
 ) -> dict[str, list[ExternalGoal]]:
-    """scenario.external_goals = [{"agent"/"to", "text", "urgency"?, "drive_type"?, "source"?, "need"?}].
+    """scenario.external_goals = [{"agent"/"to", "text", "urgency"?, "drive_type"?, "source"? (a name or a list), "need"?}].
 
     ``need`` (NeedType value) → ExternalGoal.related_need — mirrors what WorldPressureEvaluator
     populates in production; only with a related_need + urgency≥HIGH does the goal override the
@@ -152,11 +152,10 @@ def external_goals_from_scenario(
                 related_need = NeedType(str(g["need"]))
             except ValueError:
                 related_need = None
-        src = g.get("source")
-        source_id = resolve_ref(src, id_by_name, agent_ids) if src else "world"
+        src = g.get("source") or []
         out[to_id].append(ExternalGoal(
             text=text,
-            source_id=source_id,
+            source_ids=tuple(resolve_ref(s, id_by_name, agent_ids) for s in ([src] if isinstance(src, str) else src)),
             urgency=parse_urgency(str(g.get("urgency", "normal"))) or Urgency.NORMAL,
             drive_type=drive,
             related_need=related_need,
