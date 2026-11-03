@@ -8,7 +8,8 @@ import contextlib
 import pytest
 
 from interaction.application import NarrativeApplication
-from engine.run_control import RunController, RunState
+from core.interfaces.actor import ActorTurn, TurnKind
+from engine.run_control import RunController, RunState, StepWithdrawn
 from tests.unit.confirmed_world import confirmed_world
 
 
@@ -222,6 +223,58 @@ async def test_a_long_run_stops_on_request(mock_build_container, test_config) ->
 
 
 @pytest.mark.asyncio
+async def test_a_step_that_raises_drops_its_half_run_session(mock_build_container, test_config) -> None:
+    """A step that raises halfway has ticked the clock and written part of itself; running on from
+    that session would commit a step that never happened whole. The next access restores from the
+    last committed step instead."""
+    app = NarrativeApplication(mock_build_container, test_config)
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
+    wid = world.world_id
+    runtime = app.get_session(wid).runtime
+
+    async def half_then_raise(_agents):
+        runtime.clock.tick()
+        raise RuntimeError("store down")
+
+    runtime._run_step = half_then_raise
+    queue = mock_build_container.event_bus.subscribe()
+    app.start_run(wid, steps=2)
+    task = app.get_session(wid).task
+    assert task is not None
+    await asyncio.wait_for(task, timeout=30.0)
+
+    statuses = []
+    while not queue.empty():
+        ev = queue.get_nowait()
+        if ev and ev.get("type") == "status" and ev.get("world_id") == wid:
+            statuses.append(ev["status"])
+    assert statuses[-1] == "failed"
+    assert not app.has_session(wid)
+    await app.restore_session(wid)
+    assert app.world_time(wid).step == 0
+
+
+@pytest.mark.asyncio
+async def test_a_stop_before_the_actor_is_asked_still_ends_the_run(mock_build_container, test_config) -> None:
+    """The stop lands while no turn waits (the step is busy elsewhere); the turn the step opens
+    afterwards is withdrawn, so stop and delete don't wait forever."""
+    app = NarrativeApplication(mock_build_container, test_config)
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
+    wid = world.world_id
+    channel = app.get_session(wid).runtime.actor
+    channel.follow(next(iter(world.agents)))
+    app.start_run(wid, steps=10_000)
+    app.stop_run(wid)                         # nothing pending yet
+
+    with pytest.raises(StepWithdrawn):
+        await asyncio.wait_for(
+            channel.request(ActorTurn(channel.agent_id, 1, TurnKind.DECIDE)), timeout=1,
+        )
+    task = app.get_session(wid).task
+    await asyncio.wait_for(task, timeout=30.0)
+
+
+@pytest.mark.asyncio
 async def test_delete_world_purges_and_stops(mock_build_container, test_config) -> None:
     app = NarrativeApplication(mock_build_container, test_config)
     world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
@@ -250,6 +303,28 @@ def _make_store_yield(container) -> None:
         await original(world_id)
 
     store.clear = slow_clear  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_a_reset_that_fails_halfway_leaves_no_stale_session(
+    mock_build_container, test_config, monkeypatch,
+) -> None:
+    """Once the stores are rewound, the step-N session must not survive a failed restore: a run
+    from it would commit step N+1 on top of step 0."""
+    from world.initializer import WorldInitializer
+
+    app = NarrativeApplication(mock_build_container, test_config)
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
+    wid = world.world_id
+    await app.run_world(wid, steps=1)
+
+    async def broken_restore(self, world_id, **_kw):
+        raise OSError("snapshot store down")
+
+    monkeypatch.setattr(WorldInitializer, "restore", broken_restore)
+    with pytest.raises(OSError):
+        await app.reset_session(wid)
+    assert not app.has_session(wid)
 
 
 @pytest.mark.asyncio

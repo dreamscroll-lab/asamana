@@ -116,10 +116,15 @@ export class EntityLayer {
     const ids = new Set([...Object.keys(entities), ...Object.keys(this.lastEntityStates)]);
     this.withheldEntities = new Set(
       [...ids].filter(
-        (eid) => causedIds.has(eid) && entityChanged(this.lastEntityStates[eid], entities[eid])
-          // With no previous view, only a creation has a known before-state (absence).
+        (eid) => {
+          const last = this.lastEntityStates[eid];
+          if (!causedIds.has(eid) || !entityChanged(last, entities[eid])) return false;
+          // The previous view is this step's before-state only when this isn't a cut; on a cut it
+          // shows another step. Without it, only a creation has a known before-state (absence).
           // A first-seen item changed this step has no reconstructable initial placement.
-          && (!!this.lastEntityStates[eid] || createdIds.has(eid)),
+          const created = createdIds.has(eid);
+          return cut ? created && !last : !!last || created;
+        },
       ),
     );
     this.bornEntities = new Set(

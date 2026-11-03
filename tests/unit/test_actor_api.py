@@ -96,7 +96,7 @@ async def test_private_reads_fail_closed_when_review_cannot_be_recorded(
     catalog = WorldCatalog()
     world_id, character_id = await _unconfirmed_world(mock_build_container, test_config, catalog)
     if failure == "refresh":
-        monkeypatch.setattr(catalog, "_refreshed_for_write", lambda *_: False)
+        monkeypatch.setattr(catalog, "_refresh_from_disk", lambda: False)
     else:
         def fail_write() -> None:
             raise OSError("Catalog storage unavailable")
@@ -387,6 +387,7 @@ async def test_actor_turn_is_delivered_and_restored_only_through_websocket(mock_
         assert client.post(f"{base}/confirm", json={"character_id": character_id}).status_code == 200
         with client.websocket_connect(f"/ws/{world_id}") as ws:
             assert ws.receive_json()["type"] == "status"
+            assert ws.receive_json() == {"type": "actor_turn", "data": None}
             assert ws.receive_json()["type"] == "latest_step"
             assert client.post(f"{base}/run", json={"steps": 1}).status_code == 200
             while True:
@@ -418,6 +419,7 @@ async def test_turns_and_entries_reach_the_websocket(mock_build_container, test_
     with _client(mock_build_container, test_config, catalog) as client:
         with client.websocket_connect(f"/ws/{world_id}") as ws:
             assert ws.receive_json()["type"] == "status"
+            assert ws.receive_json() == {"type": "actor_turn", "data": None}
             assert ws.receive_json()["type"] == "latest_step"
             mock_build_container.event_bus.publish({"type": "actor_turn", "world_id": world_id, "turn": turn})
             mock_build_container.event_bus.publish({"type": "actor_turn", "world_id": world_id, "turn": None})

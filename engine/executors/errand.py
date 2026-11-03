@@ -68,7 +68,7 @@ def _render_errand(
             else f"去{destination}当众说出：「{order.message}」"
         )
     # All four axes empty = go take a look. That is a task, not "no instructions".
-    return lines or [f"前往{destination}"]
+    return lines or [f"前往{destination}看看"]
 
 
 class ErrandExecutor(ActionExecutor):

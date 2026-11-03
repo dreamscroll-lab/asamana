@@ -8,10 +8,12 @@ const submission = vi.hoisted(() => ({ run: vi.fn(async (fn: () => Promise<strin
 vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useEffect: vi.fn(),
+  useCallback: <T,>(fn: T) => fn,
   useMemo: (fn: () => unknown) => fn(),
   useRef: (current: unknown) => ({ current }),
   useState: (initial: unknown) => [state.values.length ? state.values.shift() : initial, vi.fn()],
 }));
+vi.mock("../../hooks/useAutoGrow", () => ({ useAutoGrow: () => undefined }));
 vi.mock("../../lib/cast", () => ({ useCast: () => ({ cast: {} }) }));
 vi.mock("./MindPanel", () => ({ default: () => null }));
 vi.mock("./submission", () => ({ useActorSubmission: () => ({ busy: false, message: "", run: submission.run }) }));

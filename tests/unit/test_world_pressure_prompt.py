@@ -222,6 +222,16 @@ def test_agent_prompt_renders_remote_sender_relation_inline() -> None:
     assert "同处一地" not in prompt
 
 
+def test_the_one_an_act_landed_on_is_not_its_source() -> None:
+    """乙 struck 丙 and left; 丙 still stands there. The act names no source the onlooker can
+    see: it must not bind the threat to 丙, the victim."""
+    signals = _ev()._signals(
+        inbox=[], broadcasts=[], acted_upon=[], sender_relations={}, visible_ids={"a3"},
+        ambient=[AmbientEvent(content="乙一拳打倒了丙", doer_agent_ids=("a2", "a3"), acted_upon_ids=("a3",))],
+    )
+    assert [s.person_id for s in signals] == [None]
+
+
 def test_each_signal_carries_the_source_it_names() -> None:
     """A goal's source names a person only where the signal itself does. An anonymous letter
     stays "world": binding it to its sender would reveal what the letter withholds."""

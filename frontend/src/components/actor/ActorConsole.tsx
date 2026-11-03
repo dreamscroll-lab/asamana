@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useAutoGrow } from "../../hooks/useAutoGrow";
 
 import { identityOf } from "../../lib/worldTable";
 import ActorIcon from "../ActorIcon";
@@ -32,7 +33,7 @@ import { URGENCY_LABEL } from "../../lib/urgency";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
 import {
   CONSOLE_USER_MESSAGE, CONSOLE_WORLD_MESSAGE, CONSOLE_RAISED, CONSOLE_COLLAPSED, CONSOLE_PANEL, CONSOLE_HEADER,
-  CONSOLE_CLOSE, CONSOLE_THREAD, CONSOLE_FOOTER, CONSOLE_INPUT,
+  CONSOLE_CLOSE, CONSOLE_THREAD, CONSOLE_FOOTER, CONSOLE_INPUT, CONSOLE_INPUT_MAX_PX,
 } from "../consoleStyles";
 import Transcript from "../narrative/Transcript";
 import ConversationWindow from "./ConversationWindow";
@@ -80,6 +81,7 @@ export default function ActorConsole({
   const collapsed = collapsedOverride ?? !immersive;
   const [pace, setPace] = useState(initialPace);
   const [text, setText] = useState("");
+  const box = useAutoGrow(text, CONSOLE_INPUT_MAX_PX);
   const { busy, message, run } = useActorSubmission();
   const [mind, setMind] = useState<ActorMind | null>(null);
   // Words just said, shown at once until their decision summary comes back as a `said` entry: `after` is
@@ -277,6 +279,7 @@ export default function ActorConsole({
         <div className={CONSOLE_FOOTER}>
           {message && <p className="text-[12px] text-rose-400">{message}</p>}
           <textarea
+            ref={box}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {

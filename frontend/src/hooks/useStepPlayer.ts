@@ -51,6 +51,8 @@ export function useStepPlayer(
   const [liveCursor, setLiveCursor] = useState(-1);
   const [liveFeed, setLiveFeed] = useState<StepView[]>([]);
   const liveReceived = useRef(-1);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
   // --- playback ---
   const [steps, setSteps] = useState<number[]>([]);
@@ -96,7 +98,10 @@ export function useStepPlayer(
   const onLiveStep = (ev: StepView) => {
     if (ev.step <= liveReceived.current) return;
     liveReceived.current = ev.step;
-    setLiveOrdered((prev) => [...prev, ev]);
+    // Nothing drains the queue during playback. Keep the step on display (index 0, where every
+    // advance leaves it) and the newest only: back in live the map goes straight to the newest,
+    // establishing the step before it, instead of replaying every step missed at full pace.
+    setLiveOrdered((prev) => (modeRef.current === "live" ? [...prev, ev] : [...prev.slice(0, 1), ev]));
     setLiveFeed((prev) => [ev, ...prev].slice(0, FEED_CAP));
   };
 

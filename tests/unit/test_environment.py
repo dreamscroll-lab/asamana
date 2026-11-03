@@ -1430,3 +1430,18 @@ def test_whether_a_kind_can_be_carried_has_exactly_one_answer() -> None:
     assert WorldEntityType.ITEM.is_takeable is True
     assert WorldEntityType.LANDMARK.is_takeable is False
     assert WorldEntitySeed(name="车", entity_type="a-kind-that-does-not-exist-yet").is_takeable is False
+
+
+def test_a_restore_keeps_what_a_lurker_may_still_catch() -> None:
+    """Covert adjudication reads the recent happenings of a place; lost on restore, a lurker
+    right after it would be told nothing happened there."""
+    from tests.unit.env_state import restore, saved
+
+    live = EnvironmentSystem()
+    live.record_happening(location_id="hall", outcome="甲把一封密信塞进了柜底", step=4, doer_ids=("a1",))
+    fresh = EnvironmentSystem()
+    restore(fresh, saved(live))
+
+    assert fresh.recent_happenings("hall", since_step=0) == [(4, "甲把一封密信塞进了柜底")]
+    assert fresh.recent_happenings("hall", since_step=0, exclude_ids=("a1",)) == []
+    assert "happenings" not in str(live.world_state())

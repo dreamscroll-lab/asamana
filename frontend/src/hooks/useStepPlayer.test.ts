@@ -129,4 +129,26 @@ describe("step playback consistency", () => {
     expect(hooks.values.get(0)).toEqual([controls.displayStep]);
     expect(controls.feed.map((entry) => entry.step)).toEqual([3, 2, 1]);
   });
+
+  it("goes straight to the newest step on returning from playback", async () => {
+    vi.mocked(api.listSteps).mockResolvedValue([1]);
+    vi.mocked(api.getStep).mockResolvedValue(step(1));
+    render();
+    controls.onLiveStep(step(1));
+    render();
+    controls.doneRendering();
+    render();
+
+    mode = "playback";
+    render();
+    await flush();
+    for (const n of [2, 3, 4, 5]) controls.onLiveStep(step(n));
+    render();
+    expect(hooks.values.get(0)).toEqual([step(1), step(5)]);   // not every step missed
+
+    mode = "live";
+    render();
+    expect(controls.displayStep?.step).toBe(5);
+    expect(controls.feed.map((entry) => entry.step)).toEqual([5, 4, 3, 2, 1]);
+  });
 });

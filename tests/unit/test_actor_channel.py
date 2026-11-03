@@ -115,6 +115,27 @@ async def test_abandon_raises_into_the_suspended_step() -> None:
         await waiting
 
 
+@pytest.mark.asyncio
+async def test_a_turn_opened_after_a_stop_is_withdrawn_until_the_next_run() -> None:
+    """A stop lands while the step is busy elsewhere (an LLM phase): no turn waits yet. The turn
+    the step opens later must not wait for an answer nobody will give, or the run never ends."""
+    heard: list[ActorTurn | None] = []
+    channel = ActorChannel(heard.append)
+    channel.follow("hero")
+
+    channel.abandon()                      # nothing pending: the stop is remembered
+
+    with pytest.raises(StepWithdrawn):
+        await asyncio.wait_for(channel.request(ActorTurn("hero", 1, TurnKind.DECIDE)), timeout=1)
+    assert channel.pending_turn is None and heard == []
+
+    channel.reopen()                       # the next run asks again
+    waiting = asyncio.create_task(channel.request(ActorTurn("hero", 1, TurnKind.DECIDE)))
+    await asyncio.sleep(0)
+    channel.submit(ActorDecision(idle=True))
+    assert (await waiting).idle
+
+
 def test_a_turn_asked_again_is_another_turn() -> None:
     # A step replayed after a restore asks the same step and kind again.
     first, again = ActorTurn("hero", 5, TurnKind.DECIDE), ActorTurn("hero", 5, TurnKind.DECIDE)
@@ -144,6 +165,7 @@ async def test_every_opening_and_closing_is_announced() -> None:
     with pytest.raises(StepWithdrawn):
         await waiting
 
+    channel.reopen()
     waiting = asyncio.create_task(channel.request(third))
     await asyncio.sleep(0)
     waiting.cancel()

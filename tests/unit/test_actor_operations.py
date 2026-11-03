@@ -413,6 +413,21 @@ async def test_constrained_interpretation_cannot_change_authority(container, cha
 
 
 @pytest.mark.asyncio
+async def test_send_reading_without_description_describes_what_it_bound(container) -> None:
+    """The operation's placeholder ("我打算发送消息") names no one; a reading that writes no
+    description is described from the recipients and words it bound."""
+    packet = _packet()
+    intent = _intent("send_message", Ref.agent(packet.agent_id), description="告诉李元吉明早入宫")
+    base = build_actor_operation(intent, packet)
+    container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps({
+        "decision": "act", "person_indices": [2], "message_content": "明早入宫。",
+    })
+    decision, _reason = await DecisionEngine(container.llm_router).interpret_actor_decision(
+        intent.description, personality=_make_personality(), packet=packet, intent=intent, base=base)
+    assert decision.action.action_description == "我打算发消息给李元吉说：「明早入宫。」"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("operation,extra", [
     ("move", {"person_indices": [1], "physical_entity_index": 1}),
     ("talk", {"physical_person_index": 2, "destination_index": 1}),
@@ -547,7 +562,7 @@ async def test_direct_submission_bypasses_parser_and_records_only_public_data(co
     answered = next(e for e in thread if e["kind"] == "answered")
     assert said["decision_summary"]["operation"] == "broadcast"
     assert said["intent"]["description"] == description
-    assert said["decision_summary"]["description"] == "我向这里的人广播"
+    assert said["decision_summary"]["description"] == "我打算向在场众人发通知说：「请来这里」"
     assert said["decision_summary"]["parameters"]["message"] == "请来这里"
     assert answered["answer"] == {"decision_summary_id": said["decision_summary"]["decision_summary_id"]}
     assert "action_type" not in json.dumps(thread)
@@ -770,7 +785,7 @@ def test_self_operations_preserve_targetless_execution_and_public_identity(conta
     assert decision_summary.target == Ref.agent(packet.agent_id) and decision_summary.operation == operation
     assert "某人" not in decision_summary.description
     if operation == "covert":
-        assert decision_summary.description == "我暗中探查"
+        assert decision_summary.description == "我打算暗中探查"
         assert "前往" not in decision_summary.description and "潜行" not in decision_summary.description
 
 

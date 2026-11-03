@@ -28,6 +28,8 @@ from typing import Any
 
 from core.interfaces.llm import LLMProvider, LLMRouter, LLMScene
 from core.logging import get_logger
+from world.setup import WorldSetup
+from world.stored_config import StoredWorldConfig
 
 from tuning.audit_checks import check_bindings, check_relations
 from tuning.audit_metrics import SCOPES, aggregate_dimensions, scope_digest, scope_totals
@@ -158,7 +160,14 @@ async def run_audit(
     if unknown:
         raise ValueError(f"unknown scope(s): {sorted(unknown)}; valid: {sorted(SCOPES)}")
 
-    view = reconstruct_world(world_id, trace_dir=trace_dir, steps=steps)
+    # The world as confirmed, read the way restore reads it: step 0's frozen setup and the stored map.
+    step_zero = await container.snapshot.load(world_id, 0)
+    config_data = await container.snapshot.load_world_config(world_id)
+    if step_zero is None or not step_zero.setup or config_data is None:
+        raise ValueError(f"world {world_id!r} has no step-0 setup and world config to audit")
+    view = reconstruct_world(
+        world_id, setup=WorldSetup.from_dict(step_zero.setup),
+        world_config=StoredWorldConfig(config_data), trace_dir=trace_dir, steps=steps)
     if not view.per_agent and not view.init.get("key_figures"):
         raise ValueError(f"no usable traces for world {world_id!r} under {trace_dir}")
 

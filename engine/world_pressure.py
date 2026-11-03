@@ -383,7 +383,8 @@ class WorldPressureEvaluator:
             sender = None if msg.anonymous or not msg.sender_id else msg.sender_id
             out.append(_Signal(line, sender, f"{sender_name}：{msg.content}"))
         for ev in ambient:
-            doers = [d for d in ev.doer_agent_ids if d in visible_ids]
+            # Who did it, not who it landed on: a victim left standing there is no threat's source.
+            doers = [d for d in ev.doer_agent_ids if d in visible_ids and d not in ev.acted_upon_ids]
             out.append(_Signal(
                 f"{AMBIENT_TAG}：{ev.content}", doers[0] if len(doers) == 1 else None, ev.content,
             ))

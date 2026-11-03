@@ -55,8 +55,8 @@ from tuning.audit_reconstruct import (
 logger = get_logger(__name__)
 
 _SYSTEM = (
-    "你是叙事仿真的**质量评审**(第三方裁定,非扮演角色)。你收到某个已跑完世界的一段 trace 的结构化"
-    "摘要,请按给定指标逐项审查。\n"
+    "你是叙事仿真的**质量评审**(第三方裁定,非扮演角色)。你收到某个世界的一份结构化材料"
+    "(开局设定,或运行过程的摘要),请按给定指标逐项审查。\n"
     "评分为**扣分制、满分 100**:每个维度默认 100 分,只在命中其『判分依据』时扣分——\n"
     "· 轻微问题：每条扣 5–10 分\n"
     "· 明显问题：每条扣 15–25 分\n"
@@ -334,18 +334,26 @@ def _action_type_legend() -> list[str]:
     return [f"{c.action_type.value.upper()}：{c.description}" for c in _ACTION_SPACE]
 
 
-def _need_legend() -> str:
-    """Need scale + the five category definitions + activation, all taken from authoritative constants (core/prompts, agent/need).
+def _need_scale_legend() -> str:
+    """Need scale + the five category definitions, all taken from authoritative constants (core/prompts).
 
     The yardstick for judging whether need types are canonical, whether intensities / weights are out
     of range or unreasonable, and whether they fit the situation. A hand copy would drift: the anchors
     (0.3 = noticeable but not urgent / 0.8 = dominates thinking) are the only basis for judging whether
-    a value is reasonable, and losing them makes the dimension unjudgeable. Activation and intensity are
-    different quantities; reading one on the other's scale can't tell right from wrong.
+    a value is reasonable, and losing them makes the dimension unjudgeable.
+    """
+    return f"{NEED_TYPE_DEFINITION}\n  {NEED_INTENSITY_DEFINITION}\n  {NEED_WEIGHT_DEFINITION}"
+
+
+def _need_legend() -> str:
+    """The need scale plus activation, for renderers whose cells show activation values.
+
+    Activation and intensity are different quantities; reading one on the other's scale can't tell
+    right from wrong. Don't add it where no activation is shown (the opening has none): there it's
+    only an off-topic runtime instruction.
     """
     activation = need_activation_legend().split("可选的需求：")[0].strip()
-    return (f"{NEED_TYPE_DEFINITION}\n  {NEED_INTENSITY_DEFINITION}\n  {NEED_WEIGHT_DEFINITION}\n"
-            f"  {activation}")
+    return f"{_need_scale_legend()}\n  {activation}"
 
 
 def _time_legend(sps: Any) -> str:
@@ -460,19 +468,15 @@ def init_block(view: WorldAuditView) -> str:
     init = view.init
     kf = {str(f.get("name")): f for f in init.get("key_figures", []) if isinstance(f, dict) and f.get("name")}
     personas = {str(p.get("name")): p for p in init.get("personas", []) if isinstance(p, dict) and p.get("name")}
-    cast = {str(c.get("name")): c for c in init.get("cast_roles", []) if isinstance(c, dict) and c.get("name")}
     era = (init.get("world_time_config") or {}).get("era_name")
 
     lines = [f"世界：{init.get('world_name')}" + (f"（时代：{era}）" if era else ""),
              f"核心张力：{init.get('core_tension')}",
              f"主题：{init.get('narrative_theme')}",
              _sub_sep("角色档案（判『设定是否违和 / 游离』『动机背景是否服务同一处境』）"),
-             f"  （需求刻度与类型：{_need_legend()}）"]
-    # key_figures is the primary key: it's the authoritative cast. Going by personas, anyone the persona
-    # step failed to generate would vanish from the initialization audit, and "a character is missing"
-    # is exactly what this audit should catch, not filter out first.
-    for name in list(kf) + [n for n in personas if n not in kf]:
-        f, p, c = kf.get(name, {}), personas.get(name, {}), cast.get(name, {})
+             f"  需求刻度与类型：{_need_scale_legend()}"]
+    for name in kf:
+        f, p = kf[name], personas.get(name, {})
         # Give the tier (main/background): this audit judges whether there are detached, interchangeable
         # characters unrelated to the core tension, and a background character needn't carry the main plot.
         # Without the tier, the judge measures everyone with the same ruler.
@@ -484,10 +488,6 @@ def init_block(view: WorldAuditView) -> str:
         where = f"　在 {p['initial_location']}" if p.get("initial_location") else ""
         lines.append(f"\n【{name}】（{tier}）{f.get('role') or p.get('role') or ''}　"
                      f"{f.get('age')}岁　{f.get('gender') or ''}{where}")
-        if not p:
-            lines.append("  ⚠ 这个角色没有生成人设(persona)——下面的性格/背景/需求整块缺失。")
-        if c.get("narrative_role") or c.get("arc_summary"):
-            lines.append(f"  叙事角色：{c.get('narrative_role', '')}　弧线：{c.get('arc_summary', '')}")
         if p.get("core_traits"):
             lines.append(f"  性格特点：{_join(p['core_traits'])}")
         if p.get("core_values"):
@@ -528,10 +528,12 @@ def init_block(view: WorldAuditView) -> str:
             f"    {a} 视 {b} 为「{_join(r.get('labels'))}」（信任度{r.get('trust')}／好感度{r.get('affection')}）\n"
             f"    {b} 视 {a} 为「{_join(r.get('reverse_labels'))}」（信任度{r.get('reverse_trust')}／好感度{r.get('reverse_affection')}）")
 
-    lines.append(_sub_sep("过往事件（故事开始前的小时数；判时间线是否倒错）"))
-    for h in init.get("historical_events", []):
-        if isinstance(h, dict):
-            lines.append(f"- [故事开始前 {h.get('hours_before_start')}h] {h.get('event')}（涉及 {_join(h.get('related_figures'))}）")
+    # Listed oldest first: in setup order the hours jump back and forth, and the judge reads the list
+    # order as the timeline.
+    lines.append(_sub_sep("过往事件（按先后排列，故事开始前的小时数；判时间线是否倒错）"))
+    events = [h for h in init.get("historical_events", []) if isinstance(h, dict)]
+    for h in sorted(events, key=lambda h: -(h.get("hours_before_start") or 0)):
+        lines.append(f"- [故事开始前 {h.get('hours_before_start')}h] {h.get('event')}（涉及 {_join(h.get('related_figures'))}）")
 
     # Opening things and errand-runners: like personas, fixed at build time for the whole run. They are
     # the affordances the world gives its characters: things to seize or hand over, people to send or ask.

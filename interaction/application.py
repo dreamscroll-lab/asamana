@@ -201,13 +201,19 @@ class NarrativeApplication:
             await self._clear_materialized(world_id)
             initializer = WorldInitializer(self._container, max_npcs=self._config.engine.max_npcs)
             world = await initializer.initialize(world_id, casting=casting)
-            self._sessions[world_id] = RuntimeSession(
-                world=world, runtime=self._build_runtime(world, casting=casting),
-            )
+            runtime = self._build_runtime(world, casting=casting)
+            # The catalog before the session: a live session the catalog calls unconfirmed or
+            # uncast would run without the viewer filters the casting turns on. A failed write
+            # leaves no session, and confirming again starts over from the setup file.
             if self._catalog is not None:
-                if casting is not None:
-                    self._catalog.set_actor_casting(world_id, casting)
-                self._catalog.set_confirmed(world_id, True)
+                try:
+                    if casting is not None:
+                        self._catalog.set_actor_casting(world_id, casting)
+                    self._catalog.set_confirmed(world_id, True)
+                except Exception:
+                    await runtime.aclose()
+                    raise
+            self._sessions[world_id] = RuntimeSession(world=world, runtime=runtime)
             # Last: the setup now lives frozen in step 0. Left behind by a failure here, the file
             # still holds what step 0 froze, and a confirmed world takes no revision.
             await self._container.snapshot.delete_world_setup(world_id)
@@ -322,6 +328,14 @@ class NarrativeApplication:
 
         initializer = WorldInitializer(self._container, max_npcs=self._config.engine.max_npcs)
 
+        # Out before the stores are touched: a reset that fails halfway must not leave the step-N
+        # session in place, running on against stores already rewound. With none, the next access
+        # restores from what storage holds. Closing also stops in-flight event generation,
+        # written for the step-N world.
+        if existing is not None:
+            del self._sessions[world_id]
+            await existing.runtime.aclose()
+
         # Drop in-flight messages and post-step-0 snapshots so restore resumes from step 0 and
         # no stale message is delivered after the reset.
         await self._container.message_provider.clear(world_id)
@@ -334,10 +348,6 @@ class NarrativeApplication:
         # stands: it belongs to the world's setup, not to its run.
         casting = self._casting(world_id)
         world = await initializer.restore(world_id, casting=casting)
-
-        # Also stops in-flight event generation, written for the step-N world.
-        if existing is not None:
-            await existing.runtime.aclose()
 
         self._sessions[world_id] = RuntimeSession(
             world=world,
@@ -516,7 +526,9 @@ class NarrativeApplication:
 
         Rebuilt, not patched: whether a character is actor-controlled, and its tier, are set
         when it is constructed, the same way on every restore. The new session is built first,
-        so a casting the world can't take (an unknown character) changes nothing.
+        so a casting the world can't take (an unknown character) changes nothing, and the old one
+        stays until the catalog has the casting: a refused write puts it back, or the live
+        session would drive the character one way while the catalog and viewers say the other.
         """
         existing = self._sessions.get(world_id)
         if existing is not None and self._run_is_live(existing):
@@ -524,10 +536,17 @@ class NarrativeApplication:
                 f"World {world_id!r} is running — stop the run before changing who performs a character."
             )
         world = await self._restore_session_locked(world_id, casting=casting)
+        assert self._catalog is not None
+        try:
+            self._catalog.set_actor_casting(world_id, casting)
+        except Exception:
+            recast = self._sessions.pop(world_id)
+            if existing is not None:
+                self._sessions[world_id] = existing
+            await recast.runtime.aclose()
+            raise
         if existing is not None:
             await existing.runtime.aclose()
-        assert self._catalog is not None
-        self._catalog.set_actor_casting(world_id, casting)
         logger.info(
             "actor_casting_changed",
             extra={
@@ -610,6 +629,20 @@ class NarrativeApplication:
             {"type": "status", "world_id": world_id, "status": state.value}
         )
 
+    async def _discard_session(self, world_id: str, session: RuntimeSession) -> None:
+        """Drop a session whose step stopped halfway (withdrawn at the actor's turn, or raised).
+
+        What the step wrote is in this session's memory and partly in the stores; running on
+        from it would commit a step that never happened whole. The next restore resumes at the
+        last committed step and rolls the rest back.
+        """
+        if self._sessions.get(world_id) is session:
+            del self._sessions[world_id]
+        try:
+            await session.runtime.aclose()
+        except Exception as exc:  # noqa: BLE001 — the session is already gone; closing is cleanup
+            logger.warning("session_close_failed", extra={"world_id": world_id, "error": str(exc)})
+
     async def _run_loop(
         self,
         world_id: str,
@@ -634,13 +667,8 @@ class NarrativeApplication:
             self._set_status(world_id, session, RunState.COMPLETED)
             raise
         except StepWithdrawn:
-            # The step stopped halfway, at the actor's turn: what it wrote is in this session's
-            # memory and partly in the stores. Drop the session; the next restore resumes at the
-            # last committed step and rolls the rest back.
             self._set_status(world_id, session, RunState.COMPLETED)
-            if self._sessions.get(world_id) is session:
-                del self._sessions[world_id]
-            await session.runtime.aclose()
+            await self._discard_session(world_id, session)
             logger.info("world_run_abandoned_at_actor_turn", extra={"world_id": world_id})
         except Exception as exc:  # noqa: BLE001 — surface any run failure as FAILED status
             self._set_status(world_id, session, RunState.FAILED)
@@ -648,6 +676,7 @@ class NarrativeApplication:
                 "world_run_failed",
                 extra={"world_id": world_id, "error": str(exc)},
             )
+            await self._discard_session(world_id, session)
         finally:
             session.controller = None
             session.task = None

@@ -36,6 +36,7 @@ const { TiledWorldScene } = await import("./TiledWorldScene");
 
 interface Internals {
   ready: boolean;
+  drawnStep: number | null;
   tokens: Map<string, AgentToken>;
   placed: Set<string>;
   presence: Presence;
@@ -409,5 +410,101 @@ describe("a body is drawn only on the step it falls", () => {
     await scene.renderStep(step({ at: 4, states: [who(MO, far)] }));
     await scene.renderStep(diedAt(step({ at: 5, states: [who(MO, near), who(SHI, near, dead)] }), SHI.id, 2));
     expect(scene.token(SHI.id)).toBeUndefined();
+  });
+});
+
+describe("a step plays from where the step before it ended", () => {
+  const moved = (route: ReturnType<typeof walking>) =>
+    did(MO, { action_type: ActionType.move, deed: Deed.move, route });
+
+  it("establishes step N-1 on a seek, then plays step N as continuous playback does", async () => {
+    const { scene, internal } = setup();
+    const transit = vi.spyOn(internal.walker, "walkTransit").mockResolvedValue(undefined);
+    const deed = vi.spyOn(internal.body, "playDeed").mockImplementation(() => {});
+    await scene.renderStep(step({ at: 9, states: [who(MO, far)] }));
+    vi.mocked(internal.post.playDeliveries).mockClear();
+    const seven = step({
+      at: 7, states: [who(MO, near)], actions: [did(MO, { action_type: ActionType.work, deed: Deed.work })],
+    });
+    const previous = vi.fn().mockResolvedValue(seven);
+    const route = walking([near, far], 1, 1);
+    await scene.renderStep(step({ at: 8, states: [who(MO, far)], actions: [moved(route)] }), previous);
+    expect(previous).toHaveBeenCalledExactlyOnceWith(7);
+    // Step 7 is only landed: its deeds and post never play.
+    expect(deed).not.toHaveBeenCalled();
+    expect(internal.post.playDeliveries).toHaveBeenCalledTimes(1);
+    // …so step 8's walk is the one continuous playback draws.
+    expect(transit).toHaveBeenCalledWith(scene.token(MO.id), MO.id, route, { x: 300, y: 0 });
+  });
+
+  it("lands step N-1 at once even when the map stands where N-2 ended", async () => {
+    const { scene, internal } = setup();
+    const transit = vi.spyOn(internal.walker, "walkTransit").mockResolvedValue(undefined);
+    await scene.renderStep(step({ at: 6, states: [who(MO, near)] }));
+    const route = walking([near, far], 1, 1);
+    const seven = step({ at: 7, states: [who(MO, far)], actions: [moved(route)] });
+    await scene.renderStep(step({ at: 8, states: [who(MO, far)] }), vi.fn().mockResolvedValue(seven));
+    // Step 7 continues from 6, but it is only established: its walk never plays.
+    expect(transit).not.toHaveBeenCalled();
+  });
+
+  it("lets a newer render through while the step-before fetch stalls", async () => {
+    const { scene, internal } = setup();
+    await scene.renderStep(step({ at: 9, states: [who(MO, far)] }));
+    const stalled = scene.renderStep(
+      step({ at: 4, states: [who(MO, near)] }), () => new Promise<never>(() => {}),
+    );
+    await Promise.resolve();
+    await scene.renderStep(step({ at: 0, states: [who(MO, far)] }));
+    await stalled;
+    expect(internal.drawnStep).toBe(0);
+  });
+
+  it("asks for no earlier step in continuous playback, or for step 0", async () => {
+    const { scene } = setup();
+    const previous = vi.fn();
+    await scene.renderStep(step({ at: 0, states: [who(MO, near)] }), previous);
+    await scene.renderStep(step({ at: 1, states: [who(MO, near)] }), previous);
+    expect(previous).not.toHaveBeenCalled();
+  });
+
+  it("draws the step as a cut when step N-1 can't be had", async () => {
+    const { scene, internal } = setup();
+    const transit = vi.spyOn(internal.walker, "walkTransit").mockResolvedValue(undefined);
+    const route = walking([near, far], 1, 1);
+    await scene.renderStep(
+      step({ at: 8, states: [who(MO, far)], actions: [moved(route)] }),
+      vi.fn().mockRejectedValue(new Error("offline")),
+    );
+    expect(transit).not.toHaveBeenCalled();
+    expect(scene.token(MO.id)!.container.x).toBe(300);
+  });
+
+  it("treats the step after a superseded render as a cut, not as continuing from where it stopped", async () => {
+    const { scene, internal } = setup();
+    vi.spyOn(internal.walker, "groundRoute").mockReturnValue([{ x: 100, y: 0 }, { x: 300, y: 0 }]);
+    let release = () => {};
+    const along = vi.spyOn(internal.walker, "walkAlong").mockImplementation(
+      () => new Promise<void>((resolve) => { release = resolve; }),
+    );
+    await scene.renderStep(step({ at: 1, states: [who(MO, near)] }));
+    const second = scene.renderStep(step({ at: 2, states: [who(MO, far)] }));
+    await vi.waitFor(() => expect(along).toHaveBeenCalledTimes(1));
+    const third = scene.renderStep(step({ at: 3, states: [who(MO, near)] }));
+    release();
+    await Promise.all([second, third]);
+    expect(along).toHaveBeenCalledTimes(1);
+    expect(scene.token(MO.id)!.container.x).toBe(100);
+  });
+
+  it("doesn't hold a body back by comparing it with another step's", async () => {
+    const { scene, internal } = setup();
+    await scene.renderStep(step({ at: 9, states: [who(MO, near)] }));
+    vi.spyOn(internal.body, "playDeed").mockImplementation(() => {});
+    vi.mocked(internal.body.bodyChanged).mockClear();
+    await scene.renderStep(step({
+      at: 4, states: [who(MO, near)], actions: [did(MO, { action_type: ActionType.work, deed: Deed.work })],
+    }));
+    expect(internal.body.bodyChanged).not.toHaveBeenCalled();
   });
 });

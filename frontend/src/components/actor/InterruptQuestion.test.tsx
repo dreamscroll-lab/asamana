@@ -8,6 +8,7 @@ vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useState: () => [state.thought, vi.fn()],
 }));
+vi.mock("../../hooks/useAutoGrow", () => ({ useAutoGrow: () => undefined }));
 import InterruptQuestion from "./InterruptQuestion";
 
 type Element = ReactElement<{ children?: ReactNode; onClick?: () => void; disabled?: boolean; maxLength?: number }>;

@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { identityOf } from "../lib/worldTable";
-import { API_BASE } from "../api/client";
+import { API_BASE, api } from "../api/client";
 import type { TiledWorldScene } from "../phaser/TiledWorldScene";
 import { renderStepInto } from "../phaser/driveStep";
 import { loadMapSource, type MapSource } from "../phaser/mapSource";
@@ -113,13 +113,14 @@ export default function LiveWorldMap({
     // A render that threw still finished (renderStepInto hands the error back). Report it
     // anyway: the driver's gate is only reopened here, so an unreported failure stops
     // playback for good.
-    renderStepInto(sceneRef.current, step).then(() => {
+    // The scene asks for step N-1 only when the map doesn't stand where step N began.
+    renderStepInto(sceneRef.current, step, (stepNo) => api.getStep(worldId, stepNo)).then(() => {
       if (!cancelled) onRenderedRef.current?.(stepNo);
     });
     return () => {
       cancelled = true;
     };
-  }, [scene, ready, step, viewer, castStatus, cast, npcStatus, npcs]);
+  }, [scene, ready, step, viewer, castStatus, cast, npcStatus, npcs, worldId]);
 
   // With no map the scene never mounts and onRendered never fires, freezing the driver's
   // gate (clock, roster, cards, DirectorBar all stall). No render timeline to wait for, so

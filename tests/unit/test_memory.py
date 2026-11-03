@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from core.interfaces.perception import PerceivedIdentity
+
 from collections.abc import Callable
 
 import pytest
@@ -260,7 +262,7 @@ async def test_importance_prompt_uses_names_not_ids(container: object) -> None:
         "朝堂上发生了争执。",
         personality=personality,
         related_agents=["a_id", "unknown_id"],
-        related_directory={"a_id": "李四", "unknown_id": ""},
+        related_directory={"a_id": PerceivedIdentity(name="李四"), "unknown_id": PerceivedIdentity(name="")},
         related_relations_text="",
         dominant_need_label="",
     )
@@ -288,7 +290,7 @@ async def test_importance_prompt_third_person_multidim_with_relations(container:
         "他又一次背着我行事。",
         personality=personality,
         related_agents=["x"],
-        related_directory={"x": "李四"},
+        related_directory={"x": PerceivedIdentity(name="李四")},
         related_relations_text="  - 李四：关系[政敌:对手]，信任度0.10、好感度-0.60",
         dominant_need_label="渴望重获父亲的认可",
     )
@@ -315,7 +317,7 @@ async def test_experiential_prompt_has_negative_constraint_and_relations(contain
     await system._write_experiential(
         raw_content="他在朝堂当众反对我。",
         personality=personality,
-        related_agent_directory={"x": "李四"},
+        related_agent_directory={"x": PerceivedIdentity(name="李四", gender="男")},
         related_relations_text="  - 李四：关系[政敌:对手]，信任度0.10、好感度-0.60",
     )
 
@@ -333,6 +335,7 @@ async def test_experiential_prompt_has_negative_constraint_and_relations(contain
     assert "我与他们的关系" in prompt and "政敌:对手" in prompt
     # Related people are a closed set, so the model can't invent anyone.
     assert "李四" in prompt
+    assert "李四（男）" in prompt      # the monologue says 他/她 of him: gender, not a guess
 
 
 @pytest.mark.asyncio
@@ -348,7 +351,7 @@ async def test_experiential_prompt_includes_situation_header(container: object) 
     await system._write_experiential(
         raw_content="他在朝堂当众反对我。",
         personality=personality,
-        related_agent_directory={"x": "李四"},
+        related_agent_directory={"x": PerceivedIdentity(name="李四", gender="男")},
         related_relations_text="  - 李四：关系[政敌:对手]，信任度0.10、好感度-0.60",
         situation=Situation(location_view=LocationView(name="朝堂", description="百官议事的正殿"), time_label="辰时"),
     )

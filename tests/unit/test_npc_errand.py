@@ -842,7 +842,7 @@ def test_the_judge_and_the_runner_read_the_same_errand_the_same_way() -> None:
 
     # The phrase the judge side must name in each cell, matching the runner-side test cell by cell.
     for (carry, name, speak), must_say in [
-        ((False, False, False), "前往宫门"),   # destination-only is a task too
+        ((False, False, False), "前往宫门看看"),   # destination-only is a task too
         ((False, False, True),  "宫门当众"),
         ((False, True,  False), "在不在宫门"),
         ((False, True,  True),  "带一句话"),
@@ -1033,7 +1033,7 @@ async def test_the_report_says_where_the_words_end_and_the_scene_begins() -> Non
     assert f"到达时所见（{_world_time(1).time_label}）：" in report.content
     assert _world_time(3).time_label not in report.content
     assert "到达时所见" not in spoken
-    assert report.content.startswith(f"{spoken}\n\n 到达时所见")
+    assert report.content.startswith(f"{spoken}\n 到达时所见")
     assert "\n  - 地点：宫门" in report.content
     assert "\n  - 在场的其他人：无" in report.content
     assert "\n  - 现场物件：无" in report.content

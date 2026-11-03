@@ -229,8 +229,8 @@ entity_type 仅 item(拿得走的物品)或 landmark(拿不走的固着物);
   "broadcast": {{"location_scope": 发生地的地点序号(笼罩全域就填 null,或整个不写这一项), "content": "公开发生了什么,不超过 80 字", "severity": "{Severity.prompt_choices()}", "phenomenon": "{Phenomenon.prompt_choices()}"}} 或 null,
   "message": {{"recipients": [人物序号，最多10个], "content": "送到他们面前的话,不超过 80 字", "urgency": "low|normal|high|critical"}} 或 null,
   "mutations": [
-    {{"kind": "entity", "entity": 物件序号, "destroyed": true 或 false, "state": "变化后的状态词,不超过 12 字,不变就留空", "description": "变化后它看上去的样子,不超过 40 字,不变就留空", "content": "改动后上面写着的全文,不超过 80 字,不变就留空", "observation": "旁人看见的一句话,不超过 40 字"}}(不毁掉时,state/description/content 至少改一项;物件本身没变、只是让人察觉到一件事,用 broadcast),
-    {{"kind": "spawn", "location": 地点序号, "entity_type": "item 或 landmark", "name": "它叫什么,不超过 12 字", "description": "它看上去是什么样,不超过 40 字", "content": "只有写着字、记着东西的才有(信、告示、账册);大多数东西没有,留空字符串。有则不超过 80 字", "observation": "在场的人看见的一句话,不超过 40 字"}},
+    {{"kind": "entity", "entity": 物件序号, "destroyed": true 或 false, "state": "变化后的状态词,不超过 12 字,不变就留空", "description": "变化后它看上去的样子,不超过 40 字,不变就留空", "content": "改动后上面写着的全文,要有具体、实质内容,不超过 80 字,不变就留空", "observation": "旁人看见的一句话,不超过 40 字"}}(不毁掉时,state/description/content 至少改一项;物件本身没变、只是让人察觉到一件事,用 broadcast),
+    {{"kind": "spawn", "location": 地点序号, "entity_type": "item 或 landmark", "name": "它叫什么,不超过 12 字", "description": "它看上去是什么样,不超过 40 字", "content": "只有写着字、记着东西的才有(信、告示、账册);大多数东西没有,留空字符串。有则要有具体、实质内容,不超过 80 字", "observation": "在场的人看见的一句话,不超过 40 字"}},
     {{"kind": "vitality", "person": 人物序号, "effect": "{VitalityEffect.prompt_choices()}", "observation": "旁人看见的一句话,不超过 40 字"}},
     {{"kind": "relocate", "person": 人物序号, "location": 地点序号, "observation": "旁人在**目的地**看见的一句话,不超过 40 字"}},
     {{"kind": "condition", "person": 人物序号, "condition": "他此后身处的处境,不超过 15 字;解开原有处境就留空字符串", "confined": true 或 false(这个处境是否限制了他的行动自由;condition 为空时填 false), "observation": "旁人看见的一句话,不超过 40 字"}}

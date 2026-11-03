@@ -13,7 +13,7 @@
  * (Typewriter); turns already there when it opened are shown whole.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { api } from "../../api/client";
 import { avatarStyle } from "../../lib/avatar";
@@ -21,6 +21,8 @@ import { DIALOGUE_TYPE_MS } from "../../lib/dialogue";
 import type { ActorDialogueTurn, CharacterIdentity, BriefRelation, Conversation, DialogueTurn } from "../../types";
 import { BTN } from "../buttonStyles";
 import SendButton, { SEND_HINT, isSendKey } from "../SendButton";
+import { CONSOLE_INPUT, CONSOLE_INPUT_MAX_PX, CONSOLE_INPUT_TURN } from "../consoleStyles";
+import { useAutoGrow } from "../../hooks/useAutoGrow";
 
 export default function ConversationWindow({
   worldId,
@@ -64,7 +66,12 @@ export default function ConversationWindow({
     if (pending && mineCount > pending.after) setPending(null);
   }, [pending, mineCount]);
   const scroller = useRef<HTMLDivElement>(null);
-  const input = useRef<HTMLTextAreaElement>(null);
+  const input = useRef<HTMLTextAreaElement | null>(null);
+  const grow = useAutoGrow(text, CONSOLE_INPUT_MAX_PX);
+  const inputRef = useCallback((el: HTMLTextAreaElement | null) => {
+    input.current = el;
+    grow(el);
+  }, [grow]);
   // The first turn typed out: the other side's latest turn when the window opened (the window
   // opens as the conversation goes live, so that turn has just arrived), and every turn after it.
   const typedFrom = useRef<number | null>(null);
@@ -199,41 +206,29 @@ export default function ConversationWindow({
           {message && <p className="mb-2 text-[12px] text-rose-400">{message}</p>}
           {!over && (
             <>
-              <div
-                className={`rounded-xl border bg-slate-950/80 transition ${
-                  speaking ? "border-indigo-500/50 shadow-[0_0_0_3px_rgba(99,102,241,0.12)]" : "border-slate-800"
-                }`}
-              >
-                <textarea
-                  ref={input}
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (!isSendKey(e)) return;
-                    e.preventDefault();
-                    if (speaking) void send(false);
-                  }}
-                  disabled={!speaking}
-                  maxLength={maxChars || undefined}
-                  rows={2}
-                  placeholder={conversation ? `对${otherName}说…` : `${otherName}正在说…`}
-                  className="block w-full resize-none bg-transparent px-3 pt-2.5 pb-1 text-[13px] leading-relaxed text-slate-100 placeholder:text-slate-600 focus:outline-none disabled:opacity-50"
-                />
-                <div className="flex items-center gap-2 px-3 pb-2">
-                  <span className="text-[11px] text-slate-500">{conversation ? turnsHint(conversation) : ""}</span>
-                  {conversation && (
-                    <span
-                      className={`ml-auto text-[10px] tabular-nums ${length >= maxChars ? "text-amber-400" : "text-slate-600"}`}
-                    >
-                      {length}/{maxChars}
-                    </span>
-                  )}
-                </div>
-              </div>
-              <div className="mt-2.5 flex items-center gap-2">
+              {conversation && <p className="mb-1.5 text-[11px] text-slate-500">{turnsHint(conversation)}</p>}
+              <textarea
+                ref={inputRef}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (!isSendKey(e)) return;
+                  e.preventDefault();
+                  if (speaking) void send(false);
+                }}
+                disabled={!speaking}
+                maxLength={maxChars || undefined}
+                rows={2}
+                placeholder={conversation ? `对${otherName}说…` : `${otherName}正在说…`}
+                className={`${CONSOLE_INPUT} block transition ${speaking ? CONSOLE_INPUT_TURN : ""}`}
+              />
+              <div className="mt-1.5 flex items-center gap-2">
                 <span className="text-[10px] text-slate-600">{SEND_HINT}</span>
+                <span className={`ml-auto text-[10px] tabular-nums ${length >= maxChars ? "text-amber-400" : "text-slate-600"}`}>
+                  {conversation && `${length}/${maxChars}`}
+                </span>
                 <button
-                  className={`${BTN} ml-auto`}
+                  className={BTN}
                   disabled={!speaking}
                   onClick={() => void send(true)}
                   title="说出框里的话（可以不写）后结束交谈"

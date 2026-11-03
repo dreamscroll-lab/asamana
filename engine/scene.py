@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from agent.personality import ActionStatus
+from agent.personality import ActionStatus, visible_doing
 from core.interfaces.perception import NpcIdentity, PerceivedNpc, Situation
 from core.prompts import (
     SituationVoice, person_referent, render_condition, render_entity, render_npc,
@@ -142,7 +142,7 @@ def assemble_scene_context(
     list on ``SceneContext.own_entities``, for a caller that has the LLM pick one by number (WORK).
     FIRST voice only: the line says 「我手上的」.
 
-    ``reveal_intents=False`` keeps only whether each present person is busy. The judge needs
+    ``reveal_intents=False`` keeps only what each present person is visibly doing. The judge needs
     intents only to rule whether people would notice; the content otherwise gets written up as if
     it had happened. Turn it off for any judge whose output others read or that enters memory.
 
@@ -198,10 +198,13 @@ def assemble_scene_context(
                 # Quoted as that person's own unresolved words. An empty intent must be stated,
                 # not dropped: otherwise the judge follows expected_outcome into inventing deeds
                 # for someone who did nothing (see IDLE_BYSTANDER_VERDICT_RULE, reveal_intents).
-                intent_clause = (
-                    (f"此刻意图：「{intent}」" if intent else "此刻没有任何动作") if reveal_intents
-                    else ("此刻正忙着手上的事" if intent else "此刻没有任何动作")
-                )
+                # Without intents, what shows on sight stays: how much attention he has to spare
+                # is what detection turns on.
+                if reveal_intents:
+                    intent_clause = f"此刻意图：「{intent}」" if intent else "此刻没有任何动作"
+                else:
+                    doing = _person_visible_doing(agent_obj, directory, bystander_ids) if intent else ""
+                    intent_clause = f"此刻{doing}" if doing else "此刻没有任何动作"
                 if bg:
                     lines.append(f"  · {bg}；{intent_clause}")
                 else:
@@ -300,6 +303,17 @@ def _person_current_intent(agent: "Agent | None") -> str:
     if state.action_status != ActionStatus.IN_PROGRESS:
         return ""
     return (state.current_action or "").strip()
+
+
+def _person_visible_doing(
+    agent: "Agent", directory: "WorldDirectory", present_ids: list[str],
+) -> str:
+    """What a co-present agent is visibly doing (``visible_doing``). A talk names its partner
+    only when the partner is here too; otherwise the judge is told of someone it can't place."""
+    state = agent.personality.state
+    partner = state.activity_target
+    partners = [directory.agent_name(partner)] if partner and partner in present_ids else []
+    return visible_doing(state.activity_status, partners)
 
 
 def observe_location(environment: "EnvironmentSystem", agent_id: str) -> str:

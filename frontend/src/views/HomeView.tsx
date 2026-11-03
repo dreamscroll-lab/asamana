@@ -1,7 +1,8 @@
 // Home / "new world": a centered theme prompt (Claude-style). The world LIST lives
 // in the sidebar; this view is purely the create-a-world experience + its build
 // progress. On success it hands off to the review/confirm stage.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useAutoGrow } from "../hooks/useAutoGrow";
 import { useNavigate } from "react-router-dom";
 
 import { api } from "../api/client";
@@ -12,12 +13,9 @@ import { useWorlds } from "../lib/worldsContext";
 import type { BuildJob, MapTemplate, ThemePreset } from "../types";
 
 /** How tall the theme box may grow before it scrolls inside (about six lines), so it doesn't
- *  push the sample themes off the fold. Same technique as DirectorBar's INPUT_MAX_PX. */
+ *  push the sample themes off the fold. */
 const THEME_MAX_PX = 400;
 
-/** …and how tall it is before a word is typed: a one-line box reads as a search field, and
- *  this screen asks for a few sentences. */
-const THEME_MIN_PX = 120;
 
 const BUILD_POLL_GIVE_UP = 5;
 
@@ -28,6 +26,10 @@ export default function HomeView() {
   const modelKeys = deployment?.model_keys ?? false;
   const [theme, setTheme] = useState("");
   const [building, setBuilding] = useState<BuildJob | null>(null);
+  // Set before the request: a second Cmd+Enter while the POST is in flight would start (and bill)
+  // a second world build. A ref, not state, so the guard holds within the same render.
+  const creating = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
   // Consecutive failed polls of a build. One is a network blip, not the build failing: it is still
   // running on the server, so only a run of them gives up on it.
   const [pollFailures, setPollFailures] = useState(0);
@@ -38,16 +40,7 @@ export default function HomeView() {
   const [templates, setTemplates] = useState<MapTemplate[]>([]);
   // null = let the backend read the theme and pick.
   const [template, setTemplate] = useState<string | null>(null);
-  const box = useRef<HTMLTextAreaElement>(null);
-
-  // Grow to fit what has been typed, capped. Reset height to 0 before measuring, or
-  // scrollHeight reports the taller of (content, current box) and the field never shrinks.
-  useLayoutEffect(() => {
-    const el = box.current;
-    if (!el) return;
-    el.style.height = "0px";
-    el.style.height = `${Math.min(Math.max(el.scrollHeight, THEME_MIN_PX), THEME_MAX_PX)}px`;
-  }, [theme]);
+  const box = useAutoGrow(theme, THEME_MAX_PX);
 
   useEffect(() => {
     // Either failure costs that section of the form, not the ability to create
@@ -98,17 +91,22 @@ export default function HomeView() {
   }, [building, pollFailures, refresh, navigate]);
 
   async function create() {
-    if (!modelKeys) return;
+    if (!modelKeys || creating.current) return;
     setError("");
     const t = theme.trim();
     if (!t) {
       setError("请输入世界主题。");
       return;
     }
+    creating.current = true;
+    setSubmitting(true);
     try {
       setBuilding(await api.createWorld(t, template));
     } catch (e) {
       setError(String(e));
+    } finally {
+      creating.current = false;
+      setSubmitting(false);
     }
   }
 
@@ -139,7 +137,7 @@ export default function HomeView() {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter") create();
             }}
             placeholder="输入世界主题..."
-            className="w-full bg-slate-900 border border-slate-800 focus:border-indigo-500/80 focus:ring-1 focus:ring-indigo-500/40 rounded-2xl p-4 pr-4 pb-14 text-slate-200 placeholder-slate-600 text-sm focus:outline-none transition resize-none shadow-2xl"
+            className="min-h-[120px] w-full bg-slate-900 border border-slate-800 focus:border-indigo-500/80 focus:ring-1 focus:ring-indigo-500/40 rounded-2xl p-4 pr-4 pb-14 text-slate-200 placeholder-slate-600 text-sm focus:outline-none transition resize-none shadow-2xl"
           />
           {templates.length > 0 && (
             <div className="absolute bottom-3 left-3">
@@ -148,7 +146,7 @@ export default function HomeView() {
           )}
           <button
             onClick={create}
-            disabled={!modelKeys || !theme.trim()}
+            disabled={!modelKeys || !theme.trim() || submitting}
             title={modelKeys ? undefined : NO_MODEL_KEYS_HINT}
             className="absolute bottom-3 right-3 px-5 py-2 rounded-xl text-xs font-semibold tracking-wider bg-indigo-600 text-white hover:bg-indigo-500 shadow-lg shadow-indigo-600/30 border border-indigo-500 transition flex items-center gap-2 disabled:bg-slate-800 disabled:text-slate-500 disabled:shadow-none disabled:border-slate-800 disabled:cursor-not-allowed"
           >

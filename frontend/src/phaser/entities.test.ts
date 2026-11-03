@@ -99,6 +99,24 @@ describe("entity note positions", () => {
   });
 });
 
+describe("a cut holds nothing back against another step's view", () => {
+  it("lands a changed thing at once: the last view shows another step", () => {
+    const { layer, entity } = setup("item");
+    layer.applyEntities(layer.beginStep({ letter: entity }, new Set(), new Set(), true));
+    const opened = { ...entity, state: "opened" };
+    const shown = layer.beginStep({ letter: opened }, new Set(["letter"]), new Set(), true);
+    expect(layer.withheld.size).toBe(0);
+    expect(shown.letter).toEqual(opened);
+  });
+
+  it("still holds back a thing made this step: absence is its known before-state", () => {
+    const { layer, entity } = setup("item");
+    const shown = layer.beginStep({ letter: entity }, new Set(["letter"]), new Set(["letter"]), true);
+    expect([...layer.withheld]).toEqual(["letter"]);
+    expect(shown.letter).toBeUndefined();
+  });
+});
+
 describe("a thing changing hands", () => {
   it("flies as a gold star from the old holder to the new, never as a letter", () => {
     const { layer, entity } = setup("item");

@@ -41,6 +41,10 @@ class ActorChannel:
         # The actor asked to break off what the character is doing, at the next interrupt stage.
         # Given up at the decision stage: by then the character is idle.
         self._break_off = False
+        # Set by ``abandon`` until the next run: a stop lands at any point of the step, and a turn
+        # that opens after it would wait for an answer nobody gives. Withdrawal is a state, not a
+        # one-shot on the turn waiting right now.
+        self._withdrawn = False
 
     @property
     def agent_id(self) -> str | None:
@@ -66,6 +70,8 @@ class ActorChannel:
             raise ValueError("Turn is not for the followed character")
         if self._pending is not None:
             raise ValueError("A turn is already waiting for the actor")
+        if self._withdrawn:
+            raise StepWithdrawn()
         future: asyncio.Future[ActorAnswer] = asyncio.get_running_loop().create_future()
         self._pending = (turn, future, check)
         logger.info(
@@ -103,12 +109,18 @@ class ActorChannel:
         self._announce(None)
 
     def abandon(self) -> None:
-        """Withdraw the waiting turn; the suspended step raises ``StepWithdrawn``."""
+        """Withdraw the waiting turn and every turn the run would still open; the suspended step
+        raises ``StepWithdrawn``. Holds until ``reopen``."""
+        self._withdrawn = True
         if self._pending is not None:
             _turn, future, _check = self._pending
             self._pending = None
             future.set_exception(StepWithdrawn())
             self._announce(None)
+
+    def reopen(self) -> None:
+        """Let turns open again: a new run starts."""
+        self._withdrawn = False
 
     def _announce(self, turn: ActorTurn | None) -> None:
         if self._on_turn is None:

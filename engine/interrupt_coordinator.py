@@ -6,7 +6,8 @@ The first two are ``apply_interrupt``; the third lands in ``NarrativeRuntime.run
 (removing the torn-down agent from in_progress_at_step_start) and ``AgentScheduler``
 (``CadenceReason.INTERRUPTED``).
 
-Signals: urgent messages, high-severity broadcasts, external THREAT goals raise the reasons; the
+Signals: urgent messages, high-severity broadcasts, external THREAT goals and one's own agreed
+times falling due raise the reasons; the
 character says whether to weigh them and weighs them itself (``Agent.weighs_interrupt`` /
 ``Agent.evaluate_interrupt``), however its cognition is driven. Teardown lands through the
 ExecutionProcessor; this never calls back into the runtime.
@@ -18,6 +19,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping
 
+from agent.goals import falling_due
 from agent.motivation import ExternalDriveType
 from agent.personality import ActionStatus
 from core.context import annotate_call, observe_stage
@@ -45,6 +47,10 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+
+def _in_progress(agent: "Agent") -> bool:
+    return agent.personality.state.action_status == ActionStatus.IN_PROGRESS
 
 
 @dataclass
@@ -125,7 +131,7 @@ class InterruptCoordinator:
 
         # Path 3: ExternalGoal THREAT, urgency >= HIGH, edge-triggered
         for agent_id, agent in agents.items():
-            if agent.personality.state.action_status != ActionStatus.IN_PROGRESS:
+            if not _in_progress(agent):
                 self._interrupt_seen_goals.pop(agent_id, None)
                 continue
             seen = self._interrupt_seen_goals.get(agent_id, set())
@@ -145,16 +151,35 @@ class InterruptCoordinator:
                     _note(agent_id, threat_reason)
             self._interrupt_seen_goals[agent_id] = qualifying
 
+        # Path 4: an agreed time of one's own falls due mid-action. The cadence gate's DUE wakes
+        # only idle bodies. A time already past isn't asked: an action begun after it was chosen
+        # with the overdue mark in view. Nor is an action ending this step: DUE wakes the agent
+        # next step anyway, and breaking off its last beat only loses what it was about to yield.
+        # A due step covers a span, so the reason says the time lies within it, not that it has
+        # come; "到了" at the span's start sends the agent hours early.
+        window = describe_duration(1, self._clock.config.seconds_per_step)
+        due_now: set[str] = set()
+        for agent_id, agent in agents.items():
+            if not _in_progress(agent):
+                continue
+            exec_state = self._executor_registry.get_active_for_agent(agent_id)
+            if exec_state is None or exec_state.remaining_steps <= 1:
+                continue
+            for goal in falling_due(agent.personality.state.short_term_goal_entities, step):
+                due_now.add(agent_id)
+                _note(agent_id, f"我约定好时间的事项快到了，就在接下来{window}之内：{goal.text}")
+
         signals = signals or {}
         candidates: Dict[str, _InterruptCandidate] = {}
         # Agents with reasons first, in the order their first reason was raised.
         for agent_id in [*reasons, *(a for a in agents if a not in reasons)]:
             agent = agents[agent_id]
-            if agent.personality.state.action_status != ActionStatus.IN_PROGRESS:
+            if not _in_progress(agent):
                 continue
             raised = reasons.get(agent_id, [])
             if not agent.weighs_interrupt(
                 step=step, reasons=raised, signals=signals.get(agent_id, PerceivedSignals()),
+                falling_due=agent_id in due_now,
             ):
                 continue
             exec_state = self._executor_registry.get_active_for_agent(agent_id)

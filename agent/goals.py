@@ -178,6 +178,13 @@ def is_due(goal: GoalEntity, step: int) -> bool:
     return goal.due_step is not None and goal.due_step <= step
 
 
+def falling_due(entities: Sequence[GoalEntity], step: int) -> List[GoalEntity]:
+    """Live goals whose agreed time is this very step: an action in progress is weighed against
+    them once, here. Not ``is_due``: re-asked every step past due, an agent that chose to finish
+    first would be asked again each step and waver."""
+    return [g for g in live_goals(entities) if g.due_step == step]
+
+
 def is_past_allowance(goal: GoalEntity, step: int) -> bool:
     """The reaper's only test: the two clocks described at _SHORT_TERM_GOAL_STALL_STEPS.
     Same clock as goal_age_hint / goal_due_hint, so the mark the judge sees decides the reaping;
@@ -235,16 +242,26 @@ def _next_short_term_seq(entities: Sequence[GoalEntity]) -> int:
     return seq + 1
 
 
-def _evict_over_cap(entities: List[GoalEntity], current_step: int) -> None:
-    """Evict the oldest over-capacity goals in place, marked FAILED, not dropped.
+def _eviction_rank(goal: GoalEntity, current_step: int) -> tuple[bool, bool]:
+    """Lower is evicted first: COGNITIVE before RESIDUE, and within each, a goal with an agreed
+    time still to come last. A far-off appointment is set early, so by queue order alone it is
+    the oldest and the first a few fresh plans would push out, long before its time."""
+    upcoming = goal.due_step is not None and goal.due_step >= current_step
+    return (goal.origin == GoalOrigin.RESIDUE, upcoming)
 
-    Oldest COGNITIVE first; RESIDUE only when the live queue is all RESIDUE, or "what I promised"
-    gets pushed out by two fresh routine goals (see GoalOrigin). RESIDUE stays bounded by this cap
-    and the time-allowance reaping in evaluate_goal_progress.
+
+def _evict_over_cap(entities: List[GoalEntity], current_step: int) -> None:
+    """Evict the over-capacity goals in place, marked FAILED, not dropped; the oldest first
+    within an ``_eviction_rank`` tier.
+
+    RESIDUE only when the live queue is all RESIDUE, or "what I promised" gets pushed out by two
+    fresh routine goals (see GoalOrigin). RESIDUE stays bounded by this cap and the
+    time-allowance reaping in evaluate_goal_progress.
     """
     live = live_goals(entities)
     while len(live) > _SHORT_TERM_GOAL_CAP:
-        victim = next((g for g in live if g.origin == GoalOrigin.COGNITIVE), live[0])
+        # min keeps the first of equal ranks, so ties go to the oldest.
+        victim = min(live, key=lambda g: _eviction_rank(g, current_step))
         live.remove(victim)
         victim.status = GoalStatus.FAILED
         victim.last_evaluated_step = current_step

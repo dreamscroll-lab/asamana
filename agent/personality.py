@@ -89,6 +89,26 @@ class AgentActivityStatus(str, Enum):
         return _ACTIVITY_STATUS_LABELS[self.value]
 
 
+def visible_doing(status: AgentActivityStatus, partners: Sequence[str] = ()) -> str:
+    """What onlookers see a body doing, as a phrase to follow his name (「正在休息」); "" when
+    nothing shows. ``partners`` are the names of those he is talking with.
+
+    Only the outer layer: never what is said, made or asked for, which for the types in
+    ``COVERTABLE_ACTION_TYPES`` is a hidden layer. COVERT doesn't show at all: someone acting
+    covertly looks like someone doing nothing in particular.
+    """
+    if status is AgentActivityStatus.TALKING:
+        return f"正与{'、'.join(partners)}交谈" if partners else f"正在{ActionType.TALK.label}"
+    return _VISIBLE_DOING.get(status, "")
+
+
+_VISIBLE_DOING: dict[AgentActivityStatus, str] = {
+    AgentActivityStatus.MOVING: "正要动身离开",
+    AgentActivityStatus.RESTING: f"正在{ActionType.REST.label}",
+    AgentActivityStatus.WORKING: "正忙着手上的事",
+}
+
+
 def activity_status_for(action_type: ActionType) -> AgentActivityStatus:
     """What an agent is visibly doing while an action of this type runs."""
 

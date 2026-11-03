@@ -292,7 +292,7 @@ def test_main_prompt_visible_entities_empty_says_无(main_engine) -> None:
     """
     packet = _make_packet()          # no visible_entities
     prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
-    assert "我够得着的东西：无" in prompt
+    assert "眼前的东西：无" in prompt
     # All three lists behave the same: any empty one is reported as empty
     assert "我能触及的人：无" in prompt
     assert "我可前往：无处" in prompt
@@ -1021,6 +1021,19 @@ def test_recipient_index_precedes_action_description_in_schema(main_engine) -> N
     assert prompt.index('"physical_recipient_index"') < prompt.index('"action_description"')
 
 
+def test_only_things_in_hand_can_be_handed_over(main_engine) -> None:
+    """Binding rejects a hand-over of something not held (physical_recipient_not_held) and the
+    retry gets the same prompt, so the boundary has to be in the prompt: for the character's own
+    decision and for the actor's interpretation alike."""
+    prompt = _decision_prompt(main_engine, _make_personality(), _make_packet(), candidates=[])
+    recipient = next(line for line in prompt.split("\n") if '"physical_recipient_index"' in line)
+    assert "我手上的东西" in recipient
+    assert "交得出去的只有“我手上的东西”那一组里的；不在我手上的，得先拿到手" in prompt
+    intent = main_engine._intent_system_prompt()  # noqa: SLF001
+    recipient = next(line for line in intent.split("\n") if '"physical_recipient_index"' in line)
+    assert "我手上的东西" in recipient and "交不出去" in recipient
+
+
 
 def test_spoken_words_follow_action_description_in_schema(main_engine) -> None:
     """The words said are what the step comes to in speech: written after the step, so they carry
@@ -1047,11 +1060,13 @@ def test_the_relation_legend_sits_in_the_system_prefix(main_engine) -> None:
     assert "尉迟恭" in user
 
 def test_item_list_marks_who_holds_what(main_engine) -> None:
-    """One list, one set of indices. Holding is an attribute of an entry, not a second namespace.
+    """One list, one set of indices, shown in two groups: what is in my hands, and what isn't.
 
     A separate list would mean a second index space, and index spaces bleeding into each other is
-    how a physical target gets bound to the wrong thing. Names come only from the perception
-    packet (the holder is always at my location), and no id appears in the prompt.
+    how a physical target gets bound to the wrong thing. Marked only per entry, something lying
+    beside me gets read as already in hand and handed over, so the groups say it outright. Names
+    come only from the perception packet (the holder is always at my location), and no id appears
+    in the prompt. Perception lists my own things first (``reachable_in_order``).
     """
     packet = _make_packet(
         visible_agent_ids=["agent-weichi"],
@@ -1059,26 +1074,40 @@ def test_item_list_marks_who_holds_what(main_engine) -> None:
     )
     packet.spatial.visible_npcs["npc-runner"] = PerceivedNpc(NpcIdentity(name="信使"))
     packet.spatial.visible_entities.extend([
-        VisibleEntity(entity_id="e1", name="灯笼", entity_type="item"),
         VisibleEntity(entity_id="e2", name="短刀", entity_type="item", holder_id="agent-shimin",
                       is_takeable=True),
+        VisibleEntity(entity_id="e1", name="灯笼", entity_type="item"),
         VisibleEntity(entity_id="e3", name="虎符", entity_type="item", holder_id="agent-weichi",
                       is_takeable=True),
         VisibleEntity(entity_id="e4", name="密函", entity_type="item", holder_id="agent-ghost"),
         VisibleEntity(entity_id="e5", name="包裹", entity_type="item", holder_id="npc-runner", is_takeable=True),
     ])
     prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
-
-    assert "我够得着的东西：" in prompt
-    assert "#1 灯笼" in prompt and "持有" not in prompt.split("#1 灯笼")[1].split("\n")[0]
-    assert "#2 短刀（由我持有；可交出）" in prompt     # in my hands: what I can do is hand it over
-    assert "#3 虎符（由尉迟恭持有）" in prompt       # in someone else's hands: not marked "可取"
-    assert "#4 密函（由某人持有" in prompt      # an unrecognized holder falls back to a descriptive referent
-    assert "#5 包裹（由信使持有）" in prompt
     actor_prompt = main_engine._intent_user_prompt("拿回包裹", _make_personality(), packet, recent=(), recalled=(), fixed=None)
-    assert "#5 包裹（由信使持有）" in actor_prompt
-    for leaked in ("agent-shimin", "agent-weichi", "agent-ghost", "npc-runner", "e1", "e2"):
-        assert leaked not in prompt
+
+    for text in (prompt, actor_prompt):    # the actor's interpretation reads the same lists
+        mine = text.index("我手上的东西：")
+        not_mine = text.index("不在我手上的东西（放在此处，或在别人手上）：")
+        assert text.index("眼前的东西（两组的序号连着数）：") < mine < text.index("#1 短刀") < not_mine
+        assert "#1 短刀（由我持有；可交出）" in text     # in my hands: what I can do is hand it over
+        assert not_mine < text.index("#2 灯笼") < text.index("#3 虎符")
+        assert "持有" not in text.split("#2 灯笼")[1].split("\n")[0]
+        assert "#3 虎符（由尉迟恭持有）" in text       # in someone else's hands: not marked "可取"
+        assert "#4 密函（由某人持有" in text      # an unrecognized holder falls back to a descriptive referent
+        assert "#5 包裹（由信使持有）" in text
+        for leaked in ("agent-shimin", "agent-weichi", "agent-ghost", "npc-runner", "e1", "e2"):
+            assert leaked not in text
+
+
+def test_item_list_says_my_hands_are_empty(main_engine) -> None:
+    """With nothing in hand the group still shows, as 无: that is what corrects a memory that thinks
+    something is held, and only the things not in hand are offered."""
+    packet = _make_packet()
+    packet.spatial.visible_entities.append(
+        VisibleEntity(entity_id="e1", name="说明", entity_type="item", is_takeable=True))
+    prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
+    assert "我手上的东西：无" in prompt
+    assert "#1 说明（可取）" in prompt
 
 
 def test_parse_binds_a_recipient_alongside_the_entity(container) -> None:

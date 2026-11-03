@@ -20,7 +20,7 @@ from agent.personality import SECRET_LABEL, EmotionState, PersonalityLayer
 from core.context import GivenFacts, annotate_active_call, annotate_call, note_active_call_adoption
 from core.duration import describe_duration
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json, output_budget
-from core.interfaces.perception import Situation
+from core.interfaces.perception import Situation, VisibleEntity
 from core.logging import get_logger
 from core.numeric import clamp
 from core.prompts import (
@@ -33,6 +33,7 @@ from core.prompts import (
     condition_line,
     recency_prefix,
     relation_legend,
+    render_entity,
     render_situation_header,
     situation_location,
     urgency_label,
@@ -40,6 +41,15 @@ from core.prompts import (
 )
 
 _logger = get_logger(__name__)
+
+# Said when the hands are empty: left out, a goal or a verdict assumes the thing it needs is there.
+_NOTHING_HELD = "无"
+
+
+def _held_lines(held: "Sequence[VisibleEntity]") -> List[str]:
+    """What the agent has in hand, one rendered item per line; content stays out, since where a
+    goal points needs what the thing is, not every word on it."""
+    return [render_entity(e, held_by_viewer=True) for e in held] or [_NOTHING_HELD]
 
 
 # Prefix-cache split: system is byte-invariant (functional, out-of-character judge); user holds this
@@ -63,6 +73,7 @@ _GOAL_EVALUATION_SYSTEM = """\
 - **警惕「永远 active」**：目标文本后可能标着它「已历约多久仍未了结」。若一个目标已历时明显偏久、且轨迹显示反复推进却始终停在原地（结果一再未达预期、状态毫无实质变化），说明当前手段对它无效——判 failed（搁置），不要无限 active。一个推进不动的目标会锁死后续认知。判 failed（搁置）时，reason 必须点明「反复无进展」的具体依据，落在已记录的轨迹 / 时长上，不臆测。
 - 但别矫枉过正：真正在**逐步推进**（每步能看到可见进展、只是尚未跨过完成线）的多步目标保持 active——搁置只针对「原地打转」，不是「还没做完」；拿不准是「有进展但慢」还是「原地打转」时，倾向保留 active。
 - 判断之前先明确好当前时间和当前地点，避免在结果中涉及到时间问题时出现错乱的情况。
+- 涉及某样东西的目标，要结合所给「被评判者此刻手上的东西」来判，比如要靠手上的东西才能成立的事，就看提前那东西在不在他手上；这里只列他手上的，没列出的东西不等于不存在。比如目标是已经把某样东西交给某人，那东西还在他手上，就是还没交出去。
 - **每个目标必须把判断依据(reason)写在最前面，再给序号(index)与状态(status)——先分析后定状态，不要凭空直接给状态。**
 - 只输出 JSON，不要任何多余内容。
 
@@ -79,6 +90,7 @@ _GOAL_EVALUATION_SYSTEM = """\
 - 没有任何依据或者通过推理也得不到的你自己臆想的事项
 - 与上面待判定目标里已有的那些意思相近或相同的事项
 - **指向所给材料里根本不存在的人、地方或东西的事项**
+- 要用到他手上没有的东西、却没把「先去得到它」算进去的事项
 - 不属于被评判者的事项
 
 约束：
@@ -117,6 +129,8 @@ _GOAL_EVALUATION_USER = """\
 本轮行动：{action_description}
 本轮行动期望的结果：{expected_outcome}
 行动结果：{action_result}
+被评判者此刻手上的东西：
+{held_items}
 {recent_experience}待判定的目标（按序号）：
 {goals_numbered}
 
@@ -150,9 +164,10 @@ _SHORT_TERM_GOAL_SYSTEM = """\
 - 短期目标是一个方向，不是具体的行动指南或具体行动，禁止直接把具体行动作为短期目标。
 - 直接照搬当前情绪当目标，或形成违背我价值观的目标
 - 因为某人**只是在场**（并没有对我做什么）就生成**针对他的激烈目标**（对抗、铲除、严防到行动）——在场至多让我"留意、相机行事"，激烈目标得有指向我的具体事件或压力撑着
-- 重复我刚刚已经做完的事，要往前推进
+- 重复我刚刚已经做完的事，或结果已经明确的事（不论好坏，比如对方已明确拒绝，或已说过不知道），要往前推进
 - 跳出第一人称，用旁观者口吻、或事后才有的命名去指代正在发生的事
 - 预设未来某件事必然发生——只依据我此刻已经知道的
+- 要靠手上的东西才能做成、那东西却不在我手上的目标——我手上有什么，以所给「我手上的东西」为准；比如想把某样东西交给某人，它却不在我手上，目标该是先去拿到它。
 - 综合所有信息后，如果存在明显的事实性冲突，禁止直接忽略严重的或需要关注的事实性冲突，必须要思考为什么会有这样的冲突，必要时可以在新的目标中体现。
 """ + ABSOLUTE_TIME_RULE_FIRST_PERSON + """
 
@@ -180,6 +195,8 @@ _SHORT_TERM_GOAL_USER = """\
 我的价值观：{core_values}{secret_line}
 我此刻的情绪：{emotion}
 我眼下最迫切的需求：{dominant_need_label}
+我手上的东西：
+{held_items}
 我的长期目标：
 {long_term_goals}
 {relations_section}
@@ -494,6 +511,7 @@ class NeedEngine:
         external_goals: "List[ExternalGoal] | None" = None,
         need_relevance: dict[NeedType, float] | None = None,
         perceived_relations: "List[PerceivedRelation] | None" = None,
+        held: "Sequence[VisibleEntity]" = (),
         generate_goals: bool = True,
     ) -> NeedEvaluation:
         """Evaluate motivations against the current context — **reads personality, writes nothing**.
@@ -587,6 +605,7 @@ class NeedEngine:
                 # Use the prompt's own renderer: a separate rendering would drop gender and declare
                 # lines beyond the cap that the model never saw.
                 .add("关系", render_relation_lines(perceived_relations or []))
+                .add("我手上的东西", _held_lines(held))
             )
             with annotate_call(
                 given_facts=given_facts,
@@ -610,6 +629,7 @@ class NeedEngine:
                     external_goals=external_goals,
                     emotion=current_emotion,
                     perceived_relations=perceived_relations,
+                    held=held,
                     now_step=current_step,
                 )
             entities = enqueue_goals(
@@ -678,6 +698,7 @@ class NeedEngine:
         situation: Situation = Situation(),
         recent_factuals: list[str] = (),
         expected_outcome: str = "",
+        held: "Sequence[VisibleEntity]" = (),
     ) -> List[GoalEntity]:
         """LLM-judge short-term goal progress and enqueue this action's **residue**; returns the
         updated queue without writing back (the agent commits).
@@ -719,7 +740,7 @@ class NeedEngine:
         )
         # Trajectory evidence, so the judge can spot goals completed cumulatively over several steps.
         recent_block = (
-            f"该角色近期的客观经历（已发生的客观记录，供判断「跨多步累积达成」；{MEMORY_ORDER_HINT}）：\n"
+            f"该角色近期的客观经历（已发生的客观记录（注意计划做的事和已经发生的事的区别，绝对不能把计划的事当作已经发生的客观事实，这个是禁止的），供判断「跨多步累积达成」；{MEMORY_ORDER_HINT}）：\n"
             + "\n".join(f"- {t}" for t in recent_factuals if t)
             + "\n"
             if any(recent_factuals) else ""
@@ -732,6 +753,7 @@ class NeedEngine:
             action_description=action_description,
             expected_outcome=expected_outcome or "（无）",
             action_result=action_result,
+            held_items="\n".join(f"- {line}" for line in _held_lines(held)),
             recent_experience=recent_block,
             goals_numbered=goals_numbered,
         )
@@ -744,6 +766,7 @@ class NeedEngine:
                 .add("我刚做了", action_description)
                 .add("我原本期望", expected_outcome or "（无）")
                 .add("实际结果", action_result)
+                .add("此刻手上的东西", _held_lines(held))
                 .add("近来的经历", recent_block.splitlines()),
                 goal_texts=goal_texts_by_index,
                 location=situation_location(situation),
@@ -1007,6 +1030,7 @@ class NeedEngine:
         external_goals: "List[ExternalGoal] | None" = None,
         emotion: EmotionState | None = None,
         perceived_relations: "List[PerceivedRelation] | None" = None,
+        held: "Sequence[VisibleEntity]" = (),
         now_step: int = 0,
     ) -> List[tuple[str, int | None]]:
         if personality is not None and dominant_need is not None:
@@ -1130,6 +1154,7 @@ class NeedEngine:
                 ),
                 emotion=emotion_text,
                 dominant_need_label=dominant_label,
+                held_items="\n".join(f"- {line}" for line in _held_lines(held)),
                 long_term_goals=long_term_goals_text,
                 recent_events=recent_events,
                 recent_memory_section=recent_memory_section,

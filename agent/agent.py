@@ -66,7 +66,9 @@ from core.interfaces.actor import (
 from core.interfaces.relation import AgentRelation
 from core.interfaces.message import Message
 from core.interfaces.snapshot import AgentState
-from core.interfaces.perception import Broadcast, PerceivedIdentity, PerceivedSignals, Situation, SpatialPerception
+from core.interfaces.perception import (
+    Broadcast, PerceivedIdentity, PerceivedSignals, Situation, SpatialPerception, VisibleEntity,
+)
 from core.prompts import (
     EMOTION_INTENSITY_DEFINITION,
     EMOTION_VALENCE_DEFINITION,
@@ -247,6 +249,10 @@ class Agent:
         # time (agent/ may not use the directory). Cache only the Situation, not the whole
         # SpatialPerception, so stale visible_agents/ambient can't be misread later. Not persisted.
         self._situation: Situation = Situation()
+        # What I have in hand, for the goal judge at feedback. Perceived like _situation, but
+        # refreshed before every feedback (refresh_held), not only after a move: the action itself
+        # may have made, handed over or seized something. Not persisted.
+        self._held: "tuple[VisibleEntity, ...]" = ()
         # This step's dead, for "deceased" marks at plan and feedback time; refreshed each step like
         # _situation. Written by perceive_step and note_deaths.
         self._dead_agent_ids: "frozenset[str]" = frozenset()
@@ -282,16 +288,14 @@ class Agent:
             gender=(known.gender if known else "") or (relation.to_gender if relation else ""),
         )
 
-    async def _resolve_agent_names(self, agent_ids) -> Dict[str, str]:
-        """agent_id → display name for memory prose, by ``_known_identity``. Unknown ids become
-        "某人" (someone), never a bare id (a layer leak). Bare names only: person_referent's
-        parentheses are for rosters.
-        """
-        names: Dict[str, str] = {}
+    async def _resolve_agent_identities(self, agent_ids) -> Dict[str, PerceivedIdentity]:
+        """agent_id → what I can call them, by ``_known_identity``; a part I don't know stays "".
+        The renderer supplies the descriptive fallback, never a bare id (a layer leak)."""
+        identities: Dict[str, PerceivedIdentity] = {}
         for aid in agent_ids:
             relation = await self.relation_system.load_existing(aid)
-            names[aid] = self._known_identity(aid, relation).name or "某人"
-        return names
+            identities[aid] = self._known_identity(aid, relation)
+        return identities
 
     async def _resolve_relation_context(self, agent_ids, *, include_legend: bool = True) -> str:
         """Build the "my relations with the people involved" block for memory writes.
@@ -322,14 +326,15 @@ class Agent:
         keeps ``relation_legend()`` in its system prompt, the cacheable prefix."""
         return await self._resolve_relation_context(agent_ids, include_legend=False)
 
-    async def _event_people_context(self, agent_ids) -> tuple[Dict[str, str], str]:
-        """{id: display name} plus the relations block for a memory write.
+    async def _event_people_context(self, agent_ids) -> tuple[Dict[str, PerceivedIdentity], str]:
+        """{id: identity} plus the relations block for a memory write. Identity, not just the
+        name: the monologue says 他/她 of the people listed, and without gender it guesses.
 
         Assembled here, where both the name cache and relation_system live, so MemorySystem takes
         only precomputed state and never depends on RelationSystem.
         """
         return (
-            await self._resolve_agent_names(agent_ids),
+            await self._resolve_agent_identities(agent_ids),
             await self._resolve_relation_context(agent_ids),
         )
 
@@ -368,6 +373,7 @@ class Agent:
             )
         # See the __init__ comment; ``refresh_situation`` updates it if he moves again within the beat.
         self._situation = Situation.from_spatial(spatial)
+        self._held = tuple(spatial.held_by(self.agent_id))
         self._dead_agent_ids = dead_ids
         logger.debug(
             "agent_perceive_step",
@@ -714,10 +720,13 @@ class Agent:
             if not sid or sid in relevant_ids:
                 continue
             relevant_ids.append(sid)
-            # Senders carry only a name; a gender seen earlier comes from relation.to_gender.
+            # Senders carry only a name; a gender seen earlier comes from what I know of them.
+            # Unknown parts stay "": ``perceive`` caches what it is given as the relation's name,
+            # so a display fallback ("某人") passed here would overwrite the name I know them by.
+            # Rendering supplies the fallback.
+            known = self._known_identity(sid, await self.relation_system.load_existing(sid))
             relevant.setdefault(sid, PerceivedIdentity(
-                name=getattr(msg, "sender_name", "") or "某人",
-                gender=(known.gender if (known := self._known_agents.get(sid)) else ""),
+                name=getattr(msg, "sender_name", "") or known.name, gender=known.gender,
             ))
         # Related-but-absent people (top-N by salience) still weigh on cognition, and SEND_MESSAGE
         # must be able to target them.
@@ -726,9 +735,7 @@ class Agent:
             if not tid or tid == self.agent_id or tid in relevant_ids:
                 continue
             relevant_ids.append(tid)
-            relevant.setdefault(tid, PerceivedIdentity(
-                name=rel.to_name or "某人", gender=rel.to_gender,
-            ))
+            relevant.setdefault(tid, self._known_identity(tid, rel))
         memory_biases = {
             aid: self.memory_system.related_memory_bias(target_agent_id=aid, current_step=current_step)
             for aid in relevant_ids
@@ -920,6 +927,7 @@ class Agent:
                 recent_foiled_texts=recent_foiled,
                 external_goals=external_goals_raw,
                 perceived_relations=perceived_relations,
+                held=spatial.held_by(self.agent_id),
                 generate_goals=generate_goals,
             )
         logger.debug(
@@ -1414,11 +1422,14 @@ class Agent:
         actor performs it: motivation is the actor's."""
         return self.actor is None
 
-    def weighs_interrupt(self, *, step: int, reasons: Sequence[str], signals: PerceivedSignals) -> bool:
+    def weighs_interrupt(
+        self, *, step: int, reasons: Sequence[str], signals: PerceivedSignals, falling_due: bool,
+    ) -> bool:
         """Whether to weigh breaking off the action in progress: when the engine's signal
-        thresholds raised ``reasons``, or for an actor, when anything reached the character."""
+        thresholds raised ``reasons``, or for an actor, when anything reached the character or
+        one of its agreed times falls due (``falling_due``, decided by the engine's own path)."""
         if self.actor is not None:
-            return self.actor.weighs_interrupt(step=step, signals=signals)
+            return self.actor.weighs_interrupt(step=step, signals=signals, falling_due=falling_due)
         return bool(reasons)
 
     async def evaluate_interrupt(
@@ -1944,6 +1955,11 @@ class Agent:
         """
         self._situation = Situation.from_spatial(spatial)
 
+    def refresh_held(self, spatial: "SpatialPerception") -> None:
+        """Re-read what I have in hand once the action's world changes have landed, so the goal
+        judge sees the thing just made or handed over."""
+        self._held = tuple(spatial.held_by(self.agent_id))
+
     async def finalize_ongoing_action(
         self, *, result: ActionResult, step: int
     ) -> None:
@@ -1982,6 +1998,7 @@ class Agent:
                 recent_factuals=recent_factuals,
                 # For a MOVE, the errand at the destination lives here; the description only says he set off.
                 expected_outcome=result.expected_outcome,
+                held=self._held,
             )
 
     async def _land_goal_progress(self, updated: List[GoalEntity], *, step: int) -> None:

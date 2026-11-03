@@ -19,6 +19,8 @@ import { AFFECTION_RANGE, EMOTION_INTENSITY_RANGE, EMOTION_VALENCE_RANGE, TRUST_
 import { useVocabulary } from "../../lib/vocabulary";
 import type { ActorAmendments, ActorMind, BriefRelation, EmotionAmendment, GoalAmendment, VocabularyEntry } from "../../types";
 import { BTN, BTN_PRIMARY } from "../buttonStyles";
+import AutoGrowTextarea from "../AutoGrowTextarea";
+import { CONSOLE_EDIT_BOX, CONSOLE_INPUT_MAX_PX } from "../consoleStyles";
 import { reasonText } from "./decisionSummary";
 import GoalPanel from "./GoalPanel";
 import { goalRows, goalsChanged, shortTermAmendments } from "./goals";
@@ -34,9 +36,6 @@ const TABS: { key: Tab; label: string }[] = [
 
 // The backend's cap on one insight (interaction/api/actor.py).
 const MAX_INSIGHT = 500;
-
-const EDIT_BOX =
-  "w-full resize-y bg-slate-950/80 border border-slate-800 rounded-lg px-2 py-1 text-[12px] text-slate-200 focus:outline-none focus:border-indigo-500/70";
 
 interface Draft {
   emotion: EmotionAmendment | null;
@@ -287,13 +286,14 @@ export default function MindPanel({
               <Mark pending edited={false} />
             </div>
           ))}
-          <textarea
+          <AutoGrowTextarea
+            maxPx={CONSOLE_INPUT_MAX_PX}
             value={draft.insight}
             onChange={(e) => setDraft({ ...draft, insight: e.target.value })}
             rows={2}
             maxLength={MAX_INSIGHT}
             placeholder="以你的视角记录一条新的认识或理解…"
-            className={EDIT_BOX}
+            className={CONSOLE_EDIT_BOX}
           />
         </div>
       )}
@@ -405,7 +405,7 @@ function GoalList({
       {goals.map((g, i) => (
         <div key={i} className="flex items-start gap-1.5">
           <span className="shrink-0 text-[12px] text-slate-500 tabular-nums">{i + 1}.</span>
-          {editing ? <textarea value={g} rows={2} onChange={(e) => set(i, e.target.value)} className={EDIT_BOX} />
+          {editing ? <AutoGrowTextarea maxPx={CONSOLE_INPUT_MAX_PX} value={g} rows={2} onChange={(e) => set(i, e.target.value)} className={CONSOLE_EDIT_BOX} />
             : <p className="m-0 flex-1 whitespace-pre-wrap break-words text-[12px] text-slate-200">{g}</p>}
           {editing && (
             <button

@@ -10,6 +10,7 @@ vi.mock("react", async (importOriginal) => ({
   useRef: (current: unknown) => ({ current }),
   useState: (initial: unknown) => [stateValues.length ? stateValues.shift() : initial, vi.fn()],
 }));
+vi.mock("../../hooks/useAutoGrow", () => ({ useAutoGrow: () => undefined }));
 const { publicCast } = vi.hoisted(() => ({ publicCast: {} as Record<string, { agent_id: string; name: string }> }));
 vi.mock("../../lib/cast", () => ({ useCast: () => ({ cast: publicCast }) }));
 vi.mock("./submission", () => ({

@@ -178,9 +178,12 @@ def build_observe_router(services: ApiServices) -> Any:
         await websocket.send_json(
             {"type": "status", "data": {"world_id": world_id, "status": state.value if state else None}}
         )
+        # Sent even when no turn is open: a client reconnecting after its turn closed would
+        # otherwise keep showing the closed one.
         turn = application.actor_turn(world_id)
-        if turn is not None:
-            await websocket.send_json({"type": "actor_turn", "data": to_wire_json(turn)})
+        await websocket.send_json(
+            {"type": "actor_turn", "data": to_wire_json(turn) if turn is not None else None}
+        )
         steps = await manager.list_steps(world_id)
         # Skip the step the initial frame already covered (subscribing first causes this overlap).
         sent_step = -1

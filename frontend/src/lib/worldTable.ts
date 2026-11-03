@@ -62,6 +62,12 @@ export interface WorldTable<T> {
   useTable(worldId: string): TableState<T>;
 }
 
+function sameRows<T>(a: Table<T>, b: Table<T>): boolean {
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => Object.hasOwn(b, key) && JSON.stringify(a[key]) === JSON.stringify(b[key]));
+}
+
 export function worldTable<T>(fetch: (worldId: string) => Promise<T[]>, keyOf: (row: T) => string): WorldTable<T> {
   const worlds = new Map<string, Entry<T>>();
 
@@ -119,7 +125,10 @@ export function worldTable<T>(fetch: (worldId: string) => Promise<T[]>, keyOf: (
   const read = (worldId: string, entry: Entry<T>): Promise<Table<T>> => {
     const pending = fetch(worldId).then(
       (rows) => {
-        const table: Table<T> = Object.freeze(Object.fromEntries(rows.map((row) => [keyOf(row), row])));
+        const fetched: Table<T> = Object.freeze(Object.fromEntries(rows.map((row) => [keyOf(row), row])));
+        // Readers take the table's identity as "it changed" (a map render restarts on it), so a
+        // read that brings back the same rows, as recovering a miss usually does, keeps it.
+        const table = sameRows(entry.state.table, fetched) ? entry.state.table : fetched;
         if (entry.pending === pending) {
           entry.pending = null;
           entry.loaded = true;

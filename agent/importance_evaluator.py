@@ -8,13 +8,14 @@ store, embedding or vector index.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
 from core.context import note_active_call_adoption, observe_stage
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json, output_budget
+from core.interfaces.perception import PerceivedIdentity
 from core.interfaces.trace import Stage
 from core.logging import get_logger
-from core.prompts import MEMORY_IMPORTANCE_SCORE_DEFINITION
+from core.prompts import MEMORY_IMPORTANCE_SCORE_DEFINITION, person_referent
 
 if TYPE_CHECKING:
     from agent.personality import PersonalityLayer
@@ -23,14 +24,18 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def render_related_people(directory: dict[str, str] | None) -> str:
-    """Render ``{id: name}`` as names for the prompt; a person with no name becomes the
-    descriptive "某位相关人物", never the id."""
+def render_related_people(
+    directory: "Mapping[str, PerceivedIdentity] | None", *, with_gender: bool,
+) -> str:
+    """Render ``{id: identity}`` for the prompt; a person with no name becomes the descriptive
+    "某位相关人物", never the id. ``with_gender`` for a prompt that writes about them (the memory
+    monologue says 他/她), roster form (``person_referent``); a pure ruling takes names only."""
     if not directory:
         return "无"
     parts = [
-        label or "某位相关人物"
-        for label in directory.values()
+        person_referent(who.name or "某位相关人物", who.gender) if with_gender
+        else who.name or "某位相关人物"
+        for who in directory.values()
     ]
     return "、".join(parts) if parts else "无"
 
@@ -49,7 +54,7 @@ class ImportanceEvaluator:
         *,
         personality: PersonalityLayer,
         related_agents: Sequence[str],
-        related_directory: dict[str, str] | None = None,
+        related_directory: dict[str, PerceivedIdentity] | None = None,
         related_relations_text: str = "",
         dominant_need_label: str = "",
     ) -> float:
@@ -60,7 +65,7 @@ class ImportanceEvaluator:
         event weighs very differently for a close friend than for a political enemy.
         """
         name = personality.soul.name
-        related_str = render_related_people(related_directory)
+        related_str = render_related_people(related_directory, with_gender=False)
         # The agent-specific label from personality.need_label, not a generic Maslow description.
         need_line = f"当前主导需求：{dominant_need_label}\n" if dominant_need_label else ""
         long_term = personality.state.long_term_goals or []

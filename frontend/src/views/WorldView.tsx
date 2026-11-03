@@ -128,9 +128,10 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
     if (viewer) setFocus({ agents: [viewer], place: null, follow: true });
   }, [viewer]);
 
-  // The actor's thread from the backend: on arrival, and whenever the run settles. A run stopped
-  // mid-step discards that step, so the thread read then replaces what was pushed live; while
-  // the world runs, the read only adds to what arrives meanwhile.
+  // The actor's thread from the backend: on arrival, on every (re)connect, since entries pushed
+  // while the socket was down are lost, and whenever the run settles. A run stopped mid-step
+  // discards that step, so the thread read then replaces what was pushed live; while the world
+  // runs, the read only adds to what arrives meanwhile.
   const settled = runState !== "running" && runState !== "stopping";
   useEffect(() => {
     if (!viewer) return;
@@ -143,7 +144,7 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
     return () => {
       current = false;
     };
-  }, [id, viewer, settled]);
+  }, [id, viewer, settled, connected]);
 
   // --- Step playback state machine (live buffer + playback + graph) ---
   const {

@@ -706,8 +706,8 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
 {{
   "reason": "先想清楚:此刻这个故事最需要怎样的一拍、为什么 —— 据此再设计下面的事件,不超过 60 字",
   "is_positive": true 或 false 或 null,
-  "spawn": {{"location": 放在哪个地点(地点序号), "entity_type": "item 或 landmark", "name": "它叫什么,不超过 12 字", "description": "它看上去是什么样,不超过 40 字", "content": "只有它本身承载文字或记录时才填,写它上面写着 / 记着的东西,不超过 80 字;其余一律留空字符串", "observation": "这件东西本身的变化,不写人,不超过 40 字"}} 或 null,
-  "alter": {{"entity": 物件序号, "state": "变化后的状态词,不超过 12 字,不变就留空", "description": "变化后它看上去的样子,不超过 40 字,不变就留空", "content": "改动后上面写着的全文,不超过 80 字,不变就留空", "observation": "这件东西本身的变化,不写人,不超过 40 字"}} 或 null,
+  "spawn": {{"location": 放在哪个地点(地点序号), "entity_type": "item 或 landmark", "name": "它叫什么,不超过 12 字", "description": "它看上去是什么样,不超过 40 字", "content": "只有它本身承载文字或记录时才填,写它上面写着 / 记着的东西,要有具体、实质内容,不超过 80 字;其余一律留空字符串", "observation": "这件东西本身的变化,不写人,不超过 40 字"}} 或 null,
+  "alter": {{"entity": 物件序号, "state": "变化后的状态词,不超过 12 字,不变就留空", "description": "变化后它看上去的样子,不超过 40 字,不变就留空", "content": "改动后上面写着的全文,要有具体、实质内容,不超过 80 字,不变就留空", "observation": "这件东西本身的变化,不写人,不超过 40 字"}} 或 null,
   "destroy": {{"entity": 物件序号, "observation": "这件东西本身的变化,不写人,不超过 40 字"}} 或 null,
   "broadcast": {{"location_scope": 发生地的地点序号(笼罩全域就填 null,或整个不写这一项), "content": "广播内容,不超过 80 字", "severity": "{Severity.prompt_choices()}", "phenomenon": "{Phenomenon.prompt_choices()}"}} 或 null,
   "message": {{"recipients": [人物序号，最多10个], "content": "定向内容,不超过 80 字", "urgency": "low|normal|high|critical"}} 或 null,

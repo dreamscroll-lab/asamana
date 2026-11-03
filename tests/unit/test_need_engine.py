@@ -44,11 +44,12 @@ def _goal(
     origin: GoalOrigin = GoalOrigin.COGNITIVE,
     created_step: int = 0,
     status: GoalStatus = GoalStatus.ACTIVE,
+    due_step: int | None = None,
 ) -> GoalEntity:
     """A short-term GoalEntity with the fields these tests care about."""
     return GoalEntity(
         id=f"stg-{created_step}-{text}", text=text, goal_type="short_term",
-        status=status, created_step=created_step, origin=origin,
+        status=status, created_step=created_step, origin=origin, due_step=due_step,
     )
 
 
@@ -2282,6 +2283,21 @@ def test_evict_over_cap_drops_cognitive_before_residue() -> None:
     assert [g.text for g in evicted] == ["计划1"], "该逐出的是最旧的那条计划"
 
 
+def test_evict_over_cap_keeps_an_appointment_still_to_come() -> None:
+    """A far-off appointment is set early, so by queue order it is the oldest; fresh plans must
+    not push it out before its time. Once its time has passed it is an ordinary plan again."""
+    upcoming = _goal("三日后去城西赴约", created_step=0, due_step=120)
+    missed = _goal("昨夜的约", created_step=1, due_step=50)
+    entities = [upcoming, missed] + [
+        _goal(f"计划{i}", created_step=i) for i in range(2, _SHORT_TERM_GOAL_CAP + 1)
+    ]
+    _evict_over_cap(entities, current_step=99)
+
+    assert upcoming.status == GoalStatus.ACTIVE
+    evicted = [g for g in entities if g.status == GoalStatus.FAILED]
+    assert evicted == [missed], "a missed appointment ranks as an ordinary plan, oldest first"
+
+
 def test_evict_over_cap_falls_back_to_residue_when_no_cognitive() -> None:
     """When the live queue is all unresolved matters, the oldest is still evicted: residue is
     bounded and can't hold slots forever."""
@@ -2854,3 +2870,76 @@ async def test_the_recent_history_block_says_when_each_thing_ended() -> None:
 
     assert "  - （昨日）请动裴寂出面" in captured["user"]
     assert "  - （几小时前）取走那封密信" in captured["user"]
+
+
+# ── What the agent has in hand ─────────────────────────────────────────────────────────
+
+
+class _CaptureLLM:
+    """Records every prompt; answers with an empty but well-formed payload."""
+
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.prompts: list[str] = []
+
+    async def complete(self, scene, messages, **kwargs):
+        from core.interfaces.llm import LLMResponse
+        self.prompts.append("\n".join(m.content for m in messages))
+        return LLMResponse(content=self.content, input_tokens=0, output_tokens=0, model="test")
+
+
+def _ledger(holder_id: str = "agent-1"):
+    from core.interfaces.perception import VisibleEntity
+    return VisibleEntity(
+        entity_id="ent-ledger", name="盐税账册", entity_type="item",
+        description="一本蓝皮账册", is_takeable=True, holder_id=holder_id,
+    )
+
+
+def test_held_by_is_only_what_the_perceiver_carries() -> None:
+    """What lies on the ground or in someone else's hands is no part of "what I have"."""
+    from core.interfaces.perception import LocationView, SpatialPerception, VisibleEntity
+    spatial = SpatialPerception(
+        location_id="hall", location_view=LocationView(name="hall", description=""),
+        world_time_label="", current_step=1,
+        visible_entities=[
+            _ledger("agent-1"), _ledger("agent-2"),
+            VisibleEntity(entity_id="ent-lamp", name="油灯", entity_type="item"),
+        ],
+    )
+    assert [e.holder_id for e in spatial.held_by("agent-1")] == ["agent-1"]
+
+
+@pytest.mark.parametrize("held,expected", [
+    ([_ledger()], "盐税账册"),
+    ([], "我手上的东西：\n- 无"),
+])
+@pytest.mark.asyncio
+async def test_goal_generation_knows_what_is_in_hand(held, expected) -> None:
+    """Without it, goals are built on things the agent doesn't have ("把账册交给他"), and every
+    decision that reads them fails the same way."""
+    llm = _CaptureLLM('{"thought": "我此刻……", "goals": []}')
+    engine = NeedEngine(llm_router=llm)  # type: ignore[arg-type]
+    await engine._generate_short_term_goals(  # noqa: SLF001
+        dominant_need=NeedType.SAFETY, personality=_make_personality(), held=held,
+    )
+    assert expected in llm.prompts[-1]
+    assert "ent-ledger" not in llm.prompts[-1]  # ids never cross the LLM boundary
+
+
+@pytest.mark.parametrize("held,expected", [
+    ([_ledger()], "盐税账册"),
+    ([], "被评判者此刻手上的东西：\n- 无"),
+])
+@pytest.mark.asyncio
+async def test_goal_judge_knows_what_is_in_hand_after_the_action(held, expected) -> None:
+    """Whether "拿到 / 交出 X" came true is read off what is in hand now, not the prose alone."""
+    llm = _CaptureLLM('{"goals": [], "residue_reason": "无", "residue": []}')
+    engine = NeedEngine(llm_router=llm)  # type: ignore[arg-type]
+    ents = enqueue_goals([], ["把盐税账册交给周映荷"], dominant_need=NeedType.SAFETY, current_step=1)
+    await engine.evaluate_goal_progress(
+        step=2, action_description="去见周映荷", action_result="见到了她(成功)",
+        personality=_make_personality(short_term_entities=ents), held=held,
+    )
+    assert expected in llm.prompts[-1]
+    assert "ent-ledger" not in llm.prompts[-1]

@@ -1579,7 +1579,7 @@ async def test_pressure_recent_past_brings_back_his_past_with_each_person_presen
     agent = _make_agent(container)
     await agent.memory_system.record_event(
         current_step=1, raw_content="尉迟恭当众折辱了我", personality=agent.personality,
-        related_agents={"a_yuchi": "尉迟恭"}, importance=0.8,
+        related_agents={"a_yuchi": PerceivedIdentity(name="尉迟恭")}, importance=0.8,
     )
     await agent.memory_system.drain_writes()
     now = 2 + RECENT_EVENT_LOOKBACK_STEPS

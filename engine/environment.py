@@ -14,6 +14,7 @@ from core.interfaces.perception import (
     DEFAULT_ENTITY_STATE, PerceivedNpc, PerceivedPresence,
     AmbientEvent, LocationView, ReachableLocation, SpatialPerception, VisibleEntity,
 )
+from core.coerce import coerce_int
 from core.logging import get_logger
 from core.text import slugify
 from engine.clock import WorldTime
@@ -96,6 +97,7 @@ def _ambient_payload(event: AmbientEvent) -> dict[str, object]:
         "strength": event.strength,
         "doer_ids": list(event.doer_ids),
         "doer_agent_ids": list(event.doer_agent_ids),
+        "acted_upon_ids": list(event.acted_upon_ids),
     }
 
 
@@ -106,6 +108,7 @@ def _ambient_from_payload(payload: Mapping[str, object]) -> AmbientEvent:
         strength=float(strength) if isinstance(strength, (int, float)) else None,
         doer_ids=tuple(str(a) for a in payload.get("doer_ids") or ()),
         doer_agent_ids=tuple(str(a) for a in payload.get("doer_agent_ids") or ()),
+        acted_upon_ids=tuple(str(a) for a in payload.get("acted_upon_ids") or ()),
     )
 
 
@@ -214,9 +217,10 @@ class EnvironmentSystem:
         self._carry_annotations: Dict[str, List[AmbientEvent]] = {}
         # Full-fidelity happenings for covert adjudication (see _Happening). No carry/flip: the
         # writer (runtime._carry_step_observations) already runs after the beat's adjudications.
-        # Must never reach spatial_for (breaks information asymmetry), world_state/engine_state
-        # (leaks into the director's briefing and replay) or assemble_scene_context (would show
-        # up in broadcast PHYSICAL outcomes).
+        # Must never reach spatial_for (breaks information asymmetry), world_state (leaks into
+        # the director's briefing and replay) or assemble_scene_context (would show up in
+        # broadcast PHYSICAL outcomes). engine_state keeps it under its own key, which only
+        # restore reads: lost, a lurker after a restore would be told nothing happened here.
         self._happenings: Dict[str, List[_Happening]] = {}
         # Tombstones stay in ``_entities`` (names must resolve and snapshots must keep them, or a
         # destroyed seed comes back on restore) but leave ``_items``. Ask "what's it called" of
@@ -812,6 +816,7 @@ class EnvironmentSystem:
         observation: str,
         strength: float | None = None,
         doer_ids: tuple[str, ...] = (),
+        acted_upon_ids: tuple[str, ...] = (),
     ) -> None:
         """Queue a location-scoped AmbientEvent for the NEXT step's ambient_events.
 
@@ -822,13 +827,15 @@ class EnvironmentSystem:
             Every member of the producing execution plus whoever the act landed on; spatial_for
             hides the ambient from them so nobody reads a third-person account of their own act.
             ``()`` for environment / system ambient.
+        acted_upon_ids:
+            Which of ``doer_ids`` the act landed on (see ``AmbientEvent.acted_upon_ids``).
         """
         if observation is None or len(observation.strip()) == 0:
             return None
         self._carry_annotations.setdefault(location_id, []).append(
             AmbientEvent(
                 content=observation, strength=strength, doer_ids=tuple(doer_ids),
-                doer_agent_ids=self._cognizant(doer_ids),
+                doer_agent_ids=self._cognizant(doer_ids), acted_upon_ids=tuple(acted_upon_ids),
             )
         )
 
@@ -1018,6 +1025,14 @@ class EnvironmentSystem:
                 scope: [_ambient_payload(e) for e in entries]
                 for scope, entries in sorted(self._carry_annotations.items())
             },
+            # What a lurker may still catch here (covert adjudication only; see _happenings).
+            "happenings": {
+                location_id: [
+                    {"step": h.step, "content": h.content, "doer_ids": list(h.doer_ids)}
+                    for h in bucket
+                ]
+                for location_id, bucket in sorted(self._happenings.items())
+            },
         }
 
     def restore_state(
@@ -1032,14 +1047,26 @@ class EnvironmentSystem:
 
         The caller rebuilds places and agent placement; this restores entity state (re-registering
         runtime-made ones, re-killing tombstoned seeds), ``transit_origins`` (so the caller can
-        send back a body left in transit with no trip), next step's carried observations, and
-        Npcs whole, position included.
+        send back a body left in transit with no trip), next step's carried observations, the
+        happenings a lurker may still catch, and Npcs whole, position included.
         """
         carry = engine.get("carry_annotations")
         if isinstance(carry, Mapping):
             self._carry_annotations = {
                 str(scope): [_ambient_from_payload(e) for e in entries if isinstance(e, Mapping)]
                 for scope, entries in carry.items() if isinstance(entries, list)
+            }
+        happenings = engine.get("happenings")
+        if isinstance(happenings, Mapping):
+            self._happenings = {
+                str(location_id): [
+                    _Happening(
+                        step=coerce_int(h.get("step"), default=0), content=str(h.get("content") or ""),
+                        doer_ids=tuple(str(i) for i in h.get("doer_ids") or ()),
+                    )
+                    for h in bucket if isinstance(h, Mapping) and h.get("content")
+                ]
+                for location_id, bucket in happenings.items() if isinstance(bucket, list)
             }
         transit_origins = engine.get("transit_origins")
         if isinstance(transit_origins, Mapping):

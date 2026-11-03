@@ -5,7 +5,14 @@ export const CONSOLE_HEADER = "shrink-0 space-y-1.5 px-3 pt-2.5 pb-2 border-b bo
 export const CONSOLE_CLOSE = "pt-1 text-[11px] text-slate-500 hover:text-slate-200 transition";
 export const CONSOLE_THREAD = "min-h-0 flex-1 overflow-y-auto px-3 py-2 space-y-2";
 export const CONSOLE_FOOTER = "shrink-0 border-t border-slate-800/50 px-3 py-2 space-y-1.5";
+/** Past this height a console input scrolls internally; any taller and it covers the map. */
+export const CONSOLE_INPUT_MAX_PX = 160;
 export const CONSOLE_INPUT = "min-h-14 w-full resize-none bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-[13px] text-slate-200 focus:outline-none focus:border-indigo-500/70 disabled:opacity-50";
+/** Added to CONSOLE_INPUT while it is the user's turn to speak. `!` because Tailwind gives no
+ *  order between two border-color utilities on one element. */
+export const CONSOLE_INPUT_TURN = "!border-indigo-500/50 shadow-[0_0_0_3px_rgba(99,102,241,0.12)]";
+/** CONSOLE_INPUT's compact sibling for editing entries inside a panel (insights, goals). */
+export const CONSOLE_EDIT_BOX = "w-full resize-none bg-slate-950/80 border border-slate-800 rounded-lg px-2 py-1 text-[12px] text-slate-200 focus:outline-none focus:border-indigo-500/70";
 
 export const CONSOLE_RAISED = "shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_4px_10px_-4px_rgba(0,0,0,0.6)]";
 export const CONSOLE_WORLD_MESSAGE = `max-w-[92%] break-words rounded-xl rounded-tl-sm border border-slate-800/70 bg-slate-900/70 px-3 py-2 text-[13px] leading-relaxed text-slate-200 ${CONSOLE_RAISED}`;

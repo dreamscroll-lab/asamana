@@ -438,10 +438,10 @@ class ExecutionProcessor:
             landed_at = (
                 result.action.target.acted_on_place if result.action.target is not None else None
             )
+            spatial = self._environment.spatial_for(agent_id=result.action.agent_id, step=step)
             if landed_at:
-                agent_obj.refresh_situation(
-                    self._environment.spatial_for(agent_id=result.action.agent_id, step=step)
-                )
+                agent_obj.refresh_situation(spatial)
+            agent_obj.refresh_held(spatial)
             try:
                 await agent_obj.finalize_ongoing_action(result=result, step=step)
             except Exception as exc:  # noqa: BLE001

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List
 
 from agent.decision import DecisionStatus
+from agent.personality import activity_status_for, visible_doing
 from core.context import observe_stage
 from core.interfaces.action import ActionResult, ActionTarget, ActionType, AgentAction
 from core.interfaces.directory import WorldDirectory
@@ -42,17 +43,7 @@ logger = get_logger(__name__)
 _FOILED_MISS_PRIORITY_THRESHOLD = 3
 
 
-# What the committed body is visibly doing, as the rejected agent sees it face to face. COVERT
-# isn't listed: naming it would expose it, so it falls through to the vague phrase. TALK is
-# built in _busy_reason (it names the partner).
-_BUSY_WITH: dict[ActionType, str] = {
-    ActionType.REST: f"正在{ActionType.REST.label}",
-    ActionType.WORK: f"正在{ActionType.WORK.label}",
-    ActionType.MOVE: "正要动身离开",
-    ActionType.PHYSICAL: "正在动手做别的事",
-    ActionType.SEND_MESSAGE: f"正在{ActionType.SEND_MESSAGE.label}",
-    ActionType.ERRAND: f"正在{ActionType.ERRAND.label}",
-}
+# A committed body whose activity doesn't show (COVERT) still turned the request down.
 _BUSY_UNSEEN = "正忙于他事"
 
 
@@ -729,7 +720,7 @@ class ExecutionArbiter:
     def _busy_reason(
         self, pid: str, admissions: dict[str, _Admission], claimed_by: dict[str, str],
     ) -> str:
-        """What X is doing, as the rejected agent sees it (see _BUSY_WITH).
+        """What X is visibly doing, as the rejected agent sees it face to face (``visible_doing``).
 
         Read from the books for this step's admissions, else the registry; an execution that
         finished on the step-start tick falls back to the vague phrase.
@@ -746,12 +737,8 @@ class ExecutionArbiter:
                 return f"{name}{_BUSY_UNSEEN}"
             action_type = exec_state.action_type
             members = list(exec_state.participant_ids)
-        if action_type == ActionType.TALK:
-            partners = [p for p in members if p != pid]
-            if partners:
-                who = "、".join(self._directory.agent_name(p) for p in partners)
-                return f"{name}正与{who}交谈"
-        return f"{name}{_BUSY_WITH.get(action_type, _BUSY_UNSEEN)}"
+        partners = [self._directory.agent_name(p) for p in members if p != pid]
+        return f"{name}{visible_doing(activity_status_for(action_type), partners) or _BUSY_UNSEEN}"
 
     def _rejected_result(
         self,

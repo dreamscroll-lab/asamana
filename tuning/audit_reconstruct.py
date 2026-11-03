@@ -1,10 +1,10 @@
-"""Reconstruct a browsable audit view from a world's persisted runtime traces.
+"""Reconstruct a browsable audit view from a world's confirmed setup and persisted runtime traces.
 
-Auditing is post-hoc and offline: it only reads the ``LLMCallTrace`` records already persisted in
-``data/traces/<world_id>/`` (prompt + response + stage + agent_id + step) and never reruns the
-simulation. This module regroups the flat JSONL calls into the shapes the three-part audit needs:
+Auditing is post-hoc and offline: it reads the setup frozen into step 0 plus the ``LLMCallTrace``
+records already persisted in ``data/traces/<world_id>/`` (prompt + response + stage + agent_id +
+step) and never reruns the simulation. This module regroups the flat JSONL calls into the shapes the three-part audit needs:
 
-- ``init``          — the build stage's world_building / cast_design / persona outputs (part one).
+- ``init``          — the opening world as confirmed: lore, characters, relations, history, things, NPCs (part one).
 - ``per_agent``     — each agent's per-stage trajectory across all steps (part two: across / along).
 - ``per_step``      — each agent's stage outputs within a step (part three: one step across agents).
 - ``world_sequence``— the world skeleton across steps (time + injected events); each agent's cell goes through ``cells_at``.
@@ -31,11 +31,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.interfaces.llm import IndexedRef, LLMScene, extract_json_object
+from core.interfaces.llm import LLMScene, extract_json_object
 from core.interfaces.trace import BeatKind, LLMCallTrace, stage_sort_key
-from engine.clock import SECONDS_PER_HOUR
+from core.interfaces.world_config import WorldConfig
 from interaction.models import WorldTimeView
 from providers.trace.file import BufferedJsonlTraceSink
+from world.setup import WorldSetup
 
 # Every input/state field the audit reads is attached by the cognition path to that stage's LLM call
 # through annotate_call into LLMCallTrace.extra (contract: core.context.annotate_call → LLMRouter →
@@ -485,63 +486,72 @@ def _fold_action(s: dict[str, Any], c: StageCall, out: dict, agent_name: str) ->
         _append(s, "results", {**whose, **fields})
 
 
-def _build_init(build_calls: list[LLMCallTrace]) -> tuple[dict[str, Any], dict[str, str]]:
-    """Assemble the initialization view + an agent_id→name map from build.jsonl calls."""
-    world_building: dict[str, Any] = {}
-    cast_roles: Any = None
-    personas: list[dict[str, Any]] = []
-    names: dict[str, str] = {}
-    for c in build_calls:
-        obj = extract_json_object(c.response_content)
-        if not isinstance(obj, dict):
-            continue
-        if c.scene == "world_building":
-            world_building = obj
-        elif c.scene == "cast_design":
-            cast_roles = obj.get("roles")
-        elif c.scene == "persona_generation":
-            # Identity comes from the trace's own agent_id / agent_name, not the echo: the model miscopies ids,
-            # and production (AgentGenerator._definition_from_payload) doesn't trust the echoed name / agent_id either.
-            aid = c.agent_id or obj.get("agent_id")
-            name = c.extra.get("agent_name") or obj.get("name")
-            if aid:
-                obj["agent_id"] = aid
-            if name:
-                obj["name"] = name
-            personas.append(obj)
-            if aid and name:
-                names[str(aid)] = str(name)
-    # Step duration is set by this build itself. The audit reads the raw LLM output, whose unit is hours
-    # (production quantizes to seconds in _analysis_from_payload), so the same conversion is applied
-    # here to express the trajectory's estimated_steps as natural durations; the narrative layer has no "step" unit.
-    time_config = world_building.get("world_time_config") or {}
-    hours_per_step = time_config.get("hours_per_step") if isinstance(time_config, dict) else None
-    seconds_per_step = (
-        int(hours_per_step) * SECONDS_PER_HOUR if isinstance(hours_per_step, int) else None
-    )
-    # Roles name their figure by roster number, as CastDesigner._parse reads them.
-    roster = IndexedRef(
-        str(f.get("name")) for f in world_building.get("key_figures") or [] if isinstance(f, dict)
-    )
-    for role in cast_roles if isinstance(cast_roles, list) else []:
-        if isinstance(role, dict) and (resolved := roster.resolve([role.get("index")])):
-            role["name"] = resolved[0]
+def _build_init(setup: WorldSetup, world_config: WorldConfig) -> tuple[dict[str, Any], dict[str, str]]:
+    """Assemble the initialization view + an agent_id→name map from the world's confirmed setup.
+
+    The setup frozen into step 0 is the world that ran. Don't read the build's raw LLM responses
+    instead: the build normalizes, fills in and drops fields after them (hidden needs get their
+    intensity and weight, ids resolve to places), and the confirm step may revise characters, so
+    the judge would score a world that never existed.
+    """
+    places = {pid: place.name for pid, place in world_config.get_places().items()}
+    names = {d.agent_id: d.soul.name for d in setup.characters}
+
+    # Narrative-facing text: an unresolved id falls back to a descriptive referent, never the id.
+    def _place(pid: str) -> str:
+        return places.get(pid) or "某地"
+
+    def _person(aid: str) -> str:
+        return names.get(aid) or "某人"
+
+    lore = setup.lore
     init = {
-        "world_name": world_building.get("world_name"),
+        "world_name": lore.world_name,
         # Opening things and errand-runners: like personas, they're the initial world fixed at build time
         # for the whole run. The audit needs to see them to judge whether the opening has anything to fight
         # over or anyone to send; a world with no affordances can only move forward through talk.
-        "world_entity_seeds": world_building.get("world_entity_seeds") or [],
-        "npcs": world_building.get("npcs") or [],
-        "core_tension": world_building.get("core_tension"),
-        "narrative_theme": world_building.get("narrative_theme"),
-        "key_figures": world_building.get("key_figures") or [],
-        "initial_relations": world_building.get("initial_relations") or [],
-        "historical_events": world_building.get("historical_events") or [],
-        "world_time_config": world_building.get("world_time_config") or {},
-        "seconds_per_step": seconds_per_step,
-        "cast_roles": cast_roles or [],
-        "personas": personas,
+        "world_entity_seeds": [
+            {"name": s.name, "entity_type": s.entity_type, "initial_state": s.initial_state,
+             "location_name": _place(s.location), "description": s.description}
+            for s in setup.entity_seeds
+        ],
+        "npcs": [
+            {"name": s.name, "gender": s.gender, "age": s.age,
+             "location_name": _place(s.location), "description": s.description}
+            for s in setup.npc_seeds
+        ],
+        "core_tension": lore.core_tension,
+        "narrative_theme": lore.narrative_theme,
+        "key_figures": [
+            {"name": d.soul.name, "role": d.soul.role, "age": d.soul.age, "gender": d.soul.gender,
+             "importance": d.tier.value}
+            for d in setup.characters
+        ],
+        "initial_relations": [
+            {"from": _person(r.source_id), "to": _person(r.target_id),
+             "labels": list(r.labels), "trust": r.trust, "affection": r.affection,
+             "reverse_labels": list(r.reverse_labels), "reverse_trust": r.reverse_trust,
+             "reverse_affection": r.reverse_affection}
+            for r in setup.relations
+        ],
+        "historical_events": [
+            {"event": e.event, "hours_before_start": e.hours_before_start,
+             "related_figures": [_person(a) for a in e.figure_ids]}
+            for e in setup.historical_events
+        ],
+        "world_time_config": dict(lore.world_time_config),
+        # The world's clock as the runtime resolves it, so durations read the same as in the run.
+        "seconds_per_step": lore.seconds_per_step,
+        "personas": [
+            {"agent_id": d.agent_id, "name": d.soul.name, "role": d.soul.role,
+             "initial_location": _place(d.initial_location),
+             "core_traits": list(d.soul.core_traits), "core_values": list(d.soul.core_values),
+             "self_image": d.soul.self_image, "background": d.soul.background,
+             "life_goal": d.soul.life_goal, "hard_constraints": list(d.soul.hard_constraints),
+             "long_term_goals": list(d.long_term_goals),
+             "initial_needs": d.initial_needs, "hidden_needs": d.hidden_needs}
+            for d in setup.characters
+        ],
     }
     return init, names
 
@@ -553,19 +563,21 @@ def _build_init(build_calls: list[LLMCallTrace]) -> tuple[dict[str, Any], dict[s
 def reconstruct_world(
     world_id: str,
     *,
+    setup: WorldSetup,
+    world_config: WorldConfig,
     trace_dir: str = "data/traces",
     steps: list[int] | None = None,
 ) -> WorldAuditView:
     """Read a world's traces and reshape them for the audit judges.
 
-    ``steps`` (optional) restricts the single/multi-step views to a subset; the
-    initialization view always reads the full build segment.
+    ``setup`` / ``world_config`` are the world as confirmed (step 0's setup and the persisted map):
+    the initialization view is built from them. ``steps`` (optional) restricts the single/multi-step
+    views to a subset.
     """
     sink = BufferedJsonlTraceSink(base_dir=trace_dir)
     all_calls = sink.read_calls(world_id)
 
-    build_calls = [c for c in all_calls if c.step is None or c.stage == "world_init"]
-    init, names = _build_init(build_calls)
+    init, names = _build_init(setup, world_config)
 
     world_times = {
         s.step: WorldTimeView.from_payload(s.world_time).label

@@ -190,6 +190,35 @@ async def test_amendments_saved_during_a_turn_land_at_once(container) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_turn_answered_while_an_amendment_lands_resumes_after_it(container) -> None:
+    """An amendment spans awaits (the insight is embedded and stored). Answered meanwhile, the
+    step must not resume alongside it and write back the goals it planned with."""
+    runtime, agents, hero = await _hero_with_a_relation(container, "world-actor-mind-race")
+    task = asyncio.create_task(runtime.run_step(agents))
+    await _next_turn(runtime, task)
+    storing, release = asyncio.Event(), asyncio.Event()
+    add_insight = hero.memory_system.add_insight
+
+    async def slow_insight(**kwargs):
+        storing.set()
+        await release.wait()
+        return await add_insight(**kwargs)
+
+    hero.memory_system.add_insight = slow_insight
+    amending = asyncio.create_task(runtime.amend_actor_mind(_AMENDED))
+    await storing.wait()
+
+    runtime.answer_actor(_IDLE)                     # taken: the turn closes…
+    await asyncio.wait({task}, timeout=0.5)
+    assert not task.done()                          # …but the step waits for the amendment
+
+    release.set()
+    assert await amending is True
+    await task
+    await _assert_amended(container, hero)
+
+
+@pytest.mark.asyncio
 async def test_a_later_save_overrides_an_earlier_one_and_insights_add_up(container) -> None:
     runtime, _agents, _hero = await _hero_with_a_relation(container, "world-actor-mind-merge")
 

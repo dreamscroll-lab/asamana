@@ -227,6 +227,15 @@ def _coordinator(sink: InMemoryTraceSink):
     return ActorCoordinator(WorldTimeConfig(start_hour=6, seconds_per_step=60), world_id="w", trace_sink=sink)
 
 
+def test_an_agreed_time_falling_due_asks_the_actor_and_says_why() -> None:
+    from core.interfaces.perception import PerceivedSignals
+    coordinator = _coordinator(InMemoryTraceSink())
+
+    assert coordinator.weighs_interrupt(step=5, signals=PerceivedSignals(), falling_due=True)
+    assert coordinator._reason_for(5) == "约定好时间的事项快到了"  # noqa: SLF001
+    assert not coordinator.weighs_interrupt(step=6, signals=PerceivedSignals(), falling_due=False)
+
+
 @pytest.mark.asyncio
 async def test_a_break_off_is_the_interrupt_beat() -> None:
     sink = InMemoryTraceSink()

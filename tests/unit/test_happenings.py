@@ -16,7 +16,6 @@ from engine.environment import (
     HAPPENINGS_MAX_ENTRIES, HAPPENINGS_WINDOW_STEPS, EnvironmentSystem,
 )
 from core.interfaces.place import Place
-from tests.unit.env_state import saved
 
 
 def _world_time(step: int) -> WorldTime:
@@ -124,10 +123,11 @@ def test_history_never_reaches_ordinary_perception() -> None:
     assert not any("三日后动手" in ev.content for ev in spatial.ambient_events)
 
 
-def test_history_never_reaches_the_snapshot() -> None:
-    """Never included in what a snapshot saves of the environment. That is the real leak path: the
-    engine state flows to the narrative editor's brief (the step_annotations reader in engine/narrative_editor.py)
-    and the world state to every web/replay consumer.
+def test_history_reaches_no_reader_of_the_snapshot_but_restore() -> None:
+    """The leak paths are the world state (every web/replay consumer) and the ambient
+    annotations the narrative editor's brief reads (engine/narrative_editor.py). The engine state
+    keeps it under its own key, read only by restore: lost, a lurker after a restore would be
+    told nothing happened here.
     """
     env = _env()
     env.record_happening(
@@ -135,7 +135,10 @@ def test_history_never_reaches_the_snapshot() -> None:
     )
     env.begin_step(step=2, world_time=_world_time(2))
 
-    assert "三日后动手" not in str(saved(env))
+    engine = env.engine_state()
+    assert "三日后动手" not in str(env.world_state())
+    assert "三日后动手" not in str(engine["step_annotations"]) + str(engine["carry_annotations"])
+    assert "三日后动手" in str(engine["happenings"])
 
 
 def test_blank_and_placeless_writes_are_dropped() -> None:

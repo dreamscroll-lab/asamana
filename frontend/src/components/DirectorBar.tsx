@@ -24,6 +24,7 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useAutoGrow } from "../hooks/useAutoGrow";
 
 import { api } from "../api/client";
 import { NO_MODEL_KEYS_HINT, useModelKeys } from "../lib/deployment";
@@ -32,11 +33,9 @@ import SendButton, { SEND_HINT, isSendKey } from "./SendButton";
 import { buildThread, nextOccurrence, type Submission, type SubmissionState } from "./director/thread";
 import {
   CONSOLE_USER_MESSAGE, CONSOLE_WORLD_MESSAGE, CONSOLE_COLLAPSED, CONSOLE_PANEL, CONSOLE_HEADER,
-  CONSOLE_CLOSE, CONSOLE_THREAD, CONSOLE_FOOTER, CONSOLE_INPUT,
+  CONSOLE_CLOSE, CONSOLE_THREAD, CONSOLE_FOOTER, CONSOLE_INPUT, CONSOLE_INPUT_MAX_PX,
 } from "./consoleStyles";
 
-/** Past this height the input scrolls internally; any taller and it covers the map. */
-const INPUT_MAX_PX = 132;
 const FOLLOW_BOTTOM_PX = 48;
 const MAX_DIRECTIVE_CHARS = 500;
 
@@ -54,19 +53,10 @@ export default function DirectorBar({ worldId, step }: { worldId: string; step: 
   const history = useRef<Intervention[] | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const followLatest = useRef(true);
-  const box = useRef<HTMLTextAreaElement>(null);
+  const box = useAutoGrow(text, CONSOLE_INPUT_MAX_PX);
   const modelKeys = useModelKeys();
   const working = submissions.some((item) => item.state.kind === "working");
   const items = buildThread(landed, submissions);
-
-  // Auto-grow: reset to zero before measuring scrollHeight, otherwise it only grows and never
-  // shrinks.
-  useLayoutEffect(() => {
-    const el = box.current;
-    if (!el) return;
-    el.style.height = "0px";
-    el.style.height = `${Math.min(el.scrollHeight, INPUT_MAX_PX)}px`;
-  }, [text, collapsed]);
 
   useLayoutEffect(() => {
     const el = scroller.current;

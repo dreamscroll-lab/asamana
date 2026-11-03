@@ -665,6 +665,9 @@ async def test_perceive_relevant_relations_includes_senders_filters_system() -> 
     async def fake_significant_relations(*, limit):
         return []  # no established relations → test only the in-view + sender paths
 
+    async def fake_load_existing(_agent_id):
+        return None
+
     fake_self = SimpleNamespace(
         agent_id="self-id",
         memory_system=SimpleNamespace(
@@ -673,11 +676,13 @@ async def test_perceive_relevant_relations_includes_senders_filters_system() -> 
         relation_system=SimpleNamespace(
             perceive_many=fake_perceive_many,
             significant_relations=fake_significant_relations,
+            load_existing=fake_load_existing,
         ),
         personality=SimpleNamespace(state=SimpleNamespace(emotion=EmotionState())),
         _dead_agent_ids=frozenset(),  # the dead set cached by perceive_step (none here)
         _known_agents={},             # sender gender only from meeting in person
     )
+    fake_self._known_identity = lambda aid, rel: Agent._known_identity(fake_self, aid, rel)
     spatial = _spatial(visible={"v1": "在场者"})
     inbox = [
         _msg("remote", "远方人", "你在何处"),    # absent sender → included

@@ -13,7 +13,7 @@ from core.interfaces.action import ActionTarget, Deed, Observed, Ref
 from core.interfaces.llm import LLMScene
 from agent.memory import MemorySystem
 from agent.need import NeedEngine
-from agent.personality import ActionStatus, PersonalityLayer, SoulLayer
+from agent.personality import PersonalityLayer, SoulLayer
 from agent.relation import RelationSystem
 from engine.directory import LiveWorldDirectory
 from engine.environment import IN_TRANSIT, SALIENT_AMBIENT_STRENGTH, EnvironmentSystem
@@ -2505,7 +2505,7 @@ class TestWorkExecutor:
         executor = WE(container.llm_router, _directory({"agent-a": agent_a}))
 
         async def _fail_outcome(
-            self_inner, *, agent, purpose, duration_label, now_step=0, location="",
+            self_inner, *, agent, purpose, duration_label, recalled=None, now_step=0, location="",
             situation_header="", scene="", expected_outcome="", in_hand=None,
         ):
             from engine.executors.work import _WorkVerdict
@@ -2585,6 +2585,63 @@ class TestWorkExecutor:
         prompt = _joined(container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).call_history[-1])
         assert "hall" in prompt
         assert "在场的其他人" in prompt    # scene evidence is included (agent-b is in hall with the doer)
+
+    @pytest.mark.asyncio
+    async def test_work_judge_recalls_what_the_doer_knows_about_the_job(
+        self, container, monkeypatch,
+    ) -> None:
+        """A letter or plan is written from what the doer knows; without recall its content is
+        invented and persisted. Recall is keyed by the purpose."""
+        from agent.memory_types import Memory, MemoryStream
+        from core.interfaces.llm import LLMScene
+        agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="A")
+        agents = {"agent-a": agent_a}
+        queries: list[str] = []
+        floors: list[object] = []
+
+        async def _retrieve(query: str, **kw: object) -> list[Memory]:
+            queries.append(query)
+            floors.append(kw.get("score_floor"))
+            return [Memory(
+                id="m1", stream=MemoryStream.FACTUAL, agent_id="agent-a",
+                stored_content="上月的盐税账少了三十两。", created_step=0,
+            )]
+
+        monkeypatch.setattr(agent_a.memory_system, "retrieve", _retrieve)
+        executor = WorkExecutor(container.llm_router, _directory(agents))
+        env = _make_environment()
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.WORK, description="整理账本", estimated_steps=1,
+        )
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        [result] = await executor.complete(state, 1, agents=agents, environment=env, message_system=None)
+        assert result.adjudication_failed is False
+        assert queries == [state.purpose]
+        # Above the junk floor: a loosely related memory is worse here than none.
+        from agent.memory_ranking import RETRIEVAL_SCORE_FLOOR
+        assert floors[0] is not None and floors[0] > RETRIEVAL_SCORE_FLOOR
+        prompt = _joined(container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).call_history[-1])
+        assert "上月的盐税账少了三十两。" in prompt
+        assert "m1" not in prompt          # ids never cross the LLM boundary
+
+    @pytest.mark.asyncio
+    async def test_work_recall_failure_still_judges(self, container, monkeypatch) -> None:
+        """A failed memory read only empties the recall (Rule 6); the verdict still happens."""
+        agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="A")
+        agents = {"agent-a": agent_a}
+
+        async def _boom(*_a: object, **_kw: object) -> list:
+            raise RuntimeError("vector store down")
+
+        monkeypatch.setattr(agent_a.memory_system, "retrieve", _boom)
+        executor = WorkExecutor(container.llm_router, _directory(agents))
+        env = _make_environment()
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.WORK, description="整理账本", estimated_steps=1,
+        )
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        [result] = await executor.complete(state, 1, agents=agents, environment=env, message_system=None)
+        assert result.adjudication_failed is False and result.succeeded
 
     @pytest.mark.asyncio
     async def test_work_background_agent_is_llm_judged_and_can_fail(self, container) -> None:
@@ -5074,13 +5131,14 @@ class TestCovertExecutor:
 
     @pytest.mark.asyncio
     async def test_covert_judge_never_sees_what_a_bystander_intends(self, container) -> None:
-        """Covert adjudication can see whether the people present are busy, but not what they
-        intend.
+        """Covert adjudication can see what the people present are visibly doing, but not what
+        they intend.
 
         An intent hasn't happened, and this judge's fact goes straight into the doer's memory:
         given intent text, the judge reports it as overheard ("我听见他说…"). Detection only needs
-        busy or idle.
+        what shows on sight.
         """
+        from agent.personality import AgentActivityStatus
         from core.interfaces.llm import LLMScene
         from engine.executors.covert import CovertExecutor
 
@@ -5092,10 +5150,9 @@ class TestCovertExecutor:
         agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
         agent_b = _make_agent(container, world_id="w", agent_id="agent-b", name="乙", is_main=False)
         env.place_agent(agent_id="agent-b", location_id=env.get_body_location("agent-a"))
-        agent_b.personality.update_action_status(
-            status=ActionStatus.IN_PROGRESS,
-            current_action="我去把密信烧了，免得落在旁人手里",
-            remaining_steps=2,
+        agent_b.personality.begin_action(
+            step=1, description="我去把密信烧了，免得落在旁人手里",
+            activity_status=AgentActivityStatus.WORKING, estimated_steps=3,
         )
 
         executor = CovertExecutor(
@@ -5115,7 +5172,91 @@ class TestCovertExecutor:
         prompt = _joined(provider.call_history[-1])
         assert "密信" not in prompt, "在场者打算做什么,暗中探查的裁决不该看见"
         assert "此刻意图" not in prompt
-        assert "此刻正忙着手上的事" in prompt, "忙/闲这一维要留着——判 detected 靠它"
+        assert "此刻正忙着手上的事" in prompt, "外观这一维要留着——判 detected 靠它"
+
+    @pytest.mark.asyncio
+    async def test_covert_judge_sees_a_resting_bystander_as_resting(self, container) -> None:
+        """A resting bystander reads as resting, not busy, while the intent stays hidden.
+
+        Resting is visible on sight and someone resting notices the least; read as "busy", the
+        judge contradicts a doer who waited for him to fall asleep.
+        """
+        from agent.personality import AgentActivityStatus
+        from core.interfaces.llm import LLMScene
+        from engine.executors.covert import CovertExecutor
+
+        provider = container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION)
+        provider.fixed_response = (
+            '{"detected": false, "outcome": "o", "fact": "f", "achieved": false}'
+        )
+        env = _make_environment()
+        agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
+        agent_b = _make_agent(container, world_id="w", agent_id="agent-b", name="乙", is_main=False)
+        env.place_agent(agent_id="agent-b", location_id=env.get_body_location("agent-a"))
+        agent_b.personality.begin_action(
+            step=1, description="我在角落歇下，把草稿压在枕下",
+            activity_status=AgentActivityStatus.RESTING, estimated_steps=3,
+        )
+
+        executor = CovertExecutor(
+            container.llm_router, _directory({"agent-a": agent_a, "agent-b": agent_b}),
+        )
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.COVERT, description="趁乙睡着翻看草稿",
+        )
+        agents = {"agent-a": agent_a, "agent-b": agent_b}
+        state = await executor.start(
+            action, 1, agents=agents, environment=env, message_system=None,
+        )
+        await executor.complete(
+            state, 1, agents=agents, environment=env, message_system=None,
+        )
+
+        user = provider.call_history[-1][-1].content
+        assert "乙" in user and "此刻正在休息" in user
+        assert "此刻正忙着手上的事" not in user, "歇着的人不该被说成在忙"
+        assert "枕下" not in user, "意图仍然不能露给裁决"
+
+    @pytest.mark.asyncio
+    async def test_covert_judge_sees_who_a_bystander_is_talking_with(self, container) -> None:
+        """A talk shows as a talk with the partner named, and the prompt says appearance isn't
+        content: what was said reaches the judge only as a completed happening, and "正在交谈"
+        alone must not be written up as overheard words."""
+        from agent.personality import AgentActivityStatus
+        from core.interfaces.llm import LLMScene
+        from engine.executors.covert import CovertExecutor
+
+        provider = container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION)
+        provider.fixed_response = (
+            '{"detected": false, "outcome": "o", "fact": "f", "achieved": false}'
+        )
+        env = _make_environment()
+        here = None
+        agents = {}
+        for aid, name in (("agent-a", "甲"), ("agent-b", "乙"), ("agent-c", "丙")):
+            agents[aid] = _make_agent(container, world_id="w", agent_id=aid, name=name, is_main=aid == "agent-a")
+            if here is None:
+                here = env.get_body_location(aid)
+            else:
+                env.place_agent(agent_id=aid, location_id=here)
+        agents["agent-b"].personality.begin_action(
+            step=1, description="我约丙谈那桩旧账", target="agent-c",
+            activity_status=AgentActivityStatus.TALKING, estimated_steps=3,
+        )
+        agents["agent-c"].personality.begin_action(
+            step=1, description="我听乙说那桩旧账", target="agent-b",
+            activity_status=AgentActivityStatus.TALKING, estimated_steps=3,
+        )
+
+        executor = CovertExecutor(container.llm_router, _directory(agents))
+        action = _make_action(agent_id="agent-a", action_type=ActionType.COVERT, description="偷听二人")
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        await executor.complete(state, 1, agents=agents, environment=env, message_system=None)
+
+        system, user = (m.content for m in provider.call_history[-1])
+        assert "此刻正与丙交谈" in user and "此刻正与乙交谈" in user
+        assert "旧账" not in user, "交谈的内容是隐藏层,只能经已完成的经过进来"
+        assert "外观不是内容" in system
 
     @pytest.mark.asyncio
     async def test_covert_judge_is_told_when_nothing_happened_here(self, container) -> None:

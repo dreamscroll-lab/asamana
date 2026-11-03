@@ -124,9 +124,12 @@ export class TiledWorldScene
   private demographics: Record<string, Demographics> = {};
   private tokens = new Map<string, AgentToken>();
   private placed = new Set<string>(); // agents already positioned (no fly-in from 0,0)
-  // The step the last render drew. Only the step right after it is walked to; any other (a seek,
-  // the first render) is a cut: the walk between two distant steps never happened.
+  // The step being drawn, or last drawn (deaths are judged against it).
   private drawnStep: number | null = null;
+  // The step whose render ran to the end, so the map stands as that step left it; null while a
+  // render is under way or after one was superseded. Only the step right after it continues from
+  // the map; any other first establishes the step before it (see drawFrom).
+  private completedStep: number | null = null;
   // A step renders as an awaitable timeline; the driver waits for it before the
   // next step. renderGen supersedes an in-flight render on a deliberate scrub;
   // cancelers force-resolve its pending awaits so nothing hangs.
@@ -557,6 +560,23 @@ export class TiledWorldScene
     });
   }
 
+  /**
+   * A fetch the render waits on, as a wait the barrier can wake: a superseding render resolves
+   * it to null at once. Don't await a fetch bare inside a render: one stalled request would hold
+   * the barrier, and every later render with it.
+   */
+  private cancellable<T>(fetching: Promise<T | null>): Promise<T | null> {
+    if (this.unwinding) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const cancel = () => resolve(null);
+      this.cancelers.add(cancel);
+      void fetching.then((value) => {
+        this.cancelers.delete(cancel);
+        resolve(value);
+      });
+    });
+  }
+
   // Resolve every pending await (a superseding render calls this so the old
   // render's timeline unblocks; its gen guard then bails without drawing more).
   private cancelPending(): void {
@@ -869,8 +889,10 @@ export class TiledWorldScene
    * check lets a stale render kill the new one's tweens and hang the player).
    *
    * Takes the whole `StepView` so how its channels degrade is decided here, not per caller.
+   * `previous` fetches another step; it is asked for step N-1 when the map doesn't stand where
+   * step N began (see drawFrom).
    */
-  async renderStep(step: StepView): Promise<void> {
+  async renderStep(step: StepView, previous?: (stepNo: number) => Promise<StepView>): Promise<void> {
     if (!this.ready) return;
     const gen = ++this.renderGen;
     this.unwinding = true; // no beat may take time until the old render is out
@@ -881,7 +903,7 @@ export class TiledWorldScene
     // one that clears it, and exactly one of them does.
     if (this.renderGen !== gen) return;
     this.unwinding = false;
-    const running = this.draw(step, gen);
+    const running = this.drawFrom(step, gen, previous);
     // The barrier answers "is the previous render finished", not "did it succeed" — so it
     // never rejects. A thrown render must not poison every render after it; the caller
     // still sees the failure through `running`.
@@ -889,8 +911,36 @@ export class TiledWorldScene
     await running;
   }
 
-  private async draw(step: StepView, gen: number): Promise<void> {
-    const cut = this.drawnStep === null || step.step !== this.drawnStep + 1;
+  /**
+   * Step N begins where step N-1 ended. When the map isn't there (a seek either way, the first
+   * render, a superseded render left it mid-way, the same step drawn again), step N-1's end is
+   * established first, at once, so step N plays exactly as it does in continuous playback.
+   * Step 0 has no deeds, so its start is its end and it is drawn as it is. Without step N-1 (the
+   * fetch failed) step N is drawn as a cut.
+   */
+  private async drawFrom(
+    step: StepView, gen: number, previous?: (stepNo: number) => Promise<StepView>,
+  ): Promise<void> {
+    const continues = this.completedStep !== null && step.step === this.completedStep + 1;
+    if (!continues && step.step > 0 && previous) {
+      const before = await this.cancellable(previous(step.step - 1).catch(() => null));
+      if (this.renderGen !== gen) return;
+      if (before) await this.draw(before, gen, true);
+      if (this.renderGen !== gen) return;
+    }
+    await this.draw(step, gen);
+  }
+
+  /**
+   * `establish`: land the step's end state at once and play none of it (see drawFrom); it is
+   * always a cut.
+   */
+  private async draw(step: StepView, gen: number, establish = false): Promise<void> {
+    // A cut: the map isn't where this step began, so nothing may be read off it as this step's
+    // before-state; where the step itself carries none, its end state lands at once. Its deeds
+    // still play.
+    const cut = establish || this.completedStep === null || step.step !== this.completedStep + 1;
+    this.completedStep = null;
     this.drawnStep = step.step;
     const index = indexStep(step);
     this.npcById = new Map(index.npcs.map((npc) => [npc.npc_id, npc]));
@@ -968,7 +1018,7 @@ export class TiledWorldScene
       this.tokens.delete(id);
       this.placed.delete(id);
       this.walker.clearTransit(id);
-      if (!isWholeWorld(this.viewer)) {
+      if (!isWholeWorld(this.viewer) && !establish) {
         departures.push(this.presence.leave(id, tok, localContinuity ? "walk" : "fade"));
       } else this.body.removeToken(tok);
     }
@@ -993,9 +1043,10 @@ export class TiledWorldScene
     const withheldAgents = new Set<string>();
     states.forEach((state) => {
       const hasVisibleCause = agentIdsWithActions.has(state.agent_id) || physicalTargetIds.has(state.agent_id);
-      if (!hasVisibleCause) return;
+      if (!hasVisibleCause || establish) return;
+      // On a cut the token shows another step's body: only a death this step is known to change.
       const tok = this.tokens.get(state.agent_id);
-      const changed = tok && this.placed.has(state.agent_id)
+      const changed = !cut && tok && this.placed.has(state.agent_id)
         ? this.body.bodyChanged(tok, state)
         : state.death_step === step.step;
       if (changed) withheldAgents.add(state.agent_id);
@@ -1030,7 +1081,8 @@ export class TiledWorldScene
     // Weather first, lasting through the step: a broadcast is injected at the step head (at
     // `poll_injection`, before cognition) and the cast perceived it this step, so people act in the
     // rain. Played here, not with the announcements, so it gets the full step weather.ts promises.
-    // `depicted`: broadcasts the map has drawn a picture of.
+    // `depicted`: broadcasts the map has drawn a picture of. An established step's weather is
+    // drawn too: in continuous playback it is still falling as the next step begins.
     const depicted = new Set<Scoped<BroadcastSummary>>();
     for (const b of broadcasts) {
       if (this.announcer.playPhenomenon(b, this.map.rooms.get(String(b.location_id ?? "")))) depicted.add(b);
@@ -1041,7 +1093,7 @@ export class TiledWorldScene
     // anything delivered on step N is an input to step N's decisions. Nothing delivered can
     // narrate a deed of this step (`deliver_step` means "when perceived"; see engine/broadcast.py).
     // Don't run these alongside the tracks: a death notice could show while the victim still stands.
-    if (this.renderGen === gen) {
+    if (this.renderGen === gen && !establish) {
       for (const b of broadcasts) {
         if (this.renderGen !== gen) break;
         // A broadcast whose weather drew skips its words (they stay in the feed); one whose
@@ -1055,7 +1107,7 @@ export class TiledWorldScene
 
     // Concurrent tracks partitioned by shared agents: sequential within a track, parallel across.
     const tracks = this.partition(states, actions).map((p, i) =>
-      this.playTrack(p, stateById, states, gen, i, withheldAgents, cut),
+      this.playTrack(p, stateById, states, gen, i, withheldAgents, cut, establish),
     );
     await Promise.all([...tracks, ...departures]);
     // Past this line everything writes to the map; a superseded render must not.
@@ -1072,6 +1124,8 @@ export class TiledWorldScene
     // Same net for withheld entity changes: if the causing beat was focus-gated out, land
     // the change now rather than leave the map showing a stale world.
     this.entities.revealWithheld();
+    this.completedStep = step.step;
+    if (establish) return;
     // Weather floor (see WEATHER_MIN_MS), measured from when it started.
     if (weatherAt !== null && this.renderGen === gen) {
       // `time.now` is wall-clock; the floor and delayP are in playback ms.
@@ -1146,6 +1200,7 @@ export class TiledWorldScene
     order: number,
     withheldAgents: Set<string>,
     cut: boolean,
+    establish: boolean,
   ): Promise<void> {
     // A superseded render moves nobody. Don't remove: cancelPending unblocks the old render
     // asynchronously, and its moveAgent (killTweensOf) would kill the new render's walk and
@@ -1162,7 +1217,7 @@ export class TiledWorldScene
         return this.moveAgent(st, states);
       }),
     );
-    if (this.renderGen !== gen) return;
+    if (this.renderGen !== gen || establish) return;
     // Exactly when movement lands: earlier, the note hangs over last beat's room; later, it
     // waits behind dialogue and deeds.
     this.noteNpcOutcomes(group.agentIds);
@@ -1365,7 +1420,7 @@ export class TiledWorldScene
 
   /**
    * Put a figure where this step says he is, on foot over walkable ground; resolves when the
-   * walk finishes. Only for the step right after the one drawn before (see placeAgent).
+   * walk finishes. Only for the step right after a completed render (see placeAgent).
    *
    * Don't add a straight-line branch for moves without a transit: an adjacent-room move
    * arrives with `transit: null` and would slide through the palace wall. The transit only

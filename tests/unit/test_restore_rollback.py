@@ -186,3 +186,42 @@ async def test_a_snapshot_that_cannot_be_built_is_not_committed(container, test_
     await application.run_world(world.world_id, steps=2)
 
     assert await container.snapshot.list_steps(world.world_id) == [0, 2]
+
+
+@pytest.mark.asyncio
+async def test_an_unsaved_step_is_not_shown_live(container, test_config, monkeypatch) -> None:
+    """Live observers get only what replay can find: a step whose save failed isn't published."""
+    application = NarrativeApplication(container, test_config)
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
+    queue = container.event_bus.subscribe()
+
+    async def fail_save(*args, **kwargs) -> None:
+        raise OSError("Snapshot write unavailable")
+
+    monkeypatch.setattr(container.snapshot, "save", fail_save)
+    await application.run_world(world.world_id, steps=1)
+
+    published = []
+    while not queue.empty():
+        event = queue.get_nowait()
+        if event and event.get("type") == "step":
+            published.append(event["step"])
+    assert published == []
+
+
+@pytest.mark.asyncio
+async def test_a_store_that_keeps_failing_fails_the_run(container, test_config, monkeypatch) -> None:
+    """Rule 6: repeated write failures surface instead of spending LLM calls on steps a restore
+    would lose."""
+    from engine.runtime import MAX_UNCOMMITTED_STEPS
+
+    application = NarrativeApplication(container, test_config)
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
+
+    async def fail_save(*args, **kwargs) -> None:
+        raise OSError("Snapshot write unavailable")
+
+    monkeypatch.setattr(container.snapshot, "save", fail_save)
+    with pytest.raises(RuntimeError, match="failed to commit"):
+        await application.run_world(world.world_id, steps=MAX_UNCOMMITTED_STEPS + 2)
+    assert application.world_time(world.world_id).step == MAX_UNCOMMITTED_STEPS

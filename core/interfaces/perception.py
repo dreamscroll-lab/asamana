@@ -118,6 +118,11 @@ class AmbientEvent:
         (``agent/`` can't reach ``EnvironmentSystem._npcs``). A memory's ``related_agents`` may
         only come from this: an Npc there would get relation labels, though it has no relations.
 
+    acted_upon_ids:
+        The part of ``doer_ids`` the act landed on rather than who did it. Whoever asks "who did
+        this" (world pressure binding a threat to its source) leaves them out, or the victim
+        is named as the source.
+
     PerceptionLayer is driven entirely by strength, never by content type.
     """
 
@@ -125,6 +130,7 @@ class AmbientEvent:
     strength: float | None = None
     doer_ids: tuple[str, ...] = ()
     doer_agent_ids: tuple[str, ...] = ()
+    acted_upon_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -204,6 +210,10 @@ class SpatialPerception:
     # neighbors), sorted by travel cost. destination_index binds to positions in this list.
     # Empty while IN_TRANSIT.
     reachable_locations: List["ReachableLocation"] = field(default_factory=list)
+
+    def held_by(self, agent_id: str) -> List[VisibleEntity]:
+        """What ``agent_id`` has in hand, as perceived here."""
+        return [e for e in self.visible_entities if e.holder_id == agent_id]
 
     @property
     def visible_agent_ids(self) -> List[str]:

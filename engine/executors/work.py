@@ -19,7 +19,9 @@ from core.prompts import (
     ABSOLUTE_TIME_RULE_FIRST_PERSON,
     condition_line,
     CLOSED_WORLD_FACT_RULE_FIRST_PERSON,
+    MEMORY_ORDER_HINT,
     SituationVoice,
+    render_memory_lines,
     render_situation_header,
     vitality_line,
 )
@@ -36,11 +38,18 @@ from engine.scene import SceneVisibility, assemble_scene_context, observe_locati
 
 if TYPE_CHECKING:
     from agent.agent import Agent
+    from agent.memory_types import Memory
     from engine.environment import EnvironmentSystem
     from engine.message_system import MessageSystem
     from core.interfaces.entity import WorldEntity
 
 logger = get_logger(__name__)
+
+_WORK_RECALL_K = 5
+# Above RETRIEVAL_SCORE_FLOOR, which only filters junk: a loosely related memory gets written into
+# the fact or a product's content as if it bore on the job, while a missed one only leaves the
+# content coarser. Don't go to 0.5: from there many purposes recall nothing.
+_WORK_RECALL_SCORE_FLOOR: float = 0.45
 
 
 @dataclass(frozen=True)
@@ -89,10 +98,18 @@ class WorkExecutor(ActionExecutor):
     goal is retried forever.
     """
 
-    def __init__(self, llm_router: LLMRouter, directory: WorldDirectory, seconds_per_step: int = 3600) -> None:
+    def __init__(
+        self,
+        llm_router: LLMRouter,
+        directory: WorldDirectory,
+        seconds_per_step: int = 3600,
+        *,
+        world_start_second_of_day: int = 0,
+    ) -> None:
         self._llm = llm_router
         self._directory = directory
         self._seconds_per_step = seconds_per_step
+        self._world_start_second_of_day = world_start_second_of_day
 
     def _outcome(self, agent_id: str, location: str, *, succeeded: bool) -> str:
         """Fallback 3p outcome when the judge gives none. Never quotes the purpose: it's a
@@ -183,9 +200,11 @@ class WorkExecutor(ActionExecutor):
             # takes PHYSICAL first (half of the WORK/PHYSICAL boundary).
             split_own_entities=True,
         )
+        doer = agents.get(state.initiator_id)
         gen_result = await self._generate_outcome(
-            agent=agents.get(state.initiator_id),
+            agent=doer,
             purpose=state.purpose,
+            recalled=await self._recall(doer, state.purpose, step),
             in_hand=scene.own_entities,
             now_step=step,
             duration_label=describe_duration(state.estimated_steps, self._seconds_per_step),
@@ -371,12 +390,29 @@ class WorkExecutor(ActionExecutor):
             factual_memory=factual,     # 1p self-assessed memory
         )]
 
+    async def _recall(self, agent: "Agent | None", purpose: str, step: int) -> "list[Memory]":
+        """What the doer remembers about the job, recalled by its purpose. Empty on a read
+        failure (Rule 6) or a missing doer."""
+        if agent is None:
+            return []
+        try:
+            return await agent.memory_system.retrieve(
+                purpose, current_step=step, top_k=_WORK_RECALL_K, score_floor=_WORK_RECALL_SCORE_FLOOR,
+            )
+        except Exception as exc:  # noqa: BLE001 — read failed: judge without recall
+            logger.warning(
+                "work_memory_retrieve_failed",
+                extra={"agent_id": agent.agent_id, "step": step, "error": str(exc)},
+            )
+            return []
+
     async def _generate_outcome(
         self,
         *,
         agent: "Agent | None",
         purpose: str,
         duration_label: str,
+        recalled: "list[Memory] | None" = None,
         now_step: int = 0,
         situation_header: str = "",
         scene: str = "",
@@ -386,9 +422,11 @@ class WorkExecutor(ActionExecutor):
         """Adjudicate a finished WORK (1p fact, 3p outcome, why) in one call. Returns ``None``
         when adjudication can't happen, so the caller fabricates nothing.
 
-        All three inputs are needed: ``scene`` (what's at hand, who's present),
+        All four inputs are needed: ``scene`` (what's at hand, who's present),
         ``expected_outcome`` (a reference, not a gate: the decision LLM often writes downstream
-        consequences into it), and persona/energy/emotion.
+        consequences into it), persona/energy/emotion, and ``recalled`` (what the doer knows
+        about the job: where an earlier session left off, the facts a letter or plan is written
+        from; without it a product's content is invented and then persisted).
 
         Accepted trade-off: ``scene`` is a snapshot at completion, so midway comings and goings
         are invisible to the judge.
@@ -409,21 +447,25 @@ class WorkExecutor(ActionExecutor):
 - 手边的东西:所给现场列出的是这里稀罕、特定或会有人争的东西,这类东西没列出就是没有;其中标了「由…持有」的在别人手上,不是我可以径直取用的。
 - 此刻与我同处一地的人:他们不会主动来影响我,但他们在场本身可能使我受到影响。
 - 我的本事、此刻的精力与情绪:做事的水准由它们定。
-- 我出发时想要的:只作参照,用来衡量我实际做出来的东西。
+- 我动手前期望的:只作参照,用来衡量我实际做出来的东西。
+- 我想起的旧事:是我动手时已经知道的,写下的内容只能出自这些、现场和我的本事。
 
 【我不能做的】
 - **不能把那句打算当成已经发生的事**:它是我动手前的打算,这段工夫里究竟如何,正是我要判的。
   更不能把它换个说法抄一遍,充作我实际做出来的东西。
 - **不能把过程当成产出**:比如反复斟酌而始终拿不出任何实在的东西,那就是没成。
-- **不能把我想要的照抄成已经发生的**。
+- **不能把我期望的照抄成已经发生的**。
 - 不能替同处一地的人编造他们并没有做出的举动。
+- **不能把想起的旧事当成这段工夫里发生的**:旧事里的打算、上回做到的地步,只说明我从哪儿接手,
+  这一回做成了什么仍要我来判。与这件事无关的旧事就放过,不硬写进 fact。
 
 【我记事的规矩】
 """ + CLOSED_WORLD_FACT_RULE_FIRST_PERSON + "\n" + ABSOLUTE_TIME_RULE_FIRST_PERSON + """
 
 【我要写的】
-- fact:第一人称,我自己记下的这一场——做出了什么、成果是什么，如果有新东西产生也需要在这里点明;若有没了结的部分或压根没做成的,
-  一并说清缘由。
+- fact:第一人称,我自己记下的这一场——做出了什么、成果是什么;有新东西产生要点明,产生了具体、
+  实质的内容(哪怕没有东西成形)也要在这里写清楚;若有没了结的部分或压根没做成的,一并说清缘由。
+  fact 只有我自己看得到,别人看不到也听不到,所以不会有内容泄漏的风险。
 - success:上面第 2 步的判断。
 - updated_index / updated_name / updated_state / updated_desc / updated_content:这一场我
   **动到了手上哪一件东西**,它又变成了什么样。先在所给现场「我手上的东西」那一行里指出是哪一件
@@ -446,17 +488,17 @@ class WorkExecutor(ActionExecutor):
   · 如果想要东西已经在世界中存在，那就不要再重复生成了，也不要生成一个相似的东西，这样没有意义；
   「进展」「头绪」「决心」「把握」这类**没有形体的东西一概不算**,写进来就是错。
   如果实在没有新东西产生那就留空，留空比捏造更好。
-  **东西有没有留下,和事情成没成是两回事**:一件做到一半、离我想要的还差得远的东西,
+  **东西有没有留下,和事情成没成是两回事**:一件做到一半、离我期望的还差得远的东西,
   是没达成的意图,却是实实在在的一件东西——第一次做出它时照写不误。
 - 内容(updated_content / product_content)是那件东西**上面写着、记着的东西本身**，比如纸上写了
-  什么、账上记了哪几笔、图上标了哪几处。拿到它的人读到的就是这一栏,所以写实写全,不写「写了一
-  封信，一张图纸」这种概括。
+  什么、账上记了哪几笔、图上标了哪几处。拿到它的人读到的就是这一栏,所以要有具体、实质内容、写实写全,不写「写了一
+  封信，一张图纸」这种概括或者介绍。
   · 它长什么样归 desc,不归这里;desc 是旁人一眼看得到的,上面写了什么不能在 desc 里写、
     也不能概括——那等于把内容亮给了所有人。
     没有写字记事的东西(一把刀、一张椅子)内容一律留空。所以这两个字段可以选择填写，并不是必填。
   · 改写手上那件的内容时,给出它此刻的**全部**内容,不是只写新添的那一笔。
   · 如果内容涉及到时间，那时间尽量给具体的时间点，比如6月1日，六月初六等等，不要给相对时间，比如明日，三日后。注意时间不能乱填，需要结合当前时间确定，同时，格式与当前时间一致。
-- outcome:把 fact 用第三人称说出来,点名我的名字。
+- outcome:把 fact 用第三人称说出来,点名我的名字;只说我做了什么、做出了什么,不复述其中的具体内容。
 - observation:换一个站在旁边的人来看,他看得见的是什么。他看得见我在忙什么、忙成没忙成,
   但只看得到表面、看不到内在;什么都看不见的就不写,别把 outcome 抄一遍。
 - why:没做成时,第三人称一句缘由,**只写旁人可陈述的**(所需的东西不齐、时候不够、有人在跟前);
@@ -466,12 +508,23 @@ class WorkExecutor(ActionExecutor):
 严格输出以下 JSON,不要任何多余内容。**先写 fact**——成败与留下的东西都要从我实际做出来的
 里头读,不是先拍板再补一句话去圆;后面三句叙述又要把那件东西说进去。
 **success 与 product_carried 写裸布尔 true / false,updated_index 写裸整数,都不要加引号。**
-{"fact": "第一人称、≤68字", "success": true或false, "updated_index": 整数（0=手上的东西一件也没动到）, "updated_name": "≤14字；不改名则空字符串", "updated_state": "≤12字；没变则空字符串", "updated_desc": "≤24字；没变则空字符串", "updated_content": "≤80字；没变或没有内容则空字符串", "product_name": "≤14字；没有则空字符串", "product_desc": "≤24字；没有则空字符串", "product_content": "≤80字；没有内容则空字符串", "product_carried": true或false, "outcome": "第三人称、点名我的名字、≤40字、**单行不换行**", "observation": "第三人称、点名我的名字、≤30字、**单行不换行**", "why": "第三人称、≤20字；做成了给空字符串"}
+{"fact": "第一人称、≤150字", "success": true或false, "updated_index": 整数（0=手上的东西一件也没动到）, "updated_name": "≤14字；不改名则空字符串", "updated_state": "≤12字；没变则空字符串", "updated_desc": "≤24字；没变则空字符串", "updated_content": "≤80字；没变或没有内容则空字符串", "product_name": "≤14字；没有则空字符串", "product_desc": "≤24字；没有则空字符串", "product_content": "≤80字；没有内容则空字符串", "product_carried": true或false, "outcome": "第三人称、点名我的名字、≤40字、**单行不换行**", "observation": "第三人称、点名我的名字、≤30字、**单行不换行**", "why": "第三人称、≤20字；做成了给空字符串"}
 """
         # §3: the thing to judge and the yardstick go last, right before the output instructions.
         scene_part = f"\n【我此刻所处的现场】\n{scene}\n" if scene else ""
         expected_part = (
-            f"\n【我出发时想要的】\n{expected_outcome}\n" if expected_outcome else ""
+            f"\n【我动手前期望的】\n{expected_outcome}\n" if expected_outcome else ""
+        )
+        memory_lines = [
+            line for line in render_memory_lines(
+                recalled or [], now_step=now_step, seconds_per_step=self._seconds_per_step,
+                world_start_second_of_day=self._world_start_second_of_day,
+            ) if line
+        ]
+        memory_part = (
+            f"\n【我想起的、可能与这件事有关的旧事（{MEMORY_ORDER_HINT}）】\n"
+            + "\n".join(f"- {line}" for line in memory_lines) + "\n"
+            if memory_lines else ""
         )
         doer_condition = condition_line(
             agent.personality.state.condition, voice=SituationVoice.FIRST,
@@ -484,7 +537,7 @@ class WorkExecutor(ActionExecutor):
 {header_part}【我是谁】
 {agent.personality.to_prompt_context(include_emotion=True, include_goals=False)}{doer_condition}
 {doer_vitality}
-{scene_part}
+{memory_part}{scene_part}
 【我动手前打算做的】
 {purpose}
 
@@ -497,10 +550,11 @@ class WorkExecutor(ActionExecutor):
             .add("此刻何时何地", situation_header)
             .add("我的处境", doer_condition)
             .add("我的生命值", doer_vitality)
+            .add("我想起的旧事", memory_lines)
             .add("现场", scene)
             .add("我动手前打算做的", purpose)
             .add("花掉的时间", duration_label)
-            .add("我出发时想要的", expected_outcome),
+            .add("我动手前期望的", expected_outcome),
             # So review can tell what updated_index pointed at.
             item_candidates={
                 str(i): (item.name or "某物") for i, item in enumerate(in_hand, 1)
@@ -510,13 +564,13 @@ class WorkExecutor(ActionExecutor):
             data = await complete_json(
                 self._llm.complete, system, user,
                 temperature=0.7,
-                # fact (≤68 chars ≈ 102 tok) + success (~3) + updated_index (~3)
+                # fact (≤150 chars ≈ 225 tok) + success (~3) + updated_index (~3)
                 # + updated_name (≤14 ≈ 21) + updated_state (≤12 ≈ 18) + updated_desc (≤24 ≈ 36)
                 # + updated_content (≤80 ≈ 120) + product_name (≤14 ≈ 21)
                 # + product_desc (≤24 ≈ 36) + product_content (≤80 ≈ 120)
                 # + product_carried (~3) + outcome (≤40 ≈ 60) + observation (≤30 ≈ 45)
-                # + why (≤20 ≈ 30) + structure for 14 fields (~70); est. ~688 tok.
-                max_tokens=output_budget(688),
+                # + why (≤20 ≈ 30) + structure for 14 fields (~70); est. ~811 tok.
+                max_tokens=output_budget(811),
                 failure_event="work_outcome_failed",
                 log_extra={"agent_id": agent.agent_id, "step": now_step},
                 # The verdict and the doer's own record of it; outcome and observation have

@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
+from agent.decision import send_description
 from core.interfaces.action import ActionType, Ref
 from core.action_duration import action_duration_steps, travel_duration_steps
 from core.prompts import person_referent
@@ -29,20 +30,20 @@ class _OperationDefinition:
 
 
 _OPERATIONS = (
-    _OperationDefinition(ActorOperation.MOVE, ActionType.MOVE, ("location",), "我前往{target}"),
+    _OperationDefinition(ActorOperation.MOVE, ActionType.MOVE, ("location",), "我打算前往{target}"),
     _OperationDefinition(ActorOperation.BROADCAST, ActionType.SEND_MESSAGE, ("location",),
-                         "我向这里的人广播", ("message",)),
-    _OperationDefinition(ActorOperation.TALK, ActionType.TALK, ("agent",), "我和{target}交谈"),
-    _OperationDefinition(ActorOperation.ERRAND, ActionType.ERRAND, ("npc",), "我向{target}指派任务", ("description",)),
-    _OperationDefinition(ActorOperation.TAKE, ActionType.PHYSICAL, ("item",), "我拿起{target}"),
-    _OperationDefinition(ActorOperation.USE, ActionType.PHYSICAL, ("item", "landmark"), "我使用{target}"),
-    _OperationDefinition(ActorOperation.DESTROY, ActionType.PHYSICAL, ("item", "landmark"), "我毁坏{target}"),
+                         "我打算向这里的人广播", ("message",)),
+    _OperationDefinition(ActorOperation.TALK, ActionType.TALK, ("agent",), "我打算和{target}交谈"),
+    _OperationDefinition(ActorOperation.ERRAND, ActionType.ERRAND, ("npc",), "我打算向{target}指派任务", ("description",)),
+    _OperationDefinition(ActorOperation.TAKE, ActionType.PHYSICAL, ("item",), "我打算拿起{target}"),
+    _OperationDefinition(ActorOperation.USE, ActionType.PHYSICAL, ("item", "landmark"), "我打算使用{target}"),
+    _OperationDefinition(ActorOperation.DESTROY, ActionType.PHYSICAL, ("item", "landmark"), "我打算毁坏{target}"),
     _OperationDefinition(ActorOperation.PHYSICAL, ActionType.PHYSICAL, ("agent", "item", "landmark"),
-                         "我处理{target}", ("description",)),
-    _OperationDefinition(ActorOperation.WORK, ActionType.WORK, ("agent",), "我处理手头的事务", ("description",), self_only=True),
-    _OperationDefinition(ActorOperation.REST, ActionType.REST, ("agent",), "我休息片刻", self_only=True),
-    _OperationDefinition(ActorOperation.COVERT, ActionType.COVERT, ("agent",), "我暗中探查", ("description",), self_only=True),
-    _OperationDefinition(ActorOperation.SEND_MESSAGE, ActionType.SEND_MESSAGE, ("agent",), "我发送消息",
+                         "我打算处理{target}", ("description",)),
+    _OperationDefinition(ActorOperation.WORK, ActionType.WORK, ("agent",), "我打算处理手头的事务", ("description",), self_only=True),
+    _OperationDefinition(ActorOperation.REST, ActionType.REST, ("agent",), "我打算休息片刻", self_only=True),
+    _OperationDefinition(ActorOperation.COVERT, ActionType.COVERT, ("agent",), "我打算暗中探查", ("description",), self_only=True),
+    _OperationDefinition(ActorOperation.SEND_MESSAGE, ActionType.SEND_MESSAGE, ("agent",), "我打算发送消息",
                          ("description",), self_only=True),
 )
 
@@ -169,8 +170,9 @@ def build_actor_operation(intent: ActorIntent, packet: "PerceptionPacket") -> Ac
     if operation is ActorOperation.MOVE:
         return ActorAction(definition.action_type, description, destination_id=target.id)
     if operation is ActorOperation.BROADCAST:
-        return ActorAction(definition.action_type, description, message_announce=True,
-                           message_content=(params.message or "").strip(), anonymous=params.anonymous is True)
+        words, anonymous = (params.message or "").strip(), params.anonymous is True
+        return ActorAction(definition.action_type, send_description([], words=words, anonymous=anonymous),
+                           message_announce=True, message_content=words, anonymous=anonymous)
     if operation is ActorOperation.TALK:
         return ActorAction(definition.action_type, description, person_ids=(target.id,))
     if operation is ActorOperation.ERRAND:
@@ -178,7 +180,7 @@ def build_actor_operation(intent: ActorIntent, packet: "PerceptionPacket") -> Ac
             raise ActorAnswerRejected("errand_address_conflict")
         if params.destination_id is not None:
             destination = _target_name(Ref.place(params.destination_id), packet)
-            description = f"我向{name}指派任务：前往{destination}"
+            description = f"我打算向{name}指派任务：前往{destination}看看"
         return ActorAction(
             definition.action_type, description, errand_npc_id=target.id,
             errand_destination_id=params.destination_id, errand_item_id=params.item_id,

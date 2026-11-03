@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Collection, List, Mapping, Optional, Sequence
 
+from agent.goals import is_due, live_goals
 from agent.need import NEED_URGENT_INTENSITY
 from agent.personality import EMOTION_STRONG_INTENSITY
 from core.interfaces.perception import PerceivedSignals
@@ -29,6 +30,7 @@ class CadenceReason(str, Enum):
     NEVER_DECIDED = "never_decided"  # cold start — has not thought once yet
     INTERRUPTED = "interrupted"      # it just broke off its own action to attend to something
     PRESSURE = "pressure"            # the pressure evaluator gave it an external goal
+    DUE = "due"                      # an agreed time it hasn't thought about since has come
     NEED = "need"                    # a need is driving it
     EMOTION = "emotion"              # an emotion has it
     STARVED = "starved"              # nothing pressing, but it has gone too long
@@ -245,6 +247,16 @@ class AgentScheduler:
         # urgency, not mere non-emptiness (PRESSURE_ADMIT_URGENCY).
         if any(g.urgency >= PRESSURE_ADMIT_URGENCY for g in agent.pending_external_goals):
             return CadenceReason.PRESSURE
+
+        # An appointment is kept or missed at its time, and nothing else wakes an agent for it:
+        # the starvation bound is counted in steps, so a background agent could sleep through
+        # an evening date. Once per due time: don't admit on mere overdue, or an agent with a
+        # missed appointment decides every step until the goal is reaped.
+        if any(
+            is_due(g, step) and state.last_decision_step < g.due_step
+            for g in live_goals(state.short_term_goal_entities)
+        ):
+            return CadenceReason.DUE
 
         if self._max_need(agent) >= NEED_URGENT_INTENSITY:
             return CadenceReason.NEED

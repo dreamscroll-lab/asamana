@@ -1,9 +1,9 @@
 import { useState } from "react";
 
+import AutoGrowTextarea from "../AutoGrowTextarea";
+import { CONSOLE_EDIT_BOX, CONSOLE_INPUT_MAX_PX } from "../consoleStyles";
 import type { ActorMind, BriefGoal, GoalAmendment } from "../../types";
 import { GOAL_STATUS, goalRows, liveGoal } from "./goals";
-
-const EDIT_BOX = "w-full resize-y bg-slate-950/80 border border-slate-800 rounded-lg px-2 py-1 text-[12px] text-slate-200 focus:outline-none focus:border-indigo-500/70";
 
 function GoalDetail({ goal: g }: { goal: BriefGoal | null }) {
   if (!g) return null;
@@ -43,7 +43,7 @@ export default function GoalPanel({ mind, draft, removedIds, onChange }: {
           {editing ? (
             <div className="flex items-start gap-1.5">
               <span className="shrink-0 text-[12px] text-slate-500 tabular-nums">{index + 1}.</span>
-              <textarea aria-label="目标文本" value={row.text} rows={2} className={EDIT_BOX}
+              <AutoGrowTextarea maxPx={CONSOLE_INPUT_MAX_PX} aria-label="目标文本" value={row.text} rows={2} className={CONSOLE_EDIT_BOX}
                 onChange={(e) => onChange(values.map((g, i) => i === index ? { ...g, text: e.target.value } : g))} />
               <button title="删除目标" className="text-slate-500 hover:text-rose-300"
                 onClick={() => onChange(values.filter((_, i) => i !== index), row.id ?? undefined)}>×</button>

@@ -105,6 +105,26 @@ async def test_an_exit_is_for_good(mock_build_container, test_config, catalog) -
 
 
 @pytest.mark.asyncio
+async def test_an_exit_the_catalog_refuses_leaves_the_actor_performing(
+    mock_build_container, test_config, catalog, monkeypatch,
+) -> None:
+    application, world_id, character_id = await _built(mock_build_container, test_config, catalog)
+    await application.confirm_world(world_id, character_id=character_id)
+    performing = application.get_session(world_id)
+
+    def refuse(_world_id: str, _casting: ActorCasting) -> None:
+        raise OSError("The world catalog could not be refreshed for set_actor_casting")
+
+    monkeypatch.setattr(catalog, "set_actor_casting", refuse)
+    with pytest.raises(OSError):
+        await application.release_actor(world_id)
+
+    assert application.get_session(world_id) is performing
+    assert performing.world.agents[character_id].actor is not None
+    assert application.performing_character(world_id) == character_id
+
+
+@pytest.mark.asyncio
 async def test_a_reset_keeps_the_casting(mock_build_container, test_config, catalog) -> None:
     application, world_id, character_id = await _built(mock_build_container, test_config, catalog)
     await application.confirm_world(world_id, character_id=character_id)

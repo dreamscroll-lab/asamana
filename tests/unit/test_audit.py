@@ -11,17 +11,22 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import AsyncIterator
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from core.interfaces.llm import LLMProvider, LLMResponse, LLMRouter, LLMScene
+from core.interfaces.snapshot import WorldSnapshot
+from providers.snapshot.in_memory import InMemorySnapshotProvider
 from tuning.audit_checks import check_relations
 from tuning.audit_metrics import SCOPES, weighted_total
-from tuning.audit_reconstruct import reconstruct_world
+from tuning.audit_reconstruct import WorldAuditView, reconstruct_world
 from tuning.judge_audit import judge_scope, init_block, agent_step_block
 from tuning.trace import InMemoryTraceSink
+from world.setup import WorldSetup
+from world.stored_config import StoredWorldConfig
 
 WORLD = "w-test"
 
@@ -48,35 +53,56 @@ def _write(dir_: Path, name: str, records: list[dict]) -> None:
     p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n", encoding="utf-8")
 
 
+# The confirmed world: step 0's setup and the stored map. A non-reciprocal relation category
+# ("政敌" declared one way only) is the structural, theme/language-neutral tripwire; age/label
+# semantics are the judge's job.
+_SETUP = {
+    "theme": "争位",
+    "lore": {"world_name": "测试世界", "core_tension": "争位", "narrative_theme": "夺权",
+             "world_time_config": {"era_name": "测试", "seconds_per_step": 7200}},
+    "characters": [
+        {"agent_id": "agent-x", "tier": "main", "initial_location": "north_camp",
+         "soul_data": {"name": "甲", "role": "长", "age": 30, "gender": "男"},
+         "initial_needs": [{"type": "safety", "label": "保命", "intensity": 0.8, "weight": 1.2}],
+         "hidden_needs": [{"type": "esteem", "label": "想被父亲看见", "intensity": 0.4, "weight": 0.9}]},
+        {"agent_id": "agent-y", "tier": "background", "initial_location": "north_camp",
+         "soul_data": {"name": "乙", "role": "次", "age": 20, "gender": "男"}},
+    ],
+    "relations": [
+        {"source_id": "agent-x", "target_id": "agent-y", "trust": 0.2, "affection": -0.1,
+         "labels": ["同宗:幼弟", "政敌"], "reverse_trust": 0.3, "reverse_affection": 0.1,
+         "reverse_labels": ["同宗:兄长"]},
+    ],
+    # Out of order on purpose: the view lists them oldest first.
+    "historical_events": [
+        {"event": "结盟", "hours_before_start": 12, "figure_ids": ["agent-x"], "importance": 0.5},
+        {"event": "起兵", "hours_before_start": 900, "figure_ids": ["agent-x", "agent-y"], "importance": 0.8}],
+    "entity_seeds": [
+        {"entity_id": "seed_1", "name": "虎符", "entity_type": "item", "initial_state": "intact",
+         "location": "north_camp", "description": "调兵之信物"}],
+    "npc_seeds": [
+        {"npc_id": "npc_1", "name": "营门卒", "gender": "男", "age": 28,
+         "location": "north_camp", "description": "守营门，认符不认人"}],
+}
+_WORLD_CONFIG = {"places": {"north_camp": {"place_id": "north_camp", "name": "北营"}}}
+
+
+def _view(trace_dir: str, steps: list[int] | None = None, setup: dict | None = None) -> WorldAuditView:
+    return reconstruct_world(
+        WORLD, setup=WorldSetup.from_dict(setup or _SETUP),
+        world_config=StoredWorldConfig(_WORLD_CONFIG), trace_dir=trace_dir, steps=steps)
+
+
+async def _container() -> SimpleNamespace:
+    snapshot = InMemorySnapshotProvider()
+    await snapshot.save(WORLD, 0, WorldSnapshot(
+        world_id=WORLD, step=0, timestamp=datetime(2026, 7, 1), setup=_SETUP))
+    await snapshot.save_world_config(WORLD, _WORLD_CONFIG)
+    return SimpleNamespace(snapshot=snapshot)
+
+
 @pytest.fixture()
 def trace_dir(tmp_path: Path) -> str:
-    # A non-reciprocal relation category ("政敌" declared one way only) — the structural,
-    # theme/language-neutral tripwire. Age/label semantics are the judge's job.
-    world_building = {
-        "world_name": "测试世界", "core_tension": "争位", "narrative_theme": "夺权",
-        "key_figures": [
-            {"name": "甲", "role": "长", "age": 30, "gender": "男", "brief": "b"},
-            {"name": "乙", "role": "次", "age": 20, "gender": "男", "brief": "b"},
-        ],
-        "initial_relations": [
-            {"from": "甲", "to": "乙", "labels": ["同宗:幼弟", "政敌"], "reverse_labels": ["同宗:兄长"]},
-        ],
-        "historical_events": [{"event": "结盟", "hours_before_start": 12, "related_figures": ["甲"]}],
-        "world_entity_seeds": [
-            {"name": "虎符", "entity_type": "item", "initial_state": "intact",
-             "location_name": "北营", "description": "调兵之信物"},
-        ],
-        "npcs": [{"name": "营门卒", "gender": "男", "age": 28,
-                  "location_name": "北营", "description": "守营门，认符不认人"}],
-    }
-    _write(Path(tmp_path), "build.jsonl", [
-        _rec(scene="world_building", response_content=json.dumps(world_building, ensure_ascii=False)),
-        _rec(scene="cast_design", response_content=json.dumps({"roles": []}, ensure_ascii=False)),
-        _rec(scene="persona_generation",
-             response_content=json.dumps({"agent_id": "agent-x", "name": "甲"}, ensure_ascii=False)),
-        _rec(scene="persona_generation",
-             response_content=json.dumps({"agent_id": "agent-y", "name": "乙"}, ensure_ascii=False)),
-    ])
     perc = {"emotion": "anger", "intensity": 0.7, "valence": -0.5, "need_activation": {"safety": 0.6}, "reason": "r"}
     moti = {"thought": "t", "goals": ["巩固势力"]}
     deci = {"inner_monologue": "m", "act": "TALK", "action_description": "召集心腹", "selected_index": 1}
@@ -147,7 +173,7 @@ def _router(provider: LLMProvider) -> LLMRouter:
 # ---------------------------------------------------------------------------
 
 def test_reconstruct_extracts_init_and_trajectories(trace_dir: str) -> None:
-    view = reconstruct_world(WORLD, trace_dir=trace_dir)
+    view = _view(trace_dir)
     assert view.init["world_name"] == "测试世界"
     assert view.agent_names == {"agent-x": "甲", "agent-y": "乙"}
     step1 = view.per_agent["agent-x"].steps[0]
@@ -166,29 +192,39 @@ def test_reconstruct_extracts_init_and_trajectories(trace_dir: str) -> None:
     assert "pressure" not in view.world_sequence[0]
 
 
-def test_persona_identity_comes_from_trace_not_echo(tmp_path: Path) -> None:
-    """An agent_id / name the model echoes back wrong must not become an identity in review."""
-    _write(tmp_path, "build.jsonl", [
-        _rec(scene="persona_generation", agent_id="agent-real", extra={"agent_name": "张老师"},
-             response_content=json.dumps({"agent_id": "agent-typo", "name": "张老师（班主任）"},
-                                         ensure_ascii=False)),
-    ])
-    view = reconstruct_world(WORLD, trace_dir=str(tmp_path))
-    assert view.agent_names == {"agent-real": "张老师"}
-    assert [(p["agent_id"], p["name"]) for p in view.init["personas"]] == [("agent-real", "张老师")]
+def test_init_is_the_confirmed_world_not_the_build_s_raw_output(trace_dir: str) -> None:
+    """The opening the judge reads is the setup the world ran from. The build's raw persona output
+    has no intensity or weight on hidden needs yet (and may carry needs the build later drops), so
+    reading it scores a world that never existed."""
+    view = _view(trace_dir)
+    assert view.agent_names == {"agent-x": "甲", "agent-y": "乙"}
+    block = init_block(view)
+    assert "esteem·想被父亲看见（强度0.4，在意程度0.9）" in block
+    assert "None" not in block
+    # Ids never reach the judge: places and people are named.
+    assert "（主角）长　30岁　男　在 北营" in block
+    assert "north_camp" not in block and "agent-x" not in block
+    assert view.init["seconds_per_step"] == 7200
 
 
-def test_cast_roles_reach_review_under_the_figure_their_number_names(tmp_path: Path) -> None:
-    """CastDesigner names each role's figure by roster number; review must read it the same way,
-    or every narrative role and arc silently drops out of the initialization view."""
-    roster = {"key_figures": [{"name": "甲"}, {"name": "乙"}]}
-    roles = {"roles": [{"index": 2, "narrative_role": "次子", "arc_summary": "弧"}]}
-    _write(tmp_path, "build.jsonl", [
-        _rec(scene="world_building", response_content=json.dumps(roster, ensure_ascii=False)),
-        _rec(scene="cast_design", response_content=json.dumps(roles, ensure_ascii=False)),
-    ])
-    view = reconstruct_world(WORLD, trace_dir=str(tmp_path))
-    assert [(r["name"], r["narrative_role"]) for r in view.init["cast_roles"]] == [("乙", "次子")]
+def test_init_prompt_lists_history_oldest_first_and_shows_only_the_opening_s_scales(
+        trace_dir: str) -> None:
+    """The judge reads list order as the timeline, so history goes oldest first. The opening has
+    intensity and weight but no activation: activation's definition is a runtime instruction to the
+    character there, not a scale."""
+    block = init_block(_view(trace_dir))
+    assert block.index("[故事开始前 900h] 起兵") < block.index("[故事开始前 12h] 结盟")
+    assert "intensity（需求强度）" in block and "weight（在意程度）" in block
+    assert "need_activation" not in block
+    assert "你的人设" not in block
+
+
+def test_the_judge_is_not_told_every_scope_is_a_finished_run_s_trace() -> None:
+    """The initialization scope reads the confirmed setup of a world that may not have run a step."""
+    from tuning.judge_audit import _SYSTEM
+
+    assert "已跑完" not in _SYSTEM
+    assert "开局设定" in _SYSTEM
 
 
 def test_init_shows_the_world_s_things_and_errand_hands(trace_dir: str) -> None:
@@ -198,7 +234,7 @@ def test_init_shows_the_world_s_things_and_errand_hands(trace_dir: str) -> None:
     they engage with the conflict."""
     from tuning.judge_audit import init_block
 
-    view = reconstruct_world(WORLD, trace_dir=trace_dir)
+    view = _view(trace_dir)
     block = init_block(view)
     assert "[物] 虎符（item，初始状态 intact）　在 北营：调兵之信物" in block
     assert "[NPC] 营门卒（男28岁）　在 北营：守营门，认符不认人" in block
@@ -207,20 +243,20 @@ def test_init_shows_the_world_s_things_and_errand_hands(trace_dir: str) -> None:
 def test_init_reads_each_label_as_who_the_other_party_is(trace_dir: str) -> None:
     """A label names the other party's role ("同宗:幼弟": the other is my younger kin), so the line
     the judge reads must say so, or it scores correct seniority as reversed."""
-    block = init_block(reconstruct_world(WORLD, trace_dir=trace_dir))
+    block = init_block(_view(trace_dir))
     assert "甲 视 乙 为「同宗:幼弟、政敌」" in block
     assert "乙 视 甲 为「同宗:兄长」" in block
     assert "自居为" not in block
 
 
 def test_reconstruct_steps_filter(trace_dir: str) -> None:
-    view = reconstruct_world(WORLD, trace_dir=trace_dir, steps=[99])
+    view = _view(trace_dir, steps=[99])
     assert view.per_agent == {}
     assert view.init["world_name"] == "测试世界"
 
 
 def test_relation_check_fires_on_non_reciprocal(trace_dir: str) -> None:
-    view = reconstruct_world(WORLD, trace_dir=trace_dir)
+    view = _view(trace_dir)
     findings = check_relations(view)
     assert {f["kind"] for f in findings} == {"category_not_reciprocal"}
     assert any("政敌" in f["detail"] for f in findings)
@@ -333,7 +369,7 @@ def test_clamp_and_missing_cells() -> None:
 
 @pytest.mark.asyncio
 async def test_judge_none_unit_scope(trace_dir: str) -> None:
-    view = reconstruct_world(WORLD, trace_dir=trace_dir)
+    view = _view(trace_dir)
     res = await judge_scope(_router(_SchemaMock()), SCOPES["initialization"],
                             header="h", context_block=init_block(view),
                             det_findings=check_relations(view))
@@ -919,7 +955,7 @@ def test_a_step_whose_every_decision_was_discarded_is_told_as_a_void_beat() -> N
 
 @pytest.mark.asyncio
 async def test_judge_stage_unit_scope(trace_dir: str) -> None:
-    view = reconstruct_world(WORLD, trace_dir=trace_dir)
+    view = _view(trace_dir)
     sv = view.per_agent["agent-x"].steps[0]
     res = await judge_scope(_router(_SchemaMock()), SCOPES["single_agent_single_step"],
                             header="h", context_block=agent_step_block(view, "agent-x", sv), n_units=3)
@@ -931,7 +967,7 @@ async def test_judge_stage_unit_scope(trace_dir: str) -> None:
 
 @pytest.mark.asyncio
 async def test_judge_fallback_on_failure(trace_dir: str) -> None:
-    view = reconstruct_world(WORLD, trace_dir=trace_dir)
+    view = _view(trace_dir)
     res = await judge_scope(_router(_FailProvider()), SCOPES["initialization"],
                             header="h", context_block=init_block(view))
     assert res["total"] is None and res["scores"] == {}
@@ -947,7 +983,7 @@ async def test_run_audit_writes_five_scopes(trace_dir: str) -> None:
     from tuning.audit import run_audit
 
     config = SimpleNamespace(engine=SimpleNamespace(max_concurrent_llm=4))
-    summary = await run_audit(None, config, WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir)
+    summary = await run_audit(await _container(), config, WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir)
 
     assert summary["world_score"] == 80.0
     assert set(summary["scope_totals"]) == set(SCOPES)
@@ -992,7 +1028,7 @@ async def test_run_audit_scope_and_agent_selection(trace_dir: str) -> None:
     from tuning.audit import run_audit
 
     config = SimpleNamespace(engine=SimpleNamespace(max_concurrent_llm=4))
-    s = await run_audit(None, config, WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir,
+    s = await run_audit(await _container(), config, WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir,
                         scopes=["single_agent_single_step"], agents=["甲"])  # name → agent-x
     assert s["ran_scopes"] == ["single_agent_single_step"]
     assert s["scope_totals"]["single_agent_single_step"] == 80.0
@@ -1013,14 +1049,14 @@ async def test_run_audit_incremental_merge(trace_dir: str) -> None:
 
     config = SimpleNamespace(engine=SimpleNamespace(max_concurrent_llm=4))
     out = Path(trace_dir) / WORLD / "audit"
-    await run_audit(None, config, WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir,
+    await run_audit(await _container(), config, WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir,
                     scopes=["single_agent_single_step"], agents=["agent-x"])
-    await run_audit(None, config, WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir,
+    await run_audit(await _container(), config, WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir,
                     scopes=["single_agent_single_step"], agents=["agent-y"])
     sass = json.loads((out / "single_agent_single_step.json").read_text(encoding="utf-8"))
     assert set(sass) == {"agent-x#1", "agent-y#1"}  # y merged in, x preserved
 
-    s3 = await run_audit(None, config, WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir,
+    s3 = await run_audit(await _container(), config, WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir,
                          scopes=["initialization"])
     # Scope totals are all recomputed from disk: the one not rerun stays, the newly run one is added.
     assert s3["scope_totals"]["initialization"] == 80.0
@@ -1037,7 +1073,7 @@ async def test_run_audit_rejects_unknown_scope(trace_dir: str) -> None:
     from tuning.audit import run_audit
 
     with pytest.raises(ValueError):
-        await run_audit(None, SimpleNamespace(engine=SimpleNamespace(max_concurrent_llm=4)),
+        await run_audit(await _container(), SimpleNamespace(engine=SimpleNamespace(max_concurrent_llm=4)),
                         WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir, scopes=["nope"])
 
 
@@ -1278,14 +1314,14 @@ async def test_run_audit_flags_scopes_judged_under_an_older_metric_set(trace_dir
     from tuning.audit import run_audit
 
     config = SimpleNamespace(engine=SimpleNamespace(max_concurrent_llm=4))
-    await run_audit(None, config, WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir)
+    await run_audit(await _container(), config, WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir)
     meta_path = Path(trace_dir) / WORLD / "audit" / "scope_meta.json"
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     assert all(m["digest"] for m in meta.values())
 
     meta["single_agent_multi_step"]["digest"] = "stale00000000"
     meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-    s = await run_audit(None, config, WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir,
+    s = await run_audit(await _container(), config, WORLD, judge_provider=_SchemaMock(), trace_dir=trace_dir,
                         scopes=["initialization"])
     assert s["stale_scopes"] == ["single_agent_multi_step"]
     # A scope whose criteria changed produced a score: still count it, but flag every source. Only
@@ -1606,11 +1642,8 @@ def test_persona_baseline_keeps_life_goal_separate_from_long_term_goals(goals: l
     assert ("完成一项长期研究" if goals else "未提供") in long_term
 
 
-def test_init_keys_on_the_cast_and_shows_the_tier() -> None:
-    """Initialization is keyed on key_figures (the authoritative cast): if persona generation missed
-    someone, they'd vanish from review entirely, and "a character is missing" is exactly what this
-    tier should catch. The tier is shown too: background characters don't need to carry the main
-    plot."""
+def test_init_shows_the_tier() -> None:
+    """Background characters don't need to carry the main plot, so the judge must see who is which."""
     from tuning.audit_reconstruct import WorldAuditView
     from tuning.judge_audit import init_block
 
@@ -1618,12 +1651,12 @@ def test_init_keys_on_the_cast_and_shows_the_tier() -> None:
         world_id="w", per_agent={}, per_step={}, world_sequence=[], agent_names={},
         init={"key_figures": [{"name": "甲", "importance": "main", "age": 30, "role": "王"},
                               {"name": "乙", "importance": "background", "age": 20, "role": "卒"}],
-              "personas": [{"name": "甲", "agent_id": "a1", "core_traits": ["果决"]}],
-              "initial_relations": [], "historical_events": [], "cast_roles": []})
+              "personas": [{"name": "甲", "agent_id": "a1", "core_traits": ["果决"]},
+                           {"name": "乙", "agent_id": "a2"}],
+              "initial_relations": [], "historical_events": []})
     block = init_block(view)
     assert "【甲】（主角）" in block
-    assert "【乙】（背景角色）" in block, "persona 缺失的角色仍要出现在名册里"
-    assert "没有生成人设" in block   # and says what it's missing
+    assert "【乙】（背景角色）" in block
 
 
 
@@ -1640,10 +1673,6 @@ def _beat(step: int, stage: str, beat_kind: str, payload: dict, *, agent_id: str
 
 
 def _beat_world(tmp_path: Path) -> str:
-    _write(tmp_path, "build.jsonl", [
-        _rec(scene="persona_generation", agent_id="agent-x", extra={"agent_name": "甲"},
-             response_content=json.dumps({"name": "甲"}, ensure_ascii=False)),
-    ])
     _write(tmp_path, "step_000002.jsonl", [
         _rec(stage="perception", scene="agent_decision_main", agent_id="agent-x", step=2,
              response_content=json.dumps({"emotion": "fear", "intensity": 0.4, "valence": -0.3})),
@@ -1665,7 +1694,7 @@ def _beat_world(tmp_path: Path) -> str:
 def test_a_step_settled_without_a_decision_call_reads_its_decision_from_the_beat(tmp_path: Path) -> None:
     from tuning.judge_audit import _step_lines, sass_units
 
-    view = reconstruct_world(WORLD, trace_dir=_beat_world(tmp_path))
+    view = _view(_beat_world(tmp_path))
 
     [sv] = view.per_agent["agent-x"].steps
     s = sv.summary
@@ -1685,10 +1714,6 @@ def test_a_step_settled_without_a_decision_call_reads_its_decision_from_the_beat
 def test_a_break_off_he_chose_reads_as_his_own_stop_not_an_unprompted_one(tmp_path: Path) -> None:
     from tuning.judge_audit import _mams_phase_lines, _step_lines
 
-    _write(tmp_path, "build.jsonl", [
-        _rec(scene="persona_generation", agent_id="agent-x", extra={"agent_name": "甲"},
-             response_content=json.dumps({"name": "甲"}, ensure_ascii=False)),
-    ])
     _write(tmp_path, "step_000003.jsonl", [
         _beat(3, "interrupt", "interrupt", {
             "interrupt": True, "thought": "", "doing": "清点人手", "trigger": "", "self_initiated": True,
@@ -1697,7 +1722,7 @@ def test_a_break_off_he_chose_reads_as_his_own_stop_not_an_unprompted_one(tmp_pa
              extra={"settles_prior_action": True},
              response_content=json.dumps({"fact": "我清点到一半便停了手"}, ensure_ascii=False)),
     ])
-    view = reconstruct_world(WORLD, trace_dir=str(tmp_path))
+    view = _view(str(tmp_path))
 
     [sv] = view.per_agent["agent-x"].steps
     block = "\n".join(_step_lines(sv, name="甲", sps=3600))
@@ -1710,7 +1735,7 @@ def test_a_break_off_he_chose_reads_as_his_own_stop_not_an_unprompted_one(tmp_pa
 def test_an_injection_lands_in_the_world_sequence_whoever_wrote_it(tmp_path: Path) -> None:
     from tuning.judge_audit import world_block
 
-    view = reconstruct_world(WORLD, trace_dir=_beat_world(tmp_path))
+    view = _view(_beat_world(tmp_path))
 
     assert view.world_sequence[0]["injections"] == [{"narrative_desc": "北营火起"}]
     block = world_block(view)

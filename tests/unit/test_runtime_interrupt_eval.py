@@ -14,6 +14,8 @@ import logging
 
 import pytest
 
+from core.duration import describe_duration
+
 from core.interfaces.llm import LLMScene
 
 from agent.agent import Agent
@@ -226,6 +228,101 @@ async def test_signals_aggregate_into_single_decision(container) -> None:
     # No id leaks: neither sender_id="sender" nor source_ids=("scout",) may appear in the reason fed to
     # the LLM.
     assert "sender" not in reason and "scout" not in reason
+
+
+def _goal_due(due_step: int, *, settled: bool = False):
+    from agent.goals import GoalEntity, GoalStatus
+    return GoalEntity(
+        id=f"stg-{due_step}", text="今晚十点在中央写字楼与周映荷对账", goal_type="short_term",
+        status=GoalStatus.COMPLETED if settled else GoalStatus.ACTIVE,
+        created_step=1, due_step=due_step,
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_agreed_time_falling_due_mid_action_is_weighed(container) -> None:
+    """A busy body is no candidate for the cadence gate's DUE, so without this an appointment
+    comes and goes while the agent finishes what it was doing."""
+    runtime, registry = _build_runtime(container, "world-due")
+    agent = _build_agent(container, world_id="world-due", agent_id="mc", is_main=False)
+    _start_rest([agent], registry)
+    agent.personality.set_short_term_goal_entities([_goal_due(2)])
+    spy = _DecisionSpy((False, ""))
+    agent.evaluate_interrupt = spy  # type: ignore[method-assign]
+
+    await runtime._interrupts.evaluate_interrupts(_delivery(2), [], {"mc": agent}, step=2)
+
+    # The due step is a span starting now; the reason must not say the time has already come.
+    window = describe_duration(1, runtime._interrupts._clock.config.seconds_per_step)  # noqa: SLF001
+    assert spy.reasons == [f"我约定好时间的事项快到了，就在接下来{window}之内：今晚十点在中央写字楼与周映荷对账"]
+
+
+@pytest.mark.asyncio
+async def test_an_action_ending_this_step_is_not_asked_about_an_agreed_time(container) -> None:
+    """It ends anyway and DUE wakes the agent next step; breaking off its last beat only loses
+    what it was about to yield."""
+    runtime, registry = _build_runtime(container, "world-due-last")
+    agent = _build_agent(container, world_id="world-due-last", agent_id="mc", is_main=False)
+    state = _start_rest([agent], registry, estimated_steps=2)
+    state.remaining_steps = 1  # this step's tick completes it
+    agent.personality.set_short_term_goal_entities([_goal_due(2)])
+    spy = _DecisionSpy((False, ""))
+    agent.evaluate_interrupt = spy  # type: ignore[method-assign]
+
+    await runtime._interrupts.evaluate_interrupts(_delivery(2), [], {"mc": agent}, step=2)
+
+    assert spy.reasons == []
+
+
+@pytest.mark.parametrize("label,goal,step", [
+    ("not yet due", _goal_due(3), 2),
+    ("already past due: the action was chosen with that in view", _goal_due(1), 2),
+    ("already settled", _goal_due(2, settled=True), 2),
+])
+@pytest.mark.asyncio
+async def test_an_agreed_time_is_weighed_only_on_the_step_it_falls_due(
+    container, label, goal, step,
+) -> None:
+    """Asked every step past due, an agent that chose to finish first would waver."""
+    runtime, registry = _build_runtime(container, "world-due-once")
+    agent = _build_agent(container, world_id="world-due-once", agent_id="mc", is_main=False)
+    _start_rest([agent], registry)
+    agent.personality.set_short_term_goal_entities([goal])
+    spy = _DecisionSpy((False, ""))
+    agent.evaluate_interrupt = spy  # type: ignore[method-assign]
+
+    await runtime._interrupts.evaluate_interrupts(_delivery(step), [], {"mc": agent}, step=step)
+
+    assert spy.reasons == [], label
+
+
+@pytest.mark.parametrize("estimated_steps,asked_due", [
+    (8, True),
+    # Ends this step: the same rule as for the AI, decided once by the engine's path.
+    (2, False),
+])
+@pytest.mark.asyncio
+async def test_an_agreed_time_falling_due_reaches_the_actor(
+    container, estimated_steps, asked_due,
+) -> None:
+    """An actor is asked about every interrupt trigger, this one included; it isn't a perceived
+    signal, so the engine tells the character, which tells its actor."""
+    runtime, registry = _build_runtime(container, "world-due-actor")
+    agent = _build_agent(container, world_id="world-due-actor", agent_id="mc", is_main=True)
+    state = _start_rest([agent], registry, estimated_steps=estimated_steps)
+    state.remaining_steps = estimated_steps - 1
+    agent.personality.set_short_term_goal_entities([_goal_due(2)])
+    asked: list[bool] = []
+
+    class _Actor:
+        def weighs_interrupt(self, *, step, signals, falling_due):
+            asked.append(falling_due)
+            return False
+
+    agent.actor = _Actor()  # type: ignore[assignment]
+    await runtime._interrupts.evaluate_interrupts(_delivery(2), [], {"mc": agent}, step=2)
+
+    assert asked == [asked_due]
 
 
 @pytest.mark.asyncio

@@ -356,7 +356,7 @@ CLOSED_WORLD_FACT_RULE_FIRST_PERSON: str = (
 #: This variant is for sites without a current time (compression summaries): it only keeps
 #: existing dates. Don't add anything needing a "now" to it: a processor with no clock makes one up.
 KEEP_ABSOLUTE_TIME_RULE: str = (
-    "- 所给材料里已经写明日期的，照抄那个日期，不要改写成「次日 / 明晨 / 今夜」这类相对说法。"
+    "- 所给材料里已经写明日期的，照抄那个日期，不要改写成「次日 / 明晨 / 今夜 / 今天中午」这类相对说法。"
 )
 
 #: Functional version. Inject it only where the user section gives the current world time, or the
@@ -368,7 +368,7 @@ KEEP_ABSOLUTE_TIME_RULE: str = (
 #: the model can't know DAYS_PER_MONTH and would guess from the real calendar at month end.
 ABSOLUTE_TIME_RULE: str = """\
 - 说到**一件约好的事在什么时候**（约见、期限、打算何时做某事），把那个**具体时间点**写出来，
-  不要写「明晨 / 今夜 / 三日后」等等这类相对日期的说法，要说具体时间点。
+  不要写「明晨 / 今夜 / 三日后 / 今天中午」等等这类相对日期的说法，要说具体时间点。
 - **具体时间点** = 所给的此刻时间里那套年月日的说法，加上一天里的时候。照着这样换：
       此刻那句写作「…六月初三，晚上八点」 → ✗ 明晨去见他 ✓ 六月初四清早去见他
       此刻那句写作「…3月4日，晚上八点」   → ✗ 三日后动手 ✓ 3月7日动手
@@ -383,7 +383,7 @@ ABSOLUTE_TIME_RULE: str = """\
 #: The in-character version of ABSOLUTE_TIME_RULE, phrased as a note-keeping habit.
 ABSOLUTE_TIME_RULE_FIRST_PERSON: str = """\
 - 说到**一件约好的事在什么时候**（约见、期限、打算何时做某事），我把那个**具体时间点**写出来，
-  不要写「明晨 / 今夜 / 三日后」等等这类相对日期的说法，要说具体时间点。
+  不要写「明晨 / 今夜 / 三日后 / 今天中午」等等这类相对日期的说法，要说具体时间点。
 - **具体时间点** = 所给的此刻时间里那套年月日的说法，加上一天里的时候。照着这样换：
       此刻那句写作「…六月初三，晚上八点」 → ✗ 明晨去见他 ✓ 六月初四清早去见他
       此刻那句写作「…3月4日，晚上八点」   → ✗ 三日后动手 ✓ 3月7日动手

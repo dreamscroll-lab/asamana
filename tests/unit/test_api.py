@@ -150,6 +150,7 @@ async def test_websocket_sends_initial_status_and_latest_step(container, test_co
     with client.websocket_connect(f"/ws/{world_id}") as ws:
         first = ws.receive_json()
         assert first["type"] == "status"
+        assert ws.receive_json() == {"type": "actor_turn", "data": None}   # restated even when none is open
         second = ws.receive_json()
         assert second["type"] == "latest_step"
         assert second["data"]["step"] == 0
@@ -172,6 +173,7 @@ async def test_restore_only_state_never_reaches_observation(container, test_conf
         ]
         with client.websocket_connect(f"/ws/{world_id}") as ws:
             assert ws.receive_json()["type"] == "status"
+            assert ws.receive_json() == {"type": "actor_turn", "data": None}
             payloads.append(ws.receive_json())
             snapshot.step = 1
             container.event_bus.publish({
@@ -218,6 +220,7 @@ async def test_a_step_published_while_connecting_is_not_lost(
     client = _client(container, test_config)
     with client.websocket_connect(f"/ws/{world_id}") as ws:
         assert ws.receive_json()["type"] == "status"
+        assert ws.receive_json() == {"type": "actor_turn", "data": None}
         assert ws.receive_json()["type"] == "latest_step"
         pushed = ws.receive_json()
         assert pushed["type"] == "step" and pushed["data"]["step"] == 1
@@ -234,6 +237,7 @@ async def test_the_step_the_initial_frame_carried_is_not_pushed_twice(
     client = _client(container, test_config)
     with client.websocket_connect(f"/ws/{world_id}") as ws:
         assert ws.receive_json()["type"] == "status"
+        assert ws.receive_json() == {"type": "actor_turn", "data": None}
         assert ws.receive_json()["type"] == "latest_step"      # step 0
         for step in (0, 1):
             container.event_bus.publish(

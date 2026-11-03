@@ -44,6 +44,7 @@ from core.interfaces.perception import (
     Broadcast,
     LocationView,
     NpcIdentity,
+    PerceivedIdentity,
     PerceivedNpc,
     PerceivedPresence,
     ReachableLocation,
@@ -444,26 +445,78 @@ def test_parse_llm_selection_picks_indexed_candidate(container: object) -> None:
     assert selection.estimated_steps == 2
 
 
-def test_send_message_falls_back_to_the_spoken_words(container: object) -> None:
-    """If SEND_MESSAGE omits action_description, fall back to message_content. The two fields sit
-    right next to each other, and a field readable from its neighbor isn't worth losing the whole
-    decision over."""
+def _named_packet() -> PerceptionPacket:
+    packet = _make_packet(visible_agent_ids=["a2", "a3", "a4"])
+    for aid, name in (("a2", "尉迟恭"), ("a3", "秦琼")):
+        packet.spatial.visible_agents[aid] = PerceivedPresence(identity=PerceivedIdentity(name=name, gender="男"))
+    return packet
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        ({"person_indices": [1]}, "我打算发消息给尉迟恭说：「速回东宫，不得延误。」"),
+        ({"person_indices": [1, 2, 3]}, "我打算发消息给尉迟恭、秦琼、某人说：「速回东宫，不得延误。」"),
+        ({"person_indices": [2], "anonymous": True}, "我打算匿名发消息给秦琼说：「速回东宫，不得延误。」"),
+        ({"message_announce": True}, "我打算向在场众人发通知说：「速回东宫，不得延误。」"),
+        ({"message_announce": True, "anonymous": True}, "我打算匿名向在场众人发通知说：「速回东宫，不得延误。」"),
+    ],
+)
+def test_send_message_without_description_describes_the_send(
+    container: object, extra: dict, expected: str,
+) -> None:
+    """If SEND_MESSAGE omits action_description, the act is described from its bound recipients
+    and words. The words alone would read as speech wherever the act is recalled ("我打算做：速回
+    东宫"), and a field readable from its neighbors isn't worth losing the whole decision over."""
     engine = _make_engine(container)
     candidates = [ActionCandidate(action_type=ActionType.SEND_MESSAGE, description=ActionType.SEND_MESSAGE.label)]
     payload = json.dumps(
-        {
-            "selected_index": 0,
-            "message_content": "速回东宫，不得延误。",
-            "inner_monologue": "得让他立刻回来。",
-        },
+        {"selected_index": 0, "message_content": "速回东宫，不得延误。", "inner_monologue": "得让他立刻回来。", **extra},
         ensure_ascii=False,
     )
 
-    selection = engine._parse_llm_selection(payload, candidates)  # noqa: SLF001
+    selection = engine._parse_llm_selection(payload, candidates, _named_packet())  # noqa: SLF001
 
     assert selection is not None
-    assert selection.action_description == "速回东宫，不得延误。"
+    assert selection.action_description == expected
     assert selection.message_content == "速回东宫，不得延误。"
+
+
+def test_send_message_keeps_its_own_description(container: object) -> None:
+    engine = _make_engine(container)
+    candidates = [ActionCandidate(action_type=ActionType.SEND_MESSAGE, description=ActionType.SEND_MESSAGE.label)]
+    payload = json.dumps(
+        {"selected_index": 0, "person_indices": [1], "action_description": "我写信催尉迟恭回来",
+         "message_content": "速回东宫。", "inner_monologue": "x"},
+        ensure_ascii=False,
+    )
+
+    selection = engine._parse_llm_selection(payload, candidates, _named_packet())  # noqa: SLF001
+
+    assert selection is not None
+    assert selection.action_description == "我写信催尉迟恭回来"
+
+
+def test_actor_send_without_description_describes_the_send() -> None:
+    """The actor's form reads the model's slots with the same description as a decision does."""
+    from agent.decision import _ACTION_SPACE, _actor_action_from_payload, candidate_lists
+
+    send_index = next(i for i, c in enumerate(_ACTION_SPACE) if c.action_type is ActionType.SEND_MESSAGE)
+    action = _actor_action_from_payload(
+        {"selected_index": send_index, "person_indices": [1], "message_content": "速回东宫。", "anonymous": True},
+        candidate_lists(_named_packet()),
+    )
+
+    assert action is not None
+    assert action.action_description == "我打算匿名发消息给尉迟恭说：「速回东宫。」"
+
+
+def test_send_message_without_words_or_description_is_dropped(container: object) -> None:
+    engine = _make_engine(container)
+    candidates = [ActionCandidate(action_type=ActionType.SEND_MESSAGE, description=ActionType.SEND_MESSAGE.label)]
+    payload = json.dumps({"selected_index": 0, "person_indices": [1], "inner_monologue": "x"}, ensure_ascii=False)
+
+    assert engine._parse_llm_selection(payload, candidates, _named_packet()) is None  # noqa: SLF001
 
 
 def test_only_send_message_may_borrow_the_spoken_words(container: object) -> None:

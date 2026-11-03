@@ -327,6 +327,30 @@ def test_prompt_signature_immediately_follows_message_content(container: Any) ->
     assert system.index('  "anonymous":') < system.index('  "urgency":')
 
 
+def test_prompt_ties_anonymity_to_the_recipient_not_to_secrecy(container: Any) -> None:
+    """A directed message reaches no onlooker (the executor emits no observation), so secrecy is
+    never a reason to sign anonymously; only hiding the sender from whoever receives it is. Without
+    saying so, the model signs secret letters to its closest allies anonymously."""
+    from agent.decision import _ACTION_SPACE
+
+    engine = DecisionEngine(container.llm_router)
+    system, user, _ = engine._build_decision_prompt(_make_personality(), _make_packet(), _ACTION_SPACE)
+    assert "只有收件人看得到，旁人既看不到也听不到" in user
+    anonymous = next(line for line in system.splitlines() if line.startswith('  "anonymous":'))
+    assert "跟这话有多机密、多要紧无关" in anonymous
+    assert "不想让收到的人知道是我" in anonymous
+
+
+def test_actor_intent_reads_secrecy_words_as_secrecy_not_anonymity(container: Any) -> None:
+    """An actor who says "quietly tell him" wants a private letter, which every directed message
+    already is; only asking to hide who sent it makes it anonymous."""
+    engine = DecisionEngine(container.llm_router)
+    field = engine._intent_output_fields()["anonymous"]
+    assert "不让收件人知道是谁发的" in field
+    assert "「悄悄」" in field and "说的是保密" in field
+    assert "只有收件人看得到，旁人既看不到也听不到" in engine._intent_system_prompt()
+
+
 @pytest.mark.parametrize("action_type", [ActionType.REST, ActionType.TALK])
 def test_direct_actor_binding_ignores_anonymity_on_other_actions(container: Any, action_type: ActionType) -> None:
     action = ActorAction(action_type, "我行动", anonymous=True, person_ids=(HERE,) if action_type is ActionType.TALK else ())

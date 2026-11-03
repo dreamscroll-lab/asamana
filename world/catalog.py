@@ -83,11 +83,11 @@ class WorldCatalog:
     def _refresh_from_disk(self) -> bool:
         """Load the on-disk catalog into memory. Returns whether the in-memory copy now matches disk.
 
-        On a read failure, leave ``_entries`` untouched and return False so the writer skips this write.
+        On a read failure, leave ``_entries`` untouched and return False so the writer refuses this write.
         ``_flush`` overwrites the whole file, so writing from a copy that isn't in sync with disk does
         exactly what re-reading before a write is meant to prevent: it erases worlds another process
         just registered. The worst case is at construction: if that read fails, ``_entries`` is still
-        empty, and the first register overwrites the whole index with a single world.
+        empty, and a register would overwrite the whole index with a single world.
         """
         if self._path is None or not self._path.exists():
             return True     # nothing on disk to sync with; the in-memory copy is the whole truth
@@ -99,15 +99,21 @@ class WorldCatalog:
         self._entries = {wid: dict(entry) for wid, entry in loaded.items()}
         return True
 
-    def _refreshed_for_write(self, world_id: str, op: str) -> bool:
-        """Re-read before writing; if the read fails, don't write. Missing one entry beats erasing other processes' entries."""
+    def _refresh_for_write(self, world_id: str, op: str) -> None:
+        """Re-read before writing; if the read fails, refuse the write.
+
+        Writing from a stale copy would erase other processes' entries, and skipping the write
+        quietly would let the caller go on as if it had landed (a confirmation that deletes the
+        setup, a casting the viewer filters never learn of). A write failure is raised, never
+        swallowed.
+        """
         if self._refresh_from_disk():
-            return True
+            return
         logger.error(
-            "world_catalog_write_skipped",
+            "world_catalog_write_refused",
             extra={"world_id": world_id, "op": op, "path": str(self._path)},
         )
-        return False
+        raise OSError(f"The world catalog could not be refreshed for {op}")
 
     def register(
         self,
@@ -120,8 +126,7 @@ class WorldCatalog:
         """Record (or overwrite) a world's display hints and flush to disk."""
 
         with self._write_lock():
-            if not self._refreshed_for_write(world_id, "register"):
-                return
+            self._refresh_for_write(world_id, "register")
             self._entries[world_id] = {
                 "theme": theme,
                 "world_name": world_name or world_id,
@@ -140,8 +145,7 @@ class WorldCatalog:
         """
 
         with self._write_lock():
-            if not self._refreshed_for_write(world_id, "remove"):
-                return
+            self._refresh_for_write(world_id, "remove")
             self._entries.pop(world_id, None)
             self._flush()
 
@@ -152,8 +156,7 @@ class WorldCatalog:
         """
 
         with self._write_lock():
-            if not self._refreshed_for_write(world_id, "set_confirmed"):
-                return
+            self._refresh_for_write(world_id, "set_confirmed")
             entry = self._entries.get(world_id)
             if entry is None:
                 return
@@ -173,8 +176,7 @@ class WorldCatalog:
         """
 
         with self._write_lock():
-            if not self._refreshed_for_write(world_id, "set_actor_casting"):
-                return
+            self._refresh_for_write(world_id, "set_actor_casting")
             entry = self._entries.get(world_id)
             if entry is None:
                 return
@@ -202,8 +204,7 @@ class WorldCatalog:
         """
 
         with self._write_lock():
-            if not self._refreshed_for_write(world_id, "mark_director_review"):
-                raise OSError("The world catalog could not be refreshed for director review")
+            self._refresh_for_write(world_id, "director review")
             entry = self._entries.get(world_id)
             if entry is None:
                 raise ValueError(f"World {world_id!r} is not cataloged")
@@ -225,8 +226,7 @@ class WorldCatalog:
         """
 
         with self._write_lock():
-            if not self._refreshed_for_write(world_id, "set_name"):
-                return
+            self._refresh_for_write(world_id, "set_name")
             entry = self._entries.get(world_id)
             if entry is None:
                 return

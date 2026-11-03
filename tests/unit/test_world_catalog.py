@@ -9,7 +9,7 @@ from threading import Event
 
 import pytest
 
-from world.catalog import WorldCatalog
+from world.catalog import ActorCasting, WorldCatalog
 
 
 def test_register_merges_entries_from_another_instance(tmp_path: Path) -> None:
@@ -101,9 +101,30 @@ def test_an_unreadable_catalog_is_not_overwritten_with_a_stale_copy(tmp_path: Pa
     cat = WorldCatalog(str(path))
     path.write_text("{ 这不是合法 JSON", encoding="utf-8")   # broken by an external tool / a slip in a manual edit
 
-    cat.register("world-c", world_name="长安丙")             # must not overwrite the whole file from a stale copy
+    with pytest.raises(OSError, match="register"):           # refused, not skipped: the caller must know
+        cat.register("world-c", world_name="长安丙")
 
     assert path.read_text(encoding="utf-8").startswith("{ 这不是")
+
+
+@pytest.mark.parametrize("write", ["set_confirmed", "set_actor_casting", "set_name", "remove"])
+def test_every_write_is_refused_loudly_when_the_catalog_cannot_be_read(tmp_path: Path, write: str) -> None:
+    """A skipped write the caller can't see lets it go on as if it landed: a confirmation would
+    delete the setup of a world the catalog still calls unconfirmed."""
+    path = tmp_path / "worlds.json"
+    cat = WorldCatalog(str(path))
+    cat.register("world-a")
+    path.write_text("<<corrupt>>", encoding="utf-8")
+    args = {
+        "set_confirmed": ("world-a", True),
+        "set_actor_casting": ("world-a", ActorCasting(character_id="hero")),
+        "set_name": ("world-a", "新名"),
+        "remove": ("world-a",),
+    }[write]
+
+    with pytest.raises(OSError, match=write):
+        getattr(cat, write)(*args)
+    assert path.read_text(encoding="utf-8") == "<<corrupt>>"
 
 
 def test_a_read_failure_at_construction_does_not_wipe_the_index(tmp_path: Path) -> None:
@@ -117,7 +138,8 @@ def test_a_read_failure_at_construction_does_not_wipe_the_index(tmp_path: Path) 
     cat = WorldCatalog(str(path))                 # read fails at construction → _entries is empty
     assert cat.entries() == {}
 
-    cat.register("world-b", world_name="长安乙")   # an empty copy must never be written to disk
+    with pytest.raises(OSError):                  # an empty copy must never be written to disk
+        cat.register("world-b", world_name="长安乙")
     assert path.read_text(encoding="utf-8") == "<<corrupt>>"
 
     path.write_text(good, encoding="utf-8")       # recovers once the file is fixed

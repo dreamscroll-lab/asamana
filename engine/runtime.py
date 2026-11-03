@@ -70,6 +70,12 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Steps in a row that may fail to commit before the run fails. One is carried forward by the next
+# step's snapshot; more mean the store is down, and running on spends LLM calls on steps a
+# restore would lose.
+MAX_UNCOMMITTED_STEPS = 3
+
+
 @dataclass
 class RuntimeStepResult:
     step: int
@@ -138,6 +144,7 @@ class NarrativeRuntime:
         # caller can bypass it.
         self._running: bool = False
         self._step_in_progress: bool = False
+        self._uncommitted_steps = 0
         self._event_seqs = EventSequencer(start_seq=start_event_seq)
         # Advances ongoing executions (tick) and lands completions/feedback; the main sweep,
         # death teardown and interrupts all land through it. Shares the same executor_registry.
@@ -305,6 +312,7 @@ class NarrativeRuntime:
         if self._running:
             raise ValueError(f"World {self._world_id!r} is already running.")
         self._running = True
+        self._actor.channel.reopen()
         results: list[RuntimeStepResult] = []
         try:
             step_index = 0
@@ -787,18 +795,30 @@ class NarrativeRuntime:
                 "snapshot_build_failed",
                 extra={"world_id": self._world_id, "step": step, "error": str(exc)},
             )
+        committed = False
         if snapshot is not None:
             try:
                 await self._snapshot_provider.save(self._world_id, step, snapshot)
-            except Exception as exc:  # noqa: BLE001 — Rule 6: log error, don't kill run
+                committed = True
+            except Exception as exc:  # noqa: BLE001 — Rule 6: log error; repeats fail the run below
                 logger.error(
                     "snapshot_save_failed",
                     extra={"world_id": self._world_id, "step": step, "error": str(exc)},
                 )
+        if committed and snapshot is not None:
+            self._uncommitted_steps = 0
+            self._actor.commit_thread(len(snapshot.actor_thread))
             # Live observers get the very record that was saved, so live and replay read one shape.
+            # Only a saved one: a step shown live that replay can't find never happened.
             self._event_bus.publish({
                 "type": "step", "world_id": self._world_id, "step": step, "snapshot": snapshot,
             })
+        else:
+            self._uncommitted_steps += 1
+            if self._uncommitted_steps >= MAX_UNCOMMITTED_STEPS:
+                raise RuntimeError(
+                    f"World {self._world_id!r} failed to commit {self._uncommitted_steps} steps in a row"
+                )
         snapshot_ms = round((time.perf_counter() - _t_snapshot) * 1000, 1)
 
         tick_narratives = [r["outcome"] for r in tick_records]
@@ -898,7 +918,7 @@ class NarrativeRuntime:
                 environment=self._environment.engine_state(),
                 schedule=schedule,
             ),
-            actor_thread=self._actor.take_thread(),
+            actor_thread=self._actor.live_thread,
         )
 
     def _active_execution_payloads(self, step: int) -> List[Dict[str, Any]]:
@@ -1108,7 +1128,9 @@ class NarrativeRuntime:
         # (SEND_MESSAGE, an unexposed covert act).
         # Carry attaches every execution member and spatial_for self-excludes them;
         # participant_ids defaults to [agent_id].
-        location_outcomes: dict[str, list[tuple[tuple[str, ...], str, float | None]]] = defaultdict(list)
+        location_outcomes: dict[
+            str, list[tuple[tuple[str, ...], tuple[str, ...], str, float | None]]
+        ] = defaultdict(list)
         # Each participant of a joint action produces a record with the same observation; dedupe
         # so onlookers perceive and remember it once.
         seen_carries: set[tuple[str, tuple[str, ...], str]] = set()
@@ -1124,9 +1146,9 @@ class NarrativeRuntime:
             # The person acted on is self-excluded like execution members: he already got his own
             # memory from the effect (see completion_record's acted_upon). That's also why he's in
             # this onlooker memory's related_agents: the event is about him.
-            doer_ids = tuple(dict.fromkeys(
-                [*(r.get("participant_ids") or [doer_id]), *(r.get("acted_upon") or ())]
-            ))
+            participants = tuple(r.get("participant_ids") or [doer_id])
+            acted_upon = tuple(i for i in r.get("acted_upon") or () if i not in participants)
+            doer_ids = tuple(dict.fromkeys([*participants, *acted_upon]))
             for o in r.get("observations") or []:
                 place, text, strength = o.get("location_id"), o.get("text"), o.get("strength")
                 # IN_TRANSIT isn't a place to watch from (travelers would share one "room").
@@ -1138,15 +1160,16 @@ class NarrativeRuntime:
                 if key in seen_carries:
                     continue
                 seen_carries.add(key)
-                location_outcomes[place].append((doer_ids, text, strength))
+                location_outcomes[place].append((doer_ids, acted_upon, text, strength))
 
         for loc_id, entries in location_outcomes.items():
-            for doer_ids, observation, strength in entries:
+            for doer_ids, acted_upon, observation, strength in entries:
                 self._environment.record_carry_observation(
                     location_id=loc_id,
                     observation=observation,
                     strength=strength,
                     doer_ids=doer_ids,
+                    acted_upon_ids=acted_upon,
                 )
 
     async def _plan_one_agent(

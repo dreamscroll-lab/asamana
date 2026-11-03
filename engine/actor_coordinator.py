@@ -14,7 +14,7 @@ the next interrupt stage takes without asking.
 
 Everything that passes between actor and world is recorded as the actor's thread
 (``core.interfaces.actor.ActorEntry``), each entry stamped with its step's world time, told to ``on_entry`` as it is recorded and
-handed to the step's snapshot when the step commits (``take_thread``).
+handed to the step's snapshot when the step commits (``commit_thread``).
 
 The beats the actor settles without an LLM call (the decision, the interrupt answer, the mind
 amendments) also go into the trace as ``BeatTrace``s, so a review reads the character's step
@@ -33,6 +33,7 @@ is the actor's.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 from typing import TYPE_CHECKING, Any, Callable, Sequence
@@ -121,10 +122,14 @@ class _DecideTurn:
 EntryListener = Callable[[dict[str, Any]], None]
 
 
-def _reason(signals: "PerceivedSignals") -> str:
-    """Why the character is asked, for the actor: how many things reached it. What they were is
-    in the thread's perceptions and on the map."""
-    return f"有 {len(signals)} 件事发生" if signals else ""
+def _reason(signals: "PerceivedSignals", *, falling_due: bool = False) -> str:
+    """Why the character is asked, for the actor: how many things reached it, and whether an
+    agreed time is near. What they were is in the thread's perceptions, on the map and in the
+    goals."""
+    parts = [f"有 {len(signals)} 件事发生"] if signals else []
+    if falling_due:
+        parts.append("约定好时间的事项快到了")
+    return "，".join(parts)
 
 
 class ActorCoordinator:
@@ -159,6 +164,10 @@ class ActorCoordinator:
         self._freed = False
         # Amendments saved while no turn was open, landing at the start of the next step.
         self._pending_amendments: ActorAmendments | None = None
+        # Held while an amendment is decided and lands. It spans awaits (an insight is embedded and
+        # stored), and the turn it lands in may be answered meanwhile: the step resumed by that
+        # answer waits on this lock, so it never runs alongside the amendment and overwrites it.
+        self._amending = asyncio.Lock()
 
     def _turn_changed(self, turn: ActorTurn | None) -> None:
         self._intent_generation += 1
@@ -204,17 +213,19 @@ class ActorCoordinator:
         """The thread recorded since the last commit, which no snapshot holds yet."""
         return list(self._thread)
 
-    def take_thread(self) -> list[dict[str, Any]]:
-        """The thread since the last commit, for the committing step's snapshot."""
-        thread, self._thread = self._thread, []
-        return thread
+    def commit_thread(self, count: int) -> None:
+        """Drop the first ``count`` entries, which a saved snapshot now holds. Not cleared when the
+        snapshot is built: a save that fails leaves them to the next step's snapshot, and entries
+        recorded while the save was under way belong to the next one."""
+        del self._thread[:count]
 
     # ----- agent.actor.Actor -------------------------------------------------
 
-    def _reached(self, step: int, signals: "PerceivedSignals") -> bool:
-        """Whether anything reached the character this step, keeping the turn's reason."""
-        self._weighed = (step, _reason(signals))
-        return bool(signals)
+    def _reached(self, step: int, signals: "PerceivedSignals", *, falling_due: bool = False) -> bool:
+        """Whether anything reached the character this step, or an agreed time came, keeping
+        the turn's reason."""
+        self._weighed = (step, _reason(signals, falling_due=falling_due))
+        return bool(signals) or falling_due
 
     def _reason_for(self, step: int) -> str:
         weighed_step, reason = self._weighed
@@ -248,8 +259,8 @@ class ActorCoordinator:
         reached = self._reached(step, signals)
         return self._pace is ActorPace.EVERY_STEP or self._freed or reached
 
-    def weighs_interrupt(self, *, step: int, signals: "PerceivedSignals") -> bool:
-        reached = self._reached(step, signals)
+    def weighs_interrupt(self, *, step: int, signals: "PerceivedSignals", falling_due: bool) -> bool:
+        reached = self._reached(step, signals, falling_due=falling_due)
         return self._channel.break_off_requested or reached
 
     async def evaluate_interrupt(self, agent: "Agent", *, step: int) -> tuple[bool, str]:
@@ -339,7 +350,10 @@ class ActorCoordinator:
         # A SPEAK turn's record is the dialogue turn it is answered with (``spoke``).
         if turn.kind is not TurnKind.SPEAK:
             self._record(AskedEntry(step=turn.step, turn=turn))
-        return await self._channel.request(turn, check=check)
+        answer = await self._channel.request(turn, check=check)
+        async with self._amending:   # an amendment landing in this turn finishes first
+            pass
+        return answer
 
     # ----- the actor's words and requests -------------------------------------
 
@@ -467,20 +481,23 @@ class ActorCoordinator:
         step. Raises ``ActorAnswerRejected`` for one the mind doesn't list."""
         agent = self._performed()
         await agent.check_amendments(amendments)
-        turn = self._channel.pending_turn
-        # Not during an invitation: it is asked after the step's plan is laid, and committing
-        # that plan writes the goals it carries over the character's. Not during a conversation:
-        # it is spoken while the step's other acts are adjudicated, and its own feedback is yet
-        # to land.
-        if turn is not None and turn.kind in (TurnKind.DECIDE, TurnKind.INTERRUPT):
-            changed = await agent.amend_mind(amendments, step=turn.step)
-            stage = Stage.DECISION if turn.kind is TurnKind.DECIDE else Stage.INTERRUPT
-            self._beat(BeatKind.MIND, stage, agent.agent_id, turn.step, changed)
-            return True
-        self._pending_amendments = (
-            amendments if self._pending_amendments is None else self._pending_amendments.then(amendments)
-        )
-        return False
+        async with self._amending:
+            # Read under the lock: the turn may be answered while this lands, but its step resumes
+            # only once the lock is released (see _ask).
+            turn = self._channel.pending_turn
+            # Not during an invitation: it is asked after the step's plan is laid, and committing
+            # that plan writes the goals it carries over the character's. Not during a conversation:
+            # it is spoken while the step's other acts are adjudicated, and its own feedback is yet
+            # to land.
+            if turn is not None and turn.kind in (TurnKind.DECIDE, TurnKind.INTERRUPT):
+                changed = await agent.amend_mind(amendments, step=turn.step)
+                stage = Stage.DECISION if turn.kind is TurnKind.DECIDE else Stage.INTERRUPT
+                self._beat(BeatKind.MIND, stage, agent.agent_id, turn.step, changed)
+                return True
+            self._pending_amendments = (
+                amendments if self._pending_amendments is None else self._pending_amendments.then(amendments)
+            )
+            return False
 
     async def land_amendments(self, agent: "Agent", *, step: int) -> None:
         pending, self._pending_amendments = self._pending_amendments, None

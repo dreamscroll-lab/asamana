@@ -30,7 +30,7 @@ from core.interfaces.embedding import EmbeddingProvider
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json, output_budget
 from core.interfaces.memory import MemoryKind
 from core.interfaces.trace import Stage
-from core.interfaces.perception import Situation
+from core.interfaces.perception import PerceivedIdentity, Situation
 from core.prompts import (
     ABSOLUTE_TIME_RULE_FIRST_PERSON,
     KEEP_ABSOLUTE_TIME_RULE,
@@ -79,10 +79,10 @@ def memory_collection_name(world_id: str, agent_id: str, stream: MemoryStream) -
 
 
 def _normalize_related_agents(
-    value: "Mapping[str, str] | Sequence[str] | None",
-) -> tuple[list[str], dict[str, str] | None]:
-    """Accept an ``{agent_id: name}`` mapping (names for prompt rendering) or a plain id sequence
-    (no names); return ``(id_list, directory_or_none)``."""
+    value: "Mapping[str, PerceivedIdentity] | Sequence[str] | None",
+) -> tuple[list[str], dict[str, PerceivedIdentity] | None]:
+    """Accept an ``{agent_id: identity}`` mapping (for prompt rendering) or a plain id sequence
+    (no identities); return ``(id_list, directory_or_none)``."""
     if value is None:
         return [], None
     if isinstance(value, Mapping):
@@ -199,7 +199,7 @@ class MemorySystem:
         stream: MemoryStream,
         *,
         personality: PersonalityLayer,
-        related_agents: "Mapping[str, str] | Sequence[str] | None" = None,
+        related_agents: "Mapping[str, PerceivedIdentity] | Sequence[str] | None" = None,
         related_relations_text: str = "",
         triggered_by: str | None = None,
         importance: MemoryImportance | float | None = None,
@@ -274,7 +274,7 @@ class MemorySystem:
         current_step: int,
         raw_content: str,
         personality: PersonalityLayer,
-        related_agents: "Mapping[str, str] | Sequence[str] | None" = None,
+        related_agents: "Mapping[str, PerceivedIdentity] | Sequence[str] | None" = None,
         related_relations_text: str = "",
         triggered_by: str | None = None,
         importance: MemoryImportance | float | None = None,
@@ -427,7 +427,7 @@ class MemorySystem:
         factual: Memory,
         experiential: "Memory | None",
         personality: PersonalityLayer,
-        related_directory: dict[str, str] | None,
+        related_directory: dict[str, PerceivedIdentity] | None,
         related_relations_text: str,
         situation: Situation,
         recent_factual_block: str = "",
@@ -1558,7 +1558,7 @@ class MemorySystem:
         *,
         raw_content: str,
         personality: PersonalityLayer,
-        related_agent_directory: dict[str, str] | None = None,
+        related_agent_directory: dict[str, PerceivedIdentity] | None = None,
         related_relations_text: str = "",
         situation: Situation = Situation(),
         recent_factual_block: str = "",
@@ -1581,7 +1581,7 @@ class MemorySystem:
 
         people_block = ""
         if related_agent_directory:
-            names = render_related_people(related_agent_directory)
+            names = render_related_people(related_agent_directory, with_gender=True)
             people_block = f"【涉及相关人】只能提及：{names}（不得引入未列出的人）\n\n"
         relation_block = ""
         if related_relations_text:

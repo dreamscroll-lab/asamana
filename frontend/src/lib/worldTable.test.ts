@@ -70,6 +70,18 @@ describe("identity lookup recovery", () => {
     expect(second).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps the table's identity when a recovery brings back the same rows", async () => {
+    const fetch = vi.fn<() => Promise<Row[]>>().mockResolvedValue([row("known")]);
+    const cache = worldTable(fetch, keyOf);
+    const initial = await cache.load("world");
+
+    identityOf("absent", initial);
+    await flush();
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(snapshot(cache, "world").table).toBe(initial);
+  });
+
   it("defers and merges missing-ID recovery and replaces the whole table", async () => {
     const fetch = vi.fn<() => Promise<Row[]>>()
       .mockResolvedValueOnce([row("old")])

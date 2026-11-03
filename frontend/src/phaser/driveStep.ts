@@ -14,11 +14,12 @@ import type { TiledWorldScene } from "./TiledWorldScene";
 export async function renderStepInto(
   scene: TiledWorldScene,
   step: StepView,
+  previous?: (stepNo: number) => Promise<StepView>,
 ): Promise<Error | null> {
   // The code-layer hour, not the narrative label: the label's shape is the theme's. (See AmbientLight.setHour.)
   scene.setWorldTime(step.world_time.hour);
   try {
-    await scene.renderStep(step);
+    await scene.renderStep(step, previous);
     return null;
   } catch (err) {
     return err instanceof Error ? err : new Error(String(err));

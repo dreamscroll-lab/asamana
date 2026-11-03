@@ -49,10 +49,10 @@ class Actor(Protocol):
         until the actor answers."""
         ...
 
-    def weighs_interrupt(self, *, step: int, signals: "PerceivedSignals") -> bool:
-        """Whether to weigh breaking off the action in progress: when the actor asked to, or on
-        anything that reached the character, where the AI weighs only what crosses the engine's
-        thresholds."""
+    def weighs_interrupt(self, *, step: int, signals: "PerceivedSignals", falling_due: bool) -> bool:
+        """Whether to weigh breaking off the action in progress: when the actor asked to, on
+        anything that reached the character, or when one of its agreed times falls due
+        (``falling_due``), where the AI weighs only what crosses the engine's thresholds."""
         ...
 
     async def evaluate_interrupt(self, agent: "Agent", *, step: int) -> tuple[bool, str]:

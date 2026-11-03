@@ -1046,6 +1046,7 @@ async def test_the_one_acted_upon_does_not_read_a_third_person_copy_of_it(contai
     [seen] = [ev for ev in env.spatial_for(agent_id="agent-c").ambient_events if "制服" in ev.content]
     assert not any("制服" in c for c in victim)
     assert "agent-b" in seen.doer_agent_ids
+    assert seen.acted_upon_ids == ("agent-b",)      # who it landed on, not who did it
 
 
 def test_acted_upon_lists_landed_effects_but_not_listeners(container) -> None:
@@ -1282,7 +1283,7 @@ async def test_enrolling_reorder_never_crosses_phases(container) -> None:
     assert arb["agent-a"].action_result.action.action_description == "批阅文书"
     b_exec = rt._executor_registry.get_active_for_agent("agent-b")  # noqa: SLF001
     assert b_exec is not None and b_exec.participant_ids == ["agent-b"]
-    assert "李世民正在做事" in b_exec.extra["completed_result"].outcome
+    assert "李世民正忙着手上的事" in b_exec.extra["completed_result"].outcome
 
 
 @pytest.mark.asyncio
@@ -1515,13 +1516,13 @@ async def test_a_carry_still_takes_a_body_that_means_to_leave(container) -> None
     assert rt._executor_registry.get_active_for_agent("agent-b").participant_ids == ["agent-b", "agent-a"]  # noqa: SLF001
 
 
-def test_every_action_type_has_a_visible_busy_phrase_or_is_deliberately_unseen() -> None:
-    """A new action type without its phrase would silently fall back to the vague one; only COVERT
-    belongs there."""
-    from engine.arbiter import _BUSY_WITH
+def test_every_activity_shows_on_sight_except_idle_and_covert() -> None:
+    """A new activity without its phrase would silently read as doing nothing; only IDLE and
+    COVERT belong there."""
+    from agent.personality import AgentActivityStatus, visible_doing
 
-    uncovered = set(ActionType) - set(_BUSY_WITH) - {ActionType.TALK}
-    assert uncovered == {ActionType.COVERT}
+    unseen = {s for s in AgentActivityStatus if not visible_doing(s)}
+    assert unseen == {AgentActivityStatus.IDLE, AgentActivityStatus.COVERT}
 
 
 @pytest.mark.asyncio
@@ -1561,7 +1562,7 @@ async def test_critical_pressure_keeps_own_body_against_conscription(container) 
     assert a_exec is not None and a_exec.participant_ids == ["agent-a"]
     rejection = a_exec.extra["completed_result"]
     assert rejection.succeeded is False
-    assert "李建成正在做事" in rejection.outcome
+    assert "李建成正忙着手上的事" in rejection.outcome
 
 
 @pytest.mark.asyncio
