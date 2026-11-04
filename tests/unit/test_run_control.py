@@ -264,6 +264,9 @@ async def test_a_stop_before_the_actor_is_asked_still_ends_the_run(mock_build_co
     channel = app.get_session(wid).runtime.actor
     channel.follow(next(iter(world.agents)))
     app.start_run(wid, steps=10_000)
+    # Let the run enter its step first: a stop before the task starts is undone by the run's
+    # own reopen, and whether the request below runs before that task differs across Pythons.
+    await asyncio.sleep(0)
     app.stop_run(wid)                         # nothing pending yet
 
     with pytest.raises(StepWithdrawn):
