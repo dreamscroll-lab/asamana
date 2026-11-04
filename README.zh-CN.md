@@ -6,13 +6,14 @@
 
 <p align="center"><img src="docs/images/cover.jpg" alt="Asamana" width="1024"></p>
 
-▶️ **演示视频**：[在 Bilibili 观看](https://www.bilibili.com/video/BV1R4HS6WEsE/)
+▶️ **导演模式演示**：[在 Bilibili 观看](https://www.bilibili.com/video/BV1R4HS6WEsE/)<br>
+▶️ **演员模式演示**：[在 Bilibili 观看](https://www.bilibili.com/video/BV1tkx96eEtL/)
 
 **Asamana 是一个 AI 驱动的涌现叙事引擎。**
 
 简单地说：你给出一个主题，Asamana 会构建一群有各自认知人设的 AI 角色放到一个虚拟空间里，让他们在这个空间里围绕主题自主地展开叙事与戏剧化演绎。故事没有任何预设情节，没有剧本，完全由角色共同叙事而产生。
 
-> **项目状态**：早期迭代中。接口、配置格式与存档格式都可能在版本之间变化，暂不保证向后兼容。变更见 [CHANGELOG.md](CHANGELOG.md)。
+> **项目状态**：早期迭代中。接口、配置格式与存档格式都可能在版本之间变化，暂不保证向后兼容。目前还有不少已知 bug 没有处理，后续会持续迭代优化。变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 > **语言**：目前 prompt 和生成的叙事内容（对白、记忆、情节文本等等）都是中文。
 
@@ -37,6 +38,12 @@
 - **分阶段编排**：放弃对话循环，把认知拆成 `感知 → 动机 → 决策 → 行动 → 反馈` 五个阶段，由代码确定性地编排。每个阶段都是独立的 LLM 调用，可单独测试与调优，也不会无脑累积上下文。
 - **类型化输出约束**：阶段之间用确定的类型化输出（JSON）衔接，而不是互相传递自由文本。这样可以提高准确率，也可以避免阶段间的幻觉被级联放大。
 - **overlap 上下文管理**：为保证角色的一致性、持续性和连贯性，把人设、情绪、方向（需求与目标）、关系与处境、近期记忆作为 overlap 重复注入各阶段的上下文中。
+
+### 4. 两种模式：导演模式 + 演员模式
+
+导演模式：可以观察整个世界，可以看到每个角色的内心活动和外在行为，可以看到世界发生的所有事情，也可以主动介入操控世界。
+
+演员模式：你可以在 AI 世界中扮演任意一个角色进行探索和叙事。你永远不知道世界下一步会发生什么，只有主动探索才能了解和认识世界。
 
 ## 技术架构
 
@@ -75,7 +82,7 @@ git clone https://github.com/dreamscroll-lab/asamana.git && cd asamana
 
 在中国大陆，引导里选择使用国内镜像源可以加快安装速度，详见[部署文档](docs/deployment.zh-CN.md#中国大陆的镜像源)。
 
-第一次启动时会自动导入两个已经跑完的示例世界（玄武门之变、谁是内鬼），不配 key 也可以直接浏览和回放。
+第一次启动时会自动导入两个已经跑完的示例世界（宫门血色：玄武门之变；第七把椅子：谁是内鬼），不配 key 也可以直接浏览和回放。
 
 ### 有 key 与无 key 的区别
 
@@ -176,7 +183,9 @@ Asamana 受益于以下工作：
 
 ## 联系
 
-finley@dreamscroll.net (finley)
+邮箱：finley@dreamscroll.net (finley)
+
+<p align="center"><img src="docs/images/xiaohongshu-qr.jpg" alt="小红书二维码" width="200"><br>小红书</p>
 
 ## 许可证
 

@@ -12,6 +12,8 @@ Trace records each LLM call's prompt, response, token counts, latency and cognit
 - **Storage**: `data/traces/<world_id>/` — one file for the world build, then one JSONL file per run step.
 - **Viewing**: `#/dev` → **Trace**. Group by step, stage or character, and open any call to see its full prompt and response.
 
+> **Tip**: an actor's decisions and director or narrative-editor injections make no LLM call. Trace still records them, as beats, and leaves them out of the call statistics. **Actor only** shows just what an actor caused.
+
 ## World quality audit (Audit)
 
 An LLM reviews the narrative quality of a finished world. The core principles:
