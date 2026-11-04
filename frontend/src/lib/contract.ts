@@ -9,6 +9,18 @@ import type { ActionTarget } from "../types";
 // — the input caps at it so the backend's 400 is a backstop, not the normal way to find out.
 export const MAX_WORLD_NAME_LEN = 40;
 
+// Most characters a world may have. Mirrors config.models.MAX_CAST_SIZE.
+export const MAX_CAST_SIZE = 15;
+
+// The step lengths a world may take, in whole hours. Mirrors engine.clock.MIN_HOURS_PER_STEP /
+// MAX_HOURS_PER_STEP.
+export const MIN_HOURS_PER_STEP = 1;
+export const MAX_HOURS_PER_STEP = 24;
+
+// The operation of an actor's decision summary that does nothing this step. Mirrors
+// core.interfaces.actor.IDLE_OPERATION.
+export const IDLE_OPERATION = "idle";
+
 export const ActionType = {
   talk:         "talk",
   move:         "move",
@@ -23,7 +35,6 @@ export type ActionTypeValue = typeof ActionType[keyof typeof ActionType];
 
 export const Phase = {
   interrupt: "interrupt",
-  initialization: "initialization", // step-0 seeding records (outcome "初始化完成")
   // Which beat of an execution a record reports, and so whether its `outcome` is an opening or a
   // result. An act spanning steps arrives as three beats, each saying only what is new; one that
   // opens and closes inside a step arrives as one, `settled`, which has a result but no opening to
@@ -91,7 +102,10 @@ export const actedOnAgents = (t: ActionTarget | undefined): string[] =>
 export const actedOnNpcs = (t: ActionTarget | undefined): string[] =>
   (t?.acts_on ?? []).filter((r) => r.kind === RefKind.npc).map((r) => r.id);
 
-/** Who RECEIVES it, their turn untouched: a hand-over's receiver, a conversation's listeners. */
+/**
+ * Who it LANDS ON passively, their turn untouched: a hand-over's receiver, the holder of a thing
+ * taken or worked, a conversation's listeners.
+ */
 export const reachedAgents = (t: ActionTarget | undefined): string[] =>
   (t?.reaches ?? []).filter((r) => r.kind === RefKind.agent).map((r) => r.id);
 
@@ -103,3 +117,10 @@ export const actedOnEntities = (t: ActionTarget | undefined): string[] =>
 export const claimedAgents = (t: ActionTarget | undefined): string[] =>
   (t?.claims ?? []).filter((r) => r.kind === RefKind.agent).map((r) => r.id);
 
+
+// Value ranges the backend validates amendments against; mirrors core.prompts. Sliders stay
+// inside them, so the backend's 400 is a backstop.
+export const EMOTION_INTENSITY_RANGE: [number, number] = [0, 1];
+export const EMOTION_VALENCE_RANGE: [number, number] = [-1, 1];
+export const TRUST_RANGE: [number, number] = [0, 1];
+export const AFFECTION_RANGE: [number, number] = [-1, 1];

@@ -14,7 +14,7 @@ import Phaser from "phaser";
 
 import { Phase, actedOnAgents } from "../lib/contract";
 import { hsvOf } from "../lib/dye";
-import type { ActionSummary, AgentStateSummary } from "../types";
+import type { Beat, Figure } from "./figures";
 import { deedBody } from "./deedPose";
 import { type FxHost, deathDissipate } from "./effects";
 import { RECOLOR_FX, RecolorFX } from "./recolorPipeline";
@@ -156,16 +156,16 @@ export class BodyRig {
   // mid-swing. Restoration goes through delayP, which resolves even when a scrub supersedes
   // the step, so a token is never stranded mid-blow.
 
-  /** Act out one action: the actor's deed, and the reaction of anyone it was aimed at. */
-  playDeed(tok: AgentToken, act: ActionSummary, tokens: Map<string, AgentToken>): void {
-    const body = deedBody(act.deed, act.succeeded !== false);
+  /** Act out one action: the doer's deed, and the reaction of anyone it was aimed at. */
+  playDeed(tok: AgentToken, act: Beat, tokens: Map<string, AgentToken>): void {
+    const body = deedBody(act.deed, act.shared?.succeeded ?? null);
     if (!body) return; // nothing was adjudicated → nothing was done → draw nothing
     // The CLOSING beat of a long act: he is no longer at it, so a held pose is shown once and
     // let go. Re-entering it would leave him stuck in it (sustained poses have no timer) and
     // strand a covert's shroud.
     const done = act.phase === Phase.ongoing_complete;
-    if (body.actor === "attack") this.swing(tok);
-    else this.holdPose(tok, body.actor, body.sustained && !done);
+    if (body.doer === "attack") this.swing(tok);
+    else this.holdPose(tok, body.doer, body.sustained && !done);
     this.setShroud(tok, done ? 1 : body.shroud ?? 1);
     if (!body.target) return;
     // The TARGET's pose is always a beat: sustained-ness describes the ACTOR's deed, not the
@@ -248,8 +248,7 @@ export class BodyRig {
     if (pipe) pipe.dye = hsvOf(color);
   }
 
-  // (Re)assign a token's body — used when the cast's gender/age arrives after tokens were
-  // created. Color is untouched: it came from the step state and was right from frame 1.
+  // Public demographics may arrive after a token is created; re-skin it without changing its dye.
   assignSkin(tok: AgentToken, skinId: string): void {
     if (skinId === tok.skinId) return;
     tok.skinId = skinId;
@@ -286,9 +285,9 @@ export class BodyRig {
    * Must stay single: a deferred path landing only death sends the rest through the instant
    * path, ahead of the blow that caused it (the vitality bar drains a beat early).
    */
-  applyBodyState(tok: AgentToken, state: AgentStateSummary, wasPlaced: boolean): void {
-    if (reportedDead(state)) {
-      this.applyDeathVisual(tok, state.emotion_valence, !tok.dead && wasPlaced);
+  applyBodyState(tok: AgentToken, state: Figure, fallsNow: boolean): void {
+    if (reportedDead(state.is_active, state.vitality)) {
+      this.applyDeathVisual(tok, state.emotion_valence, !tok.dead && fallsNow);
       return;
     }
     // Revive on a scrub back before the death. Keyed on tok.dead, not the sprite's angle:
@@ -301,8 +300,8 @@ export class BodyRig {
   }
 
   /** Would applying the report change what the body looks like: falling, or the bar moving. */
-  bodyChanged(tok: AgentToken, state: AgentStateSummary): boolean {
-    if (reportedDead(state) !== tok.dead) return true;
+  bodyChanged(tok: AgentToken, state: Figure): boolean {
+    if (reportedDead(state.is_active, state.vitality) !== tok.dead) return true;
     return Math.abs((state.vitality ?? 1) - tok.vit) > 0.001;
   }
 
@@ -320,7 +319,7 @@ export class BodyRig {
 
   // A corpse is swept at the start of the step after its death (the scene drops it from its
   // token map first). A body is drawn only on the step it falls: later steps still report him
-  // dead, so the scene's gone() tests for a token, not the report, or the corpse would be
+  // dead, so the scene's gone() tests the death's step, not the report, or the corpse would be
   // recreated each step, blinking and wandering.
   removeToken(tok: AgentToken): void {
     const c = tok.container;

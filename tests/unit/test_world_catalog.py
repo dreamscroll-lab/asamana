@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
-from world.catalog import WorldCatalog
+import pytest
+
+from world.catalog import ActorCasting, WorldCatalog
 
 
 def test_register_merges_entries_from_another_instance(tmp_path: Path) -> None:
@@ -35,12 +39,13 @@ def test_confirmed_defaults_false_and_persists(tmp_path: Path) -> None:
     path = str(tmp_path / "worlds.json")
     cat = WorldCatalog(path)
     cat.register("w1", theme="宫变")
-    assert cat.get("w1")["confirmed"] is False
+    assert cat.is_confirmed("w1") is False
 
     cat.set_confirmed("w1", True)
-    assert cat.get("w1")["confirmed"] is True
+    assert cat.is_confirmed("w1") is True
     # Survives a fresh instance (reads back from disk).
-    assert WorldCatalog(path).get("w1")["confirmed"] is True
+    assert WorldCatalog(path).is_confirmed("w1") is True
+    assert cat.is_confirmed("nope") is False
     # No-op for unknown worlds.
     cat.set_confirmed("nope", True)
     assert cat.get("nope") is None
@@ -96,9 +101,30 @@ def test_an_unreadable_catalog_is_not_overwritten_with_a_stale_copy(tmp_path: Pa
     cat = WorldCatalog(str(path))
     path.write_text("{ 这不是合法 JSON", encoding="utf-8")   # broken by an external tool / a slip in a manual edit
 
-    cat.register("world-c", world_name="长安丙")             # must not overwrite the whole file from a stale copy
+    with pytest.raises(OSError, match="register"):           # refused, not skipped: the caller must know
+        cat.register("world-c", world_name="长安丙")
 
     assert path.read_text(encoding="utf-8").startswith("{ 这不是")
+
+
+@pytest.mark.parametrize("write", ["set_confirmed", "set_actor_casting", "set_name", "remove"])
+def test_every_write_is_refused_loudly_when_the_catalog_cannot_be_read(tmp_path: Path, write: str) -> None:
+    """A skipped write the caller can't see lets it go on as if it landed: a confirmation would
+    delete the setup of a world the catalog still calls unconfirmed."""
+    path = tmp_path / "worlds.json"
+    cat = WorldCatalog(str(path))
+    cat.register("world-a")
+    path.write_text("<<corrupt>>", encoding="utf-8")
+    args = {
+        "set_confirmed": ("world-a", True),
+        "set_actor_casting": ("world-a", ActorCasting(character_id="hero")),
+        "set_name": ("world-a", "新名"),
+        "remove": ("world-a",),
+    }[write]
+
+    with pytest.raises(OSError, match=write):
+        getattr(cat, write)(*args)
+    assert path.read_text(encoding="utf-8") == "<<corrupt>>"
 
 
 def test_a_read_failure_at_construction_does_not_wipe_the_index(tmp_path: Path) -> None:
@@ -112,7 +138,8 @@ def test_a_read_failure_at_construction_does_not_wipe_the_index(tmp_path: Path) 
     cat = WorldCatalog(str(path))                 # read fails at construction → _entries is empty
     assert cat.entries() == {}
 
-    cat.register("world-b", world_name="长安乙")   # an empty copy must never be written to disk
+    with pytest.raises(OSError):                  # an empty copy must never be written to disk
+        cat.register("world-b", world_name="长安乙")
     assert path.read_text(encoding="utf-8") == "<<corrupt>>"
 
     path.write_text(good, encoding="utf-8")       # recovers once the file is fixed
@@ -135,3 +162,61 @@ def test_entries_sees_a_world_registered_by_another_instance(tmp_path: Path) -> 
     assert set(server.entries()) == {"w-existing", "w-from-cli"}
     # The enumeration read already synced memory, so per-world lookups don't need their own disk reads.
     assert server.get("w-from-cli") is not None
+
+
+def test_concurrent_writers_lock_before_reading_the_catalog(tmp_path: Path, monkeypatch) -> None:
+    path = str(tmp_path / "worlds.json")
+    first, second = WorldCatalog(path), WorldCatalog(path)
+    first_writing, release_first, second_read = Event(), Event(), Event()
+    flush = first._flush
+    refresh = second._refresh_from_disk
+
+    def blocked_flush() -> None:
+        first_writing.set()
+        assert release_first.wait(timeout=5)
+        flush()
+
+    def observed_refresh() -> bool:
+        second_read.set()
+        return refresh()
+
+    monkeypatch.setattr(first, "_flush", blocked_flush)
+    monkeypatch.setattr(second, "_refresh_from_disk", observed_refresh)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_write = pool.submit(first.register, "world-a")
+        assert first_writing.wait(timeout=5)
+        second_write = pool.submit(second.register, "world-b")
+        try:
+            assert not second_read.wait(timeout=0.1)
+        finally:
+            release_first.set()
+        first_write.result(timeout=5)
+        second_write.result(timeout=5)
+
+    assert set(WorldCatalog(path).entries()) == {"world-a", "world-b"}
+
+
+def test_director_review_requires_successful_catalog_refresh(tmp_path: Path) -> None:
+    path = tmp_path / "worlds.json"
+    catalog = WorldCatalog(str(path))
+    catalog.register("world-a")
+    path.write_text("<<corrupt>>", encoding="utf-8")
+
+    with pytest.raises(OSError, match="director review"):
+        catalog.mark_director_review("world-a")
+
+    assert not catalog.director_reviewed("world-a")
+
+
+def test_director_review_requires_successful_write(tmp_path: Path, monkeypatch) -> None:
+    catalog = WorldCatalog(str(tmp_path / "worlds.json"))
+    catalog.register("world-a")
+
+    def fail_write() -> None:
+        raise OSError("Catalog write unavailable")
+
+    monkeypatch.setattr(catalog, "_flush", fail_write)
+    with pytest.raises(OSError, match="unavailable"):
+        catalog.mark_director_review("world-a")
+
+    assert not WorldCatalog(str(tmp_path / "worlds.json")).director_reviewed("world-a")

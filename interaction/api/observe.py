@@ -4,9 +4,16 @@ Render-neutral: every payload is semantic world state (steps, the relationship
 graph). No coordinates/layout — a client lays it out. A 2D renderer turns the
 symbolic state into a map on the client; a text view ignores the geometry.
 
+Public character, NPC and place identities are independent of viewpoint. While an actor performs a character,
+steps, profiles, graphs and the feed answer as that character perceived the world
+(``interaction.actor_view``); once the actor exits, they answer in full again.
+
 The WebSocket pushes off the in-process event bus (subscribe, not poll): on
-connect it sends the latest persisted step and current run state, then forwards
-each live ``step`` and ``status`` event for its world.
+connect it sends the current run state, the turn waiting for the actor (if one is) and the latest
+persisted step (a ``latest_step`` frame), then forwards each live ``step``, ``status``,
+``actor_turn`` and ``actor_entry`` event for its world. An ``actor_turn`` frame carries the whole
+turn when one opens and null when it closes; an ``actor_entry`` frame one new entry of the actor's
+thread, whose history a client reads from ``GET /actor/thread``.
 """
 
 from __future__ import annotations
@@ -22,11 +29,12 @@ from core.logging import get_logger
 from fastapi import WebSocket, WebSocketDisconnect
 
 from interaction.api.app import ApiServices
-from interaction.api.serialization import to_jsonable
+from interaction.actor_view import graph_for, profile_for, step_view_for
+from interaction.api.serialization import to_wire_json
 from interaction.models import (
     AgentProfile,
     GraphNode,
-    StepEvent,
+    StepView,
     WorldGraph,
     relations_from_snapshot,
 )
@@ -43,13 +51,21 @@ def build_observe_router(services: ApiServices) -> Any:
     container = services.container
     event_bus = container.event_bus
 
+    def _step(world_id: str, view: StepView) -> dict[str, Any]:
+        viewer = application.performing_character(world_id)
+        return to_wire_json(step_view_for(view, viewer) if viewer is not None else view)
+
+    def _profile(world_id: str, profile: AgentProfile) -> dict[str, Any]:
+        viewer = application.performing_character(world_id)
+        return to_wire_json(profile_for(profile, viewer) if viewer is not None else profile)
+
     async def _step_payload(world_id: str, step: int) -> dict[str, Any]:
         replayer = manager.create_replayer(world_id)
         try:
-            event = await replayer.get_step(step)
+            view = await replayer.get_step(step)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return to_jsonable(event)
+        return _step(world_id, view)
 
     # ----- steps ----------------------------------------------------------
 
@@ -70,66 +86,59 @@ def build_observe_router(services: ApiServices) -> Any:
         else:
             snapshot = await manager.latest_snapshot(world_id)
         if snapshot is None:
-            return to_jsonable(WorldGraph())
-        profiles = await manager.character_profiles(world_id)
+            return to_wire_json(WorldGraph())
         nodes = [
-            GraphNode(
-                id=aid,
-                name=s.get("agent_name") or "某人",
-                role=profiles.get(aid, {}).get("role", ""),
-                is_main_character=bool(s.get("is_main_character", False)),
-                # Fixed identity color — same value the map/card use.
-                color=s.get("color", ""),
-            )
-            for aid, s in snapshot.agent_states.items()
+            GraphNode(id=aid, is_main_character=bool(s.get("is_main_character", False)))
+            for aid, s in snapshot.state.agents.items()
         ]
-        return to_jsonable(WorldGraph(nodes=nodes, edges=relations_from_snapshot(snapshot)))
-
-    def _make_profile(agent_id: str, entry: dict[str, Any]) -> AgentProfile:
-        return AgentProfile(
-            agent_id=agent_id,
-            name=entry.get("name", ""),
-            role=entry.get("role", ""),
-            age=entry.get("age"),
-            gender=entry.get("gender", ""),
-            background=entry.get("background", ""),
-            appearance=entry.get("appearance", ""),
-            color=entry.get("color", ""),
-            core_traits=list(entry.get("core_traits", [])),
-            core_values=list(entry.get("core_values", [])),
-            self_image=entry.get("self_image", ""),
-            life_goal=entry.get("life_goal", ""),
-            secret=entry.get("secret", ""),
-            is_main_character=bool(entry.get("is_main_character", False)),
-        )
+        graph = WorldGraph(nodes=nodes, edges=relations_from_snapshot(snapshot))
+        viewer = application.performing_character(world_id)
+        return to_wire_json(graph_for(graph, viewer) if viewer is not None else graph)
 
     @router.get("/api/worlds/{world_id}/agents")
-    async def list_profiles(world_id: str) -> list[dict[str, Any]]:
-        """The world's whole cast as persisted at step 0, the same list at every step.
+    async def list_cast(world_id: str) -> list[dict[str, Any]]:
+        """The world's public identities, identical for every viewer."""
+        if await manager.get_world(world_id) is None:
+            raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
+        identities = await manager.character_identities(world_id)
+        return [to_wire_json(identity) for _, identity in sorted(identities.items())]
 
-        A stable identity key can't come from the per-step ``agent_states`` (the roster would
-        depend on the loaded step); the map deals each agent a skin from this list, so a body
-        is the same in every step, replay and session.
-        """
-        profiles = await manager.character_profiles(world_id)
-        return [
-            to_jsonable(_make_profile(agent_id, entry))
-            for agent_id, entry in sorted(profiles.items())
-        ]
+    @router.get("/api/worlds/{world_id}/npcs")
+    async def list_npcs(world_id: str) -> list[dict[str, Any]]:
+        """The world's NPC identities, independent of current presence and viewpoint."""
+        identities = await manager.npc_identities(world_id)
+        if identities is None:
+            raise HTTPException(status_code=404, detail=f"No world setup for: {world_id}")
+        return [to_wire_json(identity) for _, identity in sorted(identities.items())]
+
+    @router.get("/api/worlds/{world_id}/places")
+    async def list_places(world_id: str) -> list[dict[str, Any]]:
+        """The world's places, fixed at build and identical for every viewer."""
+        identities = await manager.place_identities(world_id)
+        if identities is None:
+            raise HTTPException(status_code=404, detail=f"No world config for: {world_id}")
+        return [to_wire_json(identity) for _, identity in sorted(identities.items())]
 
     @router.get("/api/worlds/{world_id}/agents/{agent_id}/profile")
     async def get_profile(world_id: str, agent_id: str) -> dict[str, Any]:
-        """Static identity persisted at step 0 (name/role/background/traits…).
+        """Static identity from the world's setup (name/role/background/traits…).
 
-        Distinct from the per-step ``agent_states`` on a StepEvent, which carry
+        Distinct from the per-step ``AgentView``s on a StepView, which carry
         the mutable current state. Used for the creation-review cards and the
         per-step agent detail panel.
         """
         profiles = await manager.character_profiles(world_id)
-        entry = profiles.get(agent_id)
-        if entry is None:
+        profile = profiles.get(agent_id)
+        if profile is None:
             raise HTTPException(status_code=404, detail=f"Agent profile not found: {agent_id}")
-        return to_jsonable(_make_profile(agent_id, entry))
+        if application.performing_character(world_id) is None:
+            try:
+                await application.record_director_read(world_id)
+            except OSError as exc:
+                raise HTTPException(status_code=503, detail="The director review could not be recorded.") from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return _profile(world_id, profile)
 
     # ----- live WebSocket feed (push) -------------------------------------
 
@@ -169,20 +178,26 @@ def build_observe_router(services: ApiServices) -> Any:
         await websocket.send_json(
             {"type": "status", "data": {"world_id": world_id, "status": state.value if state else None}}
         )
+        # Sent even when no turn is open: a client reconnecting after its turn closed would
+        # otherwise keep showing the closed one.
+        turn = application.actor_turn(world_id)
+        await websocket.send_json(
+            {"type": "actor_turn", "data": to_wire_json(turn) if turn is not None else None}
+        )
         steps = await manager.list_steps(world_id)
-        # Skip the step the initial snapshot already covered (subscribing first causes this overlap).
+        # Skip the step the initial frame already covered (subscribing first causes this overlap).
         sent_step = -1
         if steps:
             try:
                 latest = await manager.create_replayer(world_id).get_step(max(steps))
-                await websocket.send_json({"type": "snapshot", "data": to_jsonable(latest)})
+                await websocket.send_json({"type": "latest_step", "data": _step(world_id, latest)})
                 sent_step = latest.step
             except ValueError:
                 pass
 
         async def _pump() -> None:
-            # Guard the whole loop: a payload value to_jsonable can't handle (an enum, set or
-            # dataclass in a dict[str, Any] field) would kill this unawaited task silently,
+            # Guard the whole loop: a payload value to_wire_json can't encode (a set, or any other
+            # non-JSON type in a dict[str, Any] field) would kill this unawaited task silently,
             # leaving the socket open and "connected" while the queue fills.
             try:
                 while True:
@@ -191,10 +206,16 @@ def build_observe_router(services: ApiServices) -> Any:
                         break
                     etype = event.get("type")
                     if etype == "step":
-                        se = StepEvent.from_runtime_payload(event)
-                        if se.step <= sent_step:
+                        view = StepView.from_runtime_payload(event)
+                        if view.step <= sent_step:
                             continue
-                        await websocket.send_json({"type": "step", "data": to_jsonable(se)})
+                        await websocket.send_json({"type": "step", "data": _step(world_id, view)})
+                    elif etype == "actor_turn":
+                        await websocket.send_json(
+                            {"type": "actor_turn", "data": to_wire_json(event.get("turn"))}
+                        )
+                    elif etype == "actor_entry":
+                        await websocket.send_json({"type": "actor_entry", "data": event.get("entry")})
                     elif etype == "status":
                         await websocket.send_json(
                             {"type": "status",

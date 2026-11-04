@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
-from agent.need import NeedState, NeedType, build_innate_needs
+from agent.need import (
+    NEED_INTENSITY_RANGE, NEED_WEIGHT_RANGE, NeedState, NeedType, build_innate_needs,
+)
 from agent.personality import (
     SECRET_LABEL,
     EmotionState,
@@ -15,12 +17,21 @@ from agent.personality import (
     parse_emotion_type,
 )
 from core.context import annotate_call, observe_stage
-from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, coerce_bool, extract_json_object, output_budget
+from core.interfaces.llm import (
+    LLMMessage,
+    LLMResponse,
+    LLMRouter,
+    LLMScene,
+    coerce_bool,
+    extract_json_object,
+    output_budget,
+)
 from core.interfaces.trace import Stage
 from core.logging import get_logger
-from core.text import slugify
 from core.prompts import (
     EMOTION_INTENSITY_DEFINITION,
+    EMOTION_INTENSITY_RANGE,
+    EMOTION_VALENCE_RANGE,
     EMOTION_VALENCE_DEFINITION,
     NEED_INTENSITY_DEFINITION, NEED_TYPE_DEFINITION, NEED_WEIGHT_DEFINITION, relation_legend,
 )
@@ -30,10 +41,10 @@ from core.coerce import (
 
 from world.identity_color import PALETTE_CHOICES, resolve_identity_colors
 from world.models import (
-    AgentDefinition, AgentTier, CastDesign, FigureCastRole, HistoricalEventSeed, RelationSeed,
+    AgentDefinition, AgentTier, CastDesign, FigureCastRole, unique_agent_id,
     ThemeAnalysis, ThemeFigure,
 )
-from world.builders import BUILD_ATTEMPTS
+from world.builders import BuildReplyRejected, complete_with_build_retry
 
 logger = get_logger(__name__)
 
@@ -55,7 +66,7 @@ class AgentGenerator:
         task_contexts: list[tuple[ThemeFigure, str]] = []
         tasks = []
         for figure in analysis.key_figures:
-            agent_id = _unique_agent_id(figure.name, used_ids)
+            agent_id = unique_agent_id(figure.name, used_ids)
             cast_role = cast_design.role_for(figure.name) if cast_design else None
             task_contexts.append((figure, agent_id))
             tasks.append(self._generate_definition(figure, analysis, agent_id, cast_role=cast_role))
@@ -106,44 +117,37 @@ class AgentGenerator:
             LLMMessage(role="system", content=system_prompt),
             LLMMessage(role="user", content=user_prompt),
         ]
-        last_exc: BaseException | None = None
-        for attempt in range(BUILD_ATTEMPTS):
-            try:
-                # Tag the trace with who is being generated: agent_id lets the dev tools identify and filter;
-                # the name is recorded separately because a build that fails at this step has no snapshot yet, so
-                # the dev tools can't look the name up from the id. Set it inside this coroutine, not before
-                # gather, or the characters' ids would get mixed up across each other's calls.
-                with observe_stage(Stage.WORLD_INIT, agent_id=agent_id), \
-                        annotate_call(agent_name=figure.name):
-                    response = await self._llm_router.complete(
-                        # reason ≤80 chars ≈ 125, plus one character's full persona: background (≤140 chars ≈ 210) + self_image/life_goal (≤50 chars each ≈ 75)
-                        # + appearance (≤40 chars ≈ 60) + long_term_goals (3 × ≤40 chars ≈ 180) + hard_constraints (3 × ≤40 chars ≈ 180)
-                        # + 5 × initial_needs (label ≤60 chars ≈ 90 + 3 numbers + structure ≈ 110) + traits/values/location/emotion ≈ 200;
-                        # estimate ~1650 tok.
-                        LLMScene.PERSONA_GENERATION, messages, max_tokens=output_budget(1650),
-                        json_mode=True,
-                    )
-                payload = extract_json_object(response.content)
-                if payload is not None:
-                    return self._definition_from_payload(figure, analysis, payload, agent_id)
-                last_exc = ValueError(
-                    f"No parseable JSON for figure '{figure.name}' (attempt {attempt + 1})"
+        async def call() -> LLMResponse:
+            # Tag the trace with who is being generated: agent_id lets the dev tools identify and filter;
+            # the name is recorded separately because a build that fails at this step has no snapshot yet, so
+            # the dev tools can't look the name up from the id. Set it inside this coroutine, not before
+            # gather, or the characters' ids would get mixed up across each other's calls.
+            with observe_stage(Stage.WORLD_INIT, agent_id=agent_id), \
+                    annotate_call(agent_name=figure.name):
+                return await self._llm_router.complete(
+                    # reason ≤80 chars ≈ 125, plus one character's full persona: background (≤140 chars ≈ 210) + self_image/life_goal (≤50 chars each ≈ 75)
+                    # + appearance (≤40 chars ≈ 60) + long_term_goals (3 × ≤40 chars ≈ 180) + hard_constraints (3 × ≤40 chars ≈ 180)
+                    # + 5 × initial_needs (label ≤60 chars ≈ 90 + 3 numbers + structure ≈ 110) + traits/values/location/emotion ≈ 200;
+                    # estimate ~1650 tok.
+                    LLMScene.PERSONA_GENERATION, messages, max_tokens=output_budget(1650),
+                    json_mode=True,
                 )
-            except Exception as exc:
-                last_exc = exc
-            logger.warning(
-                "agent_definition_attempt_failed",
-                extra={
-                    "figure_name": figure.name,
-                    "attempt": attempt + 1,
-                    "reason": str(last_exc),
-                },
-            )
-            if attempt < BUILD_ATTEMPTS - 1:
-                await asyncio.sleep(1.0)
-        raise ValueError(
-            f"AgentGenerator failed for figure '{figure.name}' after {BUILD_ATTEMPTS} attempts"
-        ) from last_exc
+
+        def parse(content: str) -> AgentDefinition:
+            payload = extract_json_object(content)
+            if payload is None:
+                raise BuildReplyRejected(
+                    f"No parseable JSON for figure '{figure.name}'", "no_json_object"
+                )
+            return self._definition_from_payload(figure, analysis, payload, agent_id)
+
+        return await complete_with_build_retry(
+            call,
+            parse,
+            attempt_failed_event="agent_definition_attempt_failed",
+            log_extra={"figure_name": figure.name},
+            failure=f"AgentGenerator failed for figure '{figure.name}'",
+        )
 
     def _build_prompt(
         self,
@@ -185,7 +189,7 @@ class AgentGenerator:
             "以及 hidden_needs 的当前激活度——它只影响 step 0 当下的状态，不影响身份。\n"
             "- initial_needs 要分清两层：weight 由核心张力 / 身份决定——它是这个角色【一生】的结构性"
             "需求优先级（典型 1.0，只有当某需求确实是他长期最看重 / 最不在意的，才偏离）；intensity 由"
-            "开局情境决定——它是该需求【此刻】的紧迫度（当下状态），允许被开局危机抬高。【开局危机只抬高 "
+            "开局情境决定——它是该需求【此刻】的强度（当下状态），允许被开局危机抬高。【开局危机只抬高 "
             "intensity，绝不写进 weight】：别把『这阵子的处境』固化成『他一生的性格优先级』。例如危局可让某需求"
             "此刻 intensity 很高，但若它本不是该角色一生所重，weight 仍应保持中性。\n"
             "- 角色不必有「对立面」——根据核心张力的形态，可以是寻找者、等待者、改变中的人、"
@@ -207,12 +211,12 @@ class AgentGenerator:
             # First: every field below is derived from this read of the character (CLAUDE.md §5).
             "reason": "动笔前先想清楚这个人是什么样的（≤80字）。只分析，不复述输入原文。",
             "core_traits": ["性格特点（1-2词），共3-5个"],
-            "core_values": ["核心价值观（1-2词），共2-4个"],
+            "core_values": ["价值观（1-2词），共2-4个"],
             "background": "人物背景（2-3句、≤140字）：描述成长经历、出身与长期形成的处世方式。只写长期稳定的身份事实，不要写此刻在哪、在做什么，也不要预测未来。用第三人称。如果人物有不想让别人知道的事，不建议写到这里。",
             "self_image": f"以第一人称视角描述自我认知（一句话、≤50字，如：我是...）。人物有「{SECRET_LABEL}」时，他们的描述应该是自洽的。",
             "appearance": "外在形象（一句话，≤40字）：体貌、衣着或气度的标志性特征。用第三人称，只写长期稳定的外在特征，不写此刻的动作或情绪。",
             "signature_color": f"最能代表该角色气质的颜色，从以下选项中选一个填入（只填英文名）：{PALETTE_CHOICES}。凭其身份、性格与处世气度择一最贴切者。",
-            "life_goal": "人生终极目标（一句话、≤50字），可选，也可以没有，不用硬编。用第一人称。",
+            "life_goal": "人生目标（一句话、≤50字），可选，也可以没有，不用硬编。用第一人称。",
             "long_term_goals": ["当前阶段的长期目标（一句话、每条≤40字，最多3条）。长期目标是要走很长一段路才能推进或守住的【方向】：比手头的小事远得多、又不像 life_goal 那样遥不可及，需持续奋斗、不会轻易到手，且是个能长出多种走法的方向，而非某一桩具体的事或一次具体行动。以角色自身当下的视角表述意图，不得引用任何事件的史称或事后命名，不得把尚未发生的事件当作已确定的未来，这个很重要！"],
             "hard_constraints": ["<一句话、≤40字不可逾越的底线，描述该角色绝对不会做或绝对会坚守的事，至多3条，也可以一条都没有>"],
             "initial_location": "初始地点（使用可用地点列表中的 name 字段值），需要结合角色本身和开局情景选择地点，不要乱选。",
@@ -257,7 +261,13 @@ class AgentGenerator:
             if cast_role.key_relationships:
                 input_lines.append(f"- 主要关系人物：{', '.join(cast_role.key_relationships)}")
         if related:
-            input_lines.append(f"- 相关关系字段说明：{relation_legend()}")
+            # The legend speaks of holder and other party; the JSON speaks of from/to. Without the
+            # mapping the model guesses which side a label belongs to.
+            input_lines.append(
+                "- 相关关系字段说明：每条关系里，labels / trust / affection 的持有者是 from、对方是 to"
+                "（labels 写 to 是 from 的谁）；reverse_labels / reverse_trust / reverse_affection 的持有者是 to、"
+                f"对方是 from。{relation_legend()}"
+            )
         input_lines.append(f"- 相关关系：{json.dumps(related, ensure_ascii=False)}")
 
         # 【输出】: schema at the end of user, next to the generation point (§3).
@@ -331,7 +341,6 @@ class AgentGenerator:
         )
         return AgentDefinition(
             agent_id=agent_id,
-            name=soul.name,
             tier=figure.tier,
             soul=soul,
             # Keep the LLM's text as-is (it may be a name, alias or id) and don't resolve it here. Text →
@@ -345,8 +354,6 @@ class AgentGenerator:
             ),
             initial_emotion=_emotion_from_payload(payload.get("initial_emotion"), fallback=_default_emotion(figure)),
             long_term_goals=coerce_str_list(payload.get("long_term_goals")),
-            initial_relations=_relations_for_figure(analysis.initial_relations, figure.name),
-            historical_memories=_historical_memories_for_figure(analysis.historical_events, figure.name),
             metadata={
                 "brief": figure.brief,
                 "source": "llm",
@@ -357,15 +364,6 @@ class AgentGenerator:
         )
 
 
-def _unique_agent_id(name: str, used_ids: set[str]) -> str:
-    base = slugify(name, fallback_prefix="agent")
-    candidate = base
-    counter = 2
-    while candidate in used_ids:
-        candidate = f"{base}-{counter}"
-        counter += 1
-    used_ids.add(candidate)
-    return candidate
 
 
 
@@ -395,8 +393,14 @@ def _emotion_from_payload(value: Any, *, fallback: EmotionState) -> EmotionState
         raw_primary = coerce_str(value.get("primary"), fallback=fallback.primary.value)
         return EmotionState(
             primary=parse_emotion_type(raw_primary),
-            intensity=coerce_float(value.get("intensity"), default=fallback.intensity, minimum=0.0, maximum=1.0),
-            valence=coerce_float(value.get("valence"), default=fallback.valence, minimum=-1.0, maximum=1.0),
+            intensity=coerce_float(
+                value.get("intensity"), default=fallback.intensity,
+                minimum=EMOTION_INTENSITY_RANGE[0], maximum=EMOTION_INTENSITY_RANGE[1],
+            ),
+            valence=coerce_float(
+                value.get("valence"), default=fallback.valence,
+                minimum=EMOTION_VALENCE_RANGE[0], maximum=EMOTION_VALENCE_RANGE[1],
+            ),
             triggered_by=coerce_optional_str(value.get("triggered_by")) or fallback.triggered_by,
         )
     label = coerce_str(value)
@@ -410,6 +414,11 @@ def _emotion_from_payload(value: Any, *, fallback: EmotionState) -> EmotionState
     return EmotionState(primary=emotion_type, intensity=0.3, valence=0.0, triggered_by="人物生成")
 
 
+#: A need the persona names is a live one; at zero intensity it would score zero in need
+#: competition, so a generated need keeps at least this much (stricter than ``NEED_INTENSITY_RANGE``).
+GENERATED_NEED_INTENSITY_FLOOR = 0.05
+
+
 def _need_states_from_payload(value: Any, *, default_hidden: bool = False) -> list[NeedState]:
     states: list[NeedState] = []
     for item in coerce_mapping_list(value):
@@ -420,8 +429,14 @@ def _need_states_from_payload(value: Any, *, default_hidden: bool = False) -> li
             NeedState(
                 type=need_type,
                 label=coerce_str(item.get("label"), fallback=_default_need_label(need_type)),
-                intensity=coerce_float(item.get("intensity"), default=0.4, minimum=0.05, maximum=1.0),
-                weight=coerce_float(item.get("weight"), default=1.0, minimum=0.1, maximum=2.0),
+                intensity=coerce_float(
+                    item.get("intensity"), default=0.4,
+                    minimum=GENERATED_NEED_INTENSITY_FLOOR, maximum=NEED_INTENSITY_RANGE[1],
+                ),
+                weight=coerce_float(
+                    item.get("weight"), default=1.0,
+                    minimum=NEED_WEIGHT_RANGE[0], maximum=NEED_WEIGHT_RANGE[1],
+                ),
                 is_hidden=coerce_bool(item.get("is_hidden"), default_hidden),
             )
         )
@@ -462,22 +477,3 @@ def _default_need_label(need_type: NeedType) -> str:
         NeedType.SELF_ACTUALIZATION: "推进长远目标",
     }
     return mapping[need_type]
-
-
-def _relations_for_figure(relations: Sequence[RelationSeed], figure_name: str) -> list[RelationSeed]:
-    return [
-        relation
-        for relation in relations
-        if relation.source_name == figure_name
-    ]
-
-
-def _historical_memories_for_figure(
-    events: Sequence[HistoricalEventSeed],
-    figure_name: str,
-) -> list[HistoricalEventSeed]:
-    return [
-        event
-        for event in events
-        if figure_name in event.related_figures
-    ]

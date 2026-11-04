@@ -9,7 +9,7 @@ import type { MapTemplate } from "../types";
 const AUTO = "";
 
 /**
- * Which map a new world is built on, defaulting to 自动选图 (the backend's TemplateSelector
+ * Which map a new world is built on, defaulting to 自动选择地图 (the backend's TemplateSelector
  * picks from the theme). The hovered or focused entry is described in a side panel: a native
  * tooltip would arrive late, truncate, and never show for the keyboard.
  */
@@ -80,7 +80,7 @@ export default function MapPicker({
           setOpen((o) => !o);
         }}
         aria-expanded={open}
-        title="选择这个世界建在哪张地图上"
+        title="选择世界地图"
         className={`px-3 py-1.5 rounded-lg text-xs border transition flex items-center gap-1.5 ${
           chosen
             ? "bg-indigo-950/50 border-indigo-500/50 text-indigo-100"
@@ -95,7 +95,7 @@ export default function MapPicker({
             d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"
           />
         </svg>
-        {chosen ? chosen.world_name || chosen.template : "自动选图"}
+        {chosen ? chosen.world_name || chosen.template : "自动选择地图"}
       </button>
 
       {open && (
@@ -104,7 +104,7 @@ export default function MapPicker({
           className="absolute left-0 top-full mt-2 z-30 w-[min(34rem,calc(100vw-2rem))] flex flex-col sm:flex-row rounded-xl border border-slate-800 bg-slate-950 shadow-2xl shadow-black/50 overflow-hidden"
         >
           <div className="sm:w-48 shrink-0 p-1.5 space-y-0.5 sm:border-r border-b sm:border-b-0 border-slate-800 max-h-72 overflow-y-auto">
-            {row(AUTO, "自动选图", "按主题挑选")}
+            {row(AUTO, "自动选择地图", "根据世界主题选择")}
             {templates.map((t) =>
               row(t.template, t.world_name || t.template, `${t.era_name} · ${t.location_count} 处地点`),
             )}
@@ -133,9 +133,9 @@ export default function MapPicker({
               </>
             ) : (
               <>
-                <div className="text-sm font-medium text-slate-100">自动选图</div>
+                <div className="text-sm font-medium text-slate-100">自动选择地图</div>
                 <p className="text-xs leading-relaxed text-slate-400">
-                  根据你写下的主题，从左侧的地图中挑一张最能承载它的。
+                  根据世界主题，从可用地图中自动选择世界地图。
                 </p>
               </>
             )}

@@ -1,4 +1,4 @@
-import type { NpcStateSummary } from "../types";
+import type { NpcIdentity, NpcView } from "../types";
 import type { TipLine } from "./tip";
 
 /**
@@ -10,7 +10,8 @@ import type { TipLine } from "./tip";
  * ship a kind just to reword it here: that is a second copy of the backend's vocabulary.
  *
  * The one thing added is the place, which is safe because a beat always happens where the body
- * ends the step (see `NpcStateSummary.outcome`).
+ * ends the step (see `NpcView.private.outcome`). Both surfaces are the observer's, so they read
+ * the body's private side.
  *
  * Don't add a standing mark on the figure: a direction glyph would only tell which leg of a job he
  * is on, a mechanism detail, at the cost of a permanent mark on up to six figures competing with the
@@ -24,12 +25,12 @@ import type { TipLine } from "./tip";
  * `roll` lifts that floor for the opening roll call, where being here is the news (otherwise these
  * would be the only figures the reader is never told about): an idle body prints as name and place.
  */
-export function npcStandingLine(npc: NpcStateSummary, roll = false): string {
-  const outcome = npc.outcome.trim();
-  const held = npc.condition.trim();
+export function npcStandingLine(npc: NpcView, identity: NpcIdentity | undefined, place: string, roll = false): string {
+  const outcome = npc.private.outcome.trim();
+  const held = npc.public.condition.trim();
   if (!outcome && !held && !roll) return "";
-  const name = npc.name.trim() || "某人";
-  const at = npc.location.trim();
+  const name = identity?.name.trim() || "某人";
+  const at = place.trim();
   // Being held comes first: it explains why he isn't moving.
   const what = [held, outcome].filter(Boolean).join("，");
   return at ? `${name}（${at}）${what}` : `${name}${what}`;
@@ -41,13 +42,13 @@ export function npcStandingLine(npc: NpcStateSummary, roll = false): string {
  * The kinds must not look alike: who he always is and what he is doing now, in one color, read as
  * one paragraph.
  */
-export function npcTipLines(npc: NpcStateSummary): TipLine[] {
-  const bits = [npc.gender.trim(), npc.age === null ? "" : `${npc.age}岁`].filter(Boolean);
-  const head = bits.length ? `NPC · ${npc.name}（${bits.join("·")}）` : `NPC · ${npc.name}`;
+export function npcTipLines(npc: NpcView, identity: NpcIdentity | undefined): TipLine[] {
+  const bits = [identity?.gender.trim(), identity?.age == null ? "" : `${identity.age}岁`].filter(Boolean);
+  const head = bits.length ? `NPC · ${identity?.name || "某人"}（${bits.join("·")}）` : `NPC · ${identity?.name || "某人"}`;
   return ([
     { text: head, tone: "head" },
-    { text: npc.description.trim(), tone: "background" },
-    { text: npc.outcome.trim(), tone: "now" },
-    { text: npc.condition.trim(), tone: "held" },
+    { text: identity?.description.trim() ?? "", tone: "background" },
+    { text: npc.private.outcome.trim(), tone: "now" },
+    { text: npc.public.condition.trim(), tone: "held" },
   ] as TipLine[]).filter((line) => line.text.length > 0);
 }

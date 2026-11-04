@@ -12,12 +12,13 @@ from agent.need import NeedType
 from agent.personality import parse_emotion_type
 from core.interfaces.action import ErrandOrder
 from core.interfaces.message import Message
-from core.interfaces.perception import AmbientEvent, Broadcast, BroadcastType
+from core.interfaces.perception import DEFAULT_ENTITY_STATE, AmbientEvent, Broadcast, BroadcastType
 from core.interfaces.urgency import Urgency, parse_urgency
 from core.interfaces.condition import BodyCondition
 from engine.presence import attach_presence
 from world import World
-from world.models import EntityPresence, NpcSeed, WorldEntity, WorldEntityType
+from world.models import unique_npc_id
+from core.interfaces.entity import EntityPresence, Npc, WorldEntity, WorldEntityType
 
 
 def spatials_for(world: World, run_step: int, world_time_label: str) -> dict:
@@ -36,7 +37,7 @@ def spatials_for(world: World, run_step: int, world_time_label: str) -> dict:
 
 
 def resolve_ref(ref: str, id_by_name: dict, valid_ids) -> str:
-    """Resolve a scenario actor reference (agent name or id) to an agent id."""
+    """Resolve a scenario doer reference (agent name or id) to an agent id."""
     ref = str(ref or "")
     if ref in valid_ids:
         return ref
@@ -98,7 +99,7 @@ def apply_ambient_from_scenario(
 
     Appends AmbientEvents into matching agents' spatials in place. No target → global.
     ``exclude`` (agent name/id) drops that agent even if otherwise matched — used to keep
-    a location-scoped event off its own actor (e.g. a bystander-reaction test).
+    a location-scoped event off its own doer (e.g. a bystander-reaction test).
     """
     id_by_name = {v: k for k, v in name_by_id.items()}
     for a in (scenario or {}).get("ambient", []):
@@ -128,7 +129,7 @@ def presence_name(sp, agent_id: str) -> str:
 def external_goals_from_scenario(
     scenario: dict | None, agent_ids, name_by_id: dict
 ) -> dict[str, list[ExternalGoal]]:
-    """scenario.external_goals = [{"agent"/"to", "text", "urgency"?, "drive_type"?, "source"?, "need"?}].
+    """scenario.external_goals = [{"agent"/"to", "text", "urgency"?, "drive_type"?, "source"? (a name or a list), "need"?}].
 
     ``need`` (NeedType value) → ExternalGoal.related_need — mirrors what WorldPressureEvaluator
     populates in production; only with a related_need + urgency≥HIGH does the goal override the
@@ -151,11 +152,10 @@ def external_goals_from_scenario(
                 related_need = NeedType(str(g["need"]))
             except ValueError:
                 related_need = None
-        src = g.get("source")
-        source_id = resolve_ref(src, id_by_name, agent_ids) if src else "world"
+        src = g.get("source") or []
         out[to_id].append(ExternalGoal(
             text=text,
-            source_id=source_id,
+            source_ids=tuple(resolve_ref(s, id_by_name, agent_ids) for s in ([src] if isinstance(src, str) else src)),
             urgency=parse_urgency(str(g.get("urgency", "normal"))) or Urgency.NORMAL,
             drive_type=drive,
             related_need=related_need,
@@ -176,9 +176,9 @@ async def apply_action_scene(scenario: dict, world: World, run_step: int, id_by_
     memories. Test scaffolding only — no production change."""
     env = world.environment
     valid_ids = list(world.agents.keys())
-    actor_ref = scenario.get("actor") or (scenario.get("actions", [{}])[0].get("actor", ""))
-    actor_id = resolve_ref(actor_ref, id_by_name, valid_ids)
-    base_loc = env.get_body_location(actor_id)
+    doer_ref = scenario.get("doer") or (scenario.get("actions", [{}])[0].get("doer", ""))
+    doer_id = resolve_ref(doer_ref, id_by_name, valid_ids)
+    base_loc = env.get_body_location(doer_id)
     scene = scenario.get("scene", {}) or {}
 
     for ref in scene.get("colocate", []):
@@ -193,26 +193,27 @@ async def apply_action_scene(scenario: dict, world: World, run_step: int, id_by_
             etype = WorldEntityType.ITEM
         # placement uses discriminated coordinates (presence + presence_ref). Don't pass location_id=: it's
         # a read-only property, and any scenario with scene.items would raise TypeError.
-        # holder: put this thing in someone's hands. "self" means the actor (which is what delivery scenarios need).
+        # holder: put this thing in someone's hands. "self" means the doer (which is what delivery scenarios need).
         holder_ref = it.get("holder")
         holder = (
-            actor_id if holder_ref in ("self", "me")
+            doer_id if holder_ref in ("self", "me")
             else resolve_ref(str(holder_ref), id_by_name, valid_ids)
         ) if holder_ref else None
         env.register_entity(WorldEntity(
             entity_id=f"act-item-{i}", name=str(it.get("name", "")), entity_type=etype,
-            state=str(it.get("state", "intact")),
+            state=str(it.get("state", DEFAULT_ENTITY_STATE)),
             description=str(it.get("desc", "")),
             presence=EntityPresence.HELD if holder else EntityPresence.AT_LOCATION,
             presence_ref=holder or base_loc,
-            is_takeable=bool(it.get("takeable", False)),
         ))
 
     # The no-cognition tier: a scenario that sends someone on an errand needs that person to exist first. Name order, so action.bearer can refer to them by name.
+    npc_ids: set[str] = set()
     for spec in scene.get("npcs", []) or []:
         env.spawn_npc(
-            NpcSeed(
+            Npc(
                 name=str(spec.get("name", "")),
+                npc_id=unique_npc_id(str(spec.get("name", "")), npc_ids),
                 gender=str(spec.get("gender", "")),
                 age=int(spec.get("age", 30)),
                 description=str(spec.get("description", "")),
@@ -265,8 +266,8 @@ async def apply_action_scene(scenario: dict, world: World, run_step: int, id_by_
             location_id=base_loc, outcome=str(text),
             # Laid back in listed order, the last one a beat before this run starts (matching the runtime window).
             step=run_step - len(happenings) + i,
-            # Empty member set: these things were done by others in the scenario, and the actor shouldn't count as already holding them.
-            actor_ids=(),
+            # Empty member set: these things were done by others in the scenario, and the doer shouldn't count as already holding them.
+            doer_ids=(),
         )
 
     # Best-effort memory seeding (only social TALK retrieves vector memories; relation +

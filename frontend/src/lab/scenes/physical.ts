@@ -1,16 +1,6 @@
 import { ActionType, Deed, RefKind } from "../../lib/contract";
 import type { LabPlaces } from "../places";
-import { CRATE, Emotion, GATE, LIN, MINDLESS_INK, MO, SHI, aimAgents, aimThing, carried, crate, did, gate, mindless, step, type LabScene, who } from "./fixtures";
-
-/** The body with no mind an act can land on — the other end of `physical_npc_index`. */
-const PORTER = {
-  npc_id: "npc_lu-liu",
-  name: "陆六",
-  color: MINDLESS_INK,
-  gender: "男",
-  age: 29,
-  description: "脚夫，替人扛货过市",
-};
+import { CRATE, Emotion, GATE, LIN, PORTER, MO, SHI, aimAgents, aimThing, carried, crate, did, gate, mindless, step, type LabScene, who } from "./fixtures";
 
 /** PHYSICAL's seven verbs — the one action type whose deed says nothing about its intent. */
 export function buildPhysicalScenes({ open: OPEN }: LabPlaces): LabScene[] {
@@ -155,6 +145,72 @@ export function buildPhysicalScenes({ open: OPEN }: LabPlaces): LabScene[] {
       ],
     },
     {
+      id: "seize-held",
+      group: "动手",
+      title: "seize · 从人手里取物（成功）",
+      watch:
+        "货箱在阿石手里，阿石被制住了。这一动做在**货箱**上（`acts_on`），阿石是被波及的持有者（`reaches`）。" +
+        "要看的是**东西是从谁身上拿的**：" +
+        "①阿墨要走到阿石身边、转向阿石，而不是在原地对着空气伸手；" +
+        "②伸手之后货箱才从阿石身上飞到阿墨身上（只飞这一道，不该再有一道金光重复同一件事），" +
+        "两人的随身清单各自对上；" +
+        "③阿石不摆受击姿势（取物不是打人），头旁的处境标记照旧。",
+      steps: [
+        step({
+          states: [who(MO, OPEN), who(SHI, OPEN, { condition: "被擒臂制住" })],
+          entities: crate(OPEN.id, { presence: "held", presence_ref: SHI.id }),
+        }),
+        step({
+          states: [
+            who(MO, OPEN, { emotion: Emotion.anticipation }),
+            who(SHI, OPEN, { condition: "被擒臂制住", emotion: Emotion.fear, emotion_valence: -0.6 }),
+          ],
+          entities: crate(OPEN.id, { presence: "held", presence_ref: MO.id }),
+          actions: [
+            did(MO, {
+              action_type: ActionType.physical,
+              deed: Deed.seize,
+              target: aimThing(CRATE, RefKind.item, [SHI.id]),
+              affected_entity_ids: [CRATE],
+              action_description: `趁${SHI.name}被制住，从他手里拿走货箱。`,
+              outcome: `在${OPEN.name}，${MO.name}从${SHI.name}手里拿走了货箱，${SHI.name}无力阻拦。`,
+            }),
+          ],
+        }),
+      ],
+    },
+    {
+      id: "seize-held-miss",
+      group: "动手",
+      title: "seize · 从人手里取物（失手）",
+      watch:
+        "同一个伸手，但阿石护住了货箱：阿墨仍要转向阿石、摆出 hold，" +
+        "冷光打在**阿石身上**（护住东西的是他），货箱不动、仍在阿石的随身清单里。",
+      steps: [
+        step({
+          states: [who(MO, OPEN), who(SHI, OPEN)],
+          entities: crate(OPEN.id, { presence: "held", presence_ref: SHI.id }),
+        }),
+        step({
+          states: [
+            who(MO, OPEN, { emotion: Emotion.frustration, emotion_valence: -0.4 }),
+            who(SHI, OPEN, { emotion: Emotion.anger, emotion_valence: -0.5 }),
+          ],
+          entities: crate(OPEN.id, { presence: "held", presence_ref: SHI.id }),
+          actions: [
+            did(MO, {
+              action_type: ActionType.physical,
+              deed: Deed.seize,
+              succeeded: false,
+              target: aimThing(CRATE, RefKind.item, [SHI.id]),
+              action_description: `伸手去夺${SHI.name}怀里的货箱。`,
+              outcome: `在${OPEN.name}，${MO.name}伸手去夺货箱，被${SHI.name}死死护住。`,
+            }),
+          ],
+        }),
+      ],
+    },
+    {
       id: "operate",
       group: "动手",
       title: "operate · 摆弄",
@@ -188,7 +244,8 @@ export function buildPhysicalScenes({ open: OPEN }: LabPlaces): LabScene[] {
         step({ states: [who(MO, OPEN)], entities: crate(OPEN.id) }),
         step({
           states: [who(MO, OPEN, { emotion: Emotion.anger, emotion_valence: -0.7 })],
-          entities: crate(OPEN.id, { presence: "destroyed", presence_ref: null, state: "destroyed" }),
+          // Destroyed: no longer in the world, so this step lists no crate at all.
+          entities: {},
           actions: [
             did(MO, {
               action_type: ActionType.physical,
@@ -232,8 +289,7 @@ export function buildPhysicalScenes({ open: OPEN }: LabPlaces): LabScene[] {
         "②货箱应当**从阿墨身上飞到阿石身上**，而不是在一个人身上消失、在另一个人身上出现；" +
         "③飞完之后两人的随身清单各自对上：阿墨空了，阿石多了一件。" +
         "④这一动做在**那件东西**上（`acts_on` 是货箱），阿石是被波及的受事（`reaches`）——" +
-        "所以叙事流里**不该**画出「阿墨 → 阿石」那道箭头：箭头说的是「做在他身上」。" +
-        "这一幕是 `reaches` 在场景台里唯一一次被喂上。",
+        "所以叙事流里**不该**画出「阿墨 → 阿石」那道箭头：箭头说的是「做在他身上」。",
       steps: [
         step({
           states: [who(MO, OPEN), who(SHI, OPEN)],
@@ -252,8 +308,8 @@ export function buildPhysicalScenes({ open: OPEN }: LabPlaces): LabScene[] {
               // acts_on is the item, since it changes hands. The recipient goes in reaches, not
               // claims, because receiving something doesn't use up his turn. See the PHYSICAL
               // binding in agent/decision.py.
-              target: aimThing(`seed_seed-${MO.id.slice(-8)}0`, RefKind.item, [SHI.id]),
-              affected_entity_ids: [`seed_seed-${MO.id.slice(-8)}0`],
+              target: aimThing(`seed_${MO.id.slice(-8)}0`, RefKind.item, [SHI.id]),
+              affected_entity_ids: [`seed_${MO.id.slice(-8)}0`],
               action_description: `把货箱交到${SHI.name}手上。`,
               outcome: `在${OPEN.name}，${MO.name}把货箱交到了${SHI.name}手上。`,
             }),
@@ -266,7 +322,7 @@ export function buildPhysicalScenes({ open: OPEN }: LabPlaces): LabScene[] {
       group: "动手",
       title: "动手 · 对象是没有认知的人",
       watch:
-        "决策层允许对**听人吩咐做事的那些人**动手（拦下、按住、夺他手里的东西，见 " +
+        "决策层允许对**可接受任务指派的人**动手（拦下、按住、夺他手里的东西，见 " +
         "`physical_npc_index`），所以 `acts_on` 里是一个 npc 而不是 agent。" +
         "要看的就是这一条：**转身和挨打必须是同一个人**——阿墨转向陆六了，那么受力的也该是陆六，" +
         "他身上要有制住的压迫与余波，而不是阿墨对着空气使一下劲。" +

@@ -24,6 +24,13 @@ from agent.need import (
     NeedEngine, NeedType,
     _NEED_FAILURE_PRESSURE, _NEED_HOMEOSTASIS_RATE, _NEED_REST_BASELINE, _NEED_SUCCESS_RELIEF,
 )
+from core.interfaces.llm import LLMRouter, LLMScene
+from providers.llm.mock import MockLLMProvider
+
+
+def _router() -> LLMRouter:
+    return LLMRouter({scene: MockLLMProvider() for scene in LLMScene})
+
 
 B = _NEED_REST_BASELINE
 SAFETY = NeedType.SAFETY.value
@@ -40,7 +47,7 @@ def test_constants_are_principled() -> None:
 
 def test_h1_idle_converges_to_baseline() -> None:
     """No shock (dominant_need=None) → all needs relax toward B and settle there."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     drive = _drive(1.0)
     for _ in range(20):
         drive = engine.evolve_intensities(drive, dominant_need=None, succeeded=True)
@@ -52,7 +59,7 @@ def test_h1_idle_converges_to_baseline() -> None:
 
 def test_h2_saturated_need_desaturates_within_window() -> None:
     """A need pinned at 1.0, never acted on, relaxes to ~B within T_desaturate ≈ 8–12 steps."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     drive = _drive(1.0)
     n = None
     for step in range(1, 21):
@@ -65,14 +72,14 @@ def test_h2_saturated_need_desaturates_within_window() -> None:
 
 def test_h3_failure_raises_when_room() -> None:
     """One failure shock net-raises a need that still has room (below the sustained-fail equilibrium)."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     drive = engine.evolve_intensities(_drive(0.5), dominant_need=NeedType.SAFETY, succeeded=False)
     assert drive[SAFETY] > 0.5
 
 
 def test_h4_sustained_failure_stays_elevated() -> None:
     """Repeated failure keeps the need clearly elevated (≈ B + k_f/λ ≈ 0.62), not relaxed to B."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     drive = _drive(B)
     for _ in range(30):
         drive = engine.evolve_intensities(drive, dominant_need=NeedType.SAFETY, succeeded=False)
@@ -82,7 +89,7 @@ def test_h4_sustained_failure_stays_elevated() -> None:
 
 def test_t_satisfy_success_relieves_fast() -> None:
     """Acting on a saturated need successfully brings it to ~B within a few steps."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     drive = _drive(1.0)
     n = None
     for step in range(1, 11):
@@ -95,7 +102,7 @@ def test_t_satisfy_success_relieves_fast() -> None:
 
 def test_h5_no_monotonic_drift_for_ignored_need() -> None:
     """Ignored needs settle at B and never drift up."""
-    engine = NeedEngine()
+    engine = NeedEngine(_router())
     drive = _drive(B)  # SAFETY ignored (SOCIAL dominant) — must not creep up
     intensities = []
     for _ in range(15):

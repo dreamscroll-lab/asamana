@@ -195,7 +195,7 @@ def test_the_shared_definition_states_that_a_sited_phenomenon_needs_a_place() ->
     model reading the instruction can do.
 
     This definition is shared by the world's two authors (asserted here for DirectorChannel, and in
-    ``test_event_system.py`` for EventSystem); separate copies would mean fire on one side and
+    ``test_narrative_editor.py`` for NarrativeEditor); separate copies would mean fire on one side and
     silently none on the other.
     """
     from core.prompts import PHENOMENON_DEFINITION

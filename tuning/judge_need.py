@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from agent.goals import _SHORT_TERM_GOAL_CAP
 from agent.need import need_activation_legend
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json, output_budget
 from core.logging import get_logger
@@ -33,7 +34,7 @@ _CRITERIA = ("fields", "ranking", "goals")
 _SYSTEM = (
     "你是叙事仿真的质量评审。被评估的是「动机(need / motivation)」阶段:综合角色的需求强度、当下处境"
     "(情绪、被激活的需求、在场者、外部压力、性格、长期目标)得出**主导需求(dominant_need)+ 其余按评分排名的需求**,"
-    "并据此生成 1-2 条**短期目标(short_term_goals)**。\n"
+    "并据此新增 0-2 条**短期目标**，与未完成的旧目标合并为当前目标队列(short_term_goals)。\n"
     "评分以**扣分制**为主:满分(5)是默认前提,只在发现**可指证的具体问题**时按维度下调;"
     "**不要因为输出与你预想的『标准答案』不同就扣分**——只要不违反下列约束即视为合理。只输出 JSON。"
 )
@@ -44,15 +45,15 @@ def _agent_block(per_agent: list[dict[str, Any]]) -> str:
     for a in per_agent:
         inp = a.get("inputs", {}) or {}
         out = a.get("outputs", {}) or {}
-        tier = "主角" if inp.get("is_main_character") else "背景"
+        tier = "主角" if inp.get("is_main_character") else "背景角色"
         traits = "、".join(inp.get("core_traits") or []) or "—"
-        lines.append(f"### {a.get('agent_name')}（{tier}，位于 {inp.get('location', '?')}；性格：{traits}）")
+        lines.append(f"### {a.get('agent_name')}（{tier}，位于 {inp.get('location', '?')}；性格特点：{traits}）")
         ltg = inp.get("long_term_goals") or []
         if ltg:
             lines.append("  长期目标：" + "；".join(str(g) for g in ltg))
         emo = inp.get("emotion")
         if emo:
-            lines.append(f"  即时情绪：{emo.get('primary')}（强度{emo.get('intensity')}，效价{emo.get('valence')}）")
+            lines.append(f"  即时情绪：{emo.get('primary')}（强度{emo.get('intensity')}，情绪正负值{emo.get('valence')}）")
         act = inp.get("need_activation") or {}
         if act:
             lines.append("  需求激活(来自感知)：" + "；".join(f"{k}:{v}" for k, v in act.items()))
@@ -112,9 +113,10 @@ def _build_prompt(scenario_meta: dict, per_agent: list[dict], det_findings: dict
         "## 字段定义\n"
         f"{need_activation_legend()}\n\n"
         "## 各维度的扣分项（各 1-5 整数；默认 5，命中问题才下调，问题越严重/越多扣得越狠）\n"
-        "1. fields（语法/结构）——出现以下即扣：dominant_need 不在五类规范需求内；short_term_goals 不是 1-2 条 / "
-        "存在空目标 / 明显超长（远超约 25 字）/ 是抽象口号表态而非具体可上手的动作 / 跳出第一人称(用旁观或事后命名)；"
-        "goal 关联的 related_need 不规范。\n"
+        "1. fields（语法/结构）——出现以下即扣：dominant_need 不在五类规范需求内；"
+        f"short_term_goals 超过 {_SHORT_TERM_GOAL_CAP} 条 / 存在空目标 / 单条超过 32 字 / "
+        "是抽象口号表态或一步即可完成的单个动作，而非可着手、需跨多步推进的方向 / 跳出第一人称(用旁观或事后命名)；"
+        "goal 关联的 related_need 不规范。每次新增 0-2 条，无新方向可不新增；当前队列可保留旧目标，也可为空，均不因此扣分。\n"
         "2. ranking（语义·需求排序）——**逐角色、只依据它自己列出的信号 + 评分**判断，出现以下即扣：dominant_need "
         "与该角色处境明显不符（如生死威胁当前却主导 self_actualization；无任何社交/外部信号却主导 social）；次要需求"
         "与处境严重脱节。**关于外部压力（只评收到它的那个角色）**：外部压力会按 urgency 给其 related_need 的评分一个"
@@ -122,7 +124,8 @@ def _build_prompt(scenario_meta: dict, per_agent: list[dict], det_findings: dict
         "但**加成未必翻盘**（被更强的内部需求压住时不主导是合理的，不扣），**更不要因为它『没切到该需求』就扣**。"
         "（dominant 必等于评分最高者——这点已由确定性检查保证，你无需在此复核『覆盖有没有发生』，只判这个 dominant "
         "对该角色自己的信号而言是否合理。）\n"
-        "3. goals（语义·短期目标）——出现以下即扣：目标与 dominant_need 或长期目标脱节；空泛不可执行；"
+        "3. goals（语义·短期目标）——新增目标应优先回应当下主导需求，长期目标作为背景，不要求每条直接服务长期目标；"
+        "旧目标可关联此前的需求，不因主导需求变化而扣分。出现以下即扣：目标与角色处境明显脱节；空泛不可执行；"
         "引用了该角色无从得知的信息 / 脑补未感知到的人事；在重复它刚刚已完成的事而非向前推进；"
         "对已逼到眼前的高紧迫外部压力视而不见；因某人**仅仅在场**（无指向该角色的动作 / 事件）就生成"
         "针对他的**激烈目标**（对抗 / 铲除 / 严防到行动）。\n\n"

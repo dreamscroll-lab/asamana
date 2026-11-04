@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.context import get_log_context
+from core.validate import require_member
 
 DEFAULT_FORMAT = "json"
 DEFAULT_LEVEL = "INFO"
@@ -92,8 +93,7 @@ def configure_logging(
         file_handler.setFormatter(formatter)
         root_logger.addHandler(file_handler)
 
-    if output not in ("stdout", "file", "stdout+file"):
-        raise ValueError(f"Unsupported logging output: {output}")
+    require_member(output, ("stdout", "file", "stdout+file"), "logging output")
 
     _suppress_noisy_loggers()
     return root_logger

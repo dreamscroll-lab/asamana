@@ -70,7 +70,7 @@ _EMOTION_LABELS: dict[EmotionType, str] = {
 _ACTIVITY_STATUS_LABELS: dict[str, str] = {
     "idle": "空闲", "moving": "移动中", "talking": "交谈中",
     "resting": "休息中", "working": "行动中",
-    "covert": "秘密行动中",
+    "covert": f"{ActionType.COVERT.label}中",
 }
 
 
@@ -87,6 +87,26 @@ class AgentActivityStatus(str, Enum):
     @property
     def label(self) -> str:
         return _ACTIVITY_STATUS_LABELS[self.value]
+
+
+def visible_doing(status: AgentActivityStatus, partners: Sequence[str] = ()) -> str:
+    """What onlookers see a body doing, as a phrase to follow his name (「正在休息」); "" when
+    nothing shows. ``partners`` are the names of those he is talking with.
+
+    Only the outer layer: never what is said, made or asked for, which for the types in
+    ``COVERTABLE_ACTION_TYPES`` is a hidden layer. COVERT doesn't show at all: someone acting
+    covertly looks like someone doing nothing in particular.
+    """
+    if status is AgentActivityStatus.TALKING:
+        return f"正与{'、'.join(partners)}交谈" if partners else f"正在{ActionType.TALK.label}"
+    return _VISIBLE_DOING.get(status, "")
+
+
+_VISIBLE_DOING: dict[AgentActivityStatus, str] = {
+    AgentActivityStatus.MOVING: "正要动身离开",
+    AgentActivityStatus.RESTING: f"正在{ActionType.REST.label}",
+    AgentActivityStatus.WORKING: "正忙着手上的事",
+}
 
 
 def activity_status_for(action_type: ActionType) -> AgentActivityStatus:
@@ -116,6 +136,7 @@ class ActionStatus(str, Enum):
 
 
 from core.numeric import clamp  # noqa: E402
+from core.prompts import EMOTION_INTENSITY_RANGE, EMOTION_VALENCE_RANGE  # noqa: E402
 
 
 # Emotion intensity band edges, the single source (``summary()`` wording derives from them).
@@ -155,11 +176,14 @@ class EmotionState:
         else:
             tone = "平稳"
         label = self.primary.label
-        return f"{strength}的{label}，情绪基调{tone}"
+        return f"{strength}的{label}，情绪{tone}"
 
 
 # The one label for SoulLayer.secret in every prompt.
 SECRET_LABEL = "秘密"
+
+# The values SoulLayer.gender may hold besides "" (unknown); consumers compare against exactly these.
+GENDERS: tuple[str, ...] = ("男", "女")
 
 
 @dataclass(frozen=True)
@@ -250,11 +274,16 @@ class StateLayer:
     long_term_goal_entities: list[GoalEntity] = field(default_factory=list)
     need_intensities: dict[str, float] = field(default_factory=dict)
     vitality: float = 1.0
+    # The step he died in; None while alive. Readers tell a death this step from an old one by it.
+    death_step: int | None = None
     # A condition persisting across steps (hands tied, drugged); see core.interfaces.condition.
     # Not merged into vitality: being restrained is not being injured, and they change independently.
     condition: "BodyCondition | None" = None
     # 0 = never; the scheduler's cadence gate treats that as starved. See mark_decided.
     last_decision_step: int = 0
+    # Others' acts that landed on him since he last perceived, as he remembers each (first
+    # person); they reach him with his next perception (PerceivedSignals.acted_upon).
+    acted_upon: list[str] = field(default_factory=list)
 
 
 class PersonalityLayer:
@@ -332,13 +361,13 @@ class PersonalityLayer:
         if soul.secret:
             lines.append(f"{SECRET_LABEL}：{soul.secret}")
         if soul.core_traits:
-            lines.append(f"核心性格：{soul.traits_text()}。")
+            lines.append(f"性格特点：{soul.traits_text()}。")
         if soul.core_values:
-            lines.append(f"核心价值观：{soul.values_text()}。")
+            lines.append(f"价值观：{soul.values_text()}。")
         if soul.self_image:
             lines.append(f"自我认知：{soul.self_image}")
         if soul.life_goal:
-            lines.append(f"毕生追求：{soul.life_goal}")
+            lines.append(f"人生目标：{soul.life_goal}")
         if include_emotion and state.emotion.intensity > 0.1:
             lines.append(f"此刻情绪：{state.emotion.summary()}。")
         if include_goals:
@@ -376,6 +405,15 @@ class PersonalityLayer:
         layer (``NeedEngine.evolve_intensities``); separate from ``apply_need_state`` so it
         needn't rewrite dominant_need / goals."""
         self._state.need_intensities = dict(values)
+
+    def note_acted_upon(self, fact: str) -> None:
+        """Someone else's act landed on him, as he remembers it; it reaches him with his next
+        perception."""
+        self._state.acted_upon.append(fact)
+
+    def clear_acted_upon(self) -> None:
+        """He has perceived what landed on him."""
+        self._state.acted_upon = []
 
     def mark_decided(self, step: int) -> None:
         """Record entry to the decision loop. The scheduler's cadence gate reads it to find who is
@@ -445,6 +483,9 @@ class PersonalityLayer:
         """Apply vitality change. Positive delta = damage; negative = recovery. Clamped [0, 1]."""
         self._state.vitality = max(0.0, min(1.0, self._state.vitality - delta))
 
+    def mark_dead(self, step: int) -> None:
+        self._state.death_step = step
+
     @property
     def is_alive(self) -> bool:
         return self._state.vitality > 0.0
@@ -480,8 +521,8 @@ class PersonalityLayer:
 
         self._state.emotion = EmotionState(
             primary=primary,
-            intensity=clamp(intensity, 0.0, 1.0),
-            valence=clamp(valence, -1.0, 1.0),
+            intensity=clamp(intensity, *EMOTION_INTENSITY_RANGE),
+            valence=clamp(valence, *EMOTION_VALENCE_RANGE),
             triggered_by=triggered_by,
         )
 
@@ -638,10 +679,12 @@ def _copy_state(state: StateLayer) -> StateLayer:
         long_term_goal_entities=[replace(g) for g in state.long_term_goal_entities],
         need_intensities=dict(state.need_intensities),
         vitality=state.vitality,
+        death_step=state.death_step,
         # Frozen, so aliasing is fine. Don't drop this line: .state goes through here, and without
         # it the field silently reads None everywhere.
         condition=state.condition,
         last_decision_step=state.last_decision_step,
+        acted_upon=list(state.acted_upon),
     )
 
 

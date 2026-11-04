@@ -1,46 +1,62 @@
-// One step of the narrative feed: the step's own header, and its four channels folded into
-// a single seq-ordered stream of rows.
+// One step of the narrative feed: the step's own header, and what happened in it as a single
+// seq-ordered stream of rows.
 //
 // This file is the ASSEMBLY: which rows exist, in what order, and which a focus collapses
 // (never drops; see `involves` in feed.ts). A row's look belongs to its own module; what the
 // wire means belongs to feed.ts.
 import { useState } from "react";
 
+import { identityOf } from "../../lib/worldTable";
+import type { Npcs } from "../../lib/npcs";
+import type { Cast } from "../../lib/cast";
+import type { Places } from "../../lib/places";
+import type { StepCast } from "./cast";
 import { Phase } from "../../lib/contract";
-import type { NpcStateSummary, StepEvent } from "../../types";
+import type { AgentView, NpcView, StepView } from "../../types";
+import { type Placed, indexStep } from "../../lib/step";
 import { npcStandingLine } from "../../lib/npc";
+import type { Viewer } from "../../lib/viewer";
 import ActionRow from "./ActionRow";
 import BroadcastRow from "./BroadcastRow";
 import CollapsedRow from "./CollapsedRow";
-import EventRow from "./EventRow";
+import InjectionRow from "./InjectionRow";
 import MessageRow from "./MessageRow";
+import ObservationRow from "./ObservationRow";
 import { stepCast } from "./cast";
-import { bornInStep, buildFeed, involves, itemKey } from "./feed";
+import { buildFeed, involves, itemKey } from "./feed";
 import { collapsedOf } from "./meta";
 
 export default function NarrativeStep({
   step,
+  cast: publicCast,
+  places,
+  npcs,
   focusAgents = [],
   isolated = false,
   onToggleIsolate,
+  viewer = null,
 }: {
-  step: StepEvent;
+  step: StepView;
+  cast: Cast;
+  places: Places;
+  npcs: Npcs;
   focusAgents?: string[];
   // Whether the feed is showing this step ALONE; owned by the feed, which sees the other steps.
   isolated?: boolean;
   onToggleIsolate?: (step: number) => void;
+  // Whose view the step is filtered to; null for the director.
+  viewer?: Viewer;
 }) {
   // Beats the reader opened despite the focus. Owned by the card, so it survives a focus
   // change: an expanded beat is one you asked to see.
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
-  // What this step brought into the world (see feed.bornInStep).
-  const born = bornInStep(step);
   const focusSet = new Set(focusAgents);
   const focusActive = focusSet.size > 0;
-  const cast = stepCast(step);
-  const feed = buildFeed(step);
-  // One transcript rides on every participant's record; the first card in feed order that
-  // prints it claims it. Decided here because it's a question about the whole list.
+  const cast = stepCast(step, publicCast, places, npcs);
+  const feed = buildFeed(step, viewer);
+  const index = indexStep(step);
+  // A transcript prints once even if two beats carry it; the first card in feed order claims
+  // it. Decided here because it's a question about the whole list.
   const spoken = new Set<string>();
 
   return (
@@ -61,7 +77,7 @@ export default function NarrativeStep({
           type="button"
           onClick={() => onToggleIsolate?.(step.step)}
           disabled={!onToggleIsolate}
-          title={isolated ? "退出，看全部步" : "只看这一步"}
+          title={isolated ? "退出筛选，查看全部步骤" : "仅查看本步"}
           className="group w-full flex items-baseline gap-1.5 text-left text-[11px] font-medium tracking-wide rounded transition enabled:hover:bg-slate-800/40 disabled:cursor-default focus:outline-none focus-visible:ring-1 focus-visible:ring-indigo-500/50"
         >
           <span className="text-amber-200/70">{step.world_time.label}</span>
@@ -72,25 +88,28 @@ export default function NarrativeStep({
                 isolated ? "text-indigo-300" : "text-slate-700 group-hover:text-slate-400"
               }`}
             >
-              {isolated ? "只看此步 ✕" : "只看此步"}
+              {isolated ? "仅查看本步 ✕" : "仅查看本步"}
             </span>
           )}
         </button>
       </div>
 
-      {/* A step where nothing happened SAYS SO (e.g. every decision failed and was skipped).
-          Blank would look like a broken feed; rows would dress the absence up as deeds. */}
-      {feed.length === 0 && (
+      {/* Step 0 is the world as built: nothing has happened yet, so it introduces who stands
+          where. Any later step where nothing happened SAYS SO (e.g. every decision failed and was
+          skipped): blank would look like a broken feed, rows would dress the absence up as deeds. */}
+      {step.step === 0 ? (
+        <AgentRollRow agents={Object.values(index.agents)} cast={cast} />
+      ) : feed.length === 0 && !index.npcs.some((npc) => npc.private.outcome.trim()) && (
         <div className="mt-2 text-[13px] text-slate-600 italic">本步无人行动。</div>
       )}
 
-      {/* World events, actions, messages and broadcasts in seq (emission) order. */}
+      {/* Injections, actions, messages and broadcasts in seq (emission) order. */}
       <div className="mt-2 space-y-2.5">
-        {feed.map((item, feedIdx) => {
+        {feed.map((item) => {
           // Same key in both branches, so expanding a row swaps it in place without a remount.
-          const key = itemKey(item, feedIdx);
+          const key = itemKey(item);
           if (focusActive && !involves(item, focusSet) && !expanded.has(key)) {
-            const { icon, text } = collapsedOf(item);
+            const { icon, text } = collapsedOf(item, cast);
             return (
               <CollapsedRow
                 key={key}
@@ -101,13 +120,15 @@ export default function NarrativeStep({
             );
           }
 
-          if (item.kind === "event") return <EventRow key={key} ev={item.data} />;
+          if (item.kind === "injection") return <InjectionRow key={key} injection={item.data} cast={cast} />;
           if (item.kind === "message") return <MessageRow key={key} m={item.data} cast={cast} />;
-          if (item.kind === "broadcast") return <BroadcastRow key={key} b={item.data} />;
+          if (item.kind === "observation") return <ObservationRow key={key} o={item.data} cast={cast} />;
+          if (item.kind === "broadcast") {
+            return <BroadcastRow key={key} b={item.data} place={cast.placeOf(item.data.location_id)} />;
+          }
 
-          // The dialogue rides on whichever participant's record happens to carry it, and a
-          // tick never replays it.
-          const turns = (item.parts.find((p) => (p.dialogue ?? []).length)?.dialogue ?? []).filter((t) => t.line);
+          // A tick never replays the dialogue.
+          const turns = (item.shared?.dialogue ?? []).filter((t) => t.line);
           const sig = turns.map((t) => `${t.speaker}:${t.line}`).join("|");
           const showConversation =
             turns.length > 0 && !spoken.has(sig) && item.data.phase !== Phase.ongoing_tick;
@@ -116,19 +137,37 @@ export default function NarrativeStep({
             <ActionRow
               key={key}
               act={item.data}
-              parts={item.parts}
-              led={item.led}
+              privateParts={item.private_parts}
               cast={cast}
               turns={turns}
               showConversation={showConversation}
-              born={born}
-              entities={step.entities}
+              entities={index.entities}
+              shared={item.shared}
+              actionDescription={item.action_description}
+              mine={viewer !== null && item.data.participant_ids.includes(viewer)}
             />
           );
         })}
       </div>
 
-      <NpcStandingRow npcs={step.npcs ?? []} roll={step.step === 0} />
+      <NpcStandingRow npcs={index.npcs} roll={step.step === 0} cast={cast} identities={npcs} />
+    </div>
+  );
+}
+
+/** The opening roll call: every character and where they stand, main characters first. */
+function AgentRollRow({ agents, cast }: { agents: Placed<AgentView>[]; cast: StepCast }): JSX.Element | null {
+  if (!agents.length) return null;
+  const ordered = [...agents].sort((a, b) => Number(b.is_main_character) - Number(a.is_main_character));
+  return (
+    <div className="mt-2 space-y-0.5 text-[13px] text-slate-400">
+      {ordered.map((a) => (
+        <div key={a.agent_id}>
+          <span style={{ color: cast.inkOf(a.agent_id) }} className="font-medium">{cast.nameOf(a.agent_id)}</span>
+          {a.is_main_character && <span className="text-[10px] text-indigo-400"> ★</span>}
+          <span className="text-slate-600">（{cast.placeOf(a.location_id)}）</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -146,9 +185,9 @@ export default function NarrativeStep({
  * The present-tense phrasing comes from lib/npc, shared with the map's hover; see there on why
  * it must not read as an event.
  */
-function NpcStandingRow({ npcs, roll }: { npcs: NpcStateSummary[]; roll: boolean }): JSX.Element | null {
+function NpcStandingRow({ npcs, roll, cast, identities }: { npcs: Placed<NpcView>[]; roll: boolean; cast: StepCast; identities: Npcs }): JSX.Element | null {
   const rows = npcs
-    .map((npc) => [npc.npc_id, npcStandingLine(npc, roll)] as const)
+    .map((npc) => [npc.npc_id, npcStandingLine(npc, identityOf(npc.npc_id, identities), cast.placeOf(npc.location_id), roll)] as const)
     .filter(([, line]) => line.length > 0);
   if (!rows.length) return null;
   return (
@@ -156,7 +195,7 @@ function NpcStandingRow({ npcs, roll }: { npcs: NpcStateSummary[]; roll: boolean
       <span className="shrink-0 text-slate-600">NPC</span>
       <div className="min-w-0 space-y-0.5">
         {rows.map(([id, line]) => (
-          <div key={id}>{line}</div>
+          <div key={id} style={{ color: cast.inkOf(id) }}>{line}</div>
         ))}
       </div>
     </div>

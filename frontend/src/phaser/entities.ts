@@ -10,12 +10,12 @@
 
 import Phaser from "phaser";
 
-import type { EntityView } from "../types";
+import type { PlacedEntity } from "../lib/step";
 import { type FxHost, flyMessageArc } from "./effects";
 import { inkOn } from "./hud";
 import { mix, shade } from "../lib/color";
 import { type CarriedItem, FONT, TEXT_RES, drawPlate } from "./types";
-import type { Room, WorldMap } from "./worldMap";
+import type { WorldMap } from "./worldMap";
 
 // The landmark's stone: ONE base color per tier that `shade()` lights into faces.
 const STONE = 0x6b7185;         // footing
@@ -24,13 +24,16 @@ const STONE_CAP = 0x9aa2b6;     // cap: lightest, it catches the most sky
 const STONE_EDGE = 0x2b2f3a;
 const LANDMARK_ACCENT = 0x8f9bb0;
 const HALO_FLASH = 0.5;         // one-shot peak when a landmark's state changes
+// An item's gold: its marker, its state notes, and its flight when it changes hands.
+const ITEM_GOLD = 0xd9a441;
 
 /**
  * Did anything the map DRAWS about this thing change? Only the fields markers read: a change
- * elsewhere would withhold a beat for nothing visible. A new thing has changed: it appears.
+ * elsewhere would withhold a beat for nothing visible. A new thing has changed: it appears; so
+ * has a thing gone from the table: it was destroyed.
  */
-function entityChanged(prev: EntityView | undefined, next: EntityView): boolean {
-  if (!prev) return true;
+function entityChanged(prev: PlacedEntity | undefined, next: PlacedEntity | undefined): boolean {
+  if (!prev || !next) return prev !== next;
   return (
     prev.presence !== next.presence ||
     prev.presence_ref !== next.presence_ref ||
@@ -46,13 +49,13 @@ function entityChanged(prev: EntityView | undefined, next: EntityView): boolean 
 export interface EntityHost extends FxHost {
   readonly map: WorldMap;
   /** Deal this step's things onto the ground their rooms can spare. */
-  layoutFixtures(entities: Record<string, EntityView>): void;
+  layoutFixtures(entities: Record<string, PlacedEntity>): void;
   /** Announce a change where it happened: a thing wrecked, a state turned. */
   floatNote(x: number, y: number, text: string, accent: number): void;
   /** What people carry has changed; every pouch handle and open pocket is stale. */
   refreshCarried(): void;
   /** The hover card over a thing: one card on the map at a time, shared with the NPCs'. */
-  showEntityTip(x: number, y: number, entity: EntityView): void;
+  showEntityTip(x: number, y: number, entity: PlacedEntity): void;
   hideTip(): void;
 }
 
@@ -66,18 +69,27 @@ export class EntityLayer {
   /** Where each thing was dealt this step. Written by the STAGING, read here to place markers. */
   readonly entitySlotOf = new Map<string, { x: number; y: number; gx: number; gy: number }>();
   /** The snapshot the markers are currently DRAWN from, not the one the step reported. */
-  private lastEntityStates: Record<string, EntityView> = {};
-  private stepEntities: Record<string, EntityView> = {};
+  private lastEntityStates: Record<string, PlacedEntity> = {};
+  private stepEntities: Record<string, PlacedEntity> = {};
   /** Things whose reported change is being held back until its cause plays. */
   private withheldEntities = new Set<string>();
   /**
    * Things some deed this step BROUGHT INTO THE WORLD; they get one arrival when their beat lands.
    *
-   * Needs both halves: the step names it (`causedIds`) AND the map never drew it. Diffing alone
-   * fires on every thing made since the last drawn step after a scrub; `causedIds` alone fires
-   * on a thing that merely changed. Deleted as drawn, so a re-run does not replay the arrival.
+   * Only explicit creations get an arrival; a first sighting or an injected item touched by a
+   * deed proves no creation. Deleted as drawn, so a re-run does not replay the arrival.
    */
   private bornEntities = new Set<string>();
+  /**
+   * This step does not follow the one drawn (a jump or a scrub back), so a thing missing from its
+   * table may simply not exist yet: it leaves without the "destroyed" note.
+   */
+  private cut = false;
+  // Things a deed this step names. In a viewer's partial step, only these can have been
+  // destroyed; anything else missing from it is just out of sight.
+  private caused: Set<string> = new Set();
+  // Whether the step in hand is the whole world (see lib/viewer isWholeWorld).
+  private wholeWorld = true;
 
   /** Which things are still holding a change back; read by the beat scheduler. */
   get withheld(): ReadonlySet<string> {
@@ -91,22 +103,39 @@ export class EntityLayer {
    * doctored view downstream works from. The decision stays here: the caller knows which things
    * the deeds name, this layer knows which would visibly change, and neither half is the test.
    */
-  beginStep(entities: Record<string, EntityView>, causedIds: Set<string>): Record<string, EntityView> {
+  beginStep(
+    entities: Record<string, PlacedEntity>, causedIds: Set<string>, createdIds: Set<string>,
+    cut: boolean, wholeWorld = true,
+  ): Record<string, PlacedEntity> {
     this.stepEntities = entities;
+    this.cut = cut;
+    this.caused = causedIds;
+    this.wholeWorld = wholeWorld;
+    // Things this step's table dropped count too: a destroyed thing must keep standing until the
+    // blow that breaks it lands.
+    const ids = new Set([...Object.keys(entities), ...Object.keys(this.lastEntityStates)]);
     this.withheldEntities = new Set(
-      Object.keys(entities).filter(
-        (eid) => causedIds.has(eid) && entityChanged(this.lastEntityStates[eid], entities[eid]),
+      [...ids].filter(
+        (eid) => {
+          const last = this.lastEntityStates[eid];
+          if (!causedIds.has(eid) || !entityChanged(last, entities[eid])) return false;
+          // The previous view is this step's before-state only when this isn't a cut; on a cut it
+          // shows another step. Without it, only a creation has a known before-state (absence).
+          // A first-seen item changed this step has no reconstructable initial placement.
+          const created = createdIds.has(eid);
+          return cut ? created && !last : !!last || created;
+        },
       ),
     );
     this.bornEntities = new Set(
-      Object.keys(entities).filter((eid) => causedIds.has(eid) && !this.lastEntityStates[eid]),
+      Object.keys(entities).filter((eid) => createdIds.has(eid) && !this.lastEntityStates[eid]),
     );
     return this.effectiveEntities();
   }
 
   /** Land every change whose causing beat never played (focus-gated out, say). */
   revealWithheld(): void {
-    this.revealEntities([...this.withheldEntities]);
+    this.revealEntities([...this.withheldEntities], new Set());
   }
 
   // Float the loss and remove the marker: the one place the instant path, the deferred path
@@ -131,7 +160,7 @@ export class EntityLayer {
    * presence, holder, position and state all defer through the same path, and revealing
    * a change is just handing over a map with one more truth in it.
    */
-  effectiveEntities(): Record<string, EntityView> {
+  effectiveEntities(): Record<string, PlacedEntity> {
     if (!this.withheldEntities.size) return this.stepEntities;
     const out = { ...this.stepEntities };
     for (const eid of this.withheldEntities) {
@@ -152,28 +181,42 @@ export class EntityLayer {
    * and re-seating a room's other fixtures by one cell is the same shuffle they already do
    * whenever a thing enters or leaves that room between steps.
    */
-  revealEntities(eids: string[]): void {
+  revealEntities(eids: string[], createdByBeat: ReadonlySet<string>): void {
     let any = false;
-    for (const eid of eids) any = this.withheldEntities.delete(eid) || any;
+    for (const eid of eids) {
+      if (!this.withheldEntities.delete(eid)) continue;
+      any = true;
+      // A later deed may change a new item again; its final placement cannot reconstruct
+      // the creation scene. Reveal it quietly rather than attribute birth to that later deed.
+      if (!createdByBeat.has(eid)) this.bornEntities.delete(eid);
+    }
     if (!any) return;
     const shown = this.effectiveEntities();
     this.host.layoutFixtures(shown);
     this.applyEntities(shown);
   }
 
-  applyEntities(entities: Record<string, EntityView>): void {
+  applyEntities(entities: Record<string, PlacedEntity>): void {
     // Runs before lastEntityStates is overwritten, so this still reads what was drawn before.
-    const prevOf = (eid: string): EntityView | undefined => this.lastEntityStates[eid];
-    const items = new Map<string, [string, EntityView][]>();
-    const landmarks = new Map<string, [string, EntityView][]>();
+    const prevOf = (eid: string): PlacedEntity | undefined => this.lastEntityStates[eid];
+    const items = new Map<string, [string, PlacedEntity][]>();
+    const landmarks = new Map<string, [string, PlacedEntity][]>();
     // The card is free-standing, and pointerout never fires on a destroyed object.
     this.host.hideTip();
     this.carriedBy.clear();
-    for (const [eid, e] of Object.entries(entities)) {
-      if (e.presence === "destroyed") {
+    // Gone from the table: destroyed, on a step that follows the last one drawn. Only a thing
+    // that has a marker gets a goodbye. In a viewer's step absence proves nothing, so only a
+    // thing a deed names is mourned; the rest just leave the view.
+    for (const [eid, e] of Object.entries(this.lastEntityStates)) {
+      if (eid in entities) continue;
+      if (this.cut || (!this.wholeWorld && !this.caused.has(eid))) {
+        this.entityMarkers.get(eid)?.destroy();
+        this.entityMarkers.delete(eid);
+      } else {
         this.destroyEntityMarker(eid, e.name);
-        continue;
       }
+    }
+    for (const [eid, e] of Object.entries(entities)) {
       if (e.presence === "held") {
         // Held items leave the map for the holder's pocket (carriedBy); a marker would only
         // stack on his token. Destroyed, not hidden: a marker exists iff the thing is in the world.
@@ -182,7 +225,9 @@ export class EntityLayer {
         const holderId = e.presence_ref;
         // Changing hands is the only part of a hand-off the map can show; without this the
         // thing just blinks between pockets. Reuses the letter's arc (one gesture, one
-        // vocabulary). Fire and forget: a step that ends first just cuts it.
+        // vocabulary) but flies the thing as itself, the gold star it is on the ground and in
+        // the pocket: as a ✉ it would read as a letter. Fire and forget: a step that ends first
+        // just cuts it.
         const wasHeldBy = prevOf(eid)?.presence === "held" ? prevOf(eid)?.presence_ref : "";
         if (holderId && wasHeldBy && wasHeldBy !== holderId) {
           const from = this.host.token(wasHeldBy);
@@ -190,7 +235,7 @@ export class EntityLayer {
           if (from && to) {
             void flyMessageArc(
               this.host, from.container.x, from.container.y,
-              to.container.x, to.container.y, { color: to.color },
+              to.container.x, to.container.y, { color: ITEM_GOLD, glyph: "✦", ripple: ITEM_GOLD },
             );
           }
         }
@@ -198,8 +243,8 @@ export class EntityLayer {
           this.carriedBy.set(holderId, [
             ...(this.carriedBy.get(holderId) ?? []),
             {
-              name: e.name, state: e.state ?? "", concealed: e.is_public === false,
-              description: e.description ?? "", content: e.content ?? "",
+              id: eid, name: e.name, state: e.state ?? "", concealed: e.is_public === false,
+              description: e.description ?? "", content: e.private.content,
             },
           ]);
           // Made and kept: never on the ground, so announce it at his token (the pocket panel
@@ -230,9 +275,10 @@ export class EntityLayer {
           // Restore scale: an arrival tween (playArrival) cut off mid-way would otherwise leave
           // the marker permanently shrunk.
           const marker = this.entityMarkers.get(eid) ?? make(eid);
+          marker.setData("entityKind", e.entity_type);
           marker.setVisible(true).setPosition(at.x, at.y).setScale(1);
-          this.refreshEntityMarker(marker, room, eid, e);
-          if (this.bornEntities.delete(eid)) this.playArrival(marker, room, e.name);
+          this.refreshEntityMarker(marker, eid, e);
+          if (this.bornEntities.delete(eid)) this.playArrival(marker, e.name);
         }
       }
     }
@@ -287,7 +333,7 @@ export class EntityLayer {
     // Phaser doesn't drop a tween when its target is destroyed, and this one repeats forever.
     // Hooking DESTROY covers every removal path.
     glow.once(Phaser.GameObjects.Events.DESTROY, () => pulse.remove());
-    const icon = this.host.add.star(0, -3, 4, 5, 11, 0xd9a441).setStrokeStyle(1.5, 0x0a0e1a);
+    const icon = this.host.add.star(0, -3, 4, 5, 11, ITEM_GOLD).setStrokeStyle(1.5, 0x0a0e1a);
     return this.mountEntityMarker(eid, [shadow, glow, icon], 16, 0xe8c06a, new Phaser.Geom.Circle(0, 0, 16));
   }
 
@@ -384,14 +430,13 @@ export class EntityLayer {
 
   refreshEntityMarker(
     marker: Phaser.GameObjects.Container,
-    room: Room,
     eid: string,
-    e: EntityView,
+    e: PlacedEntity,
   ): void {
     this.layoutEntityLabel(marker, e.name, e.state);
     const prev = this.lastEntityStates[eid];
     if (prev && prev.state !== e.state) {
-      this.host.floatNote(room.sx, room.sy - 26, `${e.name}：${prev.state}→${e.state}`, 0xd9a441);
+      this.host.floatNote(marker.x, marker.y - 26, `${e.name}：${prev.state}→${e.state}`, ITEM_GOLD);
       this.flashFixture(marker);
     }
   }
@@ -400,8 +445,8 @@ export class EntityLayer {
    * A thing ARRIVES on the ground: it swells into its slot and says its name once. The mirror
    * of `destroyEntityMarker`. Scales rather than fades, so it does not read as a redraw.
    */
-  playArrival(marker: Phaser.GameObjects.Container, room: Room, name: string): void {
-    this.host.floatNote(room.sx, room.sy - 26, `${name} 已出现`, 0xe8c06a);
+  playArrival(marker: Phaser.GameObjects.Container, name: string): void {
+    this.host.floatNote(marker.x, marker.y - 26, `${name} 已出现`, 0xe8c06a);
     marker.setScale(0);
     this.host.tweens.add({
       targets: marker,

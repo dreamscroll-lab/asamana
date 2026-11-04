@@ -24,6 +24,14 @@ from pathlib import Path
 from typing import Any
 
 
+SCENARIO_DIR = Path(__file__).resolve().parent / "scenarios"
+
+
+def scenario_path(stage_key: str) -> Path:
+    """The stage's scenario file."""
+    return SCENARIO_DIR / f"{stage_key}.json"
+
+
 class ScenarioError(ValueError):
     """Invalid scenario data (name, type, criteria). Callers turn it into a 400."""
 

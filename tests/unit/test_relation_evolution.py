@@ -12,7 +12,7 @@ from agent.memory_types import MemoryImportance, MemoryStream
 from agent.personality import EmotionState, PersonalityLayer, SoulLayer, StateLayer
 from agent.relation import RelationSystem
 from agent.relation_evolution import RelationEvolution
-from core.interfaces.agent_store import AgentRelation, relation_has_substance
+from core.interfaces.relation import AgentRelation, relation_has_substance
 from core.interfaces.llm import LLMProvider, LLMRouter, LLMScene
 from providers.llm.mock import MockLLMProvider, SequentialMockLLM
 
@@ -46,7 +46,6 @@ def _make_memory_system(container: object, *, agent_id: str = "agent-self") -> M
 
 def _make_relation_system(container: object, *, agent_id: str = "agent-self") -> RelationSystem:
     return RelationSystem(
-        container.agent_store,  # type: ignore[attr-defined]
         world_id="w",
         agent_id=agent_id,
     )
@@ -87,7 +86,6 @@ async def _seed_existing_relation(
     rel.labels = list(labels or [])
     rel.to_name = to_name
     rel.to_gender = to_gender
-    await relation._store.save_relation(rel)
     return rel
 
 
@@ -116,7 +114,7 @@ async def test_happy_path_overwrites_labels(container: object) -> None:
     applied = await evolver.evaluate(20)
 
     assert applied == [("agent-foe", ["父子:儿子", "敌人"], "")]
-    stored = await container.agent_store.load_relation("w", "agent-self", "agent-foe")  # type: ignore[attr-defined]
+    stored = await relation.load_existing("agent-foe")
     assert stored is not None
     assert stored.labels == ["父子:儿子", "敌人"]
 
@@ -141,7 +139,7 @@ async def test_empty_updates_writes_nothing(container: object) -> None:
     applied = await evolver.evaluate(20)
 
     assert applied == []
-    stored = await container.agent_store.load_relation("w", "agent-self", "agent-x")  # type: ignore[attr-defined]
+    stored = await relation.load_existing("agent-x")
     assert stored is not None
     assert stored.labels == ["同事"]
 
@@ -175,8 +173,8 @@ async def test_invalid_target_index_skipped_others_applied(container: object) ->
     applied = await evolver.evaluate(20)
 
     assert applied == [("agent-b", ["敌人"], "")]
-    a_stored = await container.agent_store.load_relation("w", "agent-self", "agent-a")  # type: ignore[attr-defined]
-    b_stored = await container.agent_store.load_relation("w", "agent-self", "agent-b")  # type: ignore[attr-defined]
+    a_stored = await relation.load_existing("agent-a")
+    b_stored = await relation.load_existing("agent-b")
     assert a_stored is not None and a_stored.labels == ["陌生"]
     assert b_stored is not None and b_stored.labels == ["敌人"]
 
@@ -195,11 +193,12 @@ async def test_malformed_labels_skipped(container: object) -> None:
     await _seed_existing_relation(relation, target_id="agent-a", labels=["原状"], to_name="甲")
     await _seed_existing_relation(relation, target_id="agent-b", labels=["原状"], to_name="乙")
 
-    # Non-array labels with no summary → skipped; all-empty labels with no summary → skipped.
+    # Non-array labels with no summary → skipped; labels none of which has the label form, with
+    # no summary → skipped.
     provider = SequentialMockLLM([
         '{"updates": ['
         '{"target_index": 1, "rationale": "non-list", "labels": "字符串非数组"},'
-        '{"target_index": 2, "rationale": "all empty", "labels": ["   ", ""]}'
+        '{"target_index": 2, "rationale": "no label form", "labels": ["   ", "", "父子:"]}'
         ']}'
     ])
     evolver = RelationEvolution(
@@ -210,7 +209,7 @@ async def test_malformed_labels_skipped(container: object) -> None:
 
     assert applied == []
     for tid in ("agent-a", "agent-b"):
-        rel = await container.agent_store.load_relation("w", "agent-self", tid)  # type: ignore[attr-defined]
+        rel = await relation.load_existing(tid)
         assert rel is not None and rel.labels == ["原状"]
 
 
@@ -244,7 +243,7 @@ async def test_llm_exception_swallowed_returns_empty(container: object) -> None:
     applied = await evolver.evaluate(20)
 
     assert applied == []
-    stored = await container.agent_store.load_relation("w", "agent-self", "agent-x")  # type: ignore[attr-defined]
+    stored = await relation.load_existing("agent-x")
     assert stored is not None and stored.labels == ["原状"]
 
 
@@ -387,7 +386,7 @@ async def test_insubstantial_ambient_third_party_excluded(container: object) -> 
     # Must survive the filter — the ic-only test would drop the protagonist's own brother.
     await _seed_event_about(memory, target_id="agent-brother", step=18, content="兄长的身影")
     await _seed_existing_relation(
-        relation, target_id="agent-brother", labels=["兄弟:弟弟", "政敌"], trust=0.1, to_name="李建成"
+        relation, target_id="agent-brother", labels=["兄弟:兄长", "政敌"], trust=0.1, to_name="李建成"
     )
 
     provider = MockLLMProvider(fixed_response='{"updates": []}')
@@ -402,7 +401,7 @@ async def test_insubstantial_ambient_third_party_excluded(container: object) -> 
     assert "李建成" in prompt                       # seeded bond kept (via labels, ic==0)
     assert "某位与你有往来的人" not in prompt        # the overheard third party is gone
     # And the baseline record itself was never labeled/evolved.
-    overheard = await container.agent_store.load_relation("w", "agent-self", "agent-overheard")  # type: ignore[attr-defined]
+    overheard = await relation.load_existing("agent-overheard")
     assert overheard is None or not overheard.has_substance()
 
 
@@ -470,7 +469,7 @@ async def test_summary_only_update_keeps_labels(container: object) -> None:
     applied = await evolver.evaluate(20)
 
     assert applied == [("agent-x", [], "近期数次试探，盟谊未变但多了几分提防。")]
-    stored = await container.agent_store.load_relation("w", "agent-self", "agent-x")  # type: ignore[attr-defined]
+    stored = await relation.load_existing("agent-x")
     assert stored is not None
     assert stored.labels == ["盟友"]   # unchanged
     assert stored.history_summary == "近期数次试探，盟谊未变但多了几分提防。"
@@ -516,7 +515,7 @@ async def test_weighing_a_stranger_does_not_bring_a_relation_into_being(containe
     applied = await evolver.evaluate(20)
 
     assert applied == []
-    stored = await container.agent_store.load_relation("w", "agent-self", "agent-stranger")  # type: ignore[attr-defined]
+    stored = await relation.load_existing("agent-stranger")
     assert stored is None, "权衡了一遍就凭空长出一段关系"
 
 
@@ -567,3 +566,5 @@ async def test_closed_world_rule_reaches_the_judge(container: object) -> None:
 
     system = provider.call_history[0][0].content
     assert CLOSED_WORLD_FACT_RULE in system
+    # This prompt writes labels, so it carries the writer's direction check (the shared legend doesn't).
+    assert "读不通就是写反了" in system

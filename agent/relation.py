@@ -8,12 +8,13 @@ than re-stating the scale anchors or label format on their own.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Sequence
+from typing import Dict, Iterable, List, Sequence
 
-from agent.personality import EmotionState, EmotionType, parse_emotion_type
-from core.interfaces.agent_store import AgentRelation, AgentStoreProvider
+from agent.personality import EmotionState
+from core.interfaces.relation import AgentRelation
 from core.interfaces.perception import PerceivedIdentity
 from core.numeric import clamp
 
@@ -32,7 +33,7 @@ NEUTRAL_AFFECTION: float = 0.0   # affection ∈ [-1,1]; 0.0 = indifferent
 
 
 class RelationDirection(str, Enum):
-    """Direction of the actor→target relation in an executor adjudication (the LLM's value for
+    """Direction of the doer→target relation in an executor adjudication (the LLM's value for
     the relation field)."""
 
     POSITIVE = "positive"
@@ -54,6 +55,7 @@ from core.prompts import (  # noqa: E402
     DECEASED_MARK,
     TRUST_RANGE,
     person_referent,
+    relation_labels,
     relation_legend,
 )
 
@@ -62,8 +64,8 @@ from core.prompts import (  # noqa: E402
 class PerceivedRelation:
     """Relation as perceived by an agent in the current moment.
 
-    ``labels`` are from the holder's viewpoint, each ``"kind:role"`` (``"父子:儿子"``) or bare
-    ``"kind"`` (``"见过"``); several coexist.
+    ``labels`` say who the target is to the holder, each ``"kind:role"`` (``"父子:父亲"``: the
+    target is the holder's father) or bare ``"kind"`` (``"见过"``); several coexist.
     """
 
     trust: float
@@ -140,15 +142,18 @@ def format_relation_block(
     return head
 
 
-def render_relation_context(named_relations: Sequence[tuple[str, AgentRelation]]) -> str:
+def render_relation_context(
+    named_relations: Sequence[tuple[str, AgentRelation]], *, include_legend: bool = True,
+) -> str:
     """The "my relations with the people involved" block for memory-write paths; "" if empty.
 
     Objective values, not perceived: the prompt injects current emotion separately, so perceived
     values would count emotion twice. Callers pass only substantive relations, with names.
+    ``include_legend=False`` when the caller's system prompt already carries ``relation_legend()``.
     """
     if not named_relations:
         return ""
-    lines = [relation_legend()]
+    lines = [relation_legend()] if include_legend else []
     for name, rel in named_relations:
         lines.append(
             "  - "
@@ -164,15 +169,17 @@ def render_relation_context(named_relations: Sequence[tuple[str, AgentRelation]]
 
 
 def describe_relations(relations: Sequence[PerceivedRelation]) -> str:
-    """Perceived relations as a prompt block: header + legend + one bullet each.
+    """Perceived relations as a prompt block: header + one bullet each.
 
-    Module-level so any holder of the perceived list renders identically without a
-    ``RelationSystem``. No truncation here; relevant_relations is capped upstream.
+    The legend (``relation_legend()``) is a constant, so it belongs in the caller's system
+    message, not beside these per-call lines. Module-level so any holder of the perceived list
+    renders identically without a ``RelationSystem``. No truncation here; relevant_relations is
+    capped upstream.
     """
     rels = list(relations)
     if not rels:
         return "附近没有相关人物。"
-    lines = ["相关人物的关系：", relation_legend()]
+    lines = ["相关人物的关系："]
     lines.extend("- " + line for line in render_relation_lines(rels, limit=len(rels)))
     return "\n".join(lines)
 
@@ -180,23 +187,22 @@ def describe_relations(relations: Sequence[PerceivedRelation]) -> str:
 def _perceived(
     relation: AgentRelation,
     *,
-    emotion: str | EmotionState,
+    emotion: EmotionState,
     recent_memory_bias: float = 0.0,
     agent_name: str = "",
     agent_gender: str = "",
 ) -> PerceivedRelation:
     """The perceived view of an objective relation: trust/affection tinted by mood and memory."""
-    emotion_state = _coerce_emotion(emotion)
     trust = _compute_perceived(
         objective=relation.trust_objective,
         recent_memory_bias=recent_memory_bias,
-        emotion=emotion_state,
+        emotion=emotion,
         value_range=TRUST_RANGE,
     )
     affection = _compute_perceived(
         objective=relation.affection_objective,
         recent_memory_bias=recent_memory_bias,
-        emotion=emotion_state,
+        emotion=emotion,
         value_range=AFFECTION_RANGE,
     )
     return PerceivedRelation(
@@ -211,26 +217,31 @@ def _perceived(
 
 
 class RelationSystem:
-    """Persist objective relations and derive perceived ones."""
+    """Hold one agent's objective relations and derive perceived ones.
 
-    def __init__(self, store: AgentStoreProvider, *, world_id: str, agent_id: str) -> None:
-        self._store = store
+    The relations live here, in memory; a step's snapshot commits them and a restore hands them
+    back (``restore``). Nothing is written elsewhere mid-step, so a step that never commits
+    leaves nothing to undo. Reads hand out copies; only ``get_or_create`` returns the held record.
+    """
+
+    def __init__(self, *, world_id: str, agent_id: str) -> None:
         self._world_id = world_id
         self._agent_id = agent_id
+        self._relations: Dict[str, AgentRelation] = {}
+
+    def restore(self, relations: Iterable[AgentRelation]) -> None:
+        """Replace every held relation with ``relations`` (this agent's outgoing ones)."""
+        self._relations = {relation.to_id: deepcopy(relation) for relation in relations}
 
     async def load_existing(self, target_agent_id: str) -> AgentRelation | None:
-        """Load a persisted relation read-only; None if absent. For context reads, where
-        get_or_create would persist an empty default relation."""
-        return await self._store.load_relation(
-            self._world_id, self._agent_id, target_agent_id
-        )
+        """A copy of a held relation; None if absent. For context reads, where get_or_create
+        would bring an empty default relation into being."""
+        relation = self._relations.get(target_agent_id)
+        return deepcopy(relation) if relation is not None else None
 
     async def get_or_create(self, target_agent_id: str) -> AgentRelation:
-        relation = await self._store.load_relation(
-            self._world_id,
-            self._agent_id,
-            target_agent_id,
-        )
+        """The held record itself, created neutral if absent: changes to it are the change."""
+        relation = self._relations.get(target_agent_id)
         if relation is not None:
             relation.trust_objective = _clamp_trust(relation.trust_objective)
             relation.affection_objective = _clamp_affection(relation.affection_objective)
@@ -244,37 +255,32 @@ class RelationSystem:
             affection_objective=NEUTRAL_AFFECTION,
             updated_step=0,
         )
-        await self._store.save_relation(relation)
+        self._relations[target_agent_id] = relation
         return relation
 
     async def perceive(
         self,
         target_agent_id: str,
-        emotion: str | EmotionState,
+        emotion: EmotionState,
         recent_memory_bias: float = 0.0,
         agent_name: str = "",
         agent_gender: str = "",
     ) -> PerceivedRelation:
         relation = await self.get_or_create(target_agent_id)
         # Cache the referent once learned, so an absent-but-known relation renders by name, not id.
-        dirty = False
-        if agent_name and relation.to_name != agent_name:
+        if agent_name:
             relation.to_name = agent_name
-            dirty = True
-        if agent_gender and relation.to_gender != agent_gender:
+        if agent_gender:
             relation.to_gender = agent_gender
-            dirty = True
-        if dirty:
-            await self._store.save_relation(relation)
         return _perceived(
             relation, emotion=emotion, recent_memory_bias=recent_memory_bias,
             agent_name=agent_name, agent_gender=agent_gender,
         )
 
     async def perceive_existing(
-        self, target_agent_id: str, emotion: str | EmotionState,
+        self, target_agent_id: str, emotion: EmotionState,
     ) -> PerceivedRelation | None:
-        """``perceive`` read-only: None when no relation exists, and nothing is persisted. For
+        """``perceive`` read-only: None when no relation exists, and nothing is created. For
         reads that must not bring a relation into being (an executor's ``complete``)."""
         relation = await self.load_existing(target_agent_id)
         if relation is None:
@@ -286,7 +292,7 @@ class RelationSystem:
     async def significant_relations(self, *, limit: int) -> List[AgentRelation]:
         """Top-N relations by distance from neutral, to bring absent people with a real relation
         into this step's perception (an ally or rival matters even when absent)."""
-        relations = await self._store.load_all_relations(self._world_id, self._agent_id)
+        relations = [deepcopy(relation) for relation in self._relations.values()]
         relations.sort(
             key=lambda r: abs(r.trust_objective - NEUTRAL_TRUST) + abs(r.affection_objective),
             reverse=True,
@@ -343,8 +349,7 @@ class RelationSystem:
         )
         relation.interaction_count += 1
         relation.updated_step = step
-        await self._store.save_relation(relation)
-        return relation
+        return deepcopy(relation)
 
     async def record_contact(self, target_agent_id: str, *, step: int) -> None:
         """Count one exchange without judging it: trust/affection stay as they are. The count is
@@ -352,7 +357,28 @@ class RelationSystem:
         relation = await self.get_or_create(target_agent_id)
         relation.interaction_count += 1
         relation.updated_step = step
-        await self._store.save_relation(relation)
+
+    async def all_relations(self) -> List[AgentRelation]:
+        """Every relation this agent holds, the most recently changed first."""
+        relations = [deepcopy(relation) for relation in self._relations.values()]
+        return sorted(relations, key=lambda r: -r.updated_step)
+
+    async def set_trust_affection(
+        self,
+        target_agent_id: str,
+        *,
+        trust: float | None,
+        affection: float | None,
+        step: int,
+    ) -> None:
+        """Set trust/affection outright; ``None`` keeps a value. Unlike ``apply_interaction`` this
+        moves no delta and counts no interaction: it is a correction, not an exchange."""
+        relation = await self.get_or_create(target_agent_id)
+        if trust is not None:
+            relation.trust_objective = _clamp_trust(trust)
+        if affection is not None:
+            relation.affection_objective = _clamp_affection(affection)
+        relation.updated_step = step
 
     async def update_history_summary(
         self, target_agent_id: str, summary: str, *, step: int
@@ -361,8 +387,7 @@ class RelationSystem:
         relation = await self.get_or_create(target_agent_id)
         relation.history_summary = summary.strip()
         relation.updated_step = step
-        await self._store.save_relation(relation)
-        return relation
+        return deepcopy(relation)
 
     async def replace_labels(
         self,
@@ -371,15 +396,14 @@ class RelationSystem:
         *,
         step: int,
     ) -> AgentRelation:
-        """Overwrite ``labels`` with a new full set (RelationEvolution). No code-side guardrails:
-        structural bonds (blood / spouse / master-disciple / liege) are preserved only by the
-        RelationEvolution prompt."""
-        cleaned = [str(label).strip() for label in labels if str(label).strip()]
+        """Overwrite ``labels`` with a new full set (RelationEvolution), in canonical form; an item
+        with no label form is dropped. Structural bonds (blood / spouse / master-disciple / liege)
+        are preserved only by the RelationEvolution prompt."""
+        cleaned = relation_labels(labels)
         relation = await self.get_or_create(target_agent_id)
         relation.labels = cleaned
         relation.updated_step = step
-        await self._store.save_relation(relation)
-        return relation
+        return deepcopy(relation)
 
 
 def _compute_perceived(
@@ -398,17 +422,6 @@ def _compute_perceived(
     memory_pull = recent_memory_bias * K_MEMORY_PULL
     low, high = value_range
     return max(low, min(high, objective + memory_pull + emotion_pull))
-
-
-def _coerce_emotion(emotion: str | EmotionState) -> EmotionState:
-    if isinstance(emotion, EmotionState):
-        return emotion
-    emotion_type = parse_emotion_type(str(emotion))
-    if emotion_type in {EmotionType.FRUSTRATION, EmotionType.ANGER, EmotionType.FEAR, EmotionType.DISGUST, EmotionType.SHAME, EmotionType.CONTEMPT, EmotionType.SADNESS, EmotionType.JEALOUSY}:
-        return EmotionState(primary=emotion_type, intensity=0.6, valence=-0.5)
-    if emotion_type in {EmotionType.JOY, EmotionType.ANTICIPATION, EmotionType.TRUST, EmotionType.PRIDE}:
-        return EmotionState(primary=emotion_type, intensity=0.5, valence=0.3)
-    return EmotionState(primary=emotion_type, intensity=0.2, valence=0.0)
 
 
 def _clamp_trust(value: float) -> float:

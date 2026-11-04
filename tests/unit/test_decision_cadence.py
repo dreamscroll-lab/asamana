@@ -35,7 +35,7 @@ def _ext(urgency: Urgency = Urgency.NORMAL) -> ExternalGoal:
     must be a real ExternalGoal — the pressure evaluator never emits bare strings."""
     return ExternalGoal(
         text="someone is at the gate",
-        source_id="world",
+        source_ids=(),
         urgency=urgency,
         drive_type=ExternalDriveType.EVENT,
     )
@@ -70,6 +70,10 @@ class _StubAgent:
     last_decision_step: int = 1
     need_intensity: float = 0.3          # _NEED_REST_BASELINE: noticeable but not urgent
     emotion_intensity: float = 0.2       # EmotionState's own default
+    goals: list = field(default_factory=list)
+
+    def decides_this_step(self, *, step: int, signals) -> None:
+        return None   # paced by the engine's cadence, as the AI is
 
     def __post_init__(self) -> None:
         self.personality = _StubPersonality(StateLayer(
@@ -77,6 +81,7 @@ class _StubAgent:
             last_decision_step=self.last_decision_step,
             need_intensities={"safety": self.need_intensity},
             emotion=EmotionState(intensity=self.emotion_intensity),
+            short_term_goal_entities=self.goals,
         ))
 
 
@@ -113,6 +118,40 @@ def test_agent_under_external_pressure_is_admitted() -> None:
     pressed = _StubAgent("b", pending_external_goals=[_ext(Urgency.NORMAL)])
     quiet = _StubAgent("a")
     assert _admitted([pressed, quiet], step=2) == {"b"}
+
+
+def _due_goal(due_step: int, status=None):
+    from agent.goals import GoalEntity, GoalStatus
+    return GoalEntity(
+        id=f"stg-{due_step}", text="今晚八点去商业中心赴约", goal_type="short_term",
+        status=status or GoalStatus.ACTIVE, created_step=1, due_step=due_step,
+    )
+
+
+def test_agreed_time_admits_an_agent_with_nothing_else_going_on() -> None:
+    """A background agent's starvation bound is counted in steps; at several hours a step it
+    sleeps through an evening appointment unless the agreed time itself wakes it."""
+    scheduler = AgentScheduler(main_max_idle_steps=2, background_max_idle_steps=6)
+    agent = _StubAgent("a", goals=[_due_goal(3)])
+    plan = scheduler.plan([agent], step=3, in_progress_at_step_start=set())
+    assert [a.agent_id for a in plan.ordered_agents()] == ["a"]
+    assert scheduler._should_decide(agent, step=3) is CadenceReason.DUE  # noqa: SLF001
+
+
+@pytest.mark.parametrize("label,last_decision_step,due_step,step,terminal", [
+    ("not yet due", 1, 5, 3, False),
+    ("already thought about since it came due", 3, 3, 4, False),
+    ("goal already settled", 1, 3, 3, True),
+])
+def test_agreed_time_admits_once_and_only_when_due(
+    label, last_decision_step, due_step, step, terminal,
+) -> None:
+    """Admitting on mere overdue would have an agent with a missed appointment decide every
+    step until the goal is reaped."""
+    from agent.goals import GoalStatus
+    goal = _due_goal(due_step, GoalStatus.FAILED if terminal else None)
+    agent = _StubAgent("a", last_decision_step=last_decision_step, goals=[goal])
+    assert _admitted([agent], step=step) == set(), label
 
 
 def test_low_urgency_pressure_alone_does_not_admit() -> None:
@@ -383,7 +422,7 @@ async def test_pressure_is_rewritten_every_step_and_never_goes_stale(container) 
                 return {}
             return {"agent-a": [ExternalGoal(
                 text="有人在殿外求见",
-                source_id="agent-b",
+                source_ids=("agent-b",),
                 urgency=Urgency.HIGH,
                 drive_type=ExternalDriveType.OBLIGATION,
             )]}

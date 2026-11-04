@@ -6,13 +6,14 @@ English | [简体中文](README.zh-CN.md)
 
 <p align="center"><img src="docs/images/cover.jpg" alt="Asamana" width="1024"></p>
 
-▶️ **Demo video**: [watch on Bilibili](https://www.bilibili.com/video/BV1R4HS6WEsE/)
+▶️ **Director mode demo**: [watch on Bilibili](https://www.bilibili.com/video/BV1R4HS6WEsE/)<br>
+▶️ **Actor mode demo**: [watch on Bilibili](https://www.bilibili.com/video/BV1tkx96eEtL/)
 
 **Asamana is an AI-driven emergent narrative engine.**
 
 Give Asamana a theme, and it creates a shared world with a cast of AI characters, each with a distinct persona and cognitive system. The characters act autonomously, and the story emerges from their interactions, with no script or predefined plot.
 
-> **Status**: early development. APIs, configuration formats and save formats may change between releases. Backward compatibility is not yet guaranteed. See [CHANGELOG.md](CHANGELOG.md) for changes.
+> **Status**: early development. APIs, configuration formats and save formats may change between releases. Backward compatibility is not yet guaranteed. There are still many known bugs, which we will fix as we keep iterating. See [CHANGELOG.md](CHANGELOG.md) for changes.
 
 > **Language**: prompts and generated narratives, including dialogue and memories, are currently in Chinese.
 
@@ -37,6 +38,12 @@ Conversation-based agent loops accumulate context with each turn, increasing cos
 - **Staged orchestration**: cognition follows five stages, `perception → motivation → decision → action → feedback`, orchestrated deterministically in code. LLM calls within these stages can be tested and tuned independently, with explicitly assembled context.
 - **Typed outputs**: stages exchange structured JSON through typed contracts. This makes outputs easier to validate and limits the spread of hallucinated information.
 - **Shared context**: each stage receives the relevant persona, emotions, needs, goals, relationships, situation and recent memories to maintain consistency over time.
+
+### 4. Two modes: director and actor
+
+**Director mode**: watch the whole world. You see every character's inner life and outward actions and everything that happens in the world, and you can step in to steer it.
+
+**Actor mode**: play any one character in the AI world, exploring it and shaping the story from inside. You never know what the world will do next; you come to know it only by exploring it.
 
 ## Architecture
 
@@ -73,7 +80,7 @@ git clone https://github.com/dreamscroll-lab/asamana.git && cd asamana
 
 On the first run, a setup wizard offers optional API key configuration (choose a model provider and enter its keys) and lets you enable developer tools. It writes `deploy/.env`, builds the images and starts the services. Open <http://localhost:8080/>, enter a theme, review and confirm the generated world, then run it to watch the story unfold.
 
-The first start also imports two completed example worlds (the Xuanwu Gate Incident and a mystery about uncovering traitors), so you can browse and replay them without API keys.
+The first start also imports two completed example worlds (宫门血色, set in the Xuanwu Gate Incident, and 第七把椅子, a mystery about uncovering traitors), so you can browse and replay them without API keys.
 
 ### With and without keys
 
@@ -144,6 +151,8 @@ A 35-step world uses roughly **2.5M–4.2M tokens** in total, mostly input token
 
 Every character, line of dialogue and plot point in a world is generated live by the LLM you connect. It doesn't reflect the views of the project's authors and may be inaccurate or inappropriate. Follow your model vendor's usage policies, and use your own judgment before sharing generated content publicly.
 
+All content in `examples/` is AI-generated fiction and should not be treated as objective fact or historical evidence.
+
 ### Developer tools
 
 Enable the developer tools for local development (see [Development](docs/development.md#developer-tools)), then open the `#/dev` page:
@@ -172,7 +181,9 @@ If you use Asamana in your research, see [CITATION.cff](CITATION.cff). GitHub's 
 
 ## Contact
 
-finley@dreamscroll.net (finley)
+Email: finley@dreamscroll.net (finley)
+
+<p align="center"><img src="docs/images/xiaohongshu-qr.jpg" alt="Xiaohongshu QR code" width="200"><br>Xiaohongshu (rednote)</p>
 
 ## License
 

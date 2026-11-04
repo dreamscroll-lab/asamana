@@ -24,8 +24,10 @@ from engine.message_system import MessageSystem
 from agent.personality import SoulLayer
 from engine.npc_runner import NpcRunner
 from providers.message.in_memory import InMemoryMessageProvider
-from world.models import EntityPresence, NpcSeed, WorldEntity, WorldEntityType
+from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
+from tests.unit.env_state import npc_outcomes, restore, saved
+from tests.unit.world_setups import make_npc
 
 
 class _FixedLLM:
@@ -75,7 +77,7 @@ def _runner(
 
 def _bearer(env: EnvironmentSystem, at: str = "hall") -> str:
     env.spawn_npc(
-        NpcSeed(name="王二", gender="男", age=34, description="跑得快、认得路"),
+        make_npc("王二", gender="男", age=34, description="跑得快、认得路"),
         location_id=at,
     )
     return env.all_npcs()[-1].npc_id
@@ -118,7 +120,7 @@ async def test_a_tool_body_is_told_and_it_goes() -> None:
     env.place_agent(agent_id="a2", location_id="gate")
 
     order = ErrandOrder(npc_id, "gate", recipient_id="a2", message="今夜勿出")
-    result = (await _run_errand(env, order, actor_id="a1"))[0]
+    result = (await _run_errand(env, order, doer_id="a1"))[0]
 
     assert result.succeeded is True
     assert result.errand_orders == [order]
@@ -126,7 +128,7 @@ async def test_a_tool_body_is_told_and_it_goes() -> None:
     # The observer's deed comes from this action record: ERRAND is its own action.
     assert action_semantics(result.action, result)["deed"] == "errand"
     assert "宫门" in result.outcome and "今夜勿出" in result.outcome    # full authoritative view
-    assert result.factual_memory.startswith("我派")                    # first person
+    assert result.factual_memory.startswith("我向")                    # first person
     # Bystanders see him call the man over, say a few words, and the man leave, but not what he was
     # told.
     assert result.observations
@@ -153,11 +155,11 @@ async def test_a_body_already_out_on_one_cannot_be_sent_again() -> None:
     # location, so place a2 first.
     assert env.assign_errand(ErrandOrder(npc_id, "gate"), requester_id="a2")
 
-    result = (await _run_errand(env, ErrandOrder(npc_id, "gate"), actor_id="a1"))[0]
+    result = (await _run_errand(env, ErrandOrder(npc_id, "gate"), doer_id="a1"))[0]
     assert result.succeeded is False
     assert result.adjudication_failed is False        # a real event, not a null step
     assert result.errand_orders == []                 # no second errand appears in the world
-    assert "抽不开身" in result.failure_reason
+    assert "正在执行别人指派的任务" in result.failure_reason
     assert result.factual_memory                      # he still remembers being foiled this step
 
 
@@ -191,10 +193,10 @@ async def test_two_people_cannot_send_the_same_body_on_the_same_beat() -> None:
 
     assert first.succeeded is True and first.errand_orders
     assert second.succeeded is False and second.errand_orders == []
-    assert "抽不开身" in second.failure_reason
+    assert "正在执行别人指派的任务" in second.failure_reason
     assert second.adjudication_failed is False        # a real event, not a null step
     # The later requester's narrative must say it didn't happen.
-    assert "未能成行" in second.outcome and second.not_executed is True
+    assert "未能完成指派" in second.outcome and second.not_executed is True
     # The world holds only one errand, owned by whoever came first.
     assert env.get_npc(npc_id).errand.requester_id == "a1"
 
@@ -246,7 +248,7 @@ async def test_a_body_that_cannot_move_cannot_be_sent() -> None:
     env.place_agent(agent_id="a1", location_id="hall")
     env.get_npc(npc_id).condition = BodyCondition(description="被按在地上", since_step=1)
 
-    result = (await _run_errand(env, ErrandOrder(npc_id, "gate"), actor_id="a1"))[0]
+    result = (await _run_errand(env, ErrandOrder(npc_id, "gate"), doer_id="a1"))[0]
     assert result.succeeded is False and "动弹不得" in result.failure_reason
     assert result.errand_orders == []
 
@@ -273,7 +275,7 @@ async def test_a_bearer_that_vanished_between_the_beats_fabricates_nothing() -> 
 
 @pytest.mark.asyncio
 async def test_telling_someone_costs_the_teller_exactly_one_beat() -> None:
-    """The point of sending someone is not having to wait: the actor's step estimate is ignored and
+    """The point of sending someone is not having to wait: the doer's step estimate is ignored and
     fixed at 1."""
     env = _world()
     npc_id = _bearer(env)
@@ -331,7 +333,7 @@ async def test_a_bare_look_brings_back_both_what_is_there_and_what_just_happened
     env.place_agent(agent_id="a2", location_id="gate")
     env.register_entity(WorldEntity(
         entity_id="banner", name="旌旗", entity_type=WorldEntityType.ITEM,
-        presence_ref="gate", is_takeable=True,
+        presence_ref="gate",
     ))
     runner, messages = _runner(env)
     env.assign_errand(ErrandOrder(npc_id, "gate"), requester_id="a1")
@@ -347,8 +349,7 @@ async def test_a_bare_look_brings_back_both_what_is_there_and_what_just_happened
     assert "宫门" in report and "旌旗" in report          # what's there
     assert "两名守卒起了争执" in report                   # what just happened there
     assert "王二" not in report                          # he isn't news there himself
-    # Say so even if nothing happened; a blank would read as "he didn't look".
-    assert "刚发生的事" in report
+    assert "当时发生的事" in report
 
 
 @pytest.mark.asyncio
@@ -360,11 +361,11 @@ async def test_it_brings_back_what_it_could_see_and_nothing_more() -> None:
     env.place_agent(agent_id="a2", location_id="gate")
     env.register_entity(WorldEntity(
         entity_id="banner", name="旌旗", entity_type=WorldEntityType.ITEM,
-        presence_ref="gate", is_takeable=True,
+        presence_ref="gate",
     ))
     hidden = WorldEntity(
         entity_id="token", name="暗记", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref="a2", is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref="a2",
     )
     hidden.is_public = False
     env.register_entity(hidden)
@@ -390,7 +391,7 @@ async def test_one_addressing_axis_carries_both_the_thing_and_the_word() -> None
     env.place_agent(agent_id="a2", location_id="gate")
     env.register_entity(WorldEntity(
         entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref=npc_id,
     ))
     runner, messages = _runner(env)
     env.assign_errand(
@@ -422,7 +423,7 @@ async def test_with_nobody_named_both_fall_to_the_place() -> None:
     env.place_agent(agent_id="a2", location_id="gate")
     env.register_entity(WorldEntity(
         entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref=npc_id,
     ))
     runner, messages = _runner(env, souls={"a2": SoulLayer(name="阿石", gender="男", age=27)})
     env.assign_errand(
@@ -488,7 +489,7 @@ async def test_the_one_who_dictated_it_does_not_hear_it_shouted_back() -> None:
 
     The mouth and the author are different people: this body speaks, but the words are his.
     Excluding only the sender, he'd receive his own order where he sent the NPC and read the echo as
-    someone falsely relaying his words (self-exclusion, see ``Message.actor_ids``).
+    someone falsely relaying his words (self-exclusion, see ``Message.doer_ids``).
     """
     env = _world()
     npc_id = _bearer(env)
@@ -543,7 +544,7 @@ async def test_a_thing_meant_for_someone_absent_comes_back_rather_than_being_lef
     env.place_agent(agent_id="a3", location_id="gate")   # a2 isn't at the gate
     env.register_entity(WorldEntity(
         entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref=npc_id,
     ))
     runner, messages = _runner(env)
     env.assign_errand(
@@ -602,7 +603,7 @@ async def test_a_half_walked_edge_survives_a_restore() -> None:
     fresh = EnvironmentSystem()
     fresh.space.register_place(_location("hall", "大殿", far=6))
     fresh.space.register_place(_location("far", "远处", hall=6))
-    fresh.restore_state(env.snapshot_state())
+    restore(fresh, saved(env))
     assert fresh.get_npc(npc_id).errand.leg_remaining == 4
 
 
@@ -635,15 +636,15 @@ async def test_the_thing_changes_hands_when_he_is_sent_off_with_it() -> None:
     env.place_agent(agent_id="a2", location_id="gate")
     env.register_entity(WorldEntity(
         entity_id="box", name="木匣", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref="a1", is_takeable=True,   # requester holds it
+        presence=EntityPresence.HELD, presence_ref="a1",   # requester holds it
     ))
     order = ErrandOrder(npc_id, "gate", item_id="box", recipient_id="a2")
-    result = (await _run_errand(env, order, actor_id="a1"))[0]
+    result = (await _run_errand(env, order, doer_id="a1"))[0]
 
     # The executor only declares; applying it belongs to the feedback layer, done by hand here.
     assert [c.entity_id for c in result.entity_state_changes] == ["box"]
     for change in result.entity_state_changes:
-        env.change_entity_state(change, acting_agent_id="a1")
+        env.change_entity_state(change, doer_id="a1")
     assert env.get_entity("box").presence_ref == npc_id      # now in his hands
     assert "木匣" in result.observations[0].text             # handed over in sight of bystanders
 
@@ -672,10 +673,9 @@ async def test_he_cannot_send_off_a_thing_that_is_not_in_his_own_hands() -> None
     env.register_entity(WorldEntity(
         entity_id="box", name="木匣", entity_type=WorldEntityType.ITEM,
         presence=EntityPresence.HELD, presence_ref="a2",   # held by someone at the gate
-        is_takeable=True,
     ))
     results = await _run_errand(
-        env, ErrandOrder(npc_id, "gate", item_id="box"), actor_id="a1",
+        env, ErrandOrder(npc_id, "gate", item_id="box"), doer_id="a1",
     )
 
     assert results[0].succeeded is False
@@ -683,6 +683,38 @@ async def test_he_cannot_send_off_a_thing_that_is_not_in_his_own_hands() -> None
     assert env.get_entity("box").presence_ref == "a2"     # didn't move
     assert not results[0].entity_state_changes
     assert env.get_npc(npc_id).errand is None            # and he wasn't sent either
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("destroyed", [False, True])
+async def test_item_lost_after_assignment_does_not_enter_errand(destroyed: bool) -> None:
+    from core.interfaces.action import EntityStateChange
+
+    env = _world()
+    npc_id = _bearer(env)
+    env.place_agent(agent_id="a1", location_id="hall")
+    env.register_entity(WorldEntity(
+        entity_id="box", name="木匣", entity_type=WorldEntityType.ITEM,
+        presence=EntityPresence.HELD, presence_ref="a1",
+    ))
+    executor = ErrandExecutor(LiveWorldDirectory.from_agents({}, env))
+    state = await executor.start(
+        _action("a1", npc_id, ErrandOrder(npc_id, "gate", item_id="box")), 1,
+        agents={}, environment=env, message_system=None,
+    )
+    assert env.get_npc(npc_id).errand is not None
+    env.change_entity_state(EntityStateChange(
+        entity_id="box", destroyed=destroyed, owner_id=None if destroyed else "other",
+    ))
+
+    result = (await executor.complete(state, 1, agents={}, environment=env, message_system=None))[0]
+
+    assert not result.succeeded
+    assert not result.entity_state_changes
+    assert not result.errand_orders
+    assert "已不在他手上" in result.factual_memory
+    assert env.get_npc(npc_id).errand is None
+    assert env.get_entity("box").owner_id == (None if destroyed else "other")
 
 
 @pytest.mark.asyncio
@@ -758,7 +790,7 @@ async def test_every_cell_of_the_space_reads_as_its_own_errand() -> None:
     """
     cells = [
         # (carries item, names person, carries message) → the line that must appear in the report
-        ((False, False, False), "刚发生的事"),   # "go look": what he saw comes back
+        ((False, False, False), "到达时所见"),   # "go look": what he saw comes back
         ((False, False, True),  "当着"),
         ((False, True,  False), "在宫门。"),
         ((False, True,  True),  "话已带到"),
@@ -775,7 +807,7 @@ async def test_every_cell_of_the_space_reads_as_its_own_errand() -> None:
         if carry:
             env.register_entity(WorldEntity(
                 entity_id="thing", name="木匣", entity_type=WorldEntityType.ITEM,
-                presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True,
+                presence=EntityPresence.HELD, presence_ref=npc_id,
             ))
         runner, messages = _runner(env)
         env.assign_errand(ErrandOrder(
@@ -804,13 +836,13 @@ def test_the_judge_and_the_runner_read_the_same_errand_the_same_way() -> None:
     npc_id = _bearer(env)
     env.register_entity(WorldEntity(
         entity_id="thing", name="木匣", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref=npc_id,
     ))
     directory = LiveWorldDirectory.from_agents({}, env)
 
     # The phrase the judge side must name in each cell, matching the runner-side test cell by cell.
     for (carry, name, speak), must_say in [
-        ((False, False, False), "去宫门走一趟"),   # destination-only is a task too
+        ((False, False, False), "前往宫门看看"),   # destination-only is a task too
         ((False, False, True),  "宫门当众"),
         ((False, True,  False), "在不在宫门"),
         ((False, True,  True),  "带一句话"),
@@ -843,7 +875,7 @@ async def test_a_body_can_be_held_down_without_losing_what_it_was_sent_to_do() -
     Consequences go only through ``npc_effects``: no ``TargetAgentEffect``, no relation_updates. He
     has no emotion, relations, memory or vitality; writing them would just be dropped by the
     feedback layer, and the relation delta would put an id outside the relation namespace into the
-    actor's relation table.
+    doer's relation table.
     """
     from core.interfaces.action import ActionType as _AT
     from engine.executors.physical import PhysicalExecutor
@@ -938,11 +970,11 @@ async def test_a_body_that_cannot_struggle_is_not_held_for_good() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _action(actor_id: str, npc_id: str, order: ErrandOrder, *, estimated_steps: int = 1):
+def _action(doer_id: str, npc_id: str, order: ErrandOrder, *, estimated_steps: int = 1):
     from agent.decision import ActionIntent
 
     return AgentAction(
-        agent_id=actor_id,
+        agent_id=doer_id,
         step=1,
         action_type=ActionType.ERRAND,
         action_description="请他去宫门看看守备",
@@ -952,11 +984,11 @@ def _action(actor_id: str, npc_id: str, order: ErrandOrder, *, estimated_steps: 
     )
 
 
-async def _run_errand(env, order: ErrandOrder, *, actor_id: str):
+async def _run_errand(env, order: ErrandOrder, *, doer_id: str):
     """Run one assignment through the whole executor lifecycle (start → complete). No LLM, so no
     stubs needed."""
     executor = ErrandExecutor(LiveWorldDirectory.from_agents({}, env))
-    action = _action(actor_id, order.npc_id, order)
+    action = _action(doer_id, order.npc_id, order)
     state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
     return await executor.complete(
         state, 1, agents={}, environment=env, message_system=None,
@@ -964,7 +996,7 @@ async def _run_errand(env, order: ErrandOrder, *, actor_id: str):
 
 
 class _StubAgent:
-    """The PHYSICAL judge reads the actor's ``personality`` and nothing else."""
+    """The PHYSICAL judge reads the doer's ``personality`` and nothing else."""
 
     def __init__(self, agent_id: str) -> None:
         from agent.personality import PersonalityLayer, SoulLayer
@@ -991,48 +1023,50 @@ async def test_the_report_says_where_the_words_end_and_the_scene_begins() -> Non
     runner, messages = _runner(env)
     env.assign_errand(ErrandOrder(npc_id, "gate", ()), requester_id="a1")
     for step in (1, 2, 3):
+        env.begin_step(step=step, world_time=_world_time(step))
         await runner.advance(step)
 
     report = (await messages.collect(step=4))[0]
     spoken = report.metadata["spoken"]
     assert spoken and spoken != report.content
     assert report.content.startswith(spoken)     # spoken line first, then attachment
-    assert "那里的情形是这样" in report.content   # the scene is in the full text
-    assert "那里的情形是这样" not in spoken       # but not in the spoken line
+    assert f"到达时所见（{_world_time(1).time_label}）：" in report.content
+    assert _world_time(3).time_label not in report.content
+    assert "到达时所见" not in spoken
+    assert report.content.startswith(f"{spoken}\n 到达时所见")
+    assert "\n  - 地点：宫门" in report.content
+    assert "\n  - 在场的其他人：无" in report.content
+    assert "\n  - 现场物件：无" in report.content
+    assert "当时发生的事" not in report.content
 
 
 def test_the_wire_carries_both_halves_and_an_ordinary_letter_has_only_one() -> None:
-    """The read model exposes the split as fields: ``spoken`` and ``perceived_summary``.
+    """The read model exposes the split as fields: ``spoken`` and ``content``.
 
     The display layer wants the short one and the full one, and gets both directly. An ordinary
     letter is all words with no attachment, so the two are equal; every view just reads its own
     field without first checking whether this is a report-back.
     """
-    from core.interfaces.snapshot import WorldSnapshot
-    from interaction.models import StepEvent
+    from interaction.models import StepView
+    from tests.unit.step_view import events, snapshot_of
 
     def _wire(mid: str, content: str, metadata: dict) -> dict:
         return {
-            "id": mid, "sender_id": "s", "sender_name": "某人", "content": content,
-            "recipients": ["a1"], "location_scope": None, "metadata": metadata,
+            "kind": "message", "message_id": mid, "sender_id": "s", "sender_name": "某人",
+            "content": content, "recipients": ["a1"], "location_scope": None, "metadata": metadata,
+            "receivers": [{"agent_id": "a1", "location_id": "hall"}],
         }
 
     report = "我去了宫门一趟，回来了。\n那里的情形是这样：\n- 在场的其他人：无"
-    snapshot = WorldSnapshot(
-        world_id="w", step=1, timestamp=None, world_time={}, agent_states={},
-        metadata={"messages": {
-            "delivered": [
-                _wire("m1", report, {"spoken": "我去了宫门一趟，回来了。"}),
-                _wire("m2", "你我明日午时相见。", {}),
-            ],
-            "inboxes": {"a1": ["m1", "m2"]},
-        }},
-    )
-    seen = StepEvent.from_snapshot(snapshot).messages
-    assert seen[0].spoken == "我去了宫门一趟，回来了。"
-    assert seen[0].perceived_summary == report
+    snapshot = snapshot_of(events=[
+        _wire("m1", report, {"spoken": "我去了宫门一趟，回来了。"}),
+        _wire("m2", "你我明日午时相见。", {}),
+    ])
+    seen = {m.message_id: m for _, m in events(StepView.from_snapshot(snapshot), "message")}
+    assert seen["m1"].spoken == "我去了宫门一趟，回来了。"
+    assert seen["m1"].content == report
     # An ordinary letter: nothing declared, so both are equal.
-    assert seen[1].spoken == seen[1].perceived_summary == "你我明日午时相见。"
+    assert seen["m2"].spoken == seen["m2"].content == "你我明日午时相见。"
 
 
 @pytest.mark.asyncio
@@ -1095,7 +1129,7 @@ async def test_each_step_says_what_happened_to_him_where_he_stands() -> None:
         env.begin_step(step=step, world_time=_world_time(step))
         await runner.advance(step)
         seen.append((
-            env.snapshot_state()["npc_outcomes"].get(npc_id),
+            npc_outcomes(env).get(npc_id),
             env.get_body_location(npc_id),
         ))
 
@@ -1107,7 +1141,7 @@ async def test_each_step_says_what_happened_to_him_where_he_stands() -> None:
 
     # Each line belongs to its own step: begin_step clears the previous one.
     env.begin_step(step=3, world_time=_world_time(3))
-    assert env.snapshot_state()["npc_outcomes"] == {}
+    assert npc_outcomes(env) == {}
 
 
 @pytest.mark.asyncio
@@ -1126,7 +1160,7 @@ async def test_a_trip_with_nothing_to_deliver_still_says_he_got_there() -> None:
     env.begin_step(step=1, world_time=_world_time(1))
     await runner.advance(1)
 
-    assert env.snapshot_state()["npc_outcomes"][npc_id] == {"text": "看了一眼", "ongoing": False}
+    assert npc_outcomes(env)[npc_id] == {"text": "看了一眼", "ongoing": False}
 
 
 @pytest.mark.asyncio
@@ -1144,7 +1178,7 @@ async def test_one_visit_can_get_two_things_done() -> None:
     env.place_agent(agent_id="a2", location_id="gate")
     letter = WorldEntity(
         entity_id="e1", name="书信", entity_type=WorldEntityType.ITEM,
-        presence=EntityPresence.HELD, presence_ref=npc_id, is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref=npc_id,
     )
     env.register_entity(letter)
     runner, _ = _runner(env, souls={
@@ -1158,7 +1192,7 @@ async def test_one_visit_can_get_two_things_done() -> None:
     env.begin_step(step=1, world_time=_world_time(1))
     await runner.advance(1)
 
-    assert env.snapshot_state()["npc_outcomes"][npc_id] == {
+    assert npc_outcomes(env)[npc_id] == {
         "text": "把书信交给了阿石，又带了句话：今夜勿出", "ongoing": False,
     }
 
@@ -1232,13 +1266,13 @@ async def test_the_legs_he_walks_are_the_lines_the_reader_is_told() -> None:
         # The assignment step: he doesn't move or speak; this step's event is in the requester's
         # line.
         assert env.get_body_location(npc_id) == "hall"
-        assert env.snapshot_state()["npc_outcomes"] == {}
+        assert npc_outcomes(env) == {}
 
         seen: list[tuple[str, str, bool]] = []
         for step in range(2, 2 + 2 * hops):
             env.begin_step(step=step, world_time=_world_time(step))
             await runner.advance(step)
-            line = env.snapshot_state()["npc_outcomes"].get(npc_id, {})
+            line = npc_outcomes(env).get(npc_id, {})
             seen.append((
                 env.get_body_location(npc_id),
                 str(line.get("text", "")),
@@ -1282,7 +1316,7 @@ async def test_a_trip_that_covered_no_ground_still_announces_what_he_did() -> No
     )
     env.begin_step(step=1, world_time=_world_time(1))
     await runner.advance(1)
-    assert env.snapshot_state()["npc_outcomes"][npc_id] == {
+    assert npc_outcomes(env)[npc_id] == {
         "text": "给阿石带了句话：今夜勿出", "ongoing": False,
     }
     assert env.get_body_location(npc_id) == "hall"
@@ -1298,7 +1332,7 @@ async def test_a_trip_that_covered_no_ground_still_announces_what_he_did() -> No
     env.assign_errand(ErrandOrder(npc_id, "gate", message="今夜勿出"), requester_id="a1")
     env.begin_step(step=1, world_time=_world_time(1))
     await runner.advance(1)
-    assert env.snapshot_state()["npc_outcomes"][npc_id] == {"text": "去不了宫门", "ongoing": False}
+    assert npc_outcomes(env)[npc_id] == {"text": "去不了宫门", "ongoing": False}
 
 
 def test_a_restrained_person_is_not_reported_as_free() -> None:

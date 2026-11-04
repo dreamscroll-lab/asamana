@@ -3,7 +3,7 @@ import Phaser from "phaser";
 
 import { TiledWorldScene } from "../phaser/TiledWorldScene";
 import type { MapSource } from "../phaser/mapSource";
-import type { MapSelect } from "../types";
+import type { MapSelect, MapOperationTarget } from "../types";
 import { THEME } from "../lib/theme";
 
 // The canvas renders at a fixed pixel budget in the panel's own shape, then FITs
@@ -30,6 +30,7 @@ interface Props {
   /** Handed the live scene once it is ready, and null when it goes away. */
   onScene: (scene: TiledWorldScene | null) => void;
   onSelect?: (t: MapSelect) => void;
+  onOperation?: (t: MapOperationTarget) => void;
   /** The user grabbed the camera by hand (drag / zoom) — drop any auto-follow. */
   onGrabCamera?: () => void;
   /**
@@ -53,6 +54,7 @@ export default function MapStage({
   source,
   onScene,
   onSelect,
+  onOperation,
   onGrabCamera,
   refit,
   children,
@@ -66,6 +68,8 @@ export default function MapStage({
   onSceneRef.current = onScene;
   const onSelectRef = useRef(onSelect);
   onSelectRef.current = onSelect;
+  const onOperationRef = useRef(onOperation);
+  onOperationRef.current = onOperation;
   const onGrabRef = useRef(onGrabCamera);
   onGrabRef.current = onGrabCamera;
 
@@ -82,6 +86,10 @@ export default function MapStage({
       },
       (t) => onSelectRef.current?.(t),
       () => onGrabRef.current?.(),
+      (target, clientX, clientY) => {
+        const box = host.getBoundingClientRect();
+        onOperationRef.current?.({ target, x: clientX - box.left, y: clientY - box.top });
+      },
     );
     const box = host.getBoundingClientRect();
     const game = new Phaser.Game({

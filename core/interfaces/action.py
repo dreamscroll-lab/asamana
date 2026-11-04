@@ -11,6 +11,7 @@ from typing import Any, Iterable, List
 
 from core.coerce import coerce_enum
 from core.interfaces.condition import BodyCondition
+from core.interfaces.perception import DEFAULT_ENTITY_STATE
 from core.interfaces.urgency import Urgency
 
 
@@ -97,7 +98,8 @@ class ActionTarget:
 
     Which relation carries the real subject is the action's business: a MOVE acts on a PLACE and
     claims those it drags along; a handover acts on the THING and reaches the receiver, or the
-    record reads as an assault with no object.
+    record reads as an assault with no object. Taking or working a thing someone else holds acts
+    on the thing and reaches its holder.
     """
 
     acts_on: list[Ref] = field(default_factory=list)
@@ -161,7 +163,7 @@ class ActionType(str, Enum):
     - MOVE         — change the agent's location
     - WORK         — turn personal will into a tangible result
     - PHYSICAL     — apply immediate force to a person or object
-    - COVERT       — gather information about others or other places unnoticed
+    - COVERT       — uncover otherwise unavailable information unnoticed at the current location
     - REST         — actively restore the agent's vitality
     - ERRAND       — have another body act elsewhere on your behalf and bring back what it saw.
                      Unlike MOVE (only your own body), SEND_MESSAGE (words one way, no return,
@@ -178,6 +180,22 @@ class ActionType(str, Enum):
     COVERT = "covert"
     ERRAND = "errand"
 
+    @property
+    def label(self) -> str:
+        return _ACTION_TYPE_LABELS[self]
+
+
+_ACTION_TYPE_LABELS: dict[ActionType, str] = {
+    ActionType.TALK: "交谈",
+    ActionType.MOVE: "移动",
+    ActionType.PHYSICAL: "动手",
+    ActionType.COVERT: "暗中探查",
+    ActionType.WORK: "做事",
+    ActionType.REST: "休息",
+    ActionType.SEND_MESSAGE: "发送消息",
+    ActionType.ERRAND: "指派任务",
+}
+
 
 class Deed(str, Enum):
     """What a bystander SEES a body do — the observable verb.
@@ -188,7 +206,7 @@ class Deed(str, Enum):
     state changed" fits taking, using and destroying alike, so picking up a letter would render
     as smashing it.
 
-    Declared by the adjudicator from what the actor was DOING, so it survives failure: a snatch
+    Declared by the adjudicator from what the doer was DOING, so it survives failure: a snatch
     that misses is still a snatch. Structural only, no theme (CLAUDE.md Rule 7).
     """
 
@@ -221,13 +239,6 @@ COVERTABLE_ACTION_TYPES: "frozenset[ActionType]" = frozenset({
 })
 
 
-#: The deeds PHYSICAL may resolve to — the closed set the adjudicator chooses from.
-PHYSICAL_DEEDS: tuple[Deed, ...] = (
-    Deed.STRIKE, Deed.RESTRAIN, Deed.SEIZE, Deed.RELINQUISH,
-    Deed.OPERATE, Deed.DESTROY, Deed.EXERT,
-)
-
-
 def parse_deed(label: str, *, default: Deed) -> Deed:
     """Coerce an adjudicator's deed label to the enum; anything unknown → ``default``, silently
     (a field-level coercion, like ``parse_emotion_type``)."""
@@ -251,18 +262,21 @@ class AgentAction:
     expected_outcome: str = ""
     estimated_steps: int = 1
     urgency: Urgency = Urgency.NORMAL   # SEND_MESSAGE only; see URGENCY_SCALE_DESCRIPTION
+    # TALK only: what the talk is about, as the doer states it up front. Everyone in the talk
+    # knows it from the start; ``action_description`` stays the doer's own. "" = he doesn't say.
+    talk_topic: str = ""
     remaining_steps: int = 1
     status: Any = None
-    llm_model: str = "rule"
     reason: str = ""
+    # SEND_MESSAGE only: the words delivered. Never filled from ``action_description``, which
+    # is the sender's own.
     content: str = ""
+    anonymous: bool = False
     intent: Any = None
 
     def __post_init__(self) -> None:
         if not self.action_description:
             self.action_description = self.content
-        if not self.content:
-            self.content = self.action_description
         if isinstance(self.action_type, str) and not isinstance(self.action_type, ActionType):
             self.action_type = ActionType(self.action_type)
 
@@ -288,7 +302,7 @@ class Observed:
 
 @dataclass
 class TargetAgentEffect:
-    """Effects an action lands on somebody other than its actor.
+    """Effects an action lands on somebody other than its doer.
 
     The one sanctioned channel for that (CLAUDE.md Executor/Feedback): an executor declares the
     deltas, the feedback layer applies them via ``Agent.apply_target_effect``. Every field past
@@ -302,8 +316,8 @@ class TargetAgentEffect:
     emotion_type: str | None = None     # None → skip emotion injection
     emotion_intensity: float = 0.0
     emotion_valence: float = 0.0
-    relation_toward_actor: tuple[str, float, float] | None = None
-    # (actor_id, trust_delta, affection_delta) — None → skip relation update
+    relation_toward_doer: tuple[str, float, float] | None = None
+    # (doer_id, trust_delta, affection_delta) — None → skip relation update
     vitality_damage: float = 0.0
     # Change to the target's ongoing condition. Two flat fields give three states:
     #   condition_set non-empty     → impose / replace
@@ -336,11 +350,11 @@ class EntityStateChange:
     new_state:        str = ""
     new_description:  str = ""
     new_content:      str = ""
-    owner_id:         str | None = None   # set → the entity's NEW HOLDER (presence → HELD): the actor when seized, the recipient when handed over; gated on is_takeable
+    owner_id:         str | None = None   # set → the entity's NEW HOLDER (presence → HELD): the doer when seized, the recipient when handed over; gated on is_takeable
     location_id:      str | None = None   # set → drop/move semantics (presence → AT_LOCATION)
     destroyed:        bool = False        # set → removal (presence → DESTROYED, terminal); wins over owner/location
     perception:       str = ""            # perception text broadcast to observers; empty → no perception triggered
-    perception_scope: str | None = None   # None → use actor's current location
+    perception_scope: str | None = None   # None → use doer's current location
 
 
 @dataclass
@@ -360,9 +374,9 @@ class EntitySpawn:
     # WorldEntityType string value; ``str`` so ``core/`` keeps no dependency on ``world/``
     # (same reason as ``VisibleEntity.entity_type``).
     entity_type: str = "item"
-    state: str = "intact"
+    state: str = DEFAULT_ENTITY_STATE
     content: str = ""
-    # Set → born in this agent's hands (HELD); None → born at the actor's location.
+    # Set → born in this agent's hands (HELD); None → born at the doer's location.
     holder_id: str | None = None
     is_public: bool = True
     # Third-person onlooker text, same channel as ``EntityStateChange.perception``. Empty
@@ -475,6 +489,15 @@ class NpcEffect:
     condition_cleared: bool = False
 
 
+@dataclass(frozen=True)
+class DialogueTurn:
+    """One line of a conversation: who said it, and what."""
+
+    speaker_id: str  # code layer — the join key; never rendered
+    speaker: str     # narrative layer — the name to print
+    line: str
+
+
 @dataclass
 class ActionResult:
     """Result of an executed action.
@@ -482,8 +505,8 @@ class ActionResult:
     Viewpoint contract: each text channel serves the consumers entitled to it; never reuse one
     string for two of them.
 
-    - ``outcome``: the authoritative, complete, third-person account (actor, target, act,
-      result), for full-information readers: the actor's action log and the god-view web /
+    - ``outcome``: the authoritative, complete, third-person account (doer, target, act,
+      result), for full-information readers: the doer's action log and the god-view web /
       snapshot. Never first person: a subjectless sentence loses who did what. Names, not ids.
     - ``gist``: what happened in one sentence (who, where, what, how it ended): ``outcome``
       without the detail some outcomes append after it (a TALK transcript, an interrupter's
@@ -494,7 +517,7 @@ class ActionResult:
       removed (dialogue transcripts, work products, covert purposes, an interrupted action's
       ``purpose``/``reason``). Matches ``outcome`` for fully public acts (PHYSICAL / MOVE); empty
       for private ones (unexposed COVERT, SEND_MESSAGE).
-    - ``factual_memory``: first person, the actor's private memory ("I tried X…"); never
+    - ``factual_memory``: first person, the doer's private memory ("I tried X…"); never
       delivered to onlookers.
     - ``failure_reason``: third person, authoritative side, ≤20 characters, so the renderer can
       show the reason without parsing prose. Only externally statable reasons, never private
@@ -502,6 +525,9 @@ class ActionResult:
     - ``entity_spawns``: ``name``/``description`` are the item's narrative reference;
       ``perception`` is onlooker text. ``is_public`` decides who can reach it from now on,
       ``perception`` who sees it appear; a private item sets neither.
+      Successful landing assigns ``entity_id``; action events preserve those receipts as
+      ``created_entity_ids``, a subset of ``affected_entity_ids``. Birth step alone cannot
+      attribute an injected or another action's item to this action.
 
     TALK is the model case: ``outcome`` = the named transcript; ``observations`` = "A and B
     talked and parted on bad terms"; ``factual_memory`` = each participant's own summary.
@@ -512,7 +538,7 @@ class ActionResult:
 
     action: AgentAction
     expected_outcome: str
-    outcome: str            # third-person, complete and authoritative (actor log + god-view web/snapshot); see class docstring
+    outcome: str            # third-person, complete and authoritative (doer log + god-view web/snapshot); see class docstring
     gist: str = ""          # see class docstring
     succeeded: bool = True
     # See Observed. Never derive it from outcome: that leaks privileged content. Empty by default
@@ -524,22 +550,23 @@ class ActionResult:
     # downstream infers it from outcome. It often equals outcome and must still be written out.
     # Only consumer: EnvironmentSystem.record_happening, read by covert-action adjudication.
     happening: str = ""
-    factual_memory: str = ""  # first person (the actor's own memory channel); see class docstring
+    factual_memory: str = ""  # first person (the doer's own memory channel); see class docstring
     failure_reason: str = ""
     # third-person authoritative reason for failure, ≤20 chars; see class docstring
     # Whether a COVERT action was exposed; read directly by exposure propagation and
     # interrupt_coordinator, never parsed from text.
     detected: bool = False
+    # Each a ``DialogueTurn``, as a dict.
     dialogue: List[dict] = field(default_factory=list)
     relation_updates: list[tuple[str, float, float]] = field(default_factory=list)
-    # (target_id, trust_delta, affection_delta) — applied to the actor's relations via _apply_feedback
+    # (target_id, trust_delta, affection_delta) — applied to the doer's relations via _apply_feedback
     target_effects: list[TargetAgentEffect] = field(default_factory=list)
     # Inbound effects to route to target agents after commit (PHYSICAL only)
     vitality_damage: float = 0.0
-    # Change to the actor's own ongoing condition; same three states as TargetAgentEffect's pair.
+    # Change to the doer's own ongoing condition; same three states as TargetAgentEffect's pair.
     # Separate from the target's: an ownerless slot would have to guess whose condition it is.
-    actor_condition_set: "BodyCondition | None" = None
-    actor_condition_cleared: bool = False
+    doer_condition_set: "BodyCondition | None" = None
+    doer_condition_cleared: bool = False
     entity_state_changes: list[EntityStateChange] = field(default_factory=list)
     # See EntitySpawn. Applied via ``EnvironmentSystem.spawn_entity`` in the feedback layer.
     entity_spawns: list[EntitySpawn] = field(default_factory=list)
@@ -549,7 +576,7 @@ class ActionResult:
     errand_orders: list[ErrandOrder] = field(default_factory=list)
     # See NpcEffect.
     npc_effects: list[NpcEffect] = field(default_factory=list)
-    # What the actor was SEEN doing (see Deed). Only PHYSICAL sets it — every other type
+    # What the doer was SEEN doing (see Deed). Only PHYSICAL sets it — every other type
     # is its own deed, so action_semantics falls back to the action_type there.
     deed: str = ""
     # True only when adjudication never happened (infra failure). The feedback layer treats it as

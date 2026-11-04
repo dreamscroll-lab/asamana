@@ -44,6 +44,7 @@ from core.interfaces.perception import (
     Broadcast,
     LocationView,
     NpcIdentity,
+    PerceivedIdentity,
     PerceivedNpc,
     PerceivedPresence,
     ReachableLocation,
@@ -163,10 +164,11 @@ def _decision_prompt(engine: DecisionEngine, *args, **kwargs) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_agent_action_post_init_populates_content_from_description() -> None:
-    action = AgentAction(action_type=ActionType.REST, action_description="Take a rest.")
+def test_agent_action_content_is_never_filled_from_its_description() -> None:
+    """``content`` is what a message delivers; the description is the doer's own."""
+    action = AgentAction(action_type=ActionType.SEND_MESSAGE, action_description="写信探他口风")
 
-    assert action.content == "Take a rest."
+    assert action.content == ""
 
 
 def test_agent_action_post_init_populates_description_from_content() -> None:
@@ -239,7 +241,7 @@ def test_an_index_outside_the_roster_is_recorded_not_just_dropped() -> None:
 
     slots = _Slots(payload={"person_indices": [1, 9], "destination_index": 7},
                    packet=object(), visible_ids=[], roster_ids=["a1", "a2"],
-                   reachable_ids=["loc1"], entity_ids=[], entity_types={}, npc_ids=[],
+                   reachable_ids=["loc1"], entity_ids=[], entity_types={}, entity_holders={}, npc_ids=[],
                    own_item_ids=[])
     assert slots.many("person_indices", slots.roster_ids) == ["a1"]     # #9 is outside the list
     assert slots.one("destination_index", slots.reachable_ids) is None  # #7, same
@@ -249,7 +251,7 @@ def test_an_index_outside_the_roster_is_recorded_not_just_dropped() -> None:
 
     # Record nothing when everything is in range; a silent channel shouldn't make noise.
     clean = _Slots(payload={"person_indices": [1]}, packet=object(), visible_ids=[],
-                   roster_ids=["a1"], reachable_ids=[], entity_ids=[], entity_types={},
+                   roster_ids=["a1"], reachable_ids=[], entity_ids=[], entity_types={}, entity_holders={},
                    npc_ids=[], own_item_ids=[])
     assert clean.many("person_indices", clean.roster_ids) == ["a1"] and clean.dropped == []
 
@@ -266,7 +268,8 @@ def test_every_declared_fact_is_one_the_prompt_actually_showed() -> None:
     Declare bare values only: a prompt fragment (like ``expected_part``) drags the prompt's section
     headings into the facts.
     """
-    from agent.memory_types import Memory, MemoryKind, MemoryStream
+    from agent.memory_types import Memory, MemoryStream
+    from core.interfaces.memory import MemoryKind
 
     def _mem(i: int, stream: MemoryStream, kind: MemoryKind, text: str) -> Memory:
         return Memory(id=f"m{i}", stream=stream, agent_id="a1", raw_content=text,
@@ -442,26 +445,78 @@ def test_parse_llm_selection_picks_indexed_candidate(container: object) -> None:
     assert selection.estimated_steps == 2
 
 
-def test_send_message_falls_back_to_the_spoken_words(container: object) -> None:
-    """If SEND_MESSAGE omits action_description, fall back to message_content. The two fields sit
-    right next to each other, and a field readable from its neighbor isn't worth losing the whole
-    decision over."""
+def _named_packet() -> PerceptionPacket:
+    packet = _make_packet(visible_agent_ids=["a2", "a3", "a4"])
+    for aid, name in (("a2", "尉迟恭"), ("a3", "秦琼")):
+        packet.spatial.visible_agents[aid] = PerceivedPresence(identity=PerceivedIdentity(name=name, gender="男"))
+    return packet
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        ({"person_indices": [1]}, "我打算发消息给尉迟恭说：「速回东宫，不得延误。」"),
+        ({"person_indices": [1, 2, 3]}, "我打算发消息给尉迟恭、秦琼、某人说：「速回东宫，不得延误。」"),
+        ({"person_indices": [2], "anonymous": True}, "我打算匿名发消息给秦琼说：「速回东宫，不得延误。」"),
+        ({"message_announce": True}, "我打算向在场众人发通知说：「速回东宫，不得延误。」"),
+        ({"message_announce": True, "anonymous": True}, "我打算匿名向在场众人发通知说：「速回东宫，不得延误。」"),
+    ],
+)
+def test_send_message_without_description_describes_the_send(
+    container: object, extra: dict, expected: str,
+) -> None:
+    """If SEND_MESSAGE omits action_description, the act is described from its bound recipients
+    and words. The words alone would read as speech wherever the act is recalled ("我打算做：速回
+    东宫"), and a field readable from its neighbors isn't worth losing the whole decision over."""
     engine = _make_engine(container)
-    candidates = [ActionCandidate(action_type=ActionType.SEND_MESSAGE, description="传讯")]
+    candidates = [ActionCandidate(action_type=ActionType.SEND_MESSAGE, description=ActionType.SEND_MESSAGE.label)]
     payload = json.dumps(
-        {
-            "selected_index": 0,
-            "message_content": "速回东宫，不得延误。",
-            "inner_monologue": "得让他立刻回来。",
-        },
+        {"selected_index": 0, "message_content": "速回东宫，不得延误。", "inner_monologue": "得让他立刻回来。", **extra},
         ensure_ascii=False,
     )
 
-    selection = engine._parse_llm_selection(payload, candidates)  # noqa: SLF001
+    selection = engine._parse_llm_selection(payload, candidates, _named_packet())  # noqa: SLF001
 
     assert selection is not None
-    assert selection.action_description == "速回东宫，不得延误。"
+    assert selection.action_description == expected
     assert selection.message_content == "速回东宫，不得延误。"
+
+
+def test_send_message_keeps_its_own_description(container: object) -> None:
+    engine = _make_engine(container)
+    candidates = [ActionCandidate(action_type=ActionType.SEND_MESSAGE, description=ActionType.SEND_MESSAGE.label)]
+    payload = json.dumps(
+        {"selected_index": 0, "person_indices": [1], "action_description": "我写信催尉迟恭回来",
+         "message_content": "速回东宫。", "inner_monologue": "x"},
+        ensure_ascii=False,
+    )
+
+    selection = engine._parse_llm_selection(payload, candidates, _named_packet())  # noqa: SLF001
+
+    assert selection is not None
+    assert selection.action_description == "我写信催尉迟恭回来"
+
+
+def test_actor_send_without_description_describes_the_send() -> None:
+    """The actor's form reads the model's slots with the same description as a decision does."""
+    from agent.decision import _ACTION_SPACE, _actor_action_from_payload, candidate_lists
+
+    send_index = next(i for i, c in enumerate(_ACTION_SPACE) if c.action_type is ActionType.SEND_MESSAGE)
+    action = _actor_action_from_payload(
+        {"selected_index": send_index, "person_indices": [1], "message_content": "速回东宫。", "anonymous": True},
+        candidate_lists(_named_packet()),
+    )
+
+    assert action is not None
+    assert action.action_description == "我打算匿名发消息给尉迟恭说：「速回东宫。」"
+
+
+def test_send_message_without_words_or_description_is_dropped(container: object) -> None:
+    engine = _make_engine(container)
+    candidates = [ActionCandidate(action_type=ActionType.SEND_MESSAGE, description=ActionType.SEND_MESSAGE.label)]
+    payload = json.dumps({"selected_index": 0, "person_indices": [1], "inner_monologue": "x"}, ensure_ascii=False)
+
+    assert engine._parse_llm_selection(payload, candidates, _named_packet()) is None  # noqa: SLF001
 
 
 def test_only_send_message_may_borrow_the_spoken_words(container: object) -> None:
@@ -487,7 +542,7 @@ def test_a_slot_binds_only_for_the_type_that_declares_it(container: object) -> N
     engine = _make_engine(container)
     packet = _make_packet(reachable_location_ids=["garden"])
     payload = json.dumps(
-        {"selected_index": 0, "destination_index": 1, "item_id": "门",
+        {"selected_index": 0, "destination_index": 1, "item_name": "门",
          "action_description": "我就地歇一会儿。", "inner_monologue": "累了。"},
         ensure_ascii=False,
     )
@@ -561,7 +616,7 @@ def test_parse_llm_selection_binds_person_via_person_index(container: object) ->
 
 def test_send_message_parses_message_content_and_routes_to_content(container: object) -> None:
     """SEND_MESSAGE: message_content (the exact words to the recipient) is parsed and lands on
-    AgentAction.content via _build_action; action_description (the actor's own account) stays
+    AgentAction.content via _build_action; action_description (the doer's own account) stays
     separate."""
     engine = _make_engine(container)
     candidates = [
@@ -589,7 +644,7 @@ def test_send_message_parses_message_content_and_routes_to_content(container: ob
     soul = SoulLayer(name="李世民", role="秦王", agent_id="agent-1")
     personality = PersonalityLayer(soul=soul, state=StateLayer(agent_id="agent-1", step=0))
     action = engine._build_action(selection, personality, packet)  # noqa: SLF001
-    # content carries the exact words; action_description stays the actor's own account
+    # content carries the exact words; action_description stays the doer's own account
     assert action.content == "父皇！太子欲谋逆，请明察！"
     assert action.action_description == "我向父皇传讯，揭发太子谋反"
     # Async action: decide pins expected_outcome to "the message is delivered" (a fixed value),
@@ -631,10 +686,9 @@ def test_talk_folds_message_content_into_action_description(container: object) -
     soul = SoulLayer(name="林语晴", role="学生", agent_id="agent-1")
     personality = PersonalityLayer(soul=soul, state=StateLayer(agent_id="agent-1", step=0))
     action = engine._build_action(selection, personality, packet)  # noqa: SLF001
-    # TALK has no delivery channel: content still mirrors action_description (with the content
-    # merged in) and carries no separate message
+    # TALK has no delivery channel: it carries no message content.
     assert action.action_description == selection.action_description
-    assert action.content == selection.action_description
+    assert action.content == ""
 
 
 def test_talk_without_message_content_keeps_description_unchanged(container: object) -> None:
@@ -655,6 +709,32 @@ def test_talk_without_message_content_keeps_description_unchanged(container: obj
     selection = engine._parse_llm_selection(payload, candidates, packet)  # noqa: SLF001
     assert selection is not None
     assert selection.action_description == "我去和他说话。"
+
+
+def test_a_talk_s_stated_topic_stays_apart_from_its_description(container: object) -> None:
+    """The topic is what the other side knows from the start; the description stays the doer's
+    own. Only a TALK keeps one."""
+    engine = _make_engine(container)
+    packet = _make_packet(visible_agent_ids=["agent-2"])
+
+    def parse(action_type: ActionType, **extra: str) -> object:
+        payload = json.dumps(
+            {
+                "selected_index": 0, "person_indices": [1],
+                "action_description": "我去探他口风，问他最担忧何事。",
+                "talk_topic": "借一步说话，核对谋划", "estimated_steps": 1, **extra,
+            },
+            ensure_ascii=False,
+        )
+        candidates = [ActionCandidate(action_type=action_type, description="")]
+        return engine._parse_llm_selection(payload, candidates, packet)  # noqa: SLF001
+
+    talk = parse(ActionType.TALK)
+    assert talk is not None
+    assert talk.talk_topic == "借一步说话，核对谋划"
+    assert talk.action_description == "我去探他口风，问他最担忧何事。"
+    send = parse(ActionType.SEND_MESSAGE, message_content="明日午时见。")
+    assert send is not None and send.talk_topic == ""
 
 
 def test_covert_does_not_bind_agent_target(container: object) -> None:
@@ -825,7 +905,7 @@ def test_parse_llm_selection_extracts_item_id(container: object) -> None:
     payload = json.dumps(
         {
             "selected_index": 0,
-            "item_id": "sword",
+            "item_name": "sword",
             "action_description": "拿起剑。",
             "inner_monologue": "需要自保。",
             "estimated_steps": 1,
@@ -901,9 +981,9 @@ def test_decision_prompt_carries_my_own_vitality_when_it_is_failing(container: o
 
     hurt = _make_personality()
     hurt.apply_vitality_damage(0.8)
-    assert "我此刻的体力：将竭" in _decision_prompt(engine, hurt, packet, candidates)
+    assert "我此刻的生命值：将竭" in _decision_prompt(engine, hurt, packet, candidates)
 
-    assert "我此刻的体力" not in _decision_prompt(engine, _make_personality(), packet, candidates)
+    assert "我此刻的生命值" not in _decision_prompt(engine, _make_personality(), packet, candidates)
 
 
 def test_parse_llm_selection_rejects_talk_without_any_target(container: object) -> None:
@@ -1007,8 +1087,7 @@ def test_decision_prompt_surfaces_broadcasts(container: object) -> None:
 
     prompt = _decision_prompt(engine, personality, packet, _ACTION_SPACE)  # noqa: SLF001
 
-    assert "世界传来" in prompt
-    assert "大雨倾盆，道路泥泞难行" in prompt
+    assert "全局广播：大雨倾盆，道路泥泞难行" in prompt
     # Code-layer enums must not appear in first-person text (on Python 3.11+ an f-string renders a
     # str-Enum as "BroadcastType.WORLD_EVENT")
     assert "BroadcastType" not in prompt
@@ -1106,26 +1185,6 @@ def test_parse_llm_selection_accepts_steps_within_bounds(container: object) -> N
 
     assert result is not None
     assert result.estimated_steps == 3
-
-
-# ---------------------------------------------------------------------------
-# _expected_outcome returns Chinese
-# ---------------------------------------------------------------------------
-
-
-def test_expected_outcome_returns_chinese(container: object) -> None:
-    """_expected_outcome must return Chinese for all action types."""
-    engine = _make_engine(container)
-    need_eval = _make_need_evaluation(NeedType.SOCIAL)
-
-    for action_type in ActionType:
-        outcome = engine._expected_outcome(action_type, need_eval)  # noqa: SLF001
-        # Basic check: no pure-ASCII sentences (English). Allow mixed content.
-        assert outcome, f"{action_type} returned empty outcome"
-        # Must contain at least one CJK character
-        assert any("一" <= ch <= "鿿" for ch in outcome), (
-            f"{action_type} outcome is not Chinese: {outcome!r}"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1280,7 +1339,18 @@ def test_a_directed_message_to_nobody_resolvable_is_rejected(container: object) 
     packet = _make_packet(visible_agent_ids=["agent-2"])
     assert _sel(engine, {"person_indices": [99]}, ActionType.SEND_MESSAGE, packet) is None
     # An explicitly declared announcement needs no recipient index and is structurally valid.
-    assert _sel(engine, {"message_announce": True}, ActionType.SEND_MESSAGE, packet) is not None
+    assert _sel(
+        engine, {"message_announce": True, "message_content": "众人听令"}, ActionType.SEND_MESSAGE, packet,
+    ) is not None
+
+
+def test_a_message_without_words_is_rejected(container: object) -> None:
+    """No words, no message: the description is the sender's own and is never sent in their place."""
+    engine = _make_engine(container)
+    packet = _make_packet(visible_agent_ids=["agent-2"])
+    assert _sel(engine, {"person_indices": [1]}, ActionType.SEND_MESSAGE, packet) is None
+    sel = _sel(engine, {"person_indices": [1], "message_content": "明日午时见。"}, ActionType.SEND_MESSAGE, packet)
+    assert sel is not None and sel.message_content == "明日午时见。"
 
 
 def test_naming_someone_outranks_the_announce_flag(container: object) -> None:
@@ -1291,7 +1361,7 @@ def test_naming_someone_outranks_the_announce_flag(container: object) -> None:
     packet = _make_packet(visible_agent_ids=["agent-2"])
     sel = _sel(
         engine,
-        {"person_indices": [1], "message_announce": True},
+        {"person_indices": [1], "message_announce": True, "message_content": "明日午时见。"},
         ActionType.SEND_MESSAGE,
         packet,
     )
@@ -1326,7 +1396,9 @@ def test_a_handover_needs_both_the_thing_and_the_hand(container: object) -> None
     engine = _make_engine(container)
     packet = _make_packet(
         visible_agent_ids=["agent-2"],
-        visible_entities=[VisibleEntity(entity_id="seal", name="印玺", entity_type="item")],
+        visible_entities=[VisibleEntity(
+            entity_id="seal", name="印玺", entity_type="item", holder_id="agent-1",
+        )],
     )
     # Recipient out of range → rejected
     assert _sel(engine, {"physical_entity_index": 1, "physical_recipient_index": 99},
@@ -1341,6 +1413,44 @@ def test_a_handover_needs_both_the_thing_and_the_hand(container: object) -> None
     assert ok is not None
     assert ok.target.acted_on_ids == ["seal"] and [r.id for r in ok.target.reaches] == ["agent-2"]
     assert ok.target.claims == []
+
+
+def test_only_what_i_hold_can_be_handed_over(container: object) -> None:
+    """A recipient named for a thing lying here or in someone else's hands rejects the step: there
+    is nothing of mine to hand over, and the executor reads reaches by whose hands it is in."""
+    engine = _make_engine(container)
+    for holder in (None, "agent-2"):
+        packet = _make_packet(
+            visible_agent_ids=["agent-2", "agent-3"],
+            visible_entities=[VisibleEntity(
+                entity_id="seal", name="印玺", entity_type="item", holder_id=holder,
+            )],
+        )
+        assert _sel(engine, {"physical_entity_index": 1, "physical_recipient_index": 2},
+                    ActionType.PHYSICAL, packet) is None
+
+
+def test_a_thing_in_someone_elses_hands_reaches_its_holder(container: object) -> None:
+    """Taking or working what someone present holds acts on the thing and reaches its holder. A
+    thing on the ground, in my own hands, or held by someone not here reaches nobody."""
+    engine = _make_engine(container)
+
+    def reached(holder: str | None, visible: list[str]) -> list[str]:
+        packet = _make_packet(
+            visible_agent_ids=visible,
+            visible_entities=[VisibleEntity(
+                entity_id="seal", name="印玺", entity_type="item", holder_id=holder,
+            )],
+        )
+        sel = _sel(engine, {"physical_entity_index": 1}, ActionType.PHYSICAL, packet)
+        assert sel is not None and sel.target.acted_on_ids == ["seal"]
+        assert sel.target.claims == []
+        return sel.target.reached_agents
+
+    assert reached("agent-2", ["agent-2"]) == ["agent-2"]
+    assert reached(None, ["agent-2"]) == []
+    assert reached("agent-1", ["agent-2"]) == []
+    assert reached("agent-9", ["agent-2"]) == []
 
 
 def test_a_carried_body_must_be_here_and_never_costs_the_whole_beat(container: object) -> None:
@@ -1392,7 +1502,7 @@ def test_a_runner_already_out_is_excluded_not_merely_labeled(container: object) 
 
     The "busy" tag on the list doesn't stop the person giving orders. With a single errand-runner
     at a location, every errand from that location fails while he's out, and each failure only
-    returns "一时抽不开身", so the same order is retried unchanged next beat.
+    returns "正在执行别人指派的任务", so the same order is retried unchanged next beat.
     """
     from agent.decision import _ACTION_SPACE
 
@@ -1406,11 +1516,11 @@ def test_a_runner_already_out_is_excluded_not_merely_labeled(container: object) 
 
     out = _make_packet(visible_npcs={"npc_a": _runner("老宦", busy=True)})
     prompt = _decision_prompt(engine, personality, out, _ACTION_SPACE)
-    assert "这一拍谁也派不出去：不可选 ERRAND" in prompt
+    assert "此刻不能接受新任务：不可选 ERRAND" in prompt
     assert "老宦" in prompt          # he's really standing here; he just can't be sent
 
     empty = _make_packet()
-    assert "此处没有听人吩咐做事的：不可选 ERRAND" in _decision_prompt(
+    assert "此处没有可接受任务指派的人：不可选 ERRAND" in _decision_prompt(
         engine, personality, empty, _ACTION_SPACE
     )
 
@@ -1427,7 +1537,7 @@ def test_a_runner_who_cannot_move_is_excluded_on_the_same_footing(container: obj
 
     held = _make_packet(visible_npcs={"npc_a": _runner("老宦", condition="双手被反绑")})
     prompt = _decision_prompt(engine, personality, held, _ACTION_SPACE)
-    assert "这一拍谁也派不出去：不可选 ERRAND" in prompt
+    assert "此刻不能接受新任务：不可选 ERRAND" in prompt
     assert "老宦" in prompt and "双手被反绑" in prompt      # he's present and his condition is visible
 
     # One restrained and one idle → errands are still possible, so don't exclude the whole block.
@@ -1484,7 +1594,7 @@ def test_the_runner_list_shown_and_the_list_bound_are_one_list(container: object
     shown = [line for line in prompt.splitlines() if line.strip().startswith("#")]
     listed = [line for line in shown if "老宦" in line or "小黄门" in line]
     assert [l.strip()[:2] for l in listed] == ["#1", "#2"]        # both present, original order
-    assert "老宦" in listed[0] and "正在忙" in listed[0]          # the busy one is printed with a tag
+    assert "老宦" in listed[0] and "正在执行任务" in listed[0]          # the busy one is printed with a tag
     assert list(packet.spatial.visible_npc_ids) == ["npc_out", "npc_idle"]  # same list, same order, used for binding
     assert "不可选 ERRAND" not in prompt                          # someone is still idle → errands stay open
 
@@ -1533,7 +1643,7 @@ def test_a_busy_runner_is_not_answered_by_pointing_at_a_letter(container: object
     block = prompt.split("【此刻够不着的行动】")[1].split("【")[0]
     assert "不可选 ERRAND" in block
     assert "改用 SEND_MESSAGE" not in block      # don't present messaging as an alternative way to reach him
-    assert "传讯到不了他" in block
+    assert "消息到不了他" in block
     # The list itself must be clear too, so nobody takes it for a second list of message
     # recipients
     assert "不在上面「我能触及的人」名单里" in prompt
@@ -1571,7 +1681,7 @@ def test_a_room_holding_only_a_runner_can_still_lay_hands_on_him(container: obje
     assert "不可选 TALK" in prompt                      # talking still isn't possible
     assert "不可选 PHYSICAL" not in prompt              # but acting on him stays open
     assert "physical_npc_index" in prompt               # and there's a slot to put it in
-    assert "这一拍谁也派不出去" in prompt                # no one to send is still excluded
+    assert "此刻不能接受新任务" in prompt                # no one to send is still excluded
 
     # Only a truly empty room (no people and no things) excludes acting physically too.
     empty = _make_packet()
@@ -1599,4 +1709,4 @@ def test_a_hand_on_a_runner_is_not_a_way_to_send_him(container: object) -> None:
     )
     block = prompt.split("【此刻够不着的行动】")[1].split("【")[0]
     assert "physical_npc_index" in block      # the path to stop him is still there
-    assert "不是差遣" in block                 # but it isn't a substitute for an errand
+    assert "不是指派任务" in block                 # but it isn't a substitute for an errand

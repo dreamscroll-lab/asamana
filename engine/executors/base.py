@@ -6,14 +6,18 @@ Scene assembly lives in ``engine.scene``; outcome wording in ``engine.narration`
 
 from __future__ import annotations
 
+import json
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, List
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, List
 
+from core.context import note_active_call_adoption
 from core.interfaces.action import ActionResult, ActionTarget, ActionType, AgentAction, Observed, Ref
 from core.interfaces.execution import TickResult
+from core.interfaces.llm import LLMMessage, LLMResponse, LLMScene, extract_json
+from core.logging import get_logger
 from engine.narration import (
     format_intent_clause, format_interrupt_reason_3p, format_interrupt_thought, scene_line,
 )
@@ -25,20 +29,94 @@ if TYPE_CHECKING:
     from engine.environment import EnvironmentSystem
     from engine.message_system import MessageSystem
 
+logger = get_logger(__name__)
+
+
+async def complete_json(
+    call: Callable[..., Awaitable[LLMResponse]],
+    system: str,
+    user: str,
+    *,
+    max_tokens: int,
+    temperature: float,
+    failure_event: str,
+    log_extra: dict[str, Any],
+    required: tuple[str, ...] = (),
+) -> dict[str, Any] | None:
+    """One executor narration call: the JSON object it answered, or ``None`` when it is unusable.
+
+    ``call`` is ``LLMRouter.complete`` or ``complete_with_retry``; the caller wraps this in its own
+    ``annotate_call``. Unusable means the call raised, the answer holds no JSON object, or one of
+    the ``required`` keys is missing or blank. A payload without the verdict or the narrative it
+    must carry is not a smaller answer: filling it with a default or a template would invent the
+    result (Rule 1), so the caller takes its no-op path.
+    """
+    try:
+        response = await call(
+            LLMScene.AGENT_ACTION_NARRATION,
+            [LLMMessage(role="system", content=system), LLMMessage(role="user", content=user)],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=True,
+        )
+        data = extract_json(response.content)
+    except Exception as exc:
+        note_active_call_adoption(False, "unusable_payload")
+        logger.warning(failure_event, extra={**log_extra, "error": str(exc)})
+        return None
+    missing = [
+        key for key in required
+        if data.get(key) is None or (isinstance(data[key], str) and not data[key].strip())
+    ]
+    if missing:
+        note_active_call_adoption(False, f"missing_{missing[0]}")
+        logger.warning(failure_event, extra={**log_extra, "error": "missing_fields", "fields": missing})
+        return None
+    return data
+
+
+def adjudication_failed_result(
+    state: "ActionExecutionState", step: int, *, outcome: str,
+) -> ActionResult:
+    """The null step when adjudication never happened (Rule 5): no memory, no claimed result.
+    ``outcome`` is never perceived; it is only the trace/snapshot marker."""
+    return ActionResult(
+        action=AgentAction(
+            agent_id=state.initiator_id,
+            step=step,
+            action_type=state.action_type,
+            action_description=state.purpose,
+            target=state.target,
+            estimated_steps=state.estimated_steps,
+        ),
+        expected_outcome=state.expected_outcome or state.purpose,
+        outcome=outcome,
+        succeeded=False,
+        adjudication_failed=True,
+    )
+
 
 def participant_action_desc(
     directory: "WorldDirectory", agent_id: str, exec_state: "ActionExecutionState"
 ) -> str:
     """Viewpoint-correct description of exec_state for one participant.
 
-    ``purpose`` is the initiator's framing (a TALK's "与李世民交谈" would be self-referential
-    read by 李世民), so a conscripted participant gets a joiner-POV line instead.
+    The initiator's is his own ``purpose``. Anyone drawn in gets only what he perceives: who
+    drew him in and into what. A TALK's ``purpose`` is the initiator's own
+    ``action_description``, which the other side never learns; he knows its ``talk_topic``, if
+    the initiator stated one. Someone carried off by a MOVE knows who takes him, not where to: he
+    learns that on arrival. Only TALK and MOVE draw others in (``Conscription``).
     """
     if agent_id == exec_state.initiator_id:
         return exec_state.purpose
     initiator_name = directory.agent_name(exec_state.initiator_id)
-    # No bracket around the purpose: callers quote this whole line in 「」, so one would nest.
-    return f"参与{initiator_name}发起的行动，行动意图：{exec_state.purpose}"
+    if exec_state.action_type == ActionType.MOVE:
+        return f"被{initiator_name}强行带着走"
+    if exec_state.talk_topic:
+        # The topic is named as his: read under "what I set out to do", a bare one is taken for
+        # the joiner's own aim. No bracket around it: callers quote this whole line in 「」.
+        return f"应{initiator_name}的邀请交谈，{initiator_name}的来意是{exec_state.talk_topic}"
+    return f"应{initiator_name}的邀请交谈"
 
 
 def participant_intent(agent_id: str, exec_state: "ActionExecutionState") -> str:
@@ -109,8 +187,9 @@ def action_semantics(action: "AgentAction", result: "ActionResult") -> dict[str,
     - ``deed``: the observable verb (see ``Deed``).
     - ``target``: the aim (``target_semantics``); it survives failure, unlike
       ``affected_entity_ids``.
-    - ``affected_entity_ids``: entities this deed changed or created. Which are new the
-      observer derives from the entity table.
+    - ``affected_entity_ids``: entities this deed changed or created.
+    - ``created_entity_ids``: entities this deed created, from accepted spawns only. Being
+      born in the same step does not attribute an entity to this deed.
 
     The deed must name the act, not the consequence: "an object changed" is true of taking and
     of smashing alike. PHYSICAL's adjudicator declares it; every other type is its own deed.
@@ -129,6 +208,7 @@ def action_semantics(action: "AgentAction", result: "ActionResult") -> dict[str,
             *(c.entity_id for c in (result.entity_state_changes or [])),
             *(s.entity_id for s in (result.entity_spawns or []) if s.entity_id),
         ],
+        "created_entity_ids": [s.entity_id for s in result.entity_spawns if s.entity_id],
     }
 
 
@@ -160,6 +240,9 @@ class ActionExecutionState:
     # Bodies that hear without being enrolled (TALK's listeners). Arbitration, conscription
     # and teardown must read participant_ids alone, so a listener never spends its turn.
     listener_ids: List[str] = field(default_factory=list)
+    # TALK only: ``AgentAction.talk_topic``, which everyone in the talk knows; ``purpose`` is the
+    # initiator's own.
+    talk_topic: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -177,6 +260,7 @@ class ActionExecutionState:
         expected_outcome: str = "",
         opening_observations: list[Observed] | None = None,
         listener_ids: List[str] | None = None,
+        talk_topic: str = "",
     ) -> "ActionExecutionState":
         # The start step is the first step, so N steps = 1 start + N-1 ticks. remaining == 0
         # ⟺ ready to complete, which unifies immediate and ongoing actions. Born-zero callers
@@ -197,6 +281,7 @@ class ActionExecutionState:
             opening_outcome=opening_outcome,
             opening_observations=list(opening_observations or []),
             listener_ids=list(listener_ids or []),
+            talk_topic=talk_topic,
         )
 
     @classmethod
@@ -208,12 +293,16 @@ class ActionExecutionState:
         failure_result: "ActionResult",
         started_step: int,
         purpose: str = "",
+        not_executed: bool = True,
     ) -> "ActionExecutionState":
-        """A feasibility/rejection failure as an actor-only, same-step-completing execution
+        """A feasibility/rejection failure as a doer-only, same-step-completing execution
         carrying its result in ``extra["completed_result"]``, so it flows through the one
-        completion path."""
-        # A "couldn't execute" non-event, not a defeat; the renderer mutes it.
-        failure_result.not_executed = True
+        completion path.
+
+        By default a "couldn't execute" non-event, not a defeat; the renderer mutes it.
+        ``not_executed=False`` for a failure that did happen to the doer (an invitation refused
+        to his face): remembered and fed back like any other failed act."""
+        failure_result.not_executed = not_executed
         state = cls.create(
             action_type=action_type,
             initiator_id=initiator_id,
@@ -227,6 +316,65 @@ class ActionExecutionState:
         )
         state.extra["completed_result"] = failure_result
         return state
+
+    def to_payload(self) -> dict[str, Any]:
+        """This execution as the step snapshot keeps it, so a restored world carries on with it.
+
+        Only executions still under way reach a snapshot: one that completes in its own step
+        (``create_failed`` among them) leaves the registry before the commit point. ``extra`` must
+        be JSON-native; the round trip here raises on anything else instead of letting the
+        snapshot writer stringify it into something no restore can read.
+        """
+        return {
+            "execution_id": self.execution_id,
+            "action_type": self.action_type.value,
+            "initiator_id": self.initiator_id,
+            "participant_ids": list(self.participant_ids),
+            "started_step": self.started_step,
+            "estimated_steps": self.estimated_steps,
+            "remaining_steps": self.remaining_steps,
+            "purpose": self.purpose,
+            **target_semantics(self.target),
+            "expected_outcome": self.expected_outcome,
+            "opening_outcome": self.opening_outcome,
+            "opening_observations": [
+                {"location_id": o.location_id, "text": o.text, "strength": o.strength}
+                for o in self.opening_observations
+            ],
+            "listener_ids": list(self.listener_ids),
+            "talk_topic": self.talk_topic,
+            "extra": json.loads(json.dumps(self.extra)),
+        }
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "ActionExecutionState":
+        """Inverse of ``to_payload``. Raises on a malformed payload; the restore decides what a
+        world does without it."""
+        target = payload.get("target") or {}
+
+        def refs(group: str) -> list[Ref]:
+            return [Ref(str(r["kind"]), str(r["id"])) for r in target.get(group) or []]
+
+        return cls(
+            execution_id=str(payload["execution_id"]),
+            action_type=ActionType(payload["action_type"]),
+            initiator_id=str(payload["initiator_id"]),
+            participant_ids=[str(pid) for pid in payload["participant_ids"]],
+            started_step=int(payload["started_step"]),
+            estimated_steps=int(payload["estimated_steps"]),
+            remaining_steps=int(payload["remaining_steps"]),
+            purpose=str(payload.get("purpose", "")),
+            target=ActionTarget(acts_on=refs("acts_on"), claims=refs("claims"), reaches=refs("reaches")),
+            expected_outcome=str(payload.get("expected_outcome", "")),
+            opening_outcome=str(payload.get("opening_outcome", "")),
+            opening_observations=[
+                Observed(location_id=str(o["location_id"]), text=str(o["text"]), strength=o.get("strength"))
+                for o in payload.get("opening_observations") or []
+            ],
+            listener_ids=[str(lid) for lid in payload.get("listener_ids") or []],
+            talk_topic=str(payload.get("talk_topic", "")),
+            extra=dict(payload.get("extra") or {}),
+        )
 
 
 class Conscription(str, Enum):
@@ -333,7 +481,7 @@ class ActionExecutor(ABC):
         step: int,
         *,
         agents: dict[str, "Agent"],
-        environment: "EnvironmentSystem | None" = None,
+        environment: "EnvironmentSystem",
         interrupted_agent_id: str | None = None,
         thought: str = "",
         cause: str = "",
@@ -372,7 +520,7 @@ class ActionExecutor(ABC):
                 target=state.target,
             )
             name = agent.personality.soul.name
-            location = observe_location(environment, agent_id) if environment is not None else "此处"
+            location = observe_location(environment, agent_id)
             cut = f"因{cause}而中断" if cause else "被打断"
             gist = scene_line(location, f"{name}的「{state.purpose}」{cut}。")
             results.append(ActionResult(

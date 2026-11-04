@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Dict
 
-from agent.memory_types import Memory, MemoryKind
+from agent.memory_types import Memory
+from core.interfaces.memory import MemoryKind
 from core.interfaces.vector_store import SearchResult
 
 

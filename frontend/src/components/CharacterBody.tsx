@@ -3,7 +3,10 @@
 // over the map, as the relationship graph is.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import { identityOf } from "../lib/worldTable";
 import { api, API_BASE } from "../api/client";
+import { useCast } from "../lib/cast";
+import { placeName, usePlaces } from "../lib/places";
 import { reportedDead, unfinishedGoals } from "../lib/agentState";
 import { avatarStyle, emotionColor } from "../lib/avatar";
 import { identityColor, parseHex, toHex } from "../lib/color";
@@ -11,7 +14,9 @@ import { dyePixels, hsvOf } from "../lib/dye";
 import { type FrameRect, loadAtlasFrames } from "../lib/atlasFrames";
 import { loadCast } from "../phaser/mapSource";
 import type { CharacterSet, Demographics } from "../phaser/skins";
-import type { AgentProfile, AgentStateSummary, WorldGraph } from "../types";
+import type { Viewer } from "../lib/viewer";
+import type { Placed } from "../lib/step";
+import type { AgentProfile, AgentView, WorldGraph } from "../types";
 import type { CardAgent } from "./CharacterCard";
 
 // Facing the viewer and slightly right, so the callouts on both sides read as one chart. A
@@ -209,13 +214,20 @@ export default function CharacterBody({
   agent,
   live,
   graph,
+  viewer,
 }: {
   worldId: string;
   agent: CardAgent;
-  live?: AgentStateSummary;
+  live?: Placed<AgentView>;
   graph: WorldGraph | null;
+  viewer: Viewer;
 }) {
-  const [profile, setProfile] = useState<AgentProfile | null>(null);
+  const { cast, status: castStatus } = useCast(worldId);
+  const { places } = usePlaces(worldId);
+  const identity = identityOf(agent.id, cast);
+  const scope = JSON.stringify([worldId, viewer, agent.id]);
+  const [loaded, setLoaded] = useState<{ scope: string; profile: AgentProfile } | null>(null);
+  const profile = loaded?.scope === scope && (viewer === null || viewer === agent.id) ? loaded.profile : null;
   const [figure, setFigure] = useState<Figure | null>(null);
   const [figureFailed, setFigureFailed] = useState(false);
   const [hovered, setHovered] = useState<OrganKey | null>(null);
@@ -223,36 +235,33 @@ export default function CharacterBody({
 
   useEffect(() => {
     let alive = true;
-    setProfile(null);
-    setFigure(null);
-    setFigureFailed(false);
+    setLoaded(null);
+    if (viewer !== null && viewer !== agent.id) return;
     api
       .agentProfile(worldId, agent.id)
-      .then((p) => alive && setProfile(p))
-      // No profile, no body to choose: say so rather than leave the figure loading.
-      .catch(() => alive && setFigureFailed(true));
+      .then((p) => alive && setLoaded({ scope, profile: p }))
+      .catch(() => {});
     return () => {
       alive = false;
     };
-  }, [worldId, agent.id]);
+  }, [worldId, agent.id, viewer, scope]);
 
-  // Wait for the profile: the body is chosen by gender and age, and drawing a guess first would
-  // swap one person for another on screen.
+  // Wait for public identity so the body never switches after it appears.
   useEffect(() => {
-    if (!profile) return;
+    if (!identity) return;
     let alive = true;
     setFigure(null);
     setFigureFailed(false);
-    drawFigure(worldId, { gender: profile.gender, age: profile.age }, agent.color || profile.color)
+    drawFigure(worldId, { gender: identity.gender, age: identity.age }, toHex(identityColor(identity.color, agent.id)))
       .then((f) => alive && setFigure(f))
       .catch(() => alive && setFigureFailed(true));
     return () => {
       alive = false;
     };
-  }, [worldId, profile, agent.color]);
+  }, [worldId, identity, agent.id]);
 
-  const dead = live ? reportedDead(live) : false;
-  const { planned, owed } = useMemo(() => unfinishedGoals(live), [live]);
+  const dead = live ? reportedDead(live.is_active, live.private.vitality) : false;
+  const shortTermGoals = useMemo(() => unfinishedGoals(live?.private), [live]);
 
   // Ties held by this person, strongest first: how much they lean on someone either way.
   const ties = useMemo(() => {
@@ -277,25 +286,25 @@ export default function CharacterBody({
     aim: (
       <>
         <Section label="人生目标">{profile?.life_goal || "—"}</Section>
-        <Section label="长期目标"><Numbered items={live?.long_term_goals ?? []} /></Section>
+        <Section label="长期目标"><Numbered items={live?.private.long_term_goals ?? []} /></Section>
       </>
     ),
     mood: live ? (
       <>
-        <Section label="此刻情绪">
-          <span className={`text-sm font-semibold ${emotionColor(live.emotion_valence)}`}>{live.emotion_label}</span>
+        <Section label="当前情绪">
+          <span className={`text-sm font-semibold ${emotionColor(live.private.emotion_valence)}`}>{live.private.emotion_label}</span>
         </Section>
-        {live.emotion_intensity != null && (
-          <Section label={`强度 ${pct(live.emotion_intensity)}`}>
-            <Meter value={live.emotion_intensity} tone="bg-amber-400/80" />
+        {live.private.emotion_intensity != null && (
+          <Section label={`强度 ${pct(live.private.emotion_intensity)}`}>
+            <Meter value={live.private.emotion_intensity} tone="bg-amber-400/80" />
           </Section>
         )}
-        {live.emotion_valence != null && (
-          <Section label={`正负值 ${pct(live.emotion_valence)}`}>
+        {live.private.emotion_valence != null && (
+          <Section label={`正负值 ${pct(live.private.emotion_valence)}`}>
             <Meter
-              value={live.emotion_valence}
+              value={live.private.emotion_valence}
               min={-1}
-              tone={live.emotion_valence < 0 ? "bg-rose-400/80" : "bg-teal-400/80"}
+              tone={live.private.emotion_valence < 0 ? "bg-rose-400/80" : "bg-teal-400/80"}
             />
           </Section>
         )}
@@ -305,9 +314,9 @@ export default function CharacterBody({
     ),
     heart:
       ties == null ? (
-        <span className="text-slate-500 animate-pulse">读取关系…</span>
+        <span className="text-slate-500 animate-pulse">正在加载关系…</span>
       ) : ties.length === 0 ? (
-        <span className="text-slate-600">尚无关系</span>
+        <span className="text-slate-600">暂无关系</span>
       ) : (
         <div className="space-y-2.5">
           {ties.map(({ edge, to }) => (
@@ -315,16 +324,16 @@ export default function CharacterBody({
               <div className="flex items-center gap-1.5">
                 <span
                   className={`w-4 h-4 rounded shrink-0`}
-                  style={avatarStyle(to.color, to.id)}
+                  style={avatarStyle(identityOf(to.id, cast)?.color, to.id)}
                 />
-                <span className="text-slate-100 font-medium truncate">{to.name}</span>
+                <span className="text-slate-100 font-medium truncate">{identityOf(to.id, cast)?.name ?? "某人"}</span>
                 <span className="text-slate-500 truncate">{edge.labels.join(" · ")}</span>
               </div>
               <div className="grid grid-cols-[3rem_1fr_2rem] items-center gap-x-2 gap-y-1 text-[10px] text-slate-500">
-                <span>信任</span>
+                <span>信任度</span>
                 <Meter value={edge.trust} tone="bg-emerald-400/80" />
                 <span className="font-mono text-right">{pct(edge.trust)}</span>
-                <span>好感</span>
+                <span>好感度</span>
                 <Meter value={edge.affection} min={-1} tone={edge.affection < 0 ? "bg-rose-400/80" : "bg-pink-400/80"} />
                 <span className="font-mono text-right">{pct(edge.affection)}</span>
               </div>
@@ -335,8 +344,8 @@ export default function CharacterBody({
       ),
     need: (
       <Section label="当前需求">
-        {live?.dominant_need ? (
-          <span className="text-sm font-semibold text-orange-300">{live.dominant_need_label}</span>
+        {live?.private.dominant_need ? (
+          <span className="text-sm font-semibold text-orange-300">{live.private.dominant_need_label}</span>
         ) : (
           "—"
         )}
@@ -344,15 +353,14 @@ export default function CharacterBody({
     ),
     hands: (
       <>
-        <Section label="状态">{live ? live.activity_label || "—" : "—"}</Section>
-        <Section label="短期目标"><Numbered items={planned} /></Section>
-        {owed.length > 0 && <Section label="待办事项"><Numbered items={owed} /></Section>}
+        <Section label="状态">{live ? live.private.activity_label || "—" : "—"}</Section>
+        <Section label="短期目标"><Numbered items={shortTermGoals} /></Section>
       </>
     ),
     feet: (
       <>
-        <Section label="地点">{live?.location || "—"}</Section>
-        {live?.condition && <Section label="处境"><span className="text-amber-300">{live.condition}</span></Section>}
+        <Section label="地点">{live ? placeName(places, live.location_id) : "—"}</Section>
+        {live?.public.condition && <Section label="处境"><span className="text-amber-300">{live.public.condition}</span></Section>}
       </>
     ),
   };
@@ -396,8 +404,8 @@ export default function CharacterBody({
       return { o, y, edgeX, ax, ay, elbowX, up: up > down, room: Math.max(up, down) };
     });
   });
-  const accent = toHex(identityColor(agent.color, agent.id));
-  const role = agent.role || profile?.role;
+  const accent = toHex(identityColor(identity?.color, agent.id));
+  const role = identity?.role;
 
   return (
     <div ref={stageRef} className="relative h-full min-h-0" onMouseLeave={() => setHovered(null)}>
@@ -421,19 +429,19 @@ export default function CharacterBody({
             style={{ left: figX + figW / 2, top: figY - plateH - plateGap, width: Math.max(220, figW * 1.6) }}
           >
             <div className="text-base font-extrabold text-slate-100 truncate max-w-full">
-              {agent.name}
+              {identity?.name ?? "某人"}
               {agent.is_main_character && <span className="text-indigo-400"> ★</span>}
             </div>
             <div className="text-[11px] text-slate-400 truncate max-w-full">
-              {[role, profile?.gender, profile?.age != null ? `${profile.age} 岁` : ""].filter(Boolean).join(" · ")}
+              {[role, identity?.gender, identity?.age != null ? `${identity.age} 岁` : ""].filter(Boolean).join(" · ")}
             </div>
-            {live?.vitality != null && (
+            {live?.private.vitality != null && (
               <div className="flex items-center gap-1.5 text-[10px] text-slate-500">
                 <span>生命值</span>
                 <div className="w-24">
-                  <Meter value={live.vitality} tone={live.vitality < 0.3 ? "bg-rose-500" : "bg-emerald-500/80"} />
+                  <Meter value={live.private.vitality} tone={live.private.vitality < 0.3 ? "bg-rose-500" : "bg-emerald-500/80"} />
                 </div>
-                <span className="font-mono">{pct(live.vitality)}</span>
+                <span className="font-mono">{pct(live.private.vitality)}</span>
               </div>
             )}
           </div>
@@ -441,7 +449,7 @@ export default function CharacterBody({
           {figure ? (
             <img
               src={figure.url}
-              alt={agent.name}
+              alt={identity?.name ?? "某人"}
               draggable={false}
               className={`absolute select-none ${dead ? "grayscale opacity-50" : ""}`}
               style={{ left: figX, top: figY, width: figW, height: figH }}
@@ -451,7 +459,7 @@ export default function CharacterBody({
               className="absolute grid place-items-center text-xs text-slate-500"
               style={{ left: figX, top: figY, width: figW, height: figH }}
             >
-              {figureFailed ? "形象图不可用" : <span className="animate-pulse">描绘中…</span>}
+              {figureFailed || castStatus === "error" ? "角色形象不可用" : <span className="animate-pulse">正在加载角色图像…</span>}
             </div>
           )}
           {dead && (

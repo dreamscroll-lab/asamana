@@ -1,7 +1,7 @@
 """Runtime event-seq contract.
 
-`seq` is a per-world monotonic ordinal stamped on every per-step narrative event (action record,
-delivered message, broadcast snapshot dict, world event) in emission order: an engine-level
+`seq` is a per-world monotonic ordinal stamped on every event of a step (action, delivered
+message, broadcast, injection) in emission order: an engine-level
 property, not a render concept. Within a step the order is messages → broadcasts → actions →
 world events (arrivals-before-actions: deliveries and broadcasts were emitted last step).
 Consumers order events by it; the renderer sorts intra-step events by seq, so a death broadcast
@@ -11,11 +11,11 @@ Contract these tests pin:
 - Strictly increasing across every event within one step.
 - Continues monotonically across steps (never resets).
 - Survives snapshot save/restore: the counter's next-to-assign value is
-  persisted in ``metadata["event_seq"]`` and the runtime resumes from it via
+  persisted in ``EngineState.event_seq`` and the runtime resumes from it via
   ``start_event_seq`` — no collision, no rewind across restart.
 - Flows through read-models (``ActionSummary`` / ``MessageSummary`` /
-  ``WorldEventSummary``) built via ``StepEvent.from_runtime_payload`` and
-  ``StepEvent.from_snapshot``.
+  ``BroadcastSummary`` / ``InjectionSummary``) built via ``StepView.from_runtime_payload`` and
+  ``StepView.from_snapshot``.
 """
 from __future__ import annotations
 
@@ -24,14 +24,16 @@ import pytest
 from engine.scheduler import DEFAULT_MAIN_MAX_IDLE_STEPS
 
 from core.interfaces.message import Message
-from engine.application import NarrativeApplication
-from interaction.models import StepEvent
+from interaction.application import NarrativeApplication
+from interaction.models import StepView
+from tests.unit.step_view import events
 from tests.unit.test_runtime_smoke import (
     _build_agent,
     _build_runtime,
     _set_work_decision,
 )
 from tests.unit.bus_tap import tap
+from tests.unit.confirmed_world import confirmed_world
 
 
 def _collect_seqs(records) -> list[int]:
@@ -95,12 +97,13 @@ async def test_step_assigns_seq_across_all_channels_in_emission_order(container)
     )
 
     await runtime.run_step(agents)
-    step_event = published()[0]
+    published_step = published()[0]
 
-    actions = step_event["actions"]
-    delivered = step_event["messages"]["delivered"]
-    broadcasts = step_event["broadcasts"]
-    events = step_event["events"]
+    snapshot = published_step["snapshot"]
+    actions = snapshot.events_of("action")
+    delivered = snapshot.events_of("message")
+    broadcasts = snapshot.events_of("broadcast")
+    events = snapshot.events_of("injection")
 
     # Fixture: this step really did produce all four channels.
     assert actions, "expected action records this step"
@@ -157,8 +160,8 @@ async def test_seq_continues_monotonically_across_steps(container) -> None:
     await runtime.run_step(agents)
     step2 = published()[0]
 
-    step1_max = max(r["seq"] for r in step1["actions"])
-    step2_min = min(r["seq"] for r in step2["actions"])
+    step1_max = max(r["seq"] for r in step1["snapshot"].events)
+    step2_min = min(r["seq"] for r in step2["snapshot"].events)
     assert step2_min > step1_max, "seq must not reset or overlap across steps"
 
 
@@ -167,21 +170,21 @@ async def test_seq_persists_in_snapshot_and_resumes_without_collision(
     mock_build_container, test_config
 ) -> None:
     """The counter's next-to-assign value is persisted in the snapshot's
-    ``metadata["event_seq"]``. A restored runtime resumes from it so a new step
+    ``engine.event_seq``. A restored runtime resumes from it so a new step
     after restart keeps a strictly increasing seq — no collision, no rewind."""
     container = mock_build_container
     published = tap(container.event_bus)
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=2)
 
     snapshot = await container.snapshot.load(world.world_id, 2)
     assert snapshot is not None
-    persisted_seq = snapshot.metadata.get("event_seq")
+    persisted_seq = snapshot.engine.event_seq
     assert isinstance(persisted_seq, int)
     # The persisted value equals: max seq assigned across steps 1..2, + 1.
-    seqs_step1 = [r["seq"] for r in (await container.snapshot.load(world.world_id, 1)).actions_this_step]
-    seqs_step2 = [r["seq"] for r in snapshot.actions_this_step]
+    seqs_step1 = [r["seq"] for r in (await container.snapshot.load(world.world_id, 1)).events]
+    seqs_step2 = [r["seq"] for r in snapshot.events]
     assert persisted_seq >= max(seqs_step1 + seqs_step2) + 1
 
     # Restore the session and run one more step; the new step's action seqs must
@@ -194,7 +197,8 @@ async def test_seq_persists_in_snapshot_and_resumes_without_collision(
     # backwards across a restart.
     await application.run_world(world.world_id, steps=DEFAULT_MAIN_MAX_IDLE_STEPS + 1)
     resumed_seqs = [
-        r["seq"] for event in published() for r in event.get("actions") or []
+        r["seq"] for event in published() if event.get("type") == "step"
+        for r in event["snapshot"].events_of("action")
     ]
     assert resumed_seqs, "restart 后若干步内应至少有一次行动"
     assert min(resumed_seqs) >= persisted_seq, (
@@ -203,10 +207,9 @@ async def test_seq_persists_in_snapshot_and_resumes_without_collision(
 
 
 @pytest.mark.asyncio
-async def test_step_event_read_models_carry_seq(container) -> None:
-    """``StepEvent.from_runtime_payload`` and ``from_snapshot`` propagate seq
-    into ``ActionSummary`` / ``MessageSummary`` / ``WorldEventSummary`` and
-    keep raw ``broadcasts`` dicts that already carry seq."""
+async def test_step_view_read_models_carry_seq(container) -> None:
+    """``StepView.from_runtime_payload`` and ``from_snapshot`` propagate seq into every
+    scope's events."""
     published = tap(container.event_bus)
     world_id = "world-seq-readmodels"
     runtime, environment, message_system = _build_runtime(container, world_id=world_id)
@@ -248,20 +251,21 @@ async def test_step_event_read_models_carry_seq(container) -> None:
     payload = published()[0]
 
     # Live path (from_runtime_payload) — same data the WS observer feeds the FE.
-    live_event = StepEvent.from_runtime_payload(payload)
-    assert live_event.actions and all(action.seq > 0 for action in live_event.actions)
-    assert live_event.messages and all(msg.seq > 0 for msg in live_event.messages)
-    assert live_event.broadcasts and all(b.seq > 0 for b in live_event.broadcasts)
+    def seqs(step: StepView, kind: str) -> list[int]:
+        return [e.seq for _, e in events(step, kind)]
+
+    live = StepView.from_runtime_payload(payload)
+    for kind in ("action", "message", "broadcast"):
+        assert seqs(live, kind) and all(seq > 0 for seq in seqs(live, kind)), kind
 
     # Cross-channel ordering also visible through read-model dataclasses:
     # messages < broadcasts < actions (arrivals-before-actions).
-    assert max(m.seq for m in live_event.messages) < min(b.seq for b in live_event.broadcasts)
-    assert max(b.seq for b in live_event.broadcasts) < min(a.seq for a in live_event.actions)
+    assert max(seqs(live, "message")) < min(seqs(live, "broadcast"))
+    assert max(seqs(live, "broadcast")) < min(seqs(live, "action"))
 
     # Snapshot path (from_snapshot) — same seqs on replay.
     snapshot = await container.snapshot.load(world_id, 2)
     assert snapshot is not None
-    replay_event = StepEvent.from_snapshot(snapshot)
-    assert {a.seq for a in replay_event.actions} == {a.seq for a in live_event.actions}
-    assert {m.seq for m in replay_event.messages} == {m.seq for m in live_event.messages}
-    assert {b.seq for b in replay_event.broadcasts} == {b.seq for b in live_event.broadcasts}
+    replay = StepView.from_snapshot(snapshot)
+    for kind in ("action", "message", "broadcast"):
+        assert set(seqs(replay, kind)) == set(seqs(live, kind)), kind

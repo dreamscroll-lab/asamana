@@ -21,15 +21,16 @@ from agent.memory_ranking import (
     simple_similarity, mmr_select,
 )
 from agent.memory_types import (
-    Memory, MemoryImportance, MemoryKind, MemoryStream, RetrievalResult, coerce_importance,
+    Memory, MemoryImportance, MemoryStream, RetrievalResult, coerce_importance,
     importance_level,
 )
 from agent.memory_write_queue import MemoryWriteQueue
-from core.context import observe_stage, observe_step
+from core.context import note_active_call_adoption, observe_stage, observe_step
 from core.interfaces.embedding import EmbeddingProvider
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json, output_budget
+from core.interfaces.memory import MemoryKind
 from core.interfaces.trace import Stage
-from core.interfaces.perception import Situation
+from core.interfaces.perception import PerceivedIdentity, Situation
 from core.prompts import (
     ABSOLUTE_TIME_RULE_FIRST_PERSON,
     KEEP_ABSOLUTE_TIME_RULE,
@@ -78,10 +79,10 @@ def memory_collection_name(world_id: str, agent_id: str, stream: MemoryStream) -
 
 
 def _normalize_related_agents(
-    value: "Mapping[str, str] | Sequence[str] | None",
-) -> tuple[list[str], dict[str, str] | None]:
-    """Accept an ``{agent_id: name}`` mapping (names for prompt rendering) or a plain id sequence
-    (no names); return ``(id_list, directory_or_none)``."""
+    value: "Mapping[str, PerceivedIdentity] | Sequence[str] | None",
+) -> tuple[list[str], dict[str, PerceivedIdentity] | None]:
+    """Accept an ``{agent_id: identity}`` mapping (for prompt rendering) or a plain id sequence
+    (no identities); return ``(id_list, directory_or_none)``."""
     if value is None:
         return [], None
     if isinstance(value, Mapping):
@@ -109,8 +110,9 @@ class MemorySystem:
        _should_write_experiential passes, linked by event_group_id.
     5. Only Compression and Forget events may delete memories. Decay never deletes.
        _is_emotional_anchor protects CRITICAL memories, insights and high-|valence| experiential
-       memories from every deletion path.
-    6. kind has three values: event (a concrete experience), insight (from reflection) and
+       memories from every engine deletion path.
+    6. kind has three values: event (a concrete experience), insight (from reflection, or
+       added by the actor performing the character: ``add_insight``) and
        summary (from compression). event_group_id links the two streams of one event;
        source_ids lists the memories a memory was derived from.
     """
@@ -175,6 +177,14 @@ class MemorySystem:
         self._seq += 1
         return self._seq
 
+    @property
+    def id_seq(self) -> int:
+        return self._seq
+
+    def restore_id_seq(self, id_seq: int) -> None:
+        """Resume the id counter a snapshot committed, so new ids never reuse old ones."""
+        self._seq = id_seq
+
     async def drain_writes(self) -> None:
         """Barrier before maintenance (compression/reflection). See MemoryWriteQueue.drain."""
         await self._write_q.drain()
@@ -189,7 +199,7 @@ class MemorySystem:
         stream: MemoryStream,
         *,
         personality: PersonalityLayer,
-        related_agents: "Mapping[str, str] | Sequence[str] | None" = None,
+        related_agents: "Mapping[str, PerceivedIdentity] | Sequence[str] | None" = None,
         related_relations_text: str = "",
         triggered_by: str | None = None,
         importance: MemoryImportance | float | None = None,
@@ -264,7 +274,7 @@ class MemorySystem:
         current_step: int,
         raw_content: str,
         personality: PersonalityLayer,
-        related_agents: "Mapping[str, str] | Sequence[str] | None" = None,
+        related_agents: "Mapping[str, PerceivedIdentity] | Sequence[str] | None" = None,
         related_relations_text: str = "",
         triggered_by: str | None = None,
         importance: MemoryImportance | float | None = None,
@@ -324,7 +334,8 @@ class MemorySystem:
         self._write_q.enqueue(self._refine_event(
             factual=factual,
             experiential=experiential,
-            personality=personality,
+            # The queue may run after later feedback changes emotion or condition.
+            personality=PersonalityLayer(soul=personality.soul, state=personality.state),
             related_directory=related_directory,
             related_relations_text=related_relations_text,
             situation=situation,
@@ -416,7 +427,7 @@ class MemorySystem:
         factual: Memory,
         experiential: "Memory | None",
         personality: PersonalityLayer,
-        related_directory: dict[str, str] | None,
+        related_directory: dict[str, PerceivedIdentity] | None,
         related_relations_text: str,
         situation: Situation,
         recent_factual_block: str = "",
@@ -478,6 +489,7 @@ class MemorySystem:
         top_k: int = 5,
         stream: MemoryStream | None = None,
         exclude_ids: Collection[str] = (),
+        before_step: int | None = None,
     ) -> List[Memory]:
         """Identity-scoped retrieval of "what I know about someone", scoped by
         ``Memory.related_agents``.
@@ -496,6 +508,7 @@ class MemorySystem:
             stream=stream,
             related_agent_id=target_agent_id,
             exclude_ids=exclude_ids,
+            before_step=before_step,
         )
 
     async def retrieve(
@@ -511,6 +524,7 @@ class MemorySystem:
         trace: list[RankedMemory] | None = None,
         touch: bool = True,
         exclude_ids: Collection[str] = (),
+        score_floor: float | None = None,
     ) -> List[Memory]:
         """Recall relevant memories, optionally from one stream.
 
@@ -523,6 +537,8 @@ class MemorySystem:
           recency.
         - ``exclude_ids``: removed before the top_k cut. Don't over-fetch and drop afterwards: the
           extras would be touched without being used.
+        - ``score_floor``: overrides this system's relevance floor for one call, for a caller that
+          would rather recall nothing than something loosely related.
         - Decay floor: below 0.2 the final score is multiplied by decay_score, so an old memory
           still resurfaces when importance and relevance are both high.
 
@@ -538,6 +554,7 @@ class MemorySystem:
         query_embedding = await self._embedding.embed(query)
         streams = [stream] if stream is not None else [MemoryStream.FACTUAL, MemoryStream.EXPERIENTIAL]
         weights = RETRIEVAL_WEIGHTS
+        floor = self._retrieval_score_floor if score_floor is None else score_floor
 
         scope = dict(filters or {})
         if related_agent_id is not None:
@@ -566,7 +583,7 @@ class MemorySystem:
                 # The floor compares fused, not dense: an exact proper-noun hit can be high on sparse
                 # but middling on dense. It must run before min-max normalization, which erases
                 # absolute relevance.
-                if float(result.score) < self._retrieval_score_floor:
+                if float(result.score) < floor:
                     if trace is not None:
                         trace.append(
                             RankedMemory(
@@ -704,19 +721,6 @@ class MemorySystem:
             elif memory.kind == MemoryKind.SUMMARY:
                 period_summaries.append(memory)
 
-        # memory id → the paired memory id in the other stream
-        stream_links: Dict[str, str] = {}
-        by_group: dict[str, list[Memory]] = {}
-        for memory in events:
-            if memory.event_group_id:
-                by_group.setdefault(memory.event_group_id, []).append(memory)
-        for group_id, members in by_group.items():
-            if len(members) >= 2:
-                for m in members:
-                    other = next((other for other in members if other.id != m.id and other.stream != m.stream), None)
-                    if other is not None:
-                        stream_links[m.id] = other.id
-
         insight_sources: Dict[str, List[Memory]] = {}
         for ins in insights:
             if not ins.source_ids:
@@ -729,7 +733,6 @@ class MemorySystem:
             events=events,
             insights=insights,
             period_summaries=period_summaries,
-            stream_links=stream_links,
             insight_sources=insight_sources,
         )
 
@@ -758,8 +761,8 @@ class MemorySystem:
         """Record an action that didn't happen: a ``not_executed`` foiled attempt, or a decision
         dropped because arbitration conscripted the agent (see Agent.defer_decided_intent).
 
-        Never persisted: nothing changed in the world, and a templated "I meant to X but couldn't"
-        memory would dilute retrieval and feed relation_evolution a dealing that never happened.
+        Never written as a memory: nothing changed in the world, and a templated "I meant to X but
+        couldn't" memory would dilute retrieval and feed relation_evolution a dealing that never happened.
 
         text must be first-person and membrane-safe; it goes straight into the decide prompt.
         ``key``/``gist`` are optional merge inputs (none → never merges). ``gist`` should be the
@@ -857,7 +860,9 @@ class MemorySystem:
         self, current_step: int, *, lookback: int = RECENT_EVENT_LOOKBACK_STEPS, top_k: int = 10
     ) -> list[tuple[Memory | None, Memory | None]]:
         """Top-k recent EVENTS (last ``lookback`` steps), each paired as
-        ``(factual, experiential)`` by ``event_group_id``, ranked by max importance.
+        ``(factual, experiential)`` by ``event_group_id``, ranked by max importance, newer first
+        on a tie: in an event-dense window the cut otherwise drops the latest equal-importance
+        events, the very anchors decide's recent supplement exists for.
 
         Short-term goals need both what happened and how the agent read it: with only the feeling
         stream they repeat or drift with emotion. Experiential may be None; factual is None only in
@@ -874,7 +879,10 @@ class MemorySystem:
             groups.setdefault(m.event_group_id or m.id, {})[m.stream] = m
         ranked = sorted(
             groups.values(),
-            key=lambda slot: max(float(m.importance) for m in slot.values()),
+            key=lambda slot: (
+                max(float(m.importance) for m in slot.values()),
+                max(m.created_step for m in slot.values()),
+            ),
             reverse=True,
         )[:top_k]
         return [
@@ -962,10 +970,13 @@ class MemorySystem:
                 dimension=self._embedding.dimension,
             )
 
-    async def purge_runtime_memories(self) -> int:
-        """On reset, delete runtime memories (``created_step > 0``) and keep the build-time
-        backstory seeds (``created_step <= 0``, see ``_write_historical_memories``). Returns the
-        count removed."""
+    async def purge_memories_after(self, step: int) -> int:
+        """Delete memories created after ``step``; returns the count removed.
+
+        A restore resumes at the last persisted step, so memories written by a step that never
+        committed (a crash, or a run stopped while waiting on an actor) would otherwise repeat when
+        that step runs again. With ``step=0`` this is a reset: the build-time backstory seeds
+        (``created_step <= 0``, see ``_write_historical_memories``) stay."""
         removed = 0
         for stream in MemoryStream:
             collection = self._namespace(stream)
@@ -974,13 +985,13 @@ class MemorySystem:
             except Exception as exc:
                 # Error, not warning: the reset then keeps this stream's runtime memories.
                 logger.error(
-                    "purge_runtime_list_failed",
+                    "purge_memories_list_failed",
                     extra={"agent_id": self._agent_id, "stream": stream.value, "error": str(exc)},
                 )
                 continue
             for result in results:
                 created = int(result.payload.get("created_step", result.payload.get("step", 0)) or 0)
-                if created <= 0:
+                if created <= step:
                     continue
                 try:
                     await self._vector_store.delete(collection, result.id)
@@ -988,10 +999,26 @@ class MemorySystem:
                     removed += 1
                 except Exception as exc:
                     logger.warning(
-                        "purge_runtime_memory_failed",
+                        "purge_memory_failed",
                         extra={"agent_id": self._agent_id, "memory_id": result.id, "error": str(exc)},
                     )
         return removed
+
+    async def add_insight(
+        self, *, current_step: int, text: str, importance: float, emotion_valence: float,
+    ) -> None:
+        """Keep a judgment the character came to without reflecting on listed memories."""
+        memory = self.build_insight(
+            current_step=current_step,
+            text=text,
+            related_agents=(),
+            importance=importance,
+            emotion_valence=emotion_valence,
+            source_ids=(),
+            reflection_depth=1,
+        )
+        if not await self._persist(memory):
+            logger.error("insight_persist_failed", extra={"agent_id": self._agent_id, "memory_id": memory.id})
 
     async def seed_factual_memory(
         self,
@@ -1142,12 +1169,10 @@ class MemorySystem:
                 kind=MemoryKind.SUMMARY,
                 source_ids=[memory.id for memory in cluster],
             )
-            try:
-                await self._persist(summary_memory)
-            except Exception as exc:
+            if not await self._persist(summary_memory):
                 logger.error(
                     "compression_summary_persist_failed",
-                    extra={"agent_id": self._agent_id, "stream": stream.value, "error": str(exc)},
+                    extra={"agent_id": self._agent_id, "stream": stream.value},
                 )
                 # Roll back; the source memories stay.
                 self._entries.pop(summary_memory.id, None)
@@ -1332,24 +1357,29 @@ class MemorySystem:
             response = await self._llm_router.complete(
                 LLMScene.MEMORY_SUMMARIZATION, messages, max_tokens=output_budget(490), json_mode=True,
             )
-            if _is_unusable_llm_content(response.content):
+            if not response.content.strip():
+                note_active_call_adoption(False, "empty_summary")
                 return None
             # extract_json raises; uncaught, one bad cluster would abort the whole compression round.
             data = extract_json(response.content)
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning(
                 "memory_summary_failed",
                 extra={"agent_id": self._agent_id, "error": str(exc)},
             )
             return None
         if not isinstance(data, dict):
+            note_active_call_adoption(False, "response_not_an_object")
             return None
         # Persist points only; reason is dropped so the reasoning is never embedded.
         points = data.get("points")
         if not isinstance(points, list):
+            note_active_call_adoption(False, "missing_points")
             return None
         cleaned = [str(p).strip() for p in points if str(p).strip()]
         if not cleaned:
+            note_active_call_adoption(False, "empty_summary")
             return None
         return "\n".join(f"- {p}" for p in cleaned)
 
@@ -1395,7 +1425,8 @@ class MemorySystem:
 
     async def _persist(self, memory: Memory) -> bool:
         """Cache insert + embed + upsert, for new or changed text (unchanged text uses
-        _persist_payload). Returns whether it was persisted; only build-time callers should read it."""
+        _persist_payload). Returns whether it was persisted; callers that delete something on
+        the strength of it (seeding, compression) must read it."""
         self._entries[memory.id] = memory
         return await self._persist_vector(memory)
 
@@ -1527,7 +1558,7 @@ class MemorySystem:
         *,
         raw_content: str,
         personality: PersonalityLayer,
-        related_agent_directory: dict[str, str] | None = None,
+        related_agent_directory: dict[str, PerceivedIdentity] | None = None,
         related_relations_text: str = "",
         situation: Situation = Situation(),
         recent_factual_block: str = "",
@@ -1550,7 +1581,7 @@ class MemorySystem:
 
         people_block = ""
         if related_agent_directory:
-            names = render_related_people(related_agent_directory)
+            names = render_related_people(related_agent_directory, with_gender=True)
             people_block = f"【涉及相关人】只能提及：{names}（不得引入未列出的人）\n\n"
         relation_block = ""
         if related_relations_text:
@@ -1603,11 +1634,11 @@ class MemorySystem:
 
 【我是谁】
 我是{soul.name}。
-核心性格：{soul.traits_text()}
-核心价值观：{soul.values_text()}
-行为底线：{soul.constraints_text()}{secret_line}
+性格特点：{soul.traits_text()}
+价值观：{soul.values_text()}
+底线：{soul.constraints_text()}{secret_line}
 自我认知：{soul.self_image or '无'}
-毕生追求：{life_goal}
+人生目标：{life_goal}
 
 【此刻我的心绪】
 {emotion.summary()}{condition_block}
@@ -1623,7 +1654,7 @@ class MemorySystem:
             content = await self._complete_memory_prompt(
                 system_prompt, user_prompt, max_tokens=output_budget(300),
             )
-        if _is_unusable_llm_content(content):
+        if not content:
             # Don't fall back to raw: it would give the same event two slots in recall.
             return ""
         return content
@@ -1647,18 +1678,16 @@ class MemorySystem:
                 messages,
                 max_tokens=max_tokens,
             )
-            return response.content.strip()
+            content = response.content.strip()
+            if not content:
+                note_active_call_adoption(False, "empty_monologue")
+            return content
         except Exception as exc:
             logger.warning(
                 "memory_llm_call_failed",
                 extra={"agent_id": self._agent_id, "error": str(exc)},
             )
             return ""
-
-
-def _is_unusable_llm_content(content: str) -> bool:
-    lowered = content.strip().lower()
-    return not lowered or lowered in {"mock response", "default mock response"}
 
 
 def _loads_dict(value: Any) -> dict[str, Any]:

@@ -5,25 +5,30 @@
 //
 // Backend scales: trust ∈ [0,1], affection ∈ [-1,1]. Displayed as 0–100 / −100..100.
 import { useMemo, useState } from "react";
+import { identityOf } from "../lib/worldTable";
 import type { GraphEdge, WorldGraph } from "../types";
+import type { Cast } from "../lib/cast";
+import { identityColor, toHex } from "../lib/color";
 import { THEME } from "../lib/theme";
 import { useForceLayout } from "../hooks/useForceLayout";
 
 
 function affectionColor(a: number): { stroke: string; marker: string } {
-  if (a > 0.4) return { stroke: THEME.good, marker: "arrow-positive" }; // teal — 挚爱 (close)
-  if (a < -0.3) return { stroke: THEME.bad, marker: "arrow-negative" }; // rose — 嫌隙 (rift)
-  return { stroke: THEME.neutral, marker: "arrow-neutral" }; // slate — 中性 (neutral)
+  if (a > 0.4) return { stroke: THEME.good, marker: "arrow-positive" }; // High affection.
+  if (a < -0.3) return { stroke: THEME.bad, marker: "arrow-negative" }; // Low affection.
+  return { stroke: THEME.neutral, marker: "arrow-neutral" }; // Neutral affection.
 }
 
 const pct = (x: number) => Math.round(x * 100);
 
 export default function RelationshipGraph({
   graph,
+  cast,
   activeId,
   onNodeClick,
 }: {
   graph: WorldGraph | null;
+  cast: Cast;
   activeId?: string | null;
   onNodeClick?: (id: string) => void;
 }) {
@@ -39,9 +44,9 @@ export default function RelationshipGraph({
   }, [graph, nodes]);
 
   const nameOf = useMemo(() => {
-    const m = new Map(nodes.map((n) => [n.id, n.name]));
+    const m = new Map(nodes.map((n) => [n.id, identityOf(n.id, cast)?.name ?? "某人"]));
     return (id: string) => m.get(id) ?? id;
-  }, [nodes]);
+  }, [nodes, cast]);
 
   // Focus for a clicked node: itself + targets of its outgoing edges. Incoming edges are
   // others' views of it, not this character's relationships.
@@ -96,11 +101,11 @@ export default function RelationshipGraph({
                 )}
                 {/* trust ∈ [0,1] → 0–100; affection ∈ [−1,1] → −100..100 (can be < 0). */}
                 <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-950/40 border border-emerald-900/50">
-                  <span className="text-emerald-500/80 font-medium">信任</span>
+                  <span className="text-emerald-500/80 font-medium">信任度</span>
                   <span className="text-emerald-300 font-mono font-bold">{pct(selectedEdge.trust)}</span>
                 </span>
                 <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-rose-950/40 border border-rose-900/50">
-                  <span className="text-rose-500/80 font-medium">好感</span>
+                  <span className="text-rose-500/80 font-medium">好感度</span>
                   <span className="text-rose-300 font-mono font-bold">{pct(selectedEdge.affection)}</span>
                 </span>
               </div>
@@ -116,7 +121,7 @@ export default function RelationshipGraph({
             <svg className="w-4 h-4 text-slate-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
-            <span>拖拽节点自由布局 · 点击连线看档案 · 点击人物聚焦</span>
+            <span>拖拽节点自由布局 · 点击连线查看关系 · 点击角色聚焦</span>
           </div>
           )}
         </div>
@@ -260,8 +265,8 @@ export default function RelationshipGraph({
                 <circle
                   r="20"
                   fill={THEME.bg}
-                  stroke={isActive ? THEME.accent : touched ? THEME.brand400 : n.color || THEME.neutral700}
-                  strokeWidth={isActive ? 3.5 : n.color ? 3 : 2}
+                  stroke={isActive ? THEME.accent : touched ? THEME.brand400 : toHex(identityColor(identityOf(n.id, cast)?.color, n.id))}
+                  strokeWidth={isActive ? 3.5 : 3}
                 />
                 <text
                   textAnchor="middle"
@@ -271,7 +276,7 @@ export default function RelationshipGraph({
                   fontWeight="bold"
                   className="pointer-events-none"
                 >
-                  {n.name[0]}
+                  {(identityOf(n.id, cast)?.name ?? "某人")[0]}
                 </text>
                 <g transform="translate(0, 32)" className="pointer-events-none">
                   <rect
@@ -287,11 +292,11 @@ export default function RelationshipGraph({
                   <text
                     textAnchor="middle"
                     dominantBaseline="central"
-                    fill={n.color || (isActive ? THEME.brand300 : THEME.neutral300)}
+                    fill={toHex(identityColor(identityOf(n.id, cast)?.color, n.id))}
                     fontSize="10"
                     fontWeight="600"
                   >
-                    {n.name}
+                    {identityOf(n.id, cast)?.name ?? "某人"}
                     {n.is_main_character ? " ★" : ""}
                   </text>
                 </g>
@@ -305,15 +310,15 @@ export default function RelationshipGraph({
       <div className="p-3 border-t border-slate-800 bg-slate-950/40 grid grid-cols-3 gap-2 text-center text-[10px] text-slate-400">
         <div className="flex items-center justify-center space-x-1">
           <span className="w-2.5 h-0.5 bg-rose-500 rounded" />
-          <span>红线 · 嫌隙 (低好感)</span>
+          <span>红线 · 低好感度</span>
         </div>
         <div className="flex items-center justify-center space-x-1">
           <span className="w-2.5 h-0.5 bg-slate-500 rounded" />
-          <span>灰线 · 中性 · 虚线=低信任</span>
+          <span>灰线 · 好感度中性 · 虚线表示低信任度</span>
         </div>
         <div className="flex items-center justify-center space-x-1">
           <span className="w-2.5 h-0.5 bg-teal-500 rounded" />
-          <span>绿线 · 挚爱 (高好感)</span>
+          <span>绿线 · 高好感度</span>
         </div>
       </div>
     </div>

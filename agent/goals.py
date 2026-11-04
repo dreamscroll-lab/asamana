@@ -7,12 +7,13 @@ what a goal is and how the queue holding them behaves.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from enum import Enum
 from typing import TYPE_CHECKING, Iterable, List, Optional, Sequence
 
 from core.duration import describe_duration
+from core.interfaces.actor import GoalAmendment
 from core.interfaces.llm import extract_json
 from core.logging import get_logger
 
@@ -177,6 +178,13 @@ def is_due(goal: GoalEntity, step: int) -> bool:
     return goal.due_step is not None and goal.due_step <= step
 
 
+def falling_due(entities: Sequence[GoalEntity], step: int) -> List[GoalEntity]:
+    """Live goals whose agreed time is this very step: an action in progress is weighed against
+    them once, here. Not ``is_due``: re-asked every step past due, an agent that chose to finish
+    first would be asked again each step and waver."""
+    return [g for g in live_goals(entities) if g.due_step == step]
+
+
 def is_past_allowance(goal: GoalEntity, step: int) -> bool:
     """The reaper's only test: the two clocks described at _SHORT_TERM_GOAL_STALL_STEPS.
     Same clock as goal_age_hint / goal_due_hint, so the mark the judge sees decides the reaping;
@@ -234,16 +242,26 @@ def _next_short_term_seq(entities: Sequence[GoalEntity]) -> int:
     return seq + 1
 
 
-def _evict_over_cap(entities: List[GoalEntity], current_step: int) -> None:
-    """Evict the oldest over-capacity goals in place, marked FAILED, not dropped.
+def _eviction_rank(goal: GoalEntity, current_step: int) -> tuple[bool, bool]:
+    """Lower is evicted first: COGNITIVE before RESIDUE, and within each, a goal with an agreed
+    time still to come last. A far-off appointment is set early, so by queue order alone it is
+    the oldest and the first a few fresh plans would push out, long before its time."""
+    upcoming = goal.due_step is not None and goal.due_step >= current_step
+    return (goal.origin == GoalOrigin.RESIDUE, upcoming)
 
-    Oldest COGNITIVE first; RESIDUE only when the live queue is all RESIDUE, or "what I promised"
-    gets pushed out by two fresh routine goals (see GoalOrigin). RESIDUE stays bounded by this cap
-    and the time-allowance reaping in evaluate_goal_progress.
+
+def _evict_over_cap(entities: List[GoalEntity], current_step: int) -> None:
+    """Evict the over-capacity goals in place, marked FAILED, not dropped; the oldest first
+    within an ``_eviction_rank`` tier.
+
+    RESIDUE only when the live queue is all RESIDUE, or "what I promised" gets pushed out by two
+    fresh routine goals (see GoalOrigin). RESIDUE stays bounded by this cap and the
+    time-allowance reaping in evaluate_goal_progress.
     """
     live = live_goals(entities)
     while len(live) > _SHORT_TERM_GOAL_CAP:
-        victim = next((g for g in live if g.origin == GoalOrigin.COGNITIVE), live[0])
+        # min keeps the first of equal ranks, so ties go to the oldest.
+        victim = min(live, key=lambda g: _eviction_rank(g, current_step))
         live.remove(victim)
         victim.status = GoalStatus.FAILED
         victim.last_evaluated_step = current_step
@@ -329,6 +347,47 @@ def enqueue_goals(
     return result
 
 
+def amend_short_term_goals(
+    entities: Sequence[GoalEntity],
+    amendments: Sequence[GoalAmendment],
+    *,
+    current_step: int,
+    removed_ids: Sequence[str] = (),
+) -> List[GoalEntity]:
+    """Apply text edits, additions and explicit removals, preserving all other state; pure.
+
+    Feedback can add or close goals while an edit waits to land. Unmentioned goals survive,
+    and queued edits cannot revive terminal goals. Admission validates ids before saving.
+    """
+    edits = {g.id: g.text.strip() for g in amendments if g.id is not None}
+    removed = set(removed_ids)
+    result: List[GoalEntity] = []
+    for goal in entities:
+        if not is_live_goal(goal):
+            result.append(goal)
+        elif goal.id in removed:
+            result.append(replace(
+                goal, status=GoalStatus.FAILED, last_evaluated_step=current_step,
+                progress_summary="已放下。",
+            ))
+        else:
+            result.append(replace(goal, text=edits[goal.id]) if goal.id in edits else goal)
+    seq = _next_short_term_seq(entities)
+    for amendment in amendments:
+        text = amendment.text.strip()
+        if amendment.id is not None:
+            continue
+        result.append(GoalEntity(
+            id=f"stg-{current_step}-{seq}",
+            text=text,
+            goal_type="short_term",
+            created_step=current_step,
+        ))
+        seq += 1
+    trim_goal_history(result)
+    return result
+
+
 def _max_text_similarity(text: str, candidates: Iterable[str]) -> tuple[float, Optional[str]]:
     """(ratio, matched_text) for the literally most similar candidate; (0.0, None) if none."""
     best_ratio = 0.0
@@ -353,11 +412,11 @@ def text_to_long_term_goal_entity(text: str) -> GoalEntity:
     )
 
 
-def parse_goal_evaluation(content: str, goals: List[GoalEntity], step: int) -> None:
+def parse_goal_evaluation(content: str, goals: List[GoalEntity], step: int) -> bool:
     """Apply the judge's verdict {"goals": [{"reason", "index" (1-based), "status"}]} in place.
 
     Only index + status drive the update; reason is kept as progress_summary. Malformed entries
-    are skipped.
+    are skipped. Returns whether a verdict was usable, including an explicit empty list.
     """
     _STATUS_MAP = {
         "completed": GoalStatus.COMPLETED, "已完成": GoalStatus.COMPLETED,
@@ -368,12 +427,13 @@ def parse_goal_evaluation(content: str, goals: List[GoalEntity], step: int) -> N
     try:
         data = extract_json(content)
     except Exception:
-        return
+        return False
     if not isinstance(data, dict):
-        return
-    entries = data.get("goals", [])
+        return False
+    entries = data.get("goals")
     if not isinstance(entries, list):
-        return
+        return False
+    accepted = not entries
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -387,12 +447,14 @@ def parse_goal_evaluation(content: str, goals: List[GoalEntity], step: int) -> N
         if new_status is None:
             continue
         goals[pos].status = new_status
+        accepted = True
         goals[pos].last_evaluated_step = step
         reason = entry.get("reason")
         if reason:
             # The prompt caps this; don't slice it here, that would cut a persisted summary
             # mid-sentence.
             goals[pos].progress_summary = str(reason).strip()
+    return accepted
 
 
 def parse_residue(content: str) -> tuple[List[tuple[str, int | None]], str]:

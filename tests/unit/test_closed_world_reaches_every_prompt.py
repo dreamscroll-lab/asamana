@@ -103,7 +103,7 @@ def test_pre_existing_sites_keep_the_rule() -> None:
     direct entry points into the narrative substrate."""
     import agent.memory
     import agent.relation_evolution
-    import engine.event
+    import engine.narrative_editor
     import engine.executors.covert
     import engine.executors.physical
     import engine.executors.social
@@ -112,7 +112,7 @@ def test_pre_existing_sites_keep_the_rule() -> None:
     for mod in (
         agent.memory,
         agent.relation_evolution,
-        engine.event,
+        engine.narrative_editor,
         engine.executors.covert,
         engine.executors.physical,
         engine.executors.social,
@@ -136,9 +136,9 @@ def test_importance_evaluator_stays_out_of_scope() -> None:
 
 def test_the_pacing_gate_stays_out_of_scope() -> None:
     """The pacing gate only outputs a boolean + a 40-character reason. In the same
-    engine/event.py, the event-generation half has the rule (it writes broadcast text) and the gate
+    engine/narrative_editor.py, the event-generation half has the rule (it writes broadcast text) and the gate
     half doesn't — so the assertion must target the gate's own system, not the whole module."""
-    from engine.event import EventSystem
+    from engine.narrative_editor import NarrativeEditor
 
-    src = inspect.getsource(EventSystem._passes_llm_check)
+    src = inspect.getsource(NarrativeEditor._passes_llm_check)
     assert "CLOSED_WORLD_FACT_RULE" not in src

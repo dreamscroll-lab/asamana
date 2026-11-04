@@ -51,7 +51,6 @@ async def _retrieve_view(ms, query, step: int, top_k: int) -> dict[str, Any]:
         "events": [_recalled_mem_view(m) for m in result.events],
         "insights": [_recalled_mem_view(m) for m in result.insights],
         "summaries": [_recalled_mem_view(m) for m in result.period_summaries],
-        "stream_links": len(result.stream_links),
         "insight_sources": len(result.insight_sources),
     }
 
@@ -85,8 +84,8 @@ async def run_memory_retrieve(
     step = int(scenario.get("step", 60))
     top_k = int(scenario.get("top_k", 5))
 
-    actor_id = resolve_ref(scenario["actor"], id_by_name, valid_ids)
-    agent = world.agents[actor_id]
+    doer_id = resolve_ref(scenario["doer"], id_by_name, valid_ids)
+    agent = world.agents[doer_id]
     from providers.embedding.dashscope import DashScopeEmbeddingProvider
     ms = agent.memory_system
     ms._embedding = DashScopeEmbeddingProvider(model="text-embedding-v3", dimension=1024)  # noqa: SLF001
@@ -97,7 +96,7 @@ async def run_memory_retrieve(
     seeded = await seed_memories(agent, world_id, scenario, step, id_by_name, valid_ids)
     pool = [{**seed_view(m), "content": m.stored_content} for m in ms._entries.values()]  # noqa: SLF001
 
-    set_log_context(world_id=world_id, agent_id=actor_id, step=str(step))
+    set_log_context(world_id=world_id, agent_id=doer_id, step=str(step))
     try:
         recalled = await _retrieve_view(ms, _build_query(scenario.get("query")), step, top_k)
         recalled_b = None
@@ -105,18 +104,18 @@ async def run_memory_retrieve(
             recalled_b = await _retrieve_view(ms, _build_query(scenario.get("query_b")), step, top_k)
         error = None
     except Exception as exc:  # noqa: BLE001
-        logger.warning("memory_retrieve_failed", extra={"world_id": world_id, "actor": actor_id, "error": str(exc)})
+        logger.warning("memory_retrieve_failed", extra={"world_id": world_id, "doer": doer_id, "error": str(exc)})
         recalled, recalled_b, error = {}, None, str(exc)
     clear_log_context()
 
-    inputs = {"kind": kind, "actor_name": name_by_id.get(actor_id, actor_id), "step": step,
+    inputs = {"kind": kind, "doer_name": name_by_id.get(doer_id, doer_id), "step": step,
               "top_k": top_k, "seeded": seeded, "query": _query_view(scenario.get("query")), "pool": pool}
     outputs = {"kind": kind, "recalled": recalled, "error": error}
     if kind == "contrast":
         inputs["query_b"] = _query_view(scenario.get("query_b"))
         outputs["recalled_b"] = recalled_b
     trace_sink.record_phase(PhaseTrace(
-        world_id=world_id, phase="stage.memory_retrieve", step=step, agent_id=actor_id,
+        world_id=world_id, phase="stage.memory_retrieve", step=step, agent_id=doer_id,
         inputs=inputs, outputs=outputs, timestamp=datetime.now().isoformat()))
     logger.info("tuning_memory_retrieve_dry_run_complete",
                 extra={"world_id": world_id, "step": step, "kind": kind, "seeded": seeded})

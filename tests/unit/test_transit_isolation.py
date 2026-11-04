@@ -7,8 +7,9 @@ IN_TRANSIT is not "a room all travelers share":
   is referred to in narrative terms;
 - in-transit records such as MOVE ticks are not carried as ambient (guarded by
   runtime._carry_step_observations);
-- on mid-journey snapshot restore, travelers "turn back" to the origin registered by the
-  environment (transit_origins), or to their initial location if none is registered.
+- a traveler restored in transit with no trip to carry him on "turns back" to the origin
+  registered by the environment (transit_origins), or to his initial location if none is
+  registered. One whose trip resumes stays on the road (see test_execution_resume).
 """
 
 from __future__ import annotations
@@ -60,9 +61,8 @@ def _make_agent(container, agent_id: str, name: str) -> Agent:
             container.llm_router, container.embedding, container.vector_store,
             world_id="w", agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
-        relation_system=RelationSystem(container.agent_store, world_id="w", agent_id=agent_id),
-        agent_store=container.agent_store,
+        need_engine=NeedEngine(container.llm_router),
+        relation_system=RelationSystem(world_id="w", agent_id=agent_id),
         is_main_character=False,
     )
 
@@ -92,7 +92,7 @@ def test_in_transit_location_ambient_isolated() -> None:
     # Simulate a producer writing location ambient into the pseudo-location (a backstop beyond the
     # guard)
     env.record_carry_observation(
-        location_id=IN_TRANSIT, observation="甲正赶往秘密据点", actor_ids=("agent-a",),
+        location_id=IN_TRANSIT, observation="甲正赶往秘密据点", doer_ids=("agent-a",),
     )
     env.begin_step(step=1, world_time=_world_time())
 
@@ -140,16 +140,16 @@ def test_transit_origin_lifecycle_and_snapshot_roundtrip() -> None:
     env = _make_env()
     env.move_body(body_id="agent-a", location_id=IN_TRANSIT)
     assert env.transit_origin("agent-a") == "hall"
-    assert env.snapshot_state()["transit_origins"] == {"agent-a": "hall"}
+    assert env.engine_state()["transit_origins"] == {"agent-a": "hall"}
 
     # Registration is cleared on arrival
     env.move_body(body_id="agent-a", location_id="garden")
     assert env.transit_origin("agent-a") is None
-    assert env.snapshot_state()["transit_origins"] == {}
+    assert env.engine_state()["transit_origins"] == {}
 
     # restore round-trip
     fresh = _make_env()
-    fresh.restore_state({"transit_origins": {"agent-b": "garden"}, "entity_states": {}})
+    fresh.restore_state(npcs={}, entities={}, engine={"transit_origins": {"agent-b": "garden"}})
     assert fresh.transit_origin("agent-b") == "garden"
 
 
@@ -166,7 +166,7 @@ async def test_repatriation_lands_at_transit_origin(container) -> None:
     agent.personality.update_location(location=IN_TRANSIT)
 
     initializer = WorldInitializer(container)
-    initializer._repatriate_transit_agents({"agent-a": agent}, [], env)  # noqa: SLF001
+    initializer._repatriate_transit_agents({"agent-a": agent}, [], env, resumed_participants=set())  # noqa: SLF001
 
     assert env.get_body_location("agent-a") == "hall"
     assert agent.personality.state.current_location == "hall"
@@ -183,13 +183,13 @@ async def test_repatriation_falls_back_to_initial_location(container) -> None:
     agent.personality.update_location(location=IN_TRANSIT)
 
     definition = AgentDefinition(
-        agent_id="agent-a", name="甲", tier=AgentTier.BACKGROUND,
+        agent_id="agent-a", tier=AgentTier.BACKGROUND,
         soul=SoulLayer(name="甲", role="", agent_id="agent-a"),
         initial_location="garden",
         initial_emotion=EmotionState(),
     )
     initializer = WorldInitializer(container)
-    initializer._repatriate_transit_agents({"agent-a": agent}, [definition], env)  # noqa: SLF001
+    initializer._repatriate_transit_agents({"agent-a": agent}, [definition], env, resumed_participants=set())  # noqa: SLF001
 
     assert env.get_body_location("agent-a") == "garden"
     assert agent.personality.state.current_location == "garden"

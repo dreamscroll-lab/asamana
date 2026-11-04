@@ -8,11 +8,11 @@ export function buildOngoingScenes({ open: OPEN }: LabPlaces): LabScene[] {
     {
       id: "work",
       group: "长活",
-      title: "work · 多步长活（开始→进行中→完成·判否）",
+      title: "work · 做事（多步：开始→进行中→完成·判否）",
       watch:
         "interact 姿势要「跨步保持」，不能每步闪回站立；中间拍是进度条、不重放开场；收场拍计数归 0/0（引擎的写法），只报结果。" +
         "**这一幕的收场是判否的**——账点完了但对不上，所以标签走失败样式、写的是 `failure_reason`「账目与实物对不上」。" +
-        "判是判否由裁判决定、默认判是（`work.py`），所以这不是收场拍的通例：成功收场去看「talk · 交谈」与「rest · 歇息」。",
+        "判是判否由裁判决定、默认判是（`work.py`），所以这不是收场拍的通例：成功收场去看「talk · 交谈」与「rest · 休息」。",
       steps: [
         step({ states: [who(MO, OPEN)] }),
         step({
@@ -156,13 +156,13 @@ export function buildOngoingScenes({ open: OPEN }: LabPlaces): LabScene[] {
     {
       id: "rest",
       group: "长活",
-      title: "rest · 歇息（多步：坐下→歇着→起身）",
+      title: "rest · 休息（多步：坐下→歇着→起身）",
       watch:
-        "歇息是**状态**，不是一拍：第二拍蹲下之后，中间每一拍都得**保持**蹲着，" +
+        "休息是**状态**，不是一拍：第二拍蹲下之后，中间每一拍都得**保持**蹲着，" +
         "不能每步闪回站立；只有收场那一拍才起身。这一场是多步的，因为引擎本来就把 REST " +
         "按估算时长铺开跑（engine/executors/simple.py），单步版验不到「跨步保持」这件唯一会坏的事。" +
         "姿势用的是蹲姿——这套人物没有坐姿帧，而唯一「躺下」的帧是倒地死亡帧，" +
-        "拿来当歇息会让活人和尸体共用一个身体。",
+        "拿来当休息会让活人和尸体共用一个身体。",
       steps: [
         step({ states: [who(MO, OPEN)] }),
         step({

@@ -6,6 +6,7 @@ chokepoint, and the three trace sinks (buffered jsonl / in-memory / null).
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import AsyncIterator
 
 import pytest
@@ -16,6 +17,7 @@ from core.context import (
     get_call_annotations,
     get_log_context,
     note_active_call_parse,
+    observe_actor,
     observe_stage,
     observe_step,
     set_active_call,
@@ -30,7 +32,9 @@ from core.interfaces.llm import (
     extract_json,
     extract_json_object,
 )
-from core.interfaces.trace import LLMCallTrace, Stage, StepTrace, stage_sort_key
+from core.interfaces.trace import (
+    BeatKind, BeatTrace, LLMCallTrace, Stage, StepTrace, record_beat, stage_sort_key,
+)
 from providers.trace import BufferedJsonlTraceSink, InMemoryTraceSink, NullTraceSink
 
 
@@ -327,12 +331,12 @@ def test_in_memory_sink_marks_only_the_addressed_call_unadopted() -> None:
     sink.mark_call_unadopted("w", step=1, agent_id="a1", stage="motivation", reason="conscripted")
     marked = [(c.stage, c.agent_id, c.adopted, c.reject_reason) for c in sink.llm_calls]
     assert marked == [("motivation", "a1", False, "conscripted"),
-                      ("motivation", "a2", None, ""),
-                      ("decision", "a1", None, "")]
+                      ("motivation", "a2", True, ""),
+                      ("decision", "a1", True, "")]
     # No match means nothing happens; like the two context helpers, a missed mark only loses one
     # diagnostic.
     sink.mark_call_unadopted("w", step=9, agent_id="a1", stage="motivation", reason="conscripted")
-    assert [c.adopted for c in sink.llm_calls] == [False, None, None]
+    assert [c.adopted for c in sink.llm_calls] == [False, True, True]
 
 
 @pytest.mark.asyncio
@@ -444,7 +448,8 @@ async def test_buffered_jsonl_flush_all_rescues_stragglers(tmp_path) -> None:
     # a straggler arrives for step 2 AFTER its per-step flush (frozen-context deferred write);
     # the runtime never re-flushes step 2 per step, so it is not yet on disk...
     sink.record_llm_call(_call(step=2, stage="memory", scene="memory_summarization"))
-    assert len(sink.read_calls("w", step=2)) == 1
+    assert len(sink.read_calls("w", step=2)) == 2
+    assert len((tmp_path / "w" / "step_000002.jsonl").read_text().splitlines()) == 1
     # ...until the shutdown flush-all writes every remaining buffered segment.
     await sink.flush("w")  # no step → flush ALL remaining segments
     rescued = sink.read_calls("w", step=2)
@@ -519,8 +524,8 @@ async def test_delete_run_traces_stops_a_rewound_clock_merging_two_runs(tmp_path
 
 def test_stage_sort_key_orders_unknown_last() -> None:
     assert stage_sort_key("world_init") < stage_sort_key("decision")
-    assert stage_sort_key("decision") < stage_sort_key("event")
-    assert stage_sort_key("unknown") > stage_sort_key("event")
+    assert stage_sort_key("decision") < stage_sort_key("narrative_editor")
+    assert stage_sort_key("unknown") > stage_sort_key("narrative_editor")
 
 
 # ---------------------------------------------------------------------------
@@ -621,7 +626,7 @@ def test_note_active_call_adoption_records_verdict_and_reason() -> None:
     note_active_call_adoption(False, "whatever")  # no active call → no-op, must not raise
 
     class _Box:
-        adopted = None
+        adopted = True
         reject_reason = ""
 
     box = _Box()
@@ -630,7 +635,7 @@ def test_note_active_call_adoption_records_verdict_and_reason() -> None:
     assert box.adopted is False
     assert box.reject_reason == "missing_action_description"
 
-    # first verdict wins; later stray verdicts must not overwrite it
+    # The first rejection wins; acceptance never clears it.
     note_active_call_adoption(True)
     assert box.adopted is False
     assert box.reject_reason == "missing_action_description"
@@ -680,15 +685,14 @@ async def test_discarded_call_is_ok_and_parseable_yet_not_adopted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_verdict_stays_none() -> None:
-    """Uninstrumented paths take no position → None (not False): don't record "nobody reported" as
-    "discarded"."""
+async def test_successful_output_is_adopted_without_a_consumer_mark() -> None:
+    """A successful response stays adopted unless a consumer explicitly rejects it."""
     clear_log_context()
     set_log_context(world_id="w", step="1")
     sink = InMemoryTraceSink()
     router = _router(_OkProvider("just prose"), sink)
     await router.complete(LLMScene.MEMORY_SUMMARIZATION, [LLMMessage(role="user", content="x")])
-    assert sink.llm_calls[0].adopted is None
+    assert sink.llm_calls[0].adopted is True
     assert sink.llm_calls[0].reject_reason == ""
 
 def test_build_scene_order_names_real_scenes() -> None:
@@ -794,3 +798,85 @@ async def test_a_new_flush_still_invalidates_the_cached_parse(tmp_path) -> None:
     sink.record_llm_call(_call(step=2, stage="decision"))
     await sink.flush("w", 2)
     assert sink.list_steps("w") == [1, 2]
+
+
+# ---------------------------------------------------------------------------
+# actor tag / beats
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_router_tags_calls_made_under_observe_actor_only() -> None:
+    clear_log_context()
+    set_log_context(world_id="w1", step="2")
+    sink = InMemoryTraceSink()
+    router = _router(_OkProvider(), sink)
+    with observe_stage(Stage.ACTION, agent_id="a1"):
+        with observe_actor():
+            await router.complete(LLMScene.AGENT_ACTION_NARRATION, [LLMMessage(role="user", content="x")])
+        await router.complete(LLMScene.AGENT_ACTION_NARRATION, [LLMMessage(role="user", content="y")])
+    # The tag says why the call exists; whose it is stays agent_id.
+    assert [(c.actor, c.agent_id) for c in sink.llm_calls] == [(True, "a1"), (False, "a1")]
+
+
+def test_record_beat_fills_the_step_and_annotations_from_context() -> None:
+    clear_log_context()
+    set_log_context(world_id="w1", step="4")
+    sink = InMemoryTraceSink()
+    with annotate_call(settles_prior_action=True):
+        record_beat(sink, BeatKind.INJECTION, Stage.DIRECTOR, {"narrative_desc": "起火"})
+    beat = sink.beats[0]
+    assert (beat.world_id, beat.step, beat.stage, beat.beat_kind, beat.agent_id, beat.actor) == (
+        "w1", 4, "director", "injection", None, False,
+    )
+    assert beat.payload == {"narrative_desc": "起火"} and beat.extra == {"settles_prior_action": True}
+
+
+def test_record_beat_outside_a_step_records_nothing() -> None:
+    clear_log_context()
+    sink = InMemoryTraceSink()
+    record_beat(sink, BeatKind.MIND, Stage.PERCEPTION, {"insights": ["x"]}, agent_id="a1")
+    assert sink.beats == []
+
+
+def _beat(step: int = 1, agent: str | None = "a1", stage: str = "decision") -> BeatTrace:
+    return BeatTrace(world_id="w", step=step, stage=stage, beat_kind="decision",
+                     payload={"idle": True}, timestamp="t", agent_id=agent, actor=True)
+
+
+def test_in_memory_sink_beats_are_annotated_with_the_calls_at_their_coordinates() -> None:
+    sink = InMemoryTraceSink()
+    sink.record_llm_call(_call(stage="decision", step=1, agent="a1"))
+    sink.record_beat(_beat(step=1))
+    sink.record_beat(_beat(step=2))
+    # Filed under the decision stage, but a mind amendment is no decision.
+    sink.record_beat(dataclasses.replace(_beat(step=1), beat_kind="mind"))
+    sink.annotate_recorded_call("w", step=1, agent_id="a1", stage="decision", verdict="executed")
+    assert sink.llm_calls[0].extra == {"verdict": "executed"}
+    assert [b.extra for b in sink.read_beats("w")] == [{"verdict": "executed"}, {}, {}]
+    assert [b.step for b in sink.read_beats("w", step=2)] == [2]
+    # No request was made for a beat: call reads and dimensions don't see it.
+    assert len(sink.read_calls("w")) == 1 and sink.list_steps("w") == [1]
+    sink.delete_run_traces("w")
+    assert sink.read_beats("w") == []
+
+
+@pytest.mark.asyncio
+async def test_buffered_jsonl_beats_roundtrip_with_their_verdict(tmp_path) -> None:
+    sink = BufferedJsonlTraceSink(base_dir=str(tmp_path))
+    sink.record_beat(_beat(step=3))
+    sink.record_beat(_beat(step=3, agent=None, stage="director"))
+    sink.record_beat(dataclasses.replace(_beat(step=3), beat_kind="mind"))
+    sink.annotate_recorded_call("w", step=3, agent_id="a1", stage="decision", verdict="executed")
+    await sink.flush("w", 3)
+    beats = sink.read_beats("w")
+    assert [(b.agent_id, b.beat_kind, b.extra) for b in beats] == [
+        ("a1", "decision", {"verdict": "executed"}), (None, "decision", {}), ("a1", "mind", {}),
+    ]
+    assert sink.read_beats("w", agent_id="a1")[0].payload == {"idle": True}
+    assert sink.read_calls("w") == [] and sink.list_steps("w") == []
+
+
+def test_null_sink_reads_no_beats() -> None:
+    sink = NullTraceSink()
+    sink.record_beat(_beat())
+    assert sink.read_beats("w") == []

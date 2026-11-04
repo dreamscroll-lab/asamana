@@ -28,6 +28,7 @@ from core.container import Container
 from core.interfaces.llm import LLMProvider, LLMScene
 from core.logging import get_logger
 from world.initializer import WorldInitializer
+from tuning.dry_run import isolate_container
 
 from tuning.judge_llm import create_judge
 from tuning.judge_long_term_goal import judge_long_term_goal
@@ -55,7 +56,7 @@ def _deterministic_checks(outputs: dict, agent_ids: set[str]) -> dict[str, Any]:
 
     # This stage must never touch the north star (life_goal): the hardest rule invariant.
     if outputs.get("life_goal_before") != outputs.get("life_goal_after"):
-        v.append(f"毕生追求(北极星)被改动:「{outputs.get('life_goal_before')}」→「{outputs.get('life_goal_after')}」")
+        v.append(f"人生目标(北极星)被改动:「{outputs.get('life_goal_before')}」→「{outputs.get('life_goal_after')}」")
 
     if revised:
         # On change: output must be a non-empty list, actually different, and written back to the profile (after == output).
@@ -155,7 +156,7 @@ async def validate_long_term_goal(
     scenarios = load_scenarios(scenarios_path, _DEFAULT_SCENARIOS)
     judge_llm = judge_provider or create_judge(config, judge_model)
 
-    world = await WorldInitializer(container).restore(world_id)
+    world = await WorldInitializer(await isolate_container(container, world_id)).restore(world_id)
     agent_ids = set(world.agents.keys())
     out_dir = Path(trace_dir) / world_id / "validation" / "long_term_goal"
 

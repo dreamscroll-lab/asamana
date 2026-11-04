@@ -1,26 +1,38 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
-import { api, API_BASE } from "../api/client";
+import { identityOf } from "../lib/worldTable";
+import { API_BASE, api } from "../api/client";
 import type { TiledWorldScene } from "../phaser/TiledWorldScene";
 import { renderStepInto } from "../phaser/driveStep";
 import { loadMapSource, type MapSource } from "../phaser/mapSource";
-import type { MapFocus, MapSelect, StepEvent } from "../types";
+import { useCast, loadCast } from "../lib/cast";
+import { placeName, usePlaces, loadPlaces } from "../lib/places";
+import { identityColor, toHex } from "../lib/color";
+import { useNpcs, loadNpcs } from "../lib/npcs";
+import type { Viewer } from "../lib/viewer";
+import type { MapFocus, MapSelect, MapOperationTarget, StepView } from "../types";
 import MapStage from "./MapStage";
 import WorldClock from "./WorldClock";
 
 interface Props {
   worldId: string;
-  step: StepEvent | null;
+  step: StepView | null;
   // Fired when a step's render TIMELINE fully finishes. The driver waits for this
   // before advancing, so step N is fully rendered before step N+1 begins.
   onRendered?: (stepNo: number) => void;
   focus: MapFocus;
   onSelect: (t: MapSelect) => void;
+  onOperation?: (t: MapOperationTarget) => void;
   onFocusChange: (next: MapFocus) => void; // toolbar: toggle follow / clear / drop a chip
   // Immersive is owned by WorldView, not the map, so the whole surface (playback bar
   // included) goes immersive together; the map only reflects the flag in its button.
   immersive: boolean;
   onToggleImmersive: () => void;
+  // Whose view the steps are filtered to; null for the director.
+  viewer?: Viewer;
+  // What floats over the map (the director's or the actor's console), kept inside the map
+  // itself so it never covers the controls under it.
+  children?: ReactNode;
 }
 
 /**
@@ -35,32 +47,24 @@ export default function LiveWorldMap({
   onRendered,
   focus,
   onSelect,
+  onOperation,
   onFocusChange,
   immersive,
   onToggleImmersive,
+  viewer = null,
+  children,
 }: Props) {
+  const { cast, status: castStatus, error: castError } = useCast(worldId);
+  const { places, error: placeError } = usePlaces(worldId);
+  const { npcs, status: npcStatus, error: npcError } = useNpcs(worldId);
   const [scene, setScene] = useState<TiledWorldScene | null>(null);
   const sceneRef = useRef<TiledWorldScene | null>(null);
   sceneRef.current = scene;
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
-  // id → name / identity color for the focus chips, from the current step's figures.
-  // Both tiers: NPC bodies can be clicked into focus too, and reading only `agent_states`
-  // would leave their chip showing a bare id.
-  const nameOf = useMemo(() => {
-    const m = new Map<string, string>();
-    if (step) {
-      for (const s of Object.values(step.agent_states)) m.set(s.agent_id, s.agent_name);
-      for (const n of step.npcs ?? []) if (n.name) m.set(n.npc_id, n.name);
-    }
-    return (id: string) => m.get(id) ?? "某人";
-  }, [step]);
-  const colorOf = useMemo(() => {
-    const m = new Map<string, string>();
-    if (step) for (const s of Object.values(step.agent_states)) if (s.color) m.set(s.agent_id, s.color);
-    return (id: string) => m.get(id) ?? null;
-  }, [step]);
-  const placeName = focus.place ? sceneRef.current?.locationName(focus.place.id) ?? focus.place.id : null;
+  const nameOf = (id: string) => identityOf(id, cast, npcs)?.name ?? "某人";
+  const colorOf = (id: string) => toHex(identityColor(identityOf(id, cast, npcs)?.color, id));
+  const focusPlace = focus.place ? placeName(places, focus.place.id) : null;
   const ready = scene !== null;
   const [animSpeed, setAnimSpeed] = useState(1); // animation-speed multiplier
   // null = loading, false = no map, MapSource = map + its art, ready to render.
@@ -83,60 +87,62 @@ export default function LiveWorldMap({
     if (ready) sceneRef.current?.setSpeed(animSpeed);
   }, [ready, animSpeed]);
 
-  // Feed the scene each agent's gender + age (from the step-0 /agents profiles) so it can
-  // pick the right body. Keyed on the scene, not the world id: a scene rebuilt under the
-  // same id would otherwise get no cast and every figure falls back to the default body.
-  const castFed = useRef<TiledWorldScene | null>(null);
-  useEffect(() => {
-    const target = sceneRef.current;
-    if (!ready || !target || castFed.current === target) return;
-    castFed.current = target;
-    api
-      .agents(worldId)
-      .then((cast) => target.setCast(
-        Object.fromEntries(cast.map((p) => [p.agent_id, { gender: p.gender, age: p.age }])),
-      ))
-      .catch(() => {}); // no roster → figures stay on the default adult body
-  }, [ready, worldId]);
-
   useEffect(() => {
     if (ready) sceneRef.current?.setFocus(focus);
   }, [ready, focus]);
 
   useEffect(() => {
-    if (!ready || !sceneRef.current || !step) return;
+    if (scene && castStatus === "ready") scene.setCast(cast);
+  }, [scene, castStatus, cast]);
+
+  useEffect(() => {
+    if (scene && npcStatus === "ready") scene.setNpcs(npcs);
+  }, [scene, npcStatus, npcs]);
+
+  useEffect(() => {
+    scene?.setPlaces(places);
+  }, [scene, places]);
+
+  useEffect(() => {
+    if (!ready || !sceneRef.current || !step || castStatus !== "ready" || npcStatus !== "ready") return;
     // A new step supersedes any in-flight render (scrub); its onRendered is
     // suppressed via `cancelled` so only the current step's completion advances.
     let cancelled = false;
     const stepNo = step.step;
+    sceneRef.current.setViewer(viewer);
     // A render that threw still finished (renderStepInto hands the error back). Report it
     // anyway: the driver's gate is only reopened here, so an unreported failure stops
     // playback for good.
-    renderStepInto(sceneRef.current, step).then(() => {
+    // The scene asks for step N-1 only when the map doesn't stand where step N began.
+    renderStepInto(sceneRef.current, step, (stepNo) => api.getStep(worldId, stepNo)).then(() => {
       if (!cancelled) onRenderedRef.current?.(stepNo);
     });
     return () => {
       cancelled = true;
     };
-  }, [ready, step]);
+  }, [scene, ready, step, viewer, castStatus, cast, npcStatus, npcs, worldId]);
 
   // With no map the scene never mounts and onRendered never fires, freezing the driver's
   // gate (clock, roster, cards, DirectorBar all stall). No render timeline to wait for, so
   // this step counts as already drawn.
   useEffect(() => {
-    if (mapSource !== false || !step) return;
+    if ((mapSource !== false && castStatus !== "error" && npcStatus !== "error") || !step) return;
     onRenderedRef.current?.(step.step);
-  }, [mapSource, step]);
+  }, [mapSource, step, castStatus, npcStatus]);
 
   if (mapSource === false) {
     return (
-      <div className="bg-slate-900/40 border border-slate-800 rounded-2xl p-6">
+      <div className="relative h-full bg-slate-900/40 border border-slate-800 rounded-2xl p-6">
         <h3 className="text-sm font-semibold tracking-wider text-slate-400 uppercase mb-2">
           🗺️ 世界地图
         </h3>
         {/* The two fetches loadMapSource refuses to carry on without — a missing
             tileset or no derived ground still draws, so neither lands here. */}
-        <p className="text-slate-500 text-sm">取不到这个世界的地图文件或人物资产。</p>
+        <p className="text-slate-500 text-sm">地图或角色形象加载失败。</p>
+        {placeError && <button className="absolute bottom-20 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadPlaces(worldId).catch(() => {}); }}>地点资料加载失败，点击重试</button>}
+        {npcError && <button className="absolute bottom-10 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadNpcs(worldId).catch(() => {}); }}>NPC 资料加载失败，点击重试</button>}
+        {castError && <button className="absolute bottom-2 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色资料加载失败，点击重试</button>}
+        {children}
       </div>
     );
   }
@@ -159,6 +165,7 @@ export default function LiveWorldMap({
             source={mapSource}
             onScene={setScene}
             onSelect={onSelect}
+            onOperation={onOperation}
             // A hand on the camera drops follow, keeps the rest of the focus.
             onGrabCamera={() => onFocusChange({ ...focus, follow: false })}
             // Immersive collapses the shell's chrome, which resizes this box through a
@@ -172,8 +179,8 @@ export default function LiveWorldMap({
           </div>
         )}
         {/* Focus toolbar: subject chips and follow / clear as one left-aligned cluster.
-            pr-[27rem] reserves the top-right for the director console overlay, or the chips
-            wrap under it; below `sm` the console is near full-width, so no reserve. */}
+            pr-[27rem] reserves the top-right for the director console or the actor's console, or
+            the chips wrap under it; below `sm` either is near full-width, so no reserve. */}
         {(focus.agents.length > 0 || focus.place) && (
           <div className="absolute top-2 left-2 right-2 sm:pr-[27rem] flex items-center flex-wrap gap-1.5 pointer-events-none">
             <span className="text-[10px] text-slate-400 bg-slate-950/80 px-1.5 py-0.5 rounded pointer-events-auto">🎯 焦点</span>
@@ -183,25 +190,21 @@ export default function LiveWorldMap({
                 <button
                   key={id}
                   onClick={() => onFocusChange({ ...focus, agents: focus.agents.filter((a) => a !== id) })}
-                  className={`pointer-events-auto text-[11px] px-2 py-0.5 rounded-md border font-medium transition hover:brightness-125 ${
-                    c ? "" : "border-violet-500/60 bg-violet-950/70 text-violet-200"
-                  }`}
-                  // Identity color, with a faint wash behind (8-digit hex = color + alpha);
-                  // violet only when the step carries no color for this id.
-                  style={c ? { color: c, borderColor: c, backgroundColor: `${c}22` } : undefined}
+                  className="pointer-events-auto text-[11px] px-2 py-0.5 rounded-md border font-medium transition hover:brightness-125"
+                  style={{ color: c, borderColor: c, backgroundColor: `${c}22` }}
                   title="移出焦点"
                 >
                   {nameOf(id)} ✕
                 </button>
               );
             })}
-            {placeName && (
+            {focusPlace && (
               <button
                 onClick={() => onFocusChange({ ...focus, place: null })}
                 className="pointer-events-auto text-[11px] px-2 py-0.5 rounded-md border border-violet-500/60 bg-violet-950/70 text-violet-200 hover:border-violet-400 transition"
                 title="取消地点聚焦"
               >
-                📍 {placeName} ✕
+                📍 {focusPlace} ✕
               </button>
             )}
             <button
@@ -222,6 +225,10 @@ export default function LiveWorldMap({
             </button>
           </div>
         )}
+        {placeError && <button className="absolute bottom-20 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadPlaces(worldId).catch(() => {}); }}>地点资料加载失败，点击重试</button>}
+        {npcError && <button className="absolute bottom-10 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadNpcs(worldId).catch(() => {}); }}>NPC 资料加载失败，点击重试</button>}
+        {castError && <button className="absolute bottom-2 left-2 text-xs text-rose-300 bg-slate-950/90 rounded px-3 py-2" onClick={() => { void loadCast(worldId).catch(() => {}); }}>角色资料加载失败，点击重试</button>}
+        {children}
       </div>
       <div className="shrink-0 flex items-center justify-end gap-1 px-3 py-2 border-t border-slate-800/70 bg-slate-950/50">
         {/* The clock shows here only in immersive, when the header that carries it is collapsed. */}
@@ -242,17 +249,17 @@ export default function LiveWorldMap({
         ))}
         <button
           onClick={() => sceneRef.current?.resetView()}
-          title="复位视角（回到整图）"
+          title="重置地图视角（显示完整地图）"
           className="ml-1 text-[11px] px-2 py-0.5 rounded-md border bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white transition"
         >
-          ⟳ 复位
+          ⟳ 重置视角
         </button>
         <button
           onClick={onToggleImmersive}
-          title={immersive ? "退出沉浸 (Esc)" : "沉浸模式（地图铺满）"}
+          title={immersive ? "退出沉浸（Esc）" : "沉浸模式（地图铺满）"}
           className="ml-1 text-[11px] px-2 py-0.5 rounded-md border bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700 hover:text-white transition"
         >
-          {immersive ? "⤢ 退出" : "⛶ 沉浸"}
+          {immersive ? "⤢ 退出沉浸" : "⛶ 沉浸模式"}
         </button>
       </div>
     </div>

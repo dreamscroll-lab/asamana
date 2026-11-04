@@ -1,7 +1,7 @@
 """InjectionDispatcher: the dispatch path shared by both authors.
 
 These tests pin the answers that would drift if the code branched by author: who counts as affected,
-where the injection lands, and whose name is on an injected message. The LLM event editor and the
+where the injection lands, and whose name is on an injected message. The narrative editor and the
 human director must get the same answer.
 """
 
@@ -11,10 +11,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.interfaces.action import Observed
 from core.interfaces.urgency import Urgency
 from engine.broadcast import BroadcastChannel
 from engine.directory import LiveWorldDirectory
-from engine.environment import EnvironmentSystem
+from engine.environment import IN_TRANSIT, EnvironmentSystem
 from engine.execution_processor import ExecutionProcessor
 from engine.executors.registry import ActionExecutorRegistry
 from engine.injection import Author, BroadcastSpec, InjectionDispatcher, MessageSpec
@@ -63,6 +64,7 @@ def _setup():
                 directory=directory,
             ),
         ),
+        environment=environment,
         directory=directory,
     )
     return dispatcher, agents, environment, message_system, broadcast_channel
@@ -83,9 +85,28 @@ async def test_a_broadcast_touches_the_living_who_hear_it_whoever_wrote_it(autho
 
     assert committed is not None
     assert committed.target_ids == ("a1",)
-    assert committed.event.affected_names == ["李世民"]
-    assert committed.event.location_label == "太极宫"
-    assert committed.event.authored_by is author
+    assert committed.record.affected_names == ["李世民"]
+    assert committed.record.location_label == "太极宫"
+    assert committed.record.authored_by is author
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_broadcast_reaches_bodies_where_the_environment_puts_them() -> None:
+    """The audience follows ``EnvironmentSystem``, the table perception delivers by, not the
+    agent's own record, which changes only on arrival: someone who set out from the palace isn't
+    reached there, and someone already standing in it is."""
+    dispatcher, agents, environment, *_ = _setup()
+    environment.move_body(body_id="a1", location_id=IN_TRANSIT)   # his record still says palace
+    environment.move_body(body_id="a2", location_id="palace")     # his record still says market
+
+    committed = await dispatcher.dispatch(
+        author=Author.SYSTEM, step=3, agents=agents, narrative_desc="宫中起火",
+        broadcast=BroadcastSpec(content="宫中火起。", severity=Severity.HIGH, location_scope="palace"),
+        message=None,
+    )
+
+    assert committed is not None
+    assert committed.target_ids == ("a2",)
 
 
 @pytest.mark.asyncio
@@ -103,10 +124,12 @@ async def test_a_spawn_without_a_broadcast_still_says_where_it_landed(author) ->
     )
 
     assert committed is not None
-    assert committed.event.dispatched_to == ["mutation"]
-    assert committed.event.location_label == "西市"
+    assert committed.record.dispatched_to == ["mutation"]
+    assert committed.record.location_label == "西市"
     assert committed.target_ids == ("a2",)
     assert [e.name for e in environment.get_items_at("market")] == ["木箱"]
+    # What onlookers there were given to perceive travels with the injection to the step record.
+    assert committed.observations == (Observed(location_id="market", text="街心忽然多了一口木箱。"),)
 
 
 @pytest.mark.asyncio
@@ -122,9 +145,10 @@ async def test_an_injected_message_is_unsigned_and_only_metadata_names_the_autho
     )
 
     [message] = await message_system.peek_pending()
-    assert (message.sender_id, message.sender_name) == ("narrator", "不知来源")
+    assert (message.sender_id, message.sender_name) == ("narrator", "匿名")
+    assert message.anonymous is True
     assert message.sender_is_agent is False
-    assert message.metadata == {"source": author.value, "narrative": True}
+    assert message.metadata == {"source": author.value}
 
 
 @pytest.mark.asyncio

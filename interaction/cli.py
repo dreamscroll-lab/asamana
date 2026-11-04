@@ -20,7 +20,7 @@ from config.models import Config
 from core.container import Container
 from core.logging import get_logger
 from core.model_keys import ModelKeysMissing
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from world import DEFAULT_CATALOG_PATH, WorldCatalog
 from interaction.models import WorldMeta
 from interaction.world_manager import WorldManager
@@ -86,18 +86,11 @@ class NarrativeCLI:
         # the theme to pick one. Enumerating them is this layer's job.
         from worlds.tiled import list_templates
 
-        world = await self._application.build_world(
+        world_id = await self._application.build_world(
             theme, available_templates=list_templates()
         )
-        meta = await self._manager.get_world(world.world_id)
-        logger.info(
-            "world_built",
-            extra={
-                "world_id": world.world_id,
-                "world_name": world.analysis.world_name,
-                "agent_count": len(world.agents),
-            },
-        )
+        meta = await self._manager.get_world(world_id)
+        logger.info("world_built", extra={"world_id": world_id, "world_name": meta.world_name if meta else ""})
         return meta
 
 

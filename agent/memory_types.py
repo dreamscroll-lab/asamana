@@ -10,6 +10,7 @@ from enum import Enum, IntEnum
 from typing import Any, Dict, List
 
 from agent.personality import EmotionType
+from core.interfaces.memory import MemoryKind
 
 
 # Importance bucket cutoffs. Perception's strength buckets reuse them, so "HIGH/MEDIUM" has one
@@ -17,6 +18,7 @@ from agent.personality import EmotionType
 IMPORTANCE_CRITICAL_CUTOFF = 0.9
 IMPORTANCE_HIGH_CUTOFF = 0.65
 IMPORTANCE_MEDIUM_CUTOFF = 0.4
+IMPORTANCE_RANGE: tuple[float, float] = (0.0, 1.0)
 
 
 class MemoryStream(str, Enum):
@@ -94,17 +96,11 @@ def importance_level(score: float) -> MemoryImportance:
     return MemoryImportance.LOW
 
 
-class MemoryKind(str, Enum):
-    EVENT = "event"
-    INSIGHT = "insight"
-    SUMMARY = "summary"
-
-
 @dataclass
 class RetrievalResult:
     """Structured retrieval result.
 
-    Memories are split by kind, plus link info, so callers can present them in separate prompt
+    Memories are split by kind, plus each insight's sources, so callers can present them in separate prompt
     sections (recalled experiences, judgments already formed, the overall impression of a
     period) and the LLM can tell the three kinds of recollection apart.
     """
@@ -112,8 +108,6 @@ class RetrievalResult:
     events: List[Memory] = field(default_factory=list)
     insights: List[Memory] = field(default_factory=list)
     period_summaries: List[Memory] = field(default_factory=list)
-    # event_group_id → the other stream's memory id (dual-stream binding only)
-    stream_links: Dict[str, str] = field(default_factory=dict)
     # insight.id → some of its source memories (≤ 3)
     insight_sources: Dict[str, List[Memory]] = field(default_factory=dict)
 

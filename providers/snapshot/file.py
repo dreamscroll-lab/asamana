@@ -14,15 +14,17 @@ from typing import Any, List, Optional
 from core.factory import ComponentKind, ProviderFactory
 from core.interfaces.message import Message
 from core.interfaces.perception import Broadcast, BroadcastType
-from core.interfaces.snapshot import SnapshotProvider, WorldSnapshot
+from core.interfaces.snapshot import EngineState, SnapshotProvider, WorldSnapshot, WorldState
 from core.logging import get_logger
 from core.serialization import atomic_write_text, dump_json, read_json_file
 
 logger = get_logger(__name__)
 
 # Unknown keys are dropped on read, so removing a dataclass field doesn't make every existing
-# snapshot unreadable (same as _AGENT_STATE_FIELDS in agent_store).
+# snapshot unreadable.
 _SNAPSHOT_FIELDS = frozenset(f.name for f in dataclasses.fields(WorldSnapshot))
+_STATE_FIELDS = frozenset(f.name for f in dataclasses.fields(WorldState))
+_ENGINE_FIELDS = frozenset(f.name for f in dataclasses.fields(EngineState))
 
 _STEP_RE = re.compile(r"^step_(\d+)\.json$")
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
@@ -61,6 +63,9 @@ class FileSnapshotProvider(SnapshotProvider):
     def _world_config_path(self, world_id: str) -> Path:
         return self._world_dir(world_id) / "world_config.json"
 
+    def _world_setup_path(self, world_id: str) -> Path:
+        return self._world_dir(world_id) / "world_setup.json"
+
     def _world_map_path(self, world_id: str) -> Path:
         return self._world_dir(world_id) / "world_map.json"
 
@@ -73,16 +78,20 @@ class FileSnapshotProvider(SnapshotProvider):
         data = json.loads(raw)
         if isinstance(data.get("timestamp"), str):
             data["timestamp"] = datetime.fromisoformat(data["timestamp"])
-        data["pending_messages"] = [
+        state = data.get("state") if isinstance(data.get("state"), dict) else {}
+        data["state"] = WorldState(**{k: v for k, v in state.items() if k in _STATE_FIELDS})
+        engine = dict(data.get("engine")) if isinstance(data.get("engine"), dict) else {}
+        engine["pending_messages"] = [
             _message_from_dict(item)
-            for item in data.get("pending_messages", [])
+            for item in engine.get("pending_messages", [])
             if isinstance(item, dict)
         ]
-        data["pending_broadcasts"] = [
+        engine["pending_broadcasts"] = [
             _broadcast_from_dict(item)
-            for item in data.get("pending_broadcasts", [])
+            for item in engine.get("pending_broadcasts", [])
             if isinstance(item, dict)
         ]
+        data["engine"] = EngineState(**{k: v for k, v in engine.items() if k in _ENGINE_FIELDS})
         return WorldSnapshot(**{k: v for k, v in data.items() if k in _SNAPSHOT_FIELDS})
 
     # ------------------------------------------------------------------
@@ -154,8 +163,8 @@ class FileSnapshotProvider(SnapshotProvider):
             path.unlink(missing_ok=True)
 
     async def delete_world(self, world_id: str) -> None:
-        # Removes every step_*.json plus world_config.json / world_map.json under
-        # this world's dir.
+        # Removes every step_*.json plus world_config.json / world_setup.json /
+        # world_map.json under this world's dir.
         # ignore_errors: partial trees / concurrent unlinks must not raise from a
         # whole-world purge — the operation is irreversible and best-effort by design.
         await asyncio.to_thread(
@@ -174,6 +183,18 @@ class FileSnapshotProvider(SnapshotProvider):
 
     async def load_world_config(self, world_id: str) -> Optional[dict[str, Any]]:
         return await asyncio.to_thread(read_json_file, self._world_config_path(world_id))
+
+    async def save_world_setup(self, world_id: str, data: dict[str, Any]) -> None:
+        target = self._world_setup_path(world_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(atomic_write_text, target, dump_json(data))
+        logger.info("world_setup_saved", extra={"world_id": world_id})
+
+    async def load_world_setup(self, world_id: str) -> Optional[dict[str, Any]]:
+        return await asyncio.to_thread(read_json_file, self._world_setup_path(world_id))
+
+    async def delete_world_setup(self, world_id: str) -> None:
+        await asyncio.to_thread(self._world_setup_path(world_id).unlink, missing_ok=True)
 
     async def save_world_map(self, world_id: str, data: dict[str, Any]) -> None:
         target = self._world_map_path(world_id)
@@ -238,13 +259,14 @@ def _message_from_dict(data: dict) -> Message:
         deliver_step=int(data["deliver_step"]),
         created_step=int(data["created_step"]),
         sender_name=str(data.get("sender_name", "")),
+        anonymous=bool(data["anonymous"]),
         intent=str(data.get("intent", "")),
         urgency=parse_urgency(raw_urgency),
         # Dropping either field changes delivery after a restore: a mindless body would be
         # treated as a person who forms relations, and execution members would receive their own
         # act again.
         sender_is_agent=bool(data.get("sender_is_agent", True)),
-        actor_ids=tuple(data.get("actor_ids") or ()),
+        doer_ids=tuple(data.get("doer_ids") or ()),
         metadata=dict(data.get("metadata", {})),
     )
 

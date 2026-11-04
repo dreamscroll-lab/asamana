@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Dict, List, Mapping
+from dataclasses import dataclass, replace
+from typing import Dict, Iterable, List, Mapping
 
 from core.interfaces.action import (
     EntitySpawn, EntityStateChange, ErrandOrder, NpcEffect,
@@ -11,19 +11,19 @@ from core.interfaces.action import (
 )
 from core.interfaces.condition import condition_from_dict, condition_to_dict
 from core.interfaces.perception import (
-    PerceivedNpc, PerceivedPresence,
+    DEFAULT_ENTITY_STATE, PerceivedNpc, PerceivedPresence,
     AmbientEvent, LocationView, ReachableLocation, SpatialPerception, VisibleEntity,
 )
+from core.coerce import coerce_int
 from core.logging import get_logger
 from core.text import slugify
 from engine.clock import WorldTime
 from engine.space import SpaceManager
-from world.models import (
+from core.interfaces.entity import (
     ActiveErrand,
     BodyKind,
     EntityPresence,
     Npc,
-    NpcSeed,
     WorldEntity,
     WorldEntityType,
 )
@@ -60,7 +60,7 @@ MAX_ENTITIES_PER_PLACE = 12
 # per-place cap normally bounds it already.
 MAX_VISIBLE_ENTITIES = 15
 
-# Larger than the actor's menu: a judge missing a thing rules as if it weren't in the room.
+# Larger than the doer's menu: a judge missing a thing rules as if it weren't in the room.
 MAX_SCENE_ENTITIES = 30
 
 # The most Npcs a world can hold (prompt space: each crowds the co-located list). Per world
@@ -95,8 +95,9 @@ def _ambient_payload(event: AmbientEvent) -> dict[str, object]:
     return {
         "content": event.content,
         "strength": event.strength,
-        "actor_ids": list(event.actor_ids),
-        "agent_actor_ids": list(event.agent_actor_ids),
+        "doer_ids": list(event.doer_ids),
+        "doer_agent_ids": list(event.doer_agent_ids),
+        "acted_upon_ids": list(event.acted_upon_ids),
     }
 
 
@@ -105,8 +106,9 @@ def _ambient_from_payload(payload: Mapping[str, object]) -> AmbientEvent:
     return AmbientEvent(
         content=str(payload.get("content", "")),
         strength=float(strength) if isinstance(strength, (int, float)) else None,
-        actor_ids=tuple(str(a) for a in payload.get("actor_ids") or ()),
-        agent_actor_ids=tuple(str(a) for a in payload.get("agent_actor_ids") or ()),
+        doer_ids=tuple(str(a) for a in payload.get("doer_ids") or ()),
+        doer_agent_ids=tuple(str(a) for a in payload.get("doer_agent_ids") or ()),
+        acted_upon_ids=tuple(str(a) for a in payload.get("acted_upon_ids") or ()),
     )
 
 
@@ -158,12 +160,12 @@ class FeasibilityResult:
 class _Happening:
     """The full ``ActionResult.outcome`` of something that surfaced at a place; ``AmbientEvent``
     is the degraded string onlookers perceive of it. Outcomes nobody could see aren't included.
-    ``actor_ids`` already have it and are excluded on read.
+    ``doer_ids`` already have it and are excluded on read.
     """
 
     step: int
     content: str
-    actor_ids: tuple[str, ...]
+    doer_ids: tuple[str, ...]
 
 
 class EnvironmentSystem:
@@ -215,17 +217,18 @@ class EnvironmentSystem:
         self._carry_annotations: Dict[str, List[AmbientEvent]] = {}
         # Full-fidelity happenings for covert adjudication (see _Happening). No carry/flip: the
         # writer (runtime._carry_step_observations) already runs after the beat's adjudications.
-        # Must never reach spatial_for (breaks information asymmetry), snapshot_state (leaks
-        # into the director's briefing and replay) or assemble_scene_context (would show up in
-        # broadcast PHYSICAL outcomes).
+        # Must never reach spatial_for (breaks information asymmetry), world_state (leaks into
+        # the director's briefing and replay) or assemble_scene_context (would show up in
+        # broadcast PHYSICAL outcomes). engine_state keeps it under its own key, which only
+        # restore reads: lost, a lurker after a restore would be told nothing happened here.
         self._happenings: Dict[str, List[_Happening]] = {}
         # Tombstones stay in ``_entities`` (names must resolve and snapshots must keep them, or a
         # destroyed seed comes back on restore) but leave ``_items``. Ask "what's it called" of
         # the former, "what's here" of the latter.
         self._entities: Dict[str, WorldEntity] = {}    # all of them, tombstones included
         self._items: Dict[str, WorldEntity] = {}       # the ones still alive
-        # agent_id → origin. Without it an agent in transit at snapshot time is stranded after
-        # restore; restore sends it back to the origin.
+        # body_id → origin. A body caught in transit with no trip to carry it on after a restore
+        # (an Npc, or an agent whose execution was lost) is sent back here instead of stranded.
         self._transit_origins: Dict[str, str] = {}
         self._current_step = 0
         self._current_world_time_label = ""
@@ -271,22 +274,36 @@ class EnvironmentSystem:
     def get_body_location(self, body_id: str) -> str:
         return self._locations.get(body_id, UNPLACED)
 
+    def body_locations(self, body_ids: Iterable[str]) -> dict[str, str]:
+        """Where each of these bodies is, for an author's read-only view. An unplaced body has no
+        entry: it has no place to name, so a roster leaves it out rather than say "某地"."""
+        return {
+            bid: loc for bid in body_ids
+            if (loc := self.get_body_location(bid)) != UNPLACED
+        }
+
     def narrative_location_name(self, location_id: str) -> str:
         """The single location-name resolver for narrative text. IN_TRANSIT → "途中"; unknown →
-        "此处", never a bare id (that would leak into embedded prose)."""
+        "某地", never a bare id (that would leak into embedded prose). Don't fall back to "此处":
+        the text reaches bystanders, others' memories and god's-eye menus, where "here" claims a
+        place that isn't known."""
         if location_id == IN_TRANSIT:
             return "途中"
-        return self.space.name_of(location_id) or "此处"
+        name = self.space.name_of(location_id)
+        if not name:
+            logger.debug("directory_miss", extra={"lookup_id": location_id, "kind": "location"})
+            return "某地"
+        return name
 
-    def spawn_npc(self, seed: NpcSeed, *, location_id: str) -> bool:
+    def spawn_npc(self, npc: Npc, *, location_id: str) -> bool:
         """The one way to put a body-without-a-mind into the world. Returns False when nothing
-        was created (no name, not a real place, or at quota); that's not a build failure.
+        was created (no name or id, an id already taken, not a real place, or at quota); that's
+        not a build failure.
 
         The quota is enforced here, not on restore, or a world that grew to the cap would lose
-        people on restore. ids are a deterministic name slug, not a uuid, so replay reproduces
-        the same world.
+        people on restore. The id is the setup's, so replay reproduces the same world.
         """
-        name = seed.name.strip()
+        name = npc.name.strip()
         if not name:
             return False
         if location_id in (IN_TRANSIT, UNPLACED) or not self.space.has(location_id):
@@ -302,16 +319,12 @@ class EnvironmentSystem:
             )
             return False
 
-        base = f"npc_{slugify(name, fallback_prefix='npc')}"
-        npc_id = base
-        suffix = 2
-        while npc_id in self._npcs:
-            npc_id = f"{base}-{suffix}"
-            suffix += 1
-        self._npcs[npc_id] = Npc(
-            npc_id=npc_id, name=name, gender=seed.gender, age=seed.age,
-            description=seed.description,
-        )
+        # The id is the setup's (``WorldSetup.from_build`` gives one, unique in the world).
+        npc_id = npc.npc_id
+        if not npc_id or npc_id in self._npcs:
+            logger.warning("npc_spawn_without_id", extra={"npc_name": name, "npc_id": npc_id})
+            return False
+        self._npcs[npc_id] = replace(npc, name=name)
         self._place_body(npc_id, location_id, BodyKind.NPC)
         return True
 
@@ -452,12 +465,12 @@ class EnvironmentSystem:
             self._items[entity.entity_id] = entity
 
     def spawn_entity(
-        self, spawn: EntitySpawn, *, ground: str, actor_id: str | None = None,
+        self, spawn: EntitySpawn, *, ground: str, doer_id: str | None = None,
     ) -> bool:
         """The one way to put a new thing into the world. Returns False when nothing was
         created (no name, no real ground, or the place is full); that's not an error.
 
-        ``ground`` is where it lands unless born in someone's hands. ``actor_id`` is only for
+        ``ground`` is where it lands unless born in someone's hands. ``doer_id`` is only for
         self-filtering. The quota is enforced here, not in ``register_entity``, so restore never
         loses things. ids are deterministic name slugs for replay. An empty ``perception`` means
         nobody saw it (a private item), not a missed delivery.
@@ -473,7 +486,7 @@ class EnvironmentSystem:
             # ``"location"`` lands here too: places must not be created this way.
             logger.warning(
                 "spawn_unknown_kind",
-                extra={"entity_name": name, "kind": spawn.entity_type, "actor_id": actor_id},
+                extra={"entity_name": name, "kind": spawn.entity_type, "doer_id": doer_id},
             )
             return False
         if holder_id and entity_type.is_takeable:
@@ -483,7 +496,7 @@ class EnvironmentSystem:
             if not ground or ground in (IN_TRANSIT, UNPLACED):
                 logger.warning(
                     "spawn_without_ground",
-                    extra={"entity_name": name, "actor_id": actor_id, "ground": ground},
+                    extra={"entity_name": name, "doer_id": doer_id, "ground": ground},
                 )
                 return False
             presence, presence_ref = EntityPresence.AT_LOCATION, ground
@@ -500,12 +513,12 @@ class EnvironmentSystem:
                 "entity_place_full",
                 extra={
                     "cap": self._max_entities_per_place, "entity_name": name,
-                    "actor_id": actor_id, "place": presence_ref,
+                    "doer_id": doer_id, "place": presence_ref,
                 },
             )
             return False
 
-        base = f"made_{slugify(name)}"
+        base = f"made_entity_{slugify(name, fallback_prefix=None)}"
         entity_id = base
         suffix = 2
         while entity_id in self._entities:
@@ -516,12 +529,11 @@ class EnvironmentSystem:
                 entity_id=entity_id,
                 name=name,
                 entity_type=entity_type,
-                state=spawn.state or "intact",
+                state=spawn.state or DEFAULT_ENTITY_STATE,
                 description=spawn.description,
                 content=spawn.content,
                 presence=presence,
                 presence_ref=presence_ref,
-                is_takeable=entity_type.is_takeable,
                 is_public=spawn.is_public,
                 created_step=self._current_step,
             )
@@ -529,10 +541,10 @@ class EnvironmentSystem:
         # The observer needs the assigned id.
         spawn.entity_id = entity_id
         if spawn.perception and ground and ground not in (IN_TRANSIT, UNPLACED):
-            # actor_ids keeps the maker from perceiving his own product as a third party.
+            # doer_ids keeps the maker from perceiving his own product as a third party.
             self.record_carry_observation(
                 location_id=ground, observation=spawn.perception,
-                actor_ids=(actor_id,) if actor_id else (),
+                doer_ids=(doer_id,) if doer_id else (),
             )
         return True
 
@@ -540,16 +552,16 @@ class EnvironmentSystem:
         self,
         change: EntityStateChange,
         *,
-        acting_agent_id: str | None = None,
+        doer_id: str | None = None,
     ) -> bool:
         """The ONLY runtime path for mutating entity placement/state, so the placement invariant
-        lives in one place. Returns True if the entity was found.
+        lives in one place. Returns True if a live entity was found; destruction is terminal.
 
         ``perception``, if given, is delivered with the change. ``WorldMutationChannel`` omits it
         because it delivers through its own ``_deliver``; both would double the perception.
         """
         entity = self._entities.get(change.entity_id)
-        if entity is None:
+        if entity is None or entity.is_destroyed:
             return False
 
         # Capture the scope before mutation: a held item that gets destroyed
@@ -581,17 +593,17 @@ class EnvironmentSystem:
         if change.perception:
             scope = (
                 change.perception_scope
-                or (acting_agent_id and self._locations.get(acting_agent_id))
+                or (doer_id and self._locations.get(doer_id))
                 or prior_location
                 or ""
             )
             if scope:
                 # Carry, not the current layer: this step's perception is already taken.
-                # actor_ids keeps the actor from perceiving his own change.
+                # doer_ids keeps the doer from perceiving his own change.
                 self.record_carry_observation(
                     location_id=scope,
                     observation=change.perception,
-                    actor_ids=(acting_agent_id,),
+                    doer_ids=(doer_id,),
                 )
 
         return True
@@ -803,29 +815,32 @@ class EnvironmentSystem:
         location_id: str,
         observation: str,
         strength: float | None = None,
-        actor_ids: tuple[str, ...] = (),
+        doer_ids: tuple[str, ...] = (),
+        acted_upon_ids: tuple[str, ...] = (),
     ) -> None:
         """Queue a location-scoped AmbientEvent for the NEXT step's ambient_events.
 
         strength:
             None  → ordinary ambient (PerceptionMemoryLayer's default)
             float → used as is, for something that matters to onlookers
-        actor_ids:
+        doer_ids:
             Every member of the producing execution plus whoever the act landed on; spatial_for
             hides the ambient from them so nobody reads a third-person account of their own act.
             ``()`` for environment / system ambient.
+        acted_upon_ids:
+            Which of ``doer_ids`` the act landed on (see ``AmbientEvent.acted_upon_ids``).
         """
         if observation is None or len(observation.strip()) == 0:
             return None
         self._carry_annotations.setdefault(location_id, []).append(
             AmbientEvent(
-                content=observation, strength=strength, actor_ids=tuple(actor_ids),
-                agent_actor_ids=self._cognizant(actor_ids),
+                content=observation, strength=strength, doer_ids=tuple(doer_ids),
+                doer_agent_ids=self._cognizant(doer_ids), acted_upon_ids=tuple(acted_upon_ids),
             )
         )
 
     def record_happening(
-        self, *, location_id: str, outcome: str, step: int, actor_ids: tuple[str, ...] = (),
+        self, *, location_id: str, outcome: str, step: int, doer_ids: tuple[str, ...] = (),
     ) -> None:
         """Record the full-fidelity version of something that surfaced at ``location_id``, for
         lurkers; ``record_carry_observation`` gives onlookers the degraded one. The caller
@@ -835,7 +850,7 @@ class EnvironmentSystem:
             return None
         bucket = self._happenings.setdefault(location_id, [])
         bucket.append(_Happening(
-            step=step, content=outcome, actor_ids=tuple(actor_ids),
+            step=step, content=outcome, doer_ids=tuple(doer_ids),
         ))
         cutoff = step - HAPPENINGS_WINDOW_STEPS
         if bucket[0].step <= cutoff:
@@ -860,7 +875,7 @@ class EnvironmentSystem:
         return [
             (t.step, t.content)
             for t in sorted(self._happenings.get(location_id, []), key=lambda t: t.step)
-            if t.step >= since_step and not excluded.intersection(t.actor_ids)
+            if t.step >= since_step and not excluded.intersection(t.doer_ids)
         ]
 
     def _cognizant(self, ids: tuple[str, ...]) -> tuple[str, ...]:
@@ -919,7 +934,7 @@ class EnvironmentSystem:
         }
         # Never show an agent a third-person account of an act he was part of.
         ambient_events: list[AmbientEvent] = [
-            ev for ev in self._step_annotations.get(location_id, []) if agent_id not in ev.actor_ids
+            ev for ev in self._step_annotations.get(location_id, []) if agent_id not in ev.doer_ids
         ]
         # is_public hides things in other people's hands, never in one's own.
         visible_entities = [
@@ -958,37 +973,29 @@ class EnvironmentSystem:
             reachable_locations=reachable_locations,
         )
 
-    def snapshot_state(self) -> dict[str, object]:
-        """Expose environment state for snapshots and observation tooling."""
+    def world_state(self) -> dict[str, dict[str, object]]:
+        """This environment's share of the world at the end of a step, whole: Npcs and entities
+        (``core.interfaces.snapshot.WorldState``). Agents' bodies are reported with the agents,
+        by the runtime."""
         return {
-            # The agent half is write-only (agent_store is authoritative); the Npc half is read
-            # back on restore.
-            "body_locations": dict(sorted(self._locations.items())),
-            "transit_origins": dict(sorted(self._transit_origins.items())),
-            "npc_outcomes": {
-                nid: {"text": text, "ongoing": ongoing}
-                for nid, (text, ongoing) in sorted(self._npc_outcomes.items())
-            },
-            "npc_displaced": sorted(self._npc_displaced),
             # The whole Npc: nothing else records its condition or errand.
-            "npc_states": {
-                nid: _npc_payload(npc) for nid, npc in sorted(self._npcs.items())
-            },
-            "step_annotations": {
-                scope: list(entries) for scope, entries in sorted(self._step_annotations.items())
-            },
-            # What onlookers perceive next step. Unsaved, a restore would drop that beat.
-            "carry_annotations": {
-                scope: [_ambient_payload(e) for e in entries]
-                for scope, entries in sorted(self._carry_annotations.items())
-            },
-            "location_names": {
-                place.place_id: place.name for place in self.space.all_places()
+            "npcs": {
+                nid: {
+                    **_npc_payload(npc),
+                    "location_id": self._locations.get(nid, ""),
+                    "displaced": nid in self._npc_displaced,
+                    # This beat's one line, written by its runner; None when nothing happened.
+                    "outcome": (
+                        {"text": self._npc_outcomes[nid][0], "ongoing": self._npc_outcomes[nid][1]}
+                        if nid in self._npc_outcomes else None
+                    ),
+                }
+                for nid, npc in sorted(self._npcs.items())
             },
             # Includes tombstones, so restore doesn't resurrect a destroyed seed. Every field:
             # this is the only record of runtime-made things (a missing is_public makes a hidden
             # item public on restore).
-            "entity_states": {
+            "entities": {
                 eid: {
                     "name": e.name,
                     "entity_type": e.entity_type.value,
@@ -1005,46 +1012,82 @@ class EnvironmentSystem:
             },
         }
 
-    def restore_state(self, state: Mapping[str, object]) -> None:
-        """Inverse of :meth:`snapshot_state` for the mutable parts of the world.
+    def engine_state(self) -> dict[str, object]:
+        """What only resuming needs: where travelers set out from, and the ambient annotations."""
+        return {
+            "transit_origins": dict(sorted(self._transit_origins.items())),
+            # What was perceived at each place this step.
+            "step_annotations": {
+                scope: list(entries) for scope, entries in sorted(self._step_annotations.items())
+            },
+            # What onlookers perceive next step. Unsaved, a restore would drop that beat.
+            "carry_annotations": {
+                scope: [_ambient_payload(e) for e in entries]
+                for scope, entries in sorted(self._carry_annotations.items())
+            },
+            # What a lurker may still catch here (covert adjudication only; see _happenings).
+            "happenings": {
+                location_id: [
+                    {"step": h.step, "content": h.content, "doer_ids": list(h.doer_ids)}
+                    for h in bucket
+                ]
+                for location_id, bucket in sorted(self._happenings.items())
+            },
+        }
+
+    def restore_state(
+        self,
+        *,
+        npcs: Mapping[str, object],
+        entities: Mapping[str, object],
+        engine: Mapping[str, object],
+    ) -> None:
+        """Inverse of :meth:`world_state` and :meth:`engine_state` for the mutable parts of the
+        world.
 
         The caller rebuilds places and agent placement; this restores entity state (re-registering
         runtime-made ones, re-killing tombstoned seeds), ``transit_origins`` (so the caller can
-        send mid-MOVE agents back), next step's carried observations, and Npcs whole, position
-        included.
+        send back a body left in transit with no trip), next step's carried observations, the
+        happenings a lurker may still catch, and Npcs whole, position included.
         """
-        carry = state.get("carry_annotations")
+        carry = engine.get("carry_annotations")
         if isinstance(carry, Mapping):
             self._carry_annotations = {
                 str(scope): [_ambient_from_payload(e) for e in entries if isinstance(e, Mapping)]
                 for scope, entries in carry.items() if isinstance(entries, list)
             }
-        transit_origins = state.get("transit_origins")
+        happenings = engine.get("happenings")
+        if isinstance(happenings, Mapping):
+            self._happenings = {
+                str(location_id): [
+                    _Happening(
+                        step=coerce_int(h.get("step"), default=0), content=str(h.get("content") or ""),
+                        doer_ids=tuple(str(i) for i in h.get("doer_ids") or ()),
+                    )
+                    for h in bucket if isinstance(h, Mapping) and h.get("content")
+                ]
+                for location_id, bucket in happenings.items() if isinstance(bucket, list)
+            }
+        transit_origins = engine.get("transit_origins")
         if isinstance(transit_origins, Mapping):
             self._transit_origins = {
                 str(agent_id): str(origin) for agent_id, origin in transit_origins.items()
             }
-        npc_states = state.get("npc_states")
-        if isinstance(npc_states, Mapping):
-            placements = state.get("body_locations")
-            placements = placements if isinstance(placements, Mapping) else {}
-            for npc_id, payload in npc_states.items():
-                if not isinstance(payload, Mapping):
-                    continue
-                npc_id = str(npc_id)
-                self._npcs[npc_id] = _npc_from_payload(npc_id, payload)
-                where = str(placements.get(npc_id, "") or "")
-                if where and where != IN_TRANSIT:
-                    self._place_body(npc_id, where, BodyKind.NPC)
-                else:
-                    # Restore can't put it back mid-road: back to the origin, errand resumes.
-                    origin = self._transit_origins.get(npc_id, "")
-                    if origin:
-                        self._place_body(npc_id, origin, BodyKind.NPC)
-        entity_states = state.get("entity_states")
-        if not isinstance(entity_states, Mapping):
-            return
-        for entity_id, payload in entity_states.items():
+        for npc_id, payload in (npcs.items() if isinstance(npcs, Mapping) else ()):
+            if not isinstance(payload, Mapping):
+                continue
+            npc_id = str(npc_id)
+            self._npcs[npc_id] = _npc_from_payload(npc_id, payload)
+            where = str(payload.get("location_id", "") or "")
+            if where and where != IN_TRANSIT:
+                self._place_body(npc_id, where, BodyKind.NPC)
+            else:
+                # Restore can't put it back mid-road: back to the origin, errand resumes.
+                origin = self._transit_origins.get(npc_id, "")
+                if origin:
+                    self._place_body(npc_id, origin, BodyKind.NPC)
+        # A malformed snapshot restores nothing rather than failing the whole world's restore.
+        for entity_id, payload in (entities.items() if isinstance(entities, Mapping) else ()):
             if not isinstance(payload, Mapping):
                 continue
             presence = EntityPresence(str(payload.get("presence", EntityPresence.AT_LOCATION.value)))
@@ -1069,11 +1112,10 @@ class EnvironmentSystem:
                     entity_id=str(entity_id),
                     name=str(payload.get("name", entity_id)),
                     entity_type=entity_type,
-                    state=str(payload.get("state", "intact")),
+                    state=str(payload.get("state", DEFAULT_ENTITY_STATE)),
                     description=str(payload.get("description", "")),
                     presence=presence,
                     presence_ref=presence_ref,
-                    is_takeable=bool(payload.get("is_takeable", entity_type.is_takeable)),
                     is_public=bool(payload.get("is_public", True)),
                     created_step=int(payload.get("created_step", 0) or 0),
                     content=str(payload.get("content", "")),

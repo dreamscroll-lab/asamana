@@ -3,13 +3,11 @@
 Chinese output routinely uses ASCII quotes as title marks (``我筹谋数日的"共响一声"之策``); under
 Rule 1 such a payload falls back to a null step and the whole cognition call is wasted.
 
-`extract_json` parses normally first, retries once with escapes added on failure, and raises if
-that fails too; a valid payload never reaches the repair.
+`extract_json` parses normally first, retries once with escapes added on failure, and raises
+``ValueError`` if no candidate object parses; a valid payload never reaches the repair.
 """
 
 from __future__ import annotations
-
-import json
 
 import pytest
 
@@ -47,10 +45,22 @@ def test_valid_payloads_are_untouched() -> None:
 def test_structural_damage_still_raises() -> None:
     # Escapes can be repaired, structure can't. Truncation still raises, and the caller falls back
     # per Rule 1.
-    with pytest.raises(json.JSONDecodeError):
+    with pytest.raises(ValueError):
         extract_json('{"reason": "话说到一半就断了')
-    with pytest.raises(json.JSONDecodeError):
+    with pytest.raises(ValueError):
         extract_json("not json at all")
+
+
+def test_a_later_object_is_used_when_the_first_span_does_not_parse() -> None:
+    assert extract_json('{not json} then {"a": 1}') == {"a": 1}
+
+
+def test_only_objects_are_returned() -> None:
+    # A bare array or scalar is not an object: callers read fields with ``.get``.
+    with pytest.raises(ValueError):
+        extract_json("[1, 2]")
+    with pytest.raises(ValueError):
+        extract_json("42")
 
 
 def test_extract_json_object_repairs_too() -> None:

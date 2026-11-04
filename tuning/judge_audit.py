@@ -31,7 +31,7 @@ from core.prompts import (
     NEED_INTENSITY_DEFINITION,
     NEED_TYPE_DEFINITION,
     NEED_WEIGHT_DEFINITION,
-    PHYSICAL_DEEDS,
+    PHYSICAL_DEED_DESCRIPTIONS,
     urgency_label,
 )
 from core.logging import get_logger
@@ -55,8 +55,8 @@ from tuning.audit_reconstruct import (
 logger = get_logger(__name__)
 
 _SYSTEM = (
-    "你是叙事仿真的**质量评审**(第三方裁定,非扮演角色)。你收到某个已跑完世界的一段 trace 的结构化"
-    "摘要,请按给定指标逐项审查。\n"
+    "你是叙事仿真的**质量评审**(第三方裁定,非扮演角色)。你收到某个世界的一份结构化材料"
+    "(开局设定,或运行过程的摘要),请按给定指标逐项审查。\n"
     "评分为**扣分制、满分 100**:每个维度默认 100 分,只在命中其『判分依据』时扣分——\n"
     "· 轻微问题：每条扣 5–10 分\n"
     "· 明显问题：每条扣 15–25 分\n"
@@ -286,7 +286,7 @@ def _action_input_line(r: dict, name: str, said: str) -> str:
     return "  行动｜输入：" + "｜".join(parts)
 
 
-def _action_output_lines(ar: dict, actor: str, target: Any, tag: str = "") -> list[str]:
+def _action_output_lines(ar: dict, doer: str, target: Any, tag: str = "") -> list[str]:
     """Action output rendering: lay out field by field, never dump raw JSON. Key names (fact / achieved
     / detected) are code-layer identity; the judge should read "own memory", "was it detected".
 
@@ -301,10 +301,10 @@ def _action_output_lines(ar: dict, actor: str, target: Any, tag: str = "") -> li
     mark = "[成功] " if succ is True else ("[失败] " if succ is False else "")
     out = [f"  行动｜输出(结果){tag}：{mark}{ar.get('outcome') or ''}".rstrip()]
     if ar.get("fact"):
-        out.append(f"    记忆(己方)：{ar['fact']}")  # actor's first person, with the other party's view removed
+        out.append(f"    记忆(己方)：{ar['fact']}")  # doer's first person, with the other party's view removed
     dlg = ar.get("dialogue")
     if isinstance(dlg, list) and dlg:
-        out.append(f"    对话：{len(dlg)} 轮（{actor}↔{str(target) if target else '对方'}）")
+        out.append(f"    对话：{len(dlg)} 轮（{doer}↔{str(target) if target else '对方'}）")
     if (det := ar.get("detected")) is not None:
         out.append(f"    {'被人察觉了' if det else '未被察觉'}")
     return out
@@ -316,7 +316,7 @@ def _needs(ns: Any) -> str:
     for n in ns or []:
         if isinstance(n, dict):
             lab = f"·{n['label']}" if n.get("label") else ""
-            out.append(f"    - {n.get('type')}{lab}（强度{n.get('intensity')}，权重{n.get('weight')}）")
+            out.append(f"    - {n.get('type')}{lab}（强度{n.get('intensity')}，在意程度{n.get('weight')}）")
     return "\n".join(out)
 
 
@@ -334,18 +334,26 @@ def _action_type_legend() -> list[str]:
     return [f"{c.action_type.value.upper()}：{c.description}" for c in _ACTION_SPACE]
 
 
-def _need_legend() -> str:
-    """Need scale + the five category definitions + activation, all taken from authoritative constants (core/prompts, agent/need).
+def _need_scale_legend() -> str:
+    """Need scale + the five category definitions, all taken from authoritative constants (core/prompts).
 
     The yardstick for judging whether need types are canonical, whether intensities / weights are out
     of range or unreasonable, and whether they fit the situation. A hand copy would drift: the anchors
     (0.3 = noticeable but not urgent / 0.8 = dominates thinking) are the only basis for judging whether
-    a value is reasonable, and losing them makes the dimension unjudgeable. Activation and intensity are
-    different quantities; reading one on the other's scale can't tell right from wrong.
+    a value is reasonable, and losing them makes the dimension unjudgeable.
+    """
+    return f"{NEED_TYPE_DEFINITION}\n  {NEED_INTENSITY_DEFINITION}\n  {NEED_WEIGHT_DEFINITION}"
+
+
+def _need_legend() -> str:
+    """The need scale plus activation, for renderers whose cells show activation values.
+
+    Activation and intensity are different quantities; reading one on the other's scale can't tell
+    right from wrong. Don't add it where no activation is shown (the opening has none): there it's
+    only an off-topic runtime instruction.
     """
     activation = need_activation_legend().split("可选的需求：")[0].strip()
-    return (f"{NEED_TYPE_DEFINITION}\n  {NEED_INTENSITY_DEFINITION}\n  {NEED_WEIGHT_DEFINITION}\n"
-            f"  {activation}")
+    return f"{_need_scale_legend()}\n  {activation}"
 
 
 def _time_legend(sps: Any) -> str:
@@ -361,7 +369,7 @@ def _time_legend(sps: Any) -> str:
 
 
 def _pressure_legend() -> str:
-    """Two scales for external pressure: category + urgency. A judge reading "外部压力（threat，紧迫度【紧急】）"
+    """Two scales for external pressure: category + urgency. A judge reading "外部压力（threat，紧急程度【紧急】）"
     without knowing what threat means or which of the four levels 【紧急】 is can't judge whether it
     should override the dominant need.
 
@@ -376,7 +384,7 @@ def _pressure_legend() -> str:
             (Urgency.CRITICAL, "必须立即响应（生死攸关 / 不可错过）"),
         )
     )
-    return f"{EXTERNAL_DRIVE_TYPE_DEFINITION}；紧迫度 4 档：{tiers}"
+    return f"{EXTERNAL_DRIVE_TYPE_DEFINITION}；紧急程度 4 档：{tiers}"
 
 
 # Scales are defined in one place and requested by name from each renderer. Rendering a scale
@@ -393,7 +401,7 @@ _SCALES: dict[str, Any] = {
     "时间": lambda sps: _time_legend(sps),
     # Goal statuses in raw output are English enums (sams/mass already translate them; sass lays out the raw text, so it needs the mapping).
     "目标状态": lambda sps: "、".join(f"{k}={v}" for k, v in _GOAL_STATUS_LABELS.items()),
-    # The relation field in adjudication output: the actor's sentiment toward the others involved (output schema of engine/executors/*).
+    # The relation field in adjudication output: the doer's sentiment toward the others involved (output schema of engine/executors/*).
     "关系走向": lambda sps: "裁决输出的 relation 字段 —— positive=观感转好、negative=观感转坏、"
                             "neutral=没有变化",
 }
@@ -437,7 +445,7 @@ def _deed_block() -> list[str]:
     """``deed`` in PHYSICAL adjudication output: what the hands-on beat is actually doing. Only sass lays
     out raw output, so only it encounters the word; taken from core.prompts, the same source as the adjudication prompt."""
     return ["  动手的名目（PHYSICAL 裁决 deed 字段的取值）：",
-            _bullets([f"{k}：{v}" for k, v in PHYSICAL_DEEDS.items()])]
+            _bullets([f"{k.value}：{v}" for k, v in PHYSICAL_DEED_DESCRIPTIONS.items()])]
 
 
 def _cell_legend_lines(sps: Any) -> list[str]:
@@ -460,23 +468,19 @@ def init_block(view: WorldAuditView) -> str:
     init = view.init
     kf = {str(f.get("name")): f for f in init.get("key_figures", []) if isinstance(f, dict) and f.get("name")}
     personas = {str(p.get("name")): p for p in init.get("personas", []) if isinstance(p, dict) and p.get("name")}
-    cast = {str(c.get("name")): c for c in init.get("cast_roles", []) if isinstance(c, dict) and c.get("name")}
     era = (init.get("world_time_config") or {}).get("era_name")
 
     lines = [f"世界：{init.get('world_name')}" + (f"（时代：{era}）" if era else ""),
              f"核心张力：{init.get('core_tension')}",
              f"主题：{init.get('narrative_theme')}",
              _sub_sep("角色档案（判『设定是否违和 / 游离』『动机背景是否服务同一处境』）"),
-             f"  （需求刻度与类型：{_need_legend()}）"]
-    # key_figures is the primary key: it's the authoritative cast. Going by personas, anyone the persona
-    # step failed to generate would vanish from the initialization audit, and "a character is missing"
-    # is exactly what this audit should catch, not filter out first.
-    for name in list(kf) + [n for n in personas if n not in kf]:
-        f, p, c = kf.get(name, {}), personas.get(name, {}), cast.get(name, {})
+             f"  需求刻度与类型：{_need_scale_legend()}"]
+    for name in kf:
+        f, p = kf[name], personas.get(name, {})
         # Give the tier (main/background): this audit judges whether there are detached, interchangeable
         # characters unrelated to the core tension, and a background character needn't carry the main plot.
         # Without the tier, the judge measures everyone with the same ruler.
-        tier = "主角" if f.get("importance") == "main" else "背景"
+        tier = "主角" if f.get("importance") == "main" else "背景角色"
         # Where they stand at the start: like the placement of things and errand-runners, a build-time
         # opening fact. Judging whether placement fits their situation, and whether the factions start
         # crowded together or each in their own place, needs it; without it the initialization audit sees
@@ -484,12 +488,8 @@ def init_block(view: WorldAuditView) -> str:
         where = f"　在 {p['initial_location']}" if p.get("initial_location") else ""
         lines.append(f"\n【{name}】（{tier}）{f.get('role') or p.get('role') or ''}　"
                      f"{f.get('age')}岁　{f.get('gender') or ''}{where}")
-        if not p:
-            lines.append("  ⚠ 这个角色没有生成人设(persona)——下面的性格/背景/需求整块缺失。")
-        if c.get("narrative_role") or c.get("arc_summary"):
-            lines.append(f"  叙事角色：{c.get('narrative_role', '')}　弧线：{c.get('arc_summary', '')}")
         if p.get("core_traits"):
-            lines.append(f"  性格：{_join(p['core_traits'])}")
+            lines.append(f"  性格特点：{_join(p['core_traits'])}")
         if p.get("core_values"):
             lines.append(f"  价值观：{_join(p['core_values'])}")
         if p.get("self_image"):
@@ -497,12 +497,12 @@ def init_block(view: WorldAuditView) -> str:
         if p.get("background"):
             lines.append(f"  背景：{p['background']}")
         if p.get("life_goal"):
-            lines.append(f"  毕生追求：{p['life_goal']}")
+            lines.append(f"  人生目标：{p['life_goal']}")
         if p.get("long_term_goals"):
             lines.append("  长期目标：")
             lines.append(_bullets(p["long_term_goals"]))
         if p.get("hard_constraints"):
-            lines.append("  硬约束（绝不为之）：")
+            lines.append("  底线（不可逾越）：")
             lines.append(_bullets(p["hard_constraints"]))
         if p.get("initial_needs"):
             lines.append("  初始需求：")
@@ -511,12 +511,12 @@ def init_block(view: WorldAuditView) -> str:
             lines.append("  隐藏需求：")
             lines.append(_needs(p["hidden_needs"]))
 
-    lines.append(_sub_sep("初始关系（就地带年龄 + 双向 label + 信任/好感；判 年龄↔称谓 与 正反向对应）"))
+    lines.append(_sub_sep("初始关系（就地带年龄 + 双向 label + 信任度/好感度；判 年龄↔称谓 与 正反向对应）"))
     # Inject the project's own relation_legend() at the start of the relation definitions (authoritative,
-    # single source of truth): it states the label's role is the initiator's position in the relation
-    # ("父子:儿子" = A is B's son), which keeps the seniority direction from being read backwards.
+    # single source of truth): it states the label's role is the other party's position relative to
+    # the holder ("父子:父亲" = B is A's father), which keeps the seniority direction from being read backwards.
     lines.append(f"  {relation_legend()}")
-    lines.append("  （据上对照年龄判长幼：『兄弟:弟弟』的发起方应比对方年幼，反之矛盾）")
+    lines.append("  （据上对照年龄判长幼：labels 为『兄弟:弟弟』时对方（to）应比发起方（from）年幼，反之矛盾）")
     for r in init.get("initial_relations", []):
         if not isinstance(r, dict):
             continue
@@ -525,13 +525,15 @@ def init_block(view: WorldAuditView) -> str:
         ab = (kf.get(b) or {}).get("age", "?")
         lines.append(
             f"- {a}({aa}岁) — {b}({ab}岁)：\n"
-            f"    {a} 自居为 {b} 的「{_join(r.get('labels'))}」（信任{r.get('trust')}／好感{r.get('affection')}）\n"
-            f"    {b} 自居为 {a} 的「{_join(r.get('reverse_labels'))}」（信任{r.get('reverse_trust')}／好感{r.get('reverse_affection')}）")
+            f"    {a} 视 {b} 为「{_join(r.get('labels'))}」（信任度{r.get('trust')}／好感度{r.get('affection')}）\n"
+            f"    {b} 视 {a} 为「{_join(r.get('reverse_labels'))}」（信任度{r.get('reverse_trust')}／好感度{r.get('reverse_affection')}）")
 
-    lines.append(_sub_sep("历史事件（距开局小时数；判时间线是否倒错）"))
-    for h in init.get("historical_events", []):
-        if isinstance(h, dict):
-            lines.append(f"- [开局前 {h.get('hours_before_start')}h] {h.get('event')}（涉及 {_join(h.get('related_figures'))}）")
+    # Listed oldest first: in setup order the hours jump back and forth, and the judge reads the list
+    # order as the timeline.
+    lines.append(_sub_sep("过往事件（按先后排列，故事开始前的小时数；判时间线是否倒错）"))
+    events = [h for h in init.get("historical_events", []) if isinstance(h, dict)]
+    for h in sorted(events, key=lambda h: -(h.get("hours_before_start") or 0)):
+        lines.append(f"- [故事开始前 {h.get('hours_before_start')}h] {h.get('event')}（涉及 {_join(h.get('related_figures'))}）")
 
     # Opening things and errand-runners: like personas, fixed at build time for the whole run. They are
     # the affordances the world gives its characters: things to seize or hand over, people to send or ask.
@@ -541,7 +543,7 @@ def init_block(view: WorldAuditView) -> str:
     entities = init.get("world_entity_seeds") or []
     npcs = init.get("npcs") or []
     if entities or npcs:
-        lines.append(_sub_sep("开局的物与差役（判是否与核心张力咬合、落位是否自洽；纯装饰即为问题）"))
+        lines.append(_sub_sep("开局的物与NPC（判是否与核心张力咬合、落位是否自洽；纯装饰即为问题）"))
     for e in entities:
         if isinstance(e, dict):
             where = f"　在 {e.get('location_name')}" if e.get("location_name") else ""
@@ -550,7 +552,7 @@ def init_block(view: WorldAuditView) -> str:
     for n in npcs:
         if isinstance(n, dict):
             where = f"　在 {n.get('location_name')}" if n.get("location_name") else ""
-            lines.append(f"- [差役] {n.get('name')}（{n.get('gender') or ''}{n.get('age')}岁）"
+            lines.append(f"- [NPC] {n.get('name')}（{n.get('gender') or ''}{n.get('age')}岁）"
                          f"{where}：{n.get('description') or ''}")
     return "\n".join(lines)
 
@@ -780,26 +782,25 @@ def _persona_baseline_lines(name: str, k: dict[str, Any], persona: dict[str, Any
     reversal is reasonable (whether "persecuting a teammate" is abrupt depends on each agent's stance
     and faction). Shared by both, so it can't drift.
     """
-    tier = "主角" if k.get("importance") == "main" else "背景"
+    tier = "主角" if k.get("importance") == "main" else "背景角色"
     lines = [f"  {name}（{tier}）　{k.get('role') or persona.get('role') or ''}　"
              f"{k.get('age')}岁　{k.get('gender') or ''}"]
     if persona.get("core_traits"):
-        lines.append(f"  性格：{_join(persona['core_traits'])}")
+        lines.append(f"  性格特点：{_join(persona['core_traits'])}")
     if persona.get("core_values"):
         lines.append(f"  价值观：{_join(persona['core_values'])}")
     if persona.get("self_image"):
         lines.append(f"  自我认知：{persona['self_image']}")
     if persona.get("life_goal"):
-        lines.append(f"  毕生追求：{persona['life_goal']}")
+        lines.append(f"  人生目标：{persona['life_goal']}")
     if persona.get("background"):
         lines.append(f"  背景：{persona['background']}")
     if persona.get("hard_constraints"):
-        lines.append("  硬约束（绝不为之）：")
+        lines.append("  底线（不可逾越）：")
         lines.append(_bullets(persona["hard_constraints"]))
-    ltg = persona.get("long_term_goals") or ([persona["life_goal"]] if persona.get("life_goal") else [])
-    if ltg:
-        lines.append("  长期目标：")
-        lines.append(_bullets(ltg))
+    ltg = persona.get("long_term_goals") or []
+    lines.append("  长期目标：")
+    lines.append(_bullets(ltg) if ltg else "    未提供")
     return lines
 
 
@@ -848,14 +849,13 @@ def _phase_lines(s: dict[str, Any], *, name: str, sps: Any) -> list[str]:
     settles); they're then numbered and listed. Merging would pair A's result with B's inputs, and
     dropping one leaves the judge unable to tell anything is missing.
     """
-    lines: list[str] = []
+    lines: list[str] = _mind_lines(s, "perception") + _mind_lines(s, "interrupt")
     itr = s.get("interrupt") or {}
-    if itr.get("doing") or itr.get("trigger"):
-        ip = [x for x in (f"正在做:{itr['doing']}" if itr.get("doing") else "",
-                          f"突发:{itr['trigger']}" if itr.get("trigger") else "") if x]
-        lines.append("  中断｜输入：" + "｜".join(ip))
+    if ip := _interrupt_context(itr):
+        lines.append(f"  中断｜输入：{ip}")
     if itr.get("thought") is not None or itr.get("interrupt") is not None:
-        lines.append(f"  中断｜输出：{itr.get('thought', '')}（interrupt={itr.get('interrupt')}）")
+        thought = itr.get("thought") or ("未留下想法" if itr.get("self_initiated") else "")
+        lines.append(f"  中断｜输出：{thought}（interrupt={itr.get('interrupt')}）")
     if s.get("location"):
         # Where he is: the premise for judging "conflicting actions in the same place" and "did he show up
         # when the agreement fell due". Location only: time is one per step and already in the step
@@ -866,15 +866,15 @@ def _phase_lines(s: dict[str, Any], *, name: str, sps: Any) -> list[str]:
     if s.get("relations"):  # Relations (now): list + direction (who is what to whom); can change per step, so relation development is visible
         lines.append("  关系(此刻)：")
         lines.extend(
-            f"    - {name} 自居为 {r['name']} 的「{r['labels'] or '未明确'}」"
-            f"（信任{_num(r['trust'])}/好感{_num(r['affection'])}）" for r in s["relations"])
+            f"    - {name} 视 {r['name']} 为「{r['labels'] or '未明确'}」"
+            f"（信任度{_num(r['trust'])}/好感度{_num(r['affection'])}）" for r in s["relations"])
     if s.get("perceived"):
         lines.append("  感知｜输入(此刻感知到)：")
         lines.append(_bullets(s["perceived"]))
     emo = s.get("emotion") or {}
     po = [x for x in (
         f"触动：{s['perception_reason']}" if s.get("perception_reason") else "",
-        f"情绪 {emo.get('primary')}(强度{emo.get('intensity')},效价{emo.get('valence')})"
+        f"情绪 {emo.get('primary')}(强度{emo.get('intensity')},情绪正负值{emo.get('valence')})"
         if emo.get("primary") else "",
         f"激活需求 {_fmt_output(s['need_activation'])}" if s.get("need_activation") else "",
     ) if x]
@@ -886,12 +886,13 @@ def _phase_lines(s: dict[str, Any], *, name: str, sps: Any) -> list[str]:
     if s.get("motivation_thought"):
         lines.append(f"  动机｜输出：思考:{s['motivation_thought']}")
     lines.extend(_goal_lines("  新短期目标", s.get("short_term_goals")))
+    lines.extend(_mind_lines(s, "decision"))
     lines.extend(_decision_lines(s, sps))
     lines.extend(_action_lines(s, name))
     for ap in s.get("appraisal") or []:
         before = emo.get("primary")
         arrow = f"{before}→{ap['emotion']}" if before and ap.get("emotion") else ap.get("emotion")
-        lines.append(f"  反馈｜输出：情绪 {arrow}(强度{ap.get('intensity')},效价{ap.get('valence')})")
+        lines.append(f"  反馈｜输出：情绪 {arrow}(强度{ap.get('intensity')},情绪正负值{ap.get('valence')})")
     lines.extend(_numbered(s.get("goal_progress") or [],
                            lambda g, tag: _goal_progress_lines(g, tag)))
     for res in s.get("residue") or []:
@@ -899,6 +900,59 @@ def _phase_lines(s: dict[str, Any], *, name: str, sps: Any) -> list[str]:
     for mem in s.get("memory") or []:
         lines.append(f"  记忆(主观感受)：{mem}")
     lines.extend(_step_level_lines(s))
+    return lines
+
+
+def _interrupt_context(itr: dict[str, Any]) -> str:
+    """What he was doing and what cut in. A break-off he chose himself has no trigger, and says
+    so: a bare stop reads as an unprompted one."""
+    trigger = "无，他自己决定停下手头这件事" if itr.get("self_initiated") else itr.get("trigger")
+    return "｜".join(x for x in (f"正在做:{itr['doing']}" if itr.get("doing") else "",
+                                f"突发:{trigger}" if trigger else "") if x)
+
+
+def _mind_text(m: dict[str, Any]) -> str:
+    """The short changes in his mind (emotion, relations, insights), in one line."""
+    parts: list[str] = []
+    if isinstance(emo := m.get("emotion"), dict):
+        parts.append(f"心境变为 {_emo(emo.get('emotion'), emo.get('intensity'), emo.get('valence'))}")
+    for r in m.get("relations") or []:
+        vals = "/".join(x for x in (f"信任度{_num(r['trust'])}" if r.get("trust") is not None else "",
+                                    f"好感度{_num(r['affection'])}" if r.get("affection") is not None else "") if x)
+        parts.append(f"对 {r.get('to') or '某人'} 变为 {vals}")
+    if m.get("insights"):
+        parts.append(f"新的洞察：{_join(m['insights'])}")
+    return "｜".join(parts)
+
+
+def _mind_goal_lines(m: dict[str, Any], indent: str) -> list[str]:
+    """The goal changes, one goal per item (§4: the judge checks each against the beats after it).
+    An emptied list reads "（无）"; a list he didn't touch is left out."""
+    lines: list[str] = []
+    for key, label in (("long_term_goals", "长期目标变为"), ("short_term_goals", "短期目标变为"),
+                       ("removed_short_term_goals", "放下了")):
+        goals = m.get(key)
+        if goals is None or (key == "removed_short_term_goals" and not goals):
+            continue
+        items = [str(g) for g in goals if str(g).strip()]
+        lines.append(f"{indent}{label}：" if items else f"{indent}{label}：（无）")
+        lines.extend(f"{indent}  - {g}" for g in items)
+    return lines
+
+
+def _mind_lines(s: dict[str, Any], before: str, pad: str = "  ") -> list[str]:
+    """Changes in his mind that landed before the *before* beat. They have no beat of their own:
+    the beat after them already reads the new state, and this says where it came from."""
+    indent = " " * (len(pad) + 2)
+    lines: list[str] = []
+    for m in s.get("mind") or []:
+        if m.get("before") != before:
+            continue
+        goal_lines = _mind_goal_lines(m, indent)
+        text = _mind_text(m)
+        if text or goal_lines:
+            lines.append(f"{pad}内心变化（此后各拍以此为准）：{text}")
+            lines.extend(goal_lines)
     return lines
 
 
@@ -1009,7 +1063,7 @@ def _step_level_lines(s: dict[str, Any]) -> list[str]:
     ref = s.get("reflection")
     for ins in (ref.get("insights") or []) if isinstance(ref, dict) else []:
         if isinstance(ins, dict) and ins.get("text"):
-            lines.append(f"  ⟳反思（重要度{ins.get('importance')}）：{ins['text']}")
+            lines.append(f"  ⟳反思（重要程度{ins.get('importance')}）：{ins['text']}")
     return lines
 
 
@@ -1061,7 +1115,7 @@ def _goal_gist(text: Any) -> str:
 
 def _emo(pri: Any, i: Any, v: Any) -> str:
     tail = "，".join(x for x in ((f"强度{i}" if i is not None else ""),
-                                 (f"效价{v}" if v is not None else "")) if x)
+                                 (f"情绪正负值{v}" if v is not None else "")) if x)
     return f"{pri}（{tail}）" if tail else str(pri)
 
 
@@ -1089,7 +1143,7 @@ def _mams_lines(name: str, s: dict[str, Any], *, sps: Any) -> list[str]:
         for r in relations or []:
             if r.get("name") == tc:
                 lb = f"{r.get('labels')}，" if r.get("labels") else ""
-                rel = f"（{lb}信任{_num(r.get('trust'))}/好感{_num(r.get('affection'))}）"
+                rel = f"（{lb}信任度{_num(r.get('trust'))}/好感度{_num(r.get('affection'))}）"
                 break
     tgt = ((t if t.startswith("→") else f"→{t}") + rel) if t else ""
     has_act = bool(at or dec.get("action_description") or results
@@ -1115,10 +1169,10 @@ def _mams_phase_lines(s: dict[str, Any], name: str, *, sps: Any) -> list[str]:
     itr = s.get("interrupt") or {}
     if s.get("location"):
         lines.append(f"      · 他在：{s['location']}")
+    for before in ("perception", "interrupt", "decision"):
+        lines.extend(_mind_lines(s, before, pad="      · "))
     if itr.get("interrupt"):
-        ctx = "｜".join(x for x in ((f"正在做:{itr['doing']}" if itr.get("doing") else ""),
-                                    (f"突发:{itr['trigger']}" if itr.get("trigger") else "")) if x)
-        lines.append(f"      · 【中断】他当场放下了手上那件事（{ctx}）：{itr.get('thought') or ''}")
+        lines.append(f"      · 【中断】他当场放下了手上那件事（{_interrupt_context(itr)}）：{itr.get('thought') or ''}")
     if (why := s.get("intent_dropped")):
         lines.append({
             "conscripted": "      · 【本步他没有自己的行动】被并进了别人的行动，自己决定的那件事与"
@@ -1194,8 +1248,9 @@ def _mams_phase_lines(s: dict[str, Any], name: str, *, sps: Any) -> list[str]:
     return lines
 
 
-def _mams_script_lines(actor: str, s: dict[str, Any]) -> list[str]:
-    """God's-eye script: TALK's actual dialogue (speaker 1 = initiator, 2 = other party, resolved to names).
+def _mams_script_lines(doer: str, s: dict[str, Any], shown: dict[tuple[str, ...], str] | None = None) -> list[str]:
+    """God's-eye script: TALK's actual dialogue. A narrator's speakers are 1 = initiator, 2 = other
+    party, resolved to names here; a memory call's transcript names its speakers already.
     mams is the director's view and needs to read what was actually said to judge the narrative, so
     there's no viewpoint filtering here; every line is laid out. Words sent out (letters / messages
     carried by errand-runners) aren't here; they travel with "what he does".
@@ -1203,6 +1258,10 @@ def _mams_script_lines(actor: str, s: dict[str, Any]) -> list[str]:
     Both phases are searched: an interrupted conversation settles at step start, so its dialogue belongs
     to the carry-over segment. The other party is resolved from that phase's own participants/targets,
     never borrowed across phases.
+
+    Every side of a talk carries its transcript, so a step's cells share ``shown`` (lines → whose
+    cell printed them): a talk is laid out once and the other sides point to it. Laid out twice, it
+    reads as two talks.
     """
     for phase in (s.get("carried"), s):
         if not isinstance(phase, dict):
@@ -1214,12 +1273,19 @@ def _mams_script_lines(actor: str, s: dict[str, Any]) -> list[str]:
     else:
         dlg = None
     if isinstance(dlg, list) and dlg:
-        who = {1: actor, 2: str(target) if target else "对方"}
+        key = tuple(str(t.get("line", "")).strip() for t in dlg if isinstance(t, dict))
+        if shown is not None:
+            if (where := shown.get(key)) is not None:
+                return [f"      · 对话：同一场，见 {where} 处"]
+            shown[key] = doer
+        who = {1: doer, 2: str(target) if target else "对方"}
         out = ["      · 对话："]
         for turn in dlg:
             if not isinstance(turn, dict):
                 continue
-            sp = who.get(turn.get("speaker"), f"角色{turn.get('speaker')}")
+            speaker = turn.get("speaker")
+            named = isinstance(speaker, str) and not speaker.isdigit()
+            sp = speaker if named else who.get(speaker, f"角色{speaker}")
             out.append(f"          {sp}：{str(turn.get('line', '')).strip()}")
         return out
     return []
@@ -1238,7 +1304,7 @@ def _rel_deltas(name: str, relations: Any, prior: dict[str, dict[str, tuple[floa
         prev = prior.setdefault(name, {}).get(tgt)
         if prev is not None and (abs(tr - prev[0]) >= 0.1 or abs(af - prev[1]) >= 0.1):
             lb = f"「{r.get('labels')}」" if r.get("labels") else ""
-            out.append(f"{name}→{tgt}{lb} 信任{_num(prev[0])}→{_num(tr)} 好感{_num(prev[1])}→{_num(af)}")
+            out.append(f"{name}→{tgt}{lb} 信任度{_num(prev[0])}→{_num(tr)} 好感度{_num(prev[1])}→{_num(af)}")
         prior[name][tgt] = (tr, af)
     return out
 
@@ -1266,7 +1332,7 @@ def world_block(view: WorldAuditView) -> str:
     # Persona baseline (shared with sams/mass): to judge OOC / the dead reappearing / everyone going their own way; long-term ambitions = convergence target.
     kf = {str(f.get("name")): f for f in init.get("key_figures", []) if isinstance(f, dict)}
     personas = _personas_by_id(view)
-    lines.append(_sub_sep("人设基线（判是否 OOC / 死者复现 / 各行其是；长期志向=朝其收敛的靶子）"))
+    lines.append(_sub_sep("人设基线（判是否 OOC / 死者复现 / 各行其是；长期目标=朝其收敛的靶子）"))
     for i, (aid, name) in enumerate(view.agent_names.items()):
         if i:  # dotted separator between agents' personas so boundaries are clear (this section has no character header; without it they run together)
             lines.append("  ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈")
@@ -1278,15 +1344,16 @@ def world_block(view: WorldAuditView) -> str:
     for entry in view.world_sequence:
         lines.append(_step_sep(entry["step"], entry.get("world_time")))
         # World pressure (meta, a scheduling signal) isn't injected: it isn't something that happens in the world, and it distracts the director (a deliberate decision).
-        for ev in entry.get("events", []):  # events = external variables actually injected into the world (e.g. a secret letter); narrative-level, so make them prominent
+        for ev in entry.get("injections", []):  # external variables actually injected into the world (e.g. a secret letter); narrative-level, so make them prominent
             if isinstance(ev, dict) and (ev.get("message") or ev.get("narrative_desc")):
                 lines.append(f"  ⚡事件：{ev.get('narrative_desc') or ev.get('message')}")
         rel_changes: list[str] = []
+        scripts: dict[tuple[str, ...], str] = {}
         # Same cell path as mass (view.cells_at), just laid out step × character here.
         for _aid, nm, sv in view.cells_at(entry["step"]):
             if block := _mams_lines(nm, sv.summary, sps=sps):  # empty cells produce no block; the rendering decides
                 lines.extend(block)
-                lines.extend(_mams_script_lines(nm, sv.summary))  # god's-eye: what was actually said
+                lines.extend(_mams_script_lines(nm, sv.summary, scripts))  # god's-eye: what was actually said
             rel_changes.extend(_rel_deltas(nm, sv.summary.get("relations"), prior_rel))
         # Changes between agents: this step's relation matrix vs the last time it was seen. Relations are
         # only visible on steps where the agent perceived, and steps without perception aren't compared, so

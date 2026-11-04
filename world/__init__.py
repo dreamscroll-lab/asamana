@@ -8,49 +8,16 @@ The three build-time narrative invariants (``core_tension`` / ``narrative_theme`
 during build, deliberately **not** consumed by runtime cognition prompts.
 """
 
-from world.catalog import DEFAULT_CATALOG_PATH, WorldCatalog
-from world.models import (
-    AgentDefinition,
-    AgentTier,
-    HistoricalEventSeed,
-    LocationSeed,
-    RelationSeed,
-    ThemeAnalysis,
-    ThemeFigure,
-    World,
-    WorldEntity,
-    WorldEntitySeed,
-    WorldEntityType,
-)
+from world.builder import WorldBuilder
+from world.catalog import DEFAULT_CATALOG_PATH, ActorCasting, WorldCatalog
+from world.initializer import WorldInitializer
+from world.models import World
 
 __all__ = [
-    "AgentDefinition",
-    "AgentTier",
-    "HistoricalEventSeed",
-    "LocationSeed",
-    "RelationSeed",
-    "ThemeAnalysis",
-    "ThemeFigure",
+    "ActorCasting",
+    "DEFAULT_CATALOG_PATH",
     "World",
     "WorldBuilder",
-    "DEFAULT_CATALOG_PATH",
     "WorldCatalog",
-    "WorldEntity",
-    "WorldEntitySeed",
-    "WorldEntityType",
     "WorldInitializer",
 ]
-
-
-def __getattr__(name: str):
-    """Lazy import builder and initializer to avoid circular imports."""
-
-    if name == "WorldBuilder":
-        from world.builder import WorldBuilder
-
-        return WorldBuilder
-    if name == "WorldInitializer":
-        from world.initializer import WorldInitializer
-
-        return WorldInitializer
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

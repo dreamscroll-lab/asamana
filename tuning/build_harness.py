@@ -18,7 +18,7 @@ from config.models import Config
 from core.container import Container
 from core.interfaces.trace import to_jsonable
 from core.logging import get_logger
-from world import World, WorldBuilder
+from world import World, WorldBuilder, WorldInitializer
 from worlds.tiled import TiledWorldConfig, list_templates
 
 from tuning.agent_view import initialized_agent_view
@@ -78,7 +78,7 @@ async def run_build(
             logger.warning("phase_trace_record_failed", extra={"phase": phase, "error": str(exc)})
 
     builder = WorldBuilder(traced_container)
-    world = await builder.build(
+    await builder.build(
         theme=theme,
         world_id=world_id,
         world_configs=[
@@ -89,8 +89,11 @@ async def run_build(
         max_agents=config.world.max_agents,
         on_phase=on_phase,
     )
+    # A tuning run has no director to review the setup: materialize it as confirming would.
+    world = await WorldInitializer(traced_container).initialize(world_id)
+    on_phase("world_build.initialization", world)
     logger.info(
         "tuning_build_complete",
-        extra={"world_id": world_id, "world_name": world.analysis.world_name, "theme": theme},
+        extra={"world_id": world_id, "world_name": world.setup.lore.world_name, "theme": theme},
     )
     return world_id, world

@@ -1,10 +1,10 @@
-"""Reconstruct a browsable audit view from a world's persisted runtime traces.
+"""Reconstruct a browsable audit view from a world's confirmed setup and persisted runtime traces.
 
-Auditing is post-hoc and offline: it only reads the ``LLMCallTrace`` records already persisted in
-``data/traces/<world_id>/`` (prompt + response + stage + agent_id + step) and never reruns the
-simulation. This module regroups the flat JSONL calls into the shapes the three-part audit needs:
+Auditing is post-hoc and offline: it reads the setup frozen into step 0 plus the ``LLMCallTrace``
+records already persisted in ``data/traces/<world_id>/`` (prompt + response + stage + agent_id +
+step) and never reruns the simulation. This module regroups the flat JSONL calls into the shapes the three-part audit needs:
 
-- ``init``          — the build stage's world_building / cast_design / persona outputs (part one).
+- ``init``          — the opening world as confirmed: lore, characters, relations, history, things, NPCs (part one).
 - ``per_agent``     — each agent's per-stage trajectory across all steps (part two: across / along).
 - ``per_step``      — each agent's stage outputs within a step (part three: one step across agents).
 - ``world_sequence``— the world skeleton across steps (time + injected events); each agent's cell goes through ``cells_at``.
@@ -13,6 +13,11 @@ The audit's basic unit is the step: everything that happened to one body in one 
 Occasionally two things land in one step (an interrupt tears down an in-flight execution and
 settles it on the spot, then a new round of cognition runs). Multi-valued slots are then stored as
 lists in arrival order; see ``summarize``.
+
+Beats that land without an LLM call (``BeatTrace``: a decision or interrupt answer settled without
+one, mind amendments, injections landing) are read alongside the calls and fold into the same
+slots, so a step reads the same whoever settled it. The calls that only read an intent into such a
+decision (scene ``actor_intent``) are left out: the decision beat is what the step decided.
 
 Parsing always goes through ``extract_json_object`` (never raises; prose responses like
 memory_summarization are kept as-is) and tolerates gaps: a missing field in the audit view is one
@@ -26,11 +31,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.interfaces.llm import IndexedRef, extract_json_object
-from core.interfaces.trace import LLMCallTrace, stage_sort_key
-from engine.clock import SECONDS_PER_HOUR
+from core.interfaces.llm import LLMScene, extract_json_object
+from core.interfaces.trace import BeatKind, LLMCallTrace, stage_sort_key
+from core.interfaces.world_config import WorldConfig
 from interaction.models import WorldTimeView
 from providers.trace.file import BufferedJsonlTraceSink
+from world.setup import WorldSetup
 
 # Every input/state field the audit reads is attached by the cognition path to that stage's LLM call
 # through annotate_call into LLMCallTrace.extra (contract: core.context.annotate_call → LLMRouter →
@@ -67,6 +73,8 @@ from providers.trace.file import BufferedJsonlTraceSink
 #   long-term goal review call: long_term_goals_new (the version the engine finally adopted; empty = direction unchanged) ← agent/agent.py revise_long_term_goals
 #   every action-related call (action / feedback / memory): execution_id ← engine/execution_processor.py adjudication + landing,
 #                                                                        engine/interrupt_coordinator.py interrupt settlement
+#   a talk's first-person memory calls: dialogue (the transcript as [{speaker, line}], speakers by
+#                     name)                                              ← engine/executors/social.py
 #   every call in the step-start settlement phase: settles_prior_action (this segment settles the action
 #                           already in hand, not this step's new round) ← engine/runtime.py, three places at step start
 # ``execution_id`` is the engine's own key for joining action records; the audit doesn't infer from it.
@@ -111,12 +119,20 @@ def _resolve_targets(extra: dict[str, Any], out: dict) -> str | None:
     what decision.py prints (people/locations/things/NPCs 1-based, action_menu 0-based). Lists are
     split per slot; see ``_TARGET_SLOTS``.
     """
-    parts: list[str] = []
-    for slot, menu_key, prefix in _TARGET_SLOTS:
+    named: dict[str, list[str]] = {}
+    for slot, menu_key, _prefix in _TARGET_SLOTS:
         raw = out.get(slot)
         idxs = raw if isinstance(raw, list) else ([] if raw is None else [raw])
-        for idx in idxs:
-            if (nm := _menu_lookup(extra.get(menu_key), idx)) and f"{prefix}{nm}" not in parts:
+        named[slot] = [nm for idx in idxs if (nm := _menu_lookup(extra.get(menu_key), idx))]
+    return _render_targets(named)
+
+
+def _render_targets(named: dict[str, Any]) -> str | None:
+    """Render {slot: [names]} with each slot's prefix; a decision beat's targets come already named."""
+    parts: list[str] = []
+    for slot, _menu_key, prefix in _TARGET_SLOTS:
+        for nm in named.get(slot) or []:
+            if f"{prefix}{nm}" not in parts:
                 parts.append(f"{prefix}{nm}")
     return "、".join(parts) or None
 
@@ -144,6 +160,16 @@ class StageCall:
 
 
 @dataclass
+class StageBeat:
+    """One beat of a (agent, step) that landed without an LLM call (``BeatTrace``)."""
+
+    stage: str
+    kind: str
+    payload: dict[str, Any]
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class AgentStepView:
     """Everything that happened to one body in one step; the step is the audit's basic unit.
 
@@ -158,6 +184,7 @@ class AgentStepView:
     world_time: str
     calls: list[StageCall] = field(default_factory=list)
     summary: dict[str, Any] = field(default_factory=dict)
+    beats: list[StageBeat] = field(default_factory=list)
 
 
 @dataclass
@@ -205,6 +232,10 @@ def _parse(call: LLMCallTrace) -> Any:
     return obj if obj is not None else call.response_content
 
 
+# Calls that read an intent into a decision the step then takes from a decision beat: reading them
+# as decisions would count previews nobody confirmed. Their fidelity is tuning's concern, not review's.
+_INTENT_SCENE = LLMScene.ACTOR_INTENT.value
+
 # Output of the step-end maintenance phase: runs after every execution has settled, at most once per step, and belongs to no action.
 _STEP_LEVEL_STAGES = {"relation_evolution", "long_term_goals", "reflection"}
 
@@ -214,7 +245,9 @@ _STEP_LEVEL_STAGES = {"relation_evolution", "long_term_goals", "reflection"}
 _DISCARDED_VERDICTS = {"conscripted", "stood_down"}
 
 
-def summarize(calls: list[StageCall], agent_name: str = "") -> dict[str, Any]:
+def summarize(
+    calls: list[StageCall], agent_name: str = "", beats: list[StageBeat] | None = None,
+) -> dict[str, Any]:
     """One block per step: everything that happened to this body this step.
 
     The unit is the step, not the "beat". But inside a step there is a real order: the engine first
@@ -232,20 +265,74 @@ def summarize(calls: list[StageCall], agent_name: str = "") -> dict[str, Any]:
     ``agent_name`` lets the action stage drop the other party's first-person memory (a two-party TALK
     traces both sides' facts under the initiator's agent_id).
     """
-    carried = [c for c in calls if c.extra.get("settles_prior_action")]
-    fresh = [c for c in calls if not c.extra.get("settles_prior_action")]
-    if not carried or not fresh:  # nothing carried over, or the whole step is settlement — neither needs splitting
-        return _fold(calls, agent_name)
-    summary = _fold(fresh, agent_name)
-    summary["carried"] = _fold(carried, agent_name)
+    beats = beats or []
+
+    def _carried(x: StageCall | StageBeat) -> bool:
+        return bool(x.extra.get("settles_prior_action"))
+
+    carried = [c for c in calls if _carried(c)]
+    fresh = [c for c in calls if not _carried(c)]
+    carried_beats = [b for b in beats if _carried(b)]
+    fresh_beats = [b for b in beats if not _carried(b)]
+    # nothing carried over, or the whole step is settlement — neither needs splitting
+    if not (carried or carried_beats) or not (fresh or fresh_beats):
+        return _fold(calls, agent_name, beats)
+    summary = _fold(fresh, agent_name, fresh_beats)
+    summary["carried"] = _fold(carried, agent_name, carried_beats)
     return summary
 
 
-def _fold(calls: list[StageCall], agent_name: str) -> dict[str, Any]:
+def _fold_decision(s: dict[str, Any], extra: dict[str, Any], decision: dict[str, Any]) -> None:
+    """File a decision under the arbitration verdict, a call's or a beat's alike.
+
+    Arbitration verdict (extra.verdict, stamped by engine/runtime at the commit point): what the world
+    did with this intent. Discarded ones (conscripted / yielded) aren't injected at all, nor are this
+    step's motivation and goals (the engine already marked them not adopted; the adopted check
+    filters them). An intent that never executed would only be compared with someone else's action
+    result below and flagged as fabrication / a broken chain.
+    """
+    if extra.get("verdict") in _DISCARDED_VERDICTS:
+        s.pop("short_term_goals", None)
+        s.pop("motivation_thought", None)
+        s["intent_dropped"] = extra["verdict"]
+        return
+    s["decision"] = {
+        **decision,
+        # Multi-step actions are marked only at the start: remaining steps come from the execution (not
+        # the decision's self-reported estimated_steps, which is an estimate). Later steps render as usual
+        # and readers can see it's the same action continuing.
+        "spans_steps": extra.get("spans_steps"),
+        "rejected": extra.get("verdict") == "rejected",
+    }
+
+
+def _fold_beat(s: dict[str, Any], b: StageBeat) -> None:
+    """A beat goes into the slot its call would fill; mind amendments are kept as the input of the
+    beat after them (``stage``: the beat they land before)."""
+    p = b.payload
+    if b.kind == BeatKind.DECISION.value:
+        _fold_decision(s, b.extra, {
+            "action_type": p.get("action_type"),
+            "action_description": p.get("action_description"),
+            "expected_outcome": p.get("expected_outcome"),
+            "target": _render_targets(p.get("targets") or {}),
+            "message_content": p.get("message_content"),
+        })
+    elif b.kind == BeatKind.INTERRUPT.value:
+        s["interrupt"] = {k: p.get(k) for k in ("thought", "interrupt", "doing", "trigger", "self_initiated")}
+    elif b.kind == BeatKind.MIND.value:
+        _append(s, "mind", {"before": b.stage, **p})
+
+
+def _fold(calls: list[StageCall], agent_name: str, beats: list[StageBeat] | None = None) -> dict[str, Any]:
     """Fold one segment's calls (within one phase) into a summary block. Two things can still land in
     one phase (pulled into someone else's action in the step it settles); multi-valued slots are then
     listed one by one, not merged: merging pairs A's result with B's inputs."""
     s: dict[str, Any] = {}
+    for b in beats or []:
+        _fold_beat(s, b)
+        if not s.get("location") and b.extra.get("location"):
+            s["location"] = b.extra["location"]
     discarded: list[str] = []
     for c in calls:
         if c.adopted is False:
@@ -299,17 +386,7 @@ def _fold(calls: list[StageCall], agent_name: str) -> dict[str, Any]:
                 if c.extra.get(k) is not None:
                     s[k] = c.extra[k]
         elif c.stage == "decision":
-            # Arbitration verdict (extra.verdict, stamped by engine/runtime at the commit point): what the world
-            # did with this intent. Discarded ones (conscripted / yielded) aren't injected at all, nor are this
-            # step's motivation and goals (the engine already marked them not adopted; the adopted check above
-            # filters them). An intent that never executed would only be compared with someone else's action
-            # result below and flagged as fabrication / a broken chain.
-            if c.extra.get("verdict") in _DISCARDED_VERDICTS:
-                s.pop("short_term_goals", None)
-                s.pop("motivation_thought", None)
-                s["intent_dropped"] = c.extra["verdict"]
-                continue
-            s["decision"] = {
+            _fold_decision(s, c.extra, {
                 "action_type": _menu_lookup(c.extra.get("action_menu"), out.get("selected_index")),
                 "selected_index": out.get("selected_index"),
                 "action_description": out.get("action_description"),
@@ -319,12 +396,7 @@ def _fold(calls: list[StageCall], agent_name: str) -> dict[str, Any]:
                 # The exact words actually sent (god's-eye). SEND_MESSAGE and ERRAND each have their own slot; to
                 # the audit they're the same thing: which words went out this step.
                 "message_content": out.get("message_content") or out.get("errand_message"),
-                # Multi-step actions are marked only at the start: remaining steps come from the execution (not
-                # the decision's self-reported estimated_steps, which is an estimate). Later steps render as usual
-                # and readers can see it's the same action continuing.
-                "spans_steps": c.extra.get("spans_steps"),
-                "rejected": c.extra.get("verdict") == "rejected",
-            }
+            })
         elif c.stage == "action":
             _fold_action(s, c, out, agent_name)
         elif c.stage == "feedback":
@@ -401,6 +473,12 @@ def _fold_action(s: dict[str, Any], c: StageCall, out: dict, agent_name: str) ->
         _append(s, "acted_upon", au)
     fields = {k: out.get(k) for k in
               ("outcome", "fact", "dialogue", "success", "achieved", "detected") if k in out}
+    # A talk's transcript rides on each side's own memory call, speakers by name; a narrator's
+    # dialogue already in this phase covers it.
+    if fields and "dialogue" not in fields and c.extra.get("dialogue") and not any(
+        isinstance(r, dict) and r.get("dialogue") for r in s.get("results") or []
+    ):
+        fields["dialogue"] = c.extra["dialogue"]
     if fields:
         whose = {k: v for k, v in (("did", c.extra.get("action_description")),
                                    ("initiator", c.extra.get("action_initiator")),
@@ -408,63 +486,72 @@ def _fold_action(s: dict[str, Any], c: StageCall, out: dict, agent_name: str) ->
         _append(s, "results", {**whose, **fields})
 
 
-def _build_init(build_calls: list[LLMCallTrace]) -> tuple[dict[str, Any], dict[str, str]]:
-    """Assemble the initialization view + an agent_id→name map from build.jsonl calls."""
-    world_building: dict[str, Any] = {}
-    cast_roles: Any = None
-    personas: list[dict[str, Any]] = []
-    names: dict[str, str] = {}
-    for c in build_calls:
-        obj = extract_json_object(c.response_content)
-        if not isinstance(obj, dict):
-            continue
-        if c.scene == "world_building":
-            world_building = obj
-        elif c.scene == "cast_design":
-            cast_roles = obj.get("roles")
-        elif c.scene == "persona_generation":
-            # Identity comes from the trace's own agent_id / agent_name, not the echo: the model miscopies ids,
-            # and production (AgentGenerator._definition_from_payload) doesn't trust the echoed name / agent_id either.
-            aid = c.agent_id or obj.get("agent_id")
-            name = c.extra.get("agent_name") or obj.get("name")
-            if aid:
-                obj["agent_id"] = aid
-            if name:
-                obj["name"] = name
-            personas.append(obj)
-            if aid and name:
-                names[str(aid)] = str(name)
-    # Step duration is set by this build itself. The audit reads the raw LLM output, whose unit is hours
-    # (production quantizes to seconds in _analysis_from_payload), so the same conversion is applied
-    # here to express the trajectory's estimated_steps as natural durations; the narrative layer has no "step" unit.
-    time_config = world_building.get("world_time_config") or {}
-    hours_per_step = time_config.get("hours_per_step") if isinstance(time_config, dict) else None
-    seconds_per_step = (
-        int(hours_per_step) * SECONDS_PER_HOUR if isinstance(hours_per_step, int) else None
-    )
-    # Roles name their figure by roster number, as CastDesigner._parse reads them.
-    roster = IndexedRef(
-        str(f.get("name")) for f in world_building.get("key_figures") or [] if isinstance(f, dict)
-    )
-    for role in cast_roles if isinstance(cast_roles, list) else []:
-        if isinstance(role, dict) and (resolved := roster.resolve([role.get("index")])):
-            role["name"] = resolved[0]
+def _build_init(setup: WorldSetup, world_config: WorldConfig) -> tuple[dict[str, Any], dict[str, str]]:
+    """Assemble the initialization view + an agent_id→name map from the world's confirmed setup.
+
+    The setup frozen into step 0 is the world that ran. Don't read the build's raw LLM responses
+    instead: the build normalizes, fills in and drops fields after them (hidden needs get their
+    intensity and weight, ids resolve to places), and the confirm step may revise characters, so
+    the judge would score a world that never existed.
+    """
+    places = {pid: place.name for pid, place in world_config.get_places().items()}
+    names = {d.agent_id: d.soul.name for d in setup.characters}
+
+    # Narrative-facing text: an unresolved id falls back to a descriptive referent, never the id.
+    def _place(pid: str) -> str:
+        return places.get(pid) or "某地"
+
+    def _person(aid: str) -> str:
+        return names.get(aid) or "某人"
+
+    lore = setup.lore
     init = {
-        "world_name": world_building.get("world_name"),
+        "world_name": lore.world_name,
         # Opening things and errand-runners: like personas, they're the initial world fixed at build time
         # for the whole run. The audit needs to see them to judge whether the opening has anything to fight
         # over or anyone to send; a world with no affordances can only move forward through talk.
-        "world_entity_seeds": world_building.get("world_entity_seeds") or [],
-        "npcs": world_building.get("npcs") or [],
-        "core_tension": world_building.get("core_tension"),
-        "narrative_theme": world_building.get("narrative_theme"),
-        "key_figures": world_building.get("key_figures") or [],
-        "initial_relations": world_building.get("initial_relations") or [],
-        "historical_events": world_building.get("historical_events") or [],
-        "world_time_config": world_building.get("world_time_config") or {},
-        "seconds_per_step": seconds_per_step,
-        "cast_roles": cast_roles or [],
-        "personas": personas,
+        "world_entity_seeds": [
+            {"name": s.name, "entity_type": s.entity_type, "initial_state": s.initial_state,
+             "location_name": _place(s.location), "description": s.description}
+            for s in setup.entity_seeds
+        ],
+        "npcs": [
+            {"name": s.name, "gender": s.gender, "age": s.age,
+             "location_name": _place(s.location), "description": s.description}
+            for s in setup.npc_seeds
+        ],
+        "core_tension": lore.core_tension,
+        "narrative_theme": lore.narrative_theme,
+        "key_figures": [
+            {"name": d.soul.name, "role": d.soul.role, "age": d.soul.age, "gender": d.soul.gender,
+             "importance": d.tier.value}
+            for d in setup.characters
+        ],
+        "initial_relations": [
+            {"from": _person(r.source_id), "to": _person(r.target_id),
+             "labels": list(r.labels), "trust": r.trust, "affection": r.affection,
+             "reverse_labels": list(r.reverse_labels), "reverse_trust": r.reverse_trust,
+             "reverse_affection": r.reverse_affection}
+            for r in setup.relations
+        ],
+        "historical_events": [
+            {"event": e.event, "hours_before_start": e.hours_before_start,
+             "related_figures": [_person(a) for a in e.figure_ids]}
+            for e in setup.historical_events
+        ],
+        "world_time_config": dict(lore.world_time_config),
+        # The world's clock as the runtime resolves it, so durations read the same as in the run.
+        "seconds_per_step": lore.seconds_per_step,
+        "personas": [
+            {"agent_id": d.agent_id, "name": d.soul.name, "role": d.soul.role,
+             "initial_location": _place(d.initial_location),
+             "core_traits": list(d.soul.core_traits), "core_values": list(d.soul.core_values),
+             "self_image": d.soul.self_image, "background": d.soul.background,
+             "life_goal": d.soul.life_goal, "hard_constraints": list(d.soul.hard_constraints),
+             "long_term_goals": list(d.long_term_goals),
+             "initial_needs": d.initial_needs, "hidden_needs": d.hidden_needs}
+            for d in setup.characters
+        ],
     }
     return init, names
 
@@ -476,19 +563,21 @@ def _build_init(build_calls: list[LLMCallTrace]) -> tuple[dict[str, Any], dict[s
 def reconstruct_world(
     world_id: str,
     *,
+    setup: WorldSetup,
+    world_config: WorldConfig,
     trace_dir: str = "data/traces",
     steps: list[int] | None = None,
 ) -> WorldAuditView:
     """Read a world's traces and reshape them for the audit judges.
 
-    ``steps`` (optional) restricts the single/multi-step views to a subset; the
-    initialization view always reads the full build segment.
+    ``setup`` / ``world_config`` are the world as confirmed (step 0's setup and the persisted map):
+    the initialization view is built from them. ``steps`` (optional) restricts the single/multi-step
+    views to a subset.
     """
     sink = BufferedJsonlTraceSink(base_dir=trace_dir)
     all_calls = sink.read_calls(world_id)
 
-    build_calls = [c for c in all_calls if c.step is None or c.stage == "world_init"]
-    init, names = _build_init(build_calls)
+    init, names = _build_init(setup, world_config)
 
     world_times = {
         s.step: WorldTimeView.from_payload(s.world_time).label
@@ -499,12 +588,31 @@ def reconstruct_world(
 
     per_agent: dict[str, AgentTrajectory] = {}
     per_step: dict[int, dict[str, list[StageCall]]] = {}
-    # world-level calls (agent_id is None): event / director, grouped by step. pressure hangs under the
-    # agent being assessed, so it's not a world-level call.
-    world_calls: dict[int, list[StageCall]] = {}
+
+    def _trajectory(aid: str) -> AgentTrajectory:
+        traj = per_agent.get(aid)
+        if traj is None:
+            traj = per_agent[aid] = AgentTrajectory(agent_id=aid, name=names.get(aid, aid))
+        return traj
+
+    # Beats: an agent's go into its cell; a world-level one (an injection landing) into the step's skeleton.
+    agent_beats: dict[tuple[str, int], list[StageBeat]] = {}
+    injections: dict[int, list[dict[str, Any]]] = {}
+    for b in sink.read_beats(world_id):
+        if b.step not in step_set:
+            continue
+        if b.agent_id:
+            agent_beats.setdefault((b.agent_id, b.step), []).append(
+                StageBeat(stage=b.stage, kind=b.beat_kind, payload=b.payload, extra=b.extra or {}))
+            per_step.setdefault(b.step, {}).setdefault(b.agent_id, [])
+            _trajectory(b.agent_id)
+        elif b.beat_kind == BeatKind.INJECTION.value:
+            injections.setdefault(b.step, []).append(b.payload)
 
     for c in all_calls:
         if c.step is None or c.step not in step_set:
+            continue
+        if c.scene == _INTENT_SCENE or not c.agent_id:
             continue
         sc = StageCall(
             stage=c.stage, scene=c.scene, prompt=c.prompt_messages,
@@ -512,18 +620,12 @@ def reconstruct_world(
             adopted=c.adopted, reject_reason=c.reject_reason,
             extra=c.extra or {},
         )
-        if not c.agent_id:
-            world_calls.setdefault(c.step, []).append(sc)
-            continue
         # TODO(trace-attribution): a two-party TALK traces both sides' first-person facts under the
         # initiator's agent_id, so the target's fact is missing from its action stage. Fix that in the
         # trace layer, not here. Meanwhile the audit falls back to feedback_action_actual (attached under
         # this agent by the feedback call); once the trace is fixed the fallback stops firing on its own.
         per_step.setdefault(c.step, {}).setdefault(c.agent_id, []).append(sc)
-        traj = per_agent.get(c.agent_id)
-        if traj is None:
-            traj = AgentTrajectory(agent_id=c.agent_id, name=names.get(c.agent_id, c.agent_id))
-            per_agent[c.agent_id] = traj
+        _trajectory(c.agent_id)
 
     # Fold each agent's calls into AgentStepViews ordered by step. Arrival order is the true order within
     # a step; stage order is only for aligning the display with the cognition loop, not for inferring what came first.
@@ -535,21 +637,20 @@ def reconstruct_world(
         traj = per_agent[aid]
         for step in sorted(by_step):
             arrived = by_step[step]
+            beats = agent_beats.get((aid, step), [])
             traj.steps.append(AgentStepView(
                 step=step, world_time=world_times.get(step, ""),
                 calls=sorted(arrived, key=lambda c: stage_sort_key(c.stage)),
-                summary=summarize(arrived, traj.name),
+                summary=summarize(arrived, traj.name, beats),
+                beats=beats,
             ))
 
-    # World skeleton: each step's time + injected events. Agents' cells aren't copied here (see cells_at).
-    world_sequence: list[dict[str, Any]] = []
-    for step in sorted(step_set):
-        wcalls = world_calls.get(step, [])
-        world_sequence.append({
-            "step": step,
-            "world_time": world_times.get(step, ""),
-            "events": [c.output for c in wcalls if c.stage == "event"],
-        })
+    # World skeleton: each step's time + the injections that landed in it, whoever authored them.
+    # Agents' cells aren't copied here (see cells_at).
+    world_sequence = [
+        {"step": step, "world_time": world_times.get(step, ""), "injections": injections.get(step, [])}
+        for step in sorted(step_set)
+    ]
 
     return WorldAuditView(
         world_id=world_id,

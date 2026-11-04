@@ -21,10 +21,11 @@ from typing import Any
 from config.models import Config
 from core.container import Container
 from core.interfaces.action import KIND_AGENT, KIND_NPC, KIND_OBJECT, ActionType
-from world.models import WorldEntityType
+from core.interfaces.entity import WorldEntityType
 from core.interfaces.llm import LLMProvider, LLMScene
 from core.logging import get_logger
 from world.initializer import WorldInitializer
+from tuning.dry_run import isolate_container
 
 from tuning.judge_decision import judge_decision
 from tuning.judge_llm import create_judge
@@ -183,7 +184,7 @@ async def validate_decision(
     scenarios = load_scenarios(scenarios_path, _DEFAULT_SCENARIOS)
     judge_llm = judge_provider or create_judge(config, judge_model)
 
-    world = await WorldInitializer(container).restore(world_id)
+    world = await WorldInitializer(await isolate_container(container, world_id)).restore(world_id)
     name_by_id = {aid: a.personality.soul.name for aid, a in world.agents.items()}
     id_by_name = {v: k for k, v in name_by_id.items()}
     agent_locations = {aid: world.environment.get_body_location(aid) for aid in world.agents}

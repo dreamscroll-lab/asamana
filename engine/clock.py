@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from core.coerce import coerce_enum
+from core.validate import require_at_least, require_in_range, require_positive
 
 
 # For the spoken 12-hour clock in _clock_label. Don't use the two-hour shichen: at one hour per
@@ -116,6 +117,9 @@ MAX_HOURS_PER_STEP = 24
 DEFAULT_HOURS_PER_STEP = 2
 SECONDS_PER_HOUR = 3600
 DEFAULT_STEP_SECONDS = DEFAULT_HOURS_PER_STEP * SECONDS_PER_HOUR
+STEP_SECONDS_RANGE: tuple[int, int] = (
+    MIN_HOURS_PER_STEP * SECONDS_PER_HOUR, MAX_HOURS_PER_STEP * SECONDS_PER_HOUR,
+)
 
 
 def resolve_step_seconds(raw: object) -> int:
@@ -127,7 +131,7 @@ def resolve_step_seconds(raw: object) -> int:
         seconds = int(raw)  # type: ignore[call-overload]
     except (TypeError, ValueError):
         return DEFAULT_STEP_SECONDS
-    if not MIN_HOURS_PER_STEP * SECONDS_PER_HOUR <= seconds <= MAX_HOURS_PER_STEP * SECONDS_PER_HOUR:
+    if not STEP_SECONDS_RANGE[0] <= seconds <= STEP_SECONDS_RANGE[1]:
         return DEFAULT_STEP_SECONDS
     return seconds
 
@@ -147,16 +151,11 @@ class WorldTimeConfig:
     seconds_per_step: int = 3600
 
     def __post_init__(self) -> None:
-        if self.start_year < 1:
-            raise ValueError("start_year must be >= 1")
-        if not 1 <= self.start_month <= 12:
-            raise ValueError("start_month must be in the range [1, 12]")
-        if not 1 <= self.start_day <= 30:
-            raise ValueError("start_day must be in the range [1, 30]")
-        if not 0 <= self.start_hour <= 23:
-            raise ValueError("start_hour must be in the range [0, 23]")
-        if self.seconds_per_step <= 0:
-            raise ValueError("seconds_per_step must be positive")
+        require_at_least(self.start_year, 1, "start_year")
+        require_in_range(self.start_month, (1, 12), "start_month")
+        require_in_range(self.start_day, (1, 30), "start_day")
+        require_in_range(self.start_hour, (0, 23), "start_hour")
+        require_positive(self.seconds_per_step, "seconds_per_step")
 
 
 @dataclass(frozen=True)

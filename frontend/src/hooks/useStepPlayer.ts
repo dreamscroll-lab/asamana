@@ -9,22 +9,22 @@
  *   - relationship graph fetch + cache (graph, graphCache)
  *
  * The caller (WorldView) drives the WS connection and calls onLiveStep() for each
- * incoming step event, and calls doneRendering() when the map finishes a step render.
+ * incoming step, and calls doneRendering() when the map finishes a step render.
  * WorldView keeps mode, panel toggles, and all UI controls (run/pause/stop etc.);
  * it passes graphActive so the graph fetch runs only while the graph overlay is open.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
-import type { StepEvent, WorldGraph } from "../types";
+import type { StepView, WorldGraph } from "../types";
 
 const FEED_CAP = 60;
 
 export interface StepPlayerControls {
   /** The step to display in the current mode (null = nothing yet). */
-  displayStep: StepEvent | null;
+  displayStep: StepView | null;
   /** Newest-first narrative feed: the story up to the current step, in BOTH modes. */
-  feed: StepEvent[];
+  feed: StepView[];
   /** Ordered list of available step numbers for playback. */
   steps: number[];
   /** Current playback cursor (index into steps[]). */
@@ -32,8 +32,8 @@ export interface StepPlayerControls {
   playing: boolean;
   /** Latest relationship graph for the displayed step. */
   graph: WorldGraph | null;
-  /** Call from the WS onFrame handler for each incoming step/snapshot event. */
-  onLiveStep: (ev: StepEvent) => void;
+  /** Call from the WS onFrame handler for each incoming step/latest_step frame. */
+  onLiveStep: (ev: StepView) => void;
   /** Call when the map finishes rendering a step (clears the render gate). */
   doneRendering: () => void;
   goTo: (index: number) => void;
@@ -47,21 +47,24 @@ export function useStepPlayer(
   graphActive: boolean,
 ): StepPlayerControls {
   // --- live buffer ---
-  const [liveOrdered, setLiveOrdered] = useState<StepEvent[]>([]);
+  const [liveOrdered, setLiveOrdered] = useState<StepView[]>([]);
   const [liveCursor, setLiveCursor] = useState(-1);
-  const [liveFeed, setLiveFeed] = useState<StepEvent[]>([]);
+  const [liveFeed, setLiveFeed] = useState<StepView[]>([]);
+  const liveReceived = useRef(-1);
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
   // --- playback ---
   const [steps, setSteps] = useState<number[]>([]);
   const [pbIndex, setPbIndex] = useState(0);
-  const [pbStep, setPbStep] = useState<StepEvent | null>(null);
+  const [pbStep, setPbStep] = useState<StepView | null>(null);
   const [playing, setPlaying] = useState(false);
   const [rendering, setRendering] = useState(false);
-  const stepCache = useRef(new Map<number, StepEvent>());
+  const stepCache = useRef(new Map<number, StepView>());
   // Every step this playback session has shown, newest-first. Don't cap the store: the cap
   // belongs on the view, after the cursor filter. Capped here, scrubbing back past the kept
   // window would filter out every survivor and leave the feed empty.
-  const [pbSeen, setPbSeen] = useState<StepEvent[]>([]);
+  const [pbSeen, setPbSeen] = useState<StepView[]>([]);
 
   // --- graph ---
   const [graph, setGraph] = useState<WorldGraph | null>(null);
@@ -69,6 +72,7 @@ export function useStepPlayer(
 
   // --- derived ---
   const displayStep = mode === "live" ? liveOrdered[liveCursor] ?? null : pbStep;
+  const renderedStep = useRef<StepView | null>(null);
 
   // The narrative feed says the same thing in both modes: THE STORY SO FAR, newest-first.
   // Live grows as steps arrive; playback grows as the scrubber advances and recedes when
@@ -86,17 +90,25 @@ export function useStepPlayer(
   }, [mode, liveFeed, pbSeen, pbCurrent]);
 
   // Record a played step into the feed store (deduped, kept newest-first).
-  const rememberPbStep = (ev: StepEvent) =>
+  const rememberPbStep = (ev: StepView) =>
     setPbSeen((prev) =>
       prev.some((e) => e.step === ev.step) ? prev : [ev, ...prev].sort((a, b) => b.step - a.step),
     );
 
-  const onLiveStep = (ev: StepEvent) => {
-    setLiveOrdered((prev) => (prev.some((e) => e.step === ev.step) ? prev : [...prev, ev]));
-    setLiveFeed((prev) => [ev, ...prev.filter((e) => e.step !== ev.step)].slice(0, FEED_CAP));
+  const onLiveStep = (ev: StepView) => {
+    if (ev.step <= liveReceived.current) return;
+    liveReceived.current = ev.step;
+    // Nothing drains the queue during playback. Keep the step on display (index 0, where every
+    // advance leaves it) and the newest only: back in live the map goes straight to the newest,
+    // establishing the step before it, instead of replaying every step missed at full pace.
+    setLiveOrdered((prev) => (modeRef.current === "live" ? [...prev, ev] : [...prev.slice(0, 1), ev]));
+    setLiveFeed((prev) => [ev, ...prev].slice(0, FEED_CAP));
   };
 
-  const doneRendering = () => setRendering(false);
+  const doneRendering = () => {
+    renderedStep.current = displayStep;
+    setRendering(false);
+  };
 
   // Load playback step list when switching to playback mode.
   useEffect(() => {
@@ -151,7 +163,8 @@ export function useStepPlayer(
     if (mode !== "live" || rendering) return;
     if (liveCursor < liveOrdered.length - 1) {
       setRendering(true);
-      setLiveCursor((c) => c + 1);
+      setLiveOrdered((queued) => queued.slice(liveCursor + 1));
+      setLiveCursor(0);
     }
   }, [mode, rendering, liveCursor, liveOrdered.length]);
 
@@ -188,7 +201,9 @@ export function useStepPlayer(
   const goTo = (index: number) => {
     const clamped = Math.min(Math.max(index, 0), Math.max(steps.length - 1, 0));
     if (clamped === pbIndex) return;
-    setRendering(true);
+    const cached = stepCache.current.get(steps[clamped]);
+    // Returning to the still-displayed, completed step starts no render to reopen the gate.
+    setRendering(!(cached && cached === pbStep && cached === renderedStep.current));
     setPbIndex(clamped);
   };
   const seek = (delta: number) => goTo(pbIndex + delta);

@@ -6,8 +6,8 @@ export function buildCovertScenes({ open: OPEN }: LabPlaces): LabScene[] {
   return [
     {
       id: "covert",
-      group: "潜行",
-      title: "covert · 潜行",
+      group: "暗中探查",
+      title: "covert · 暗中探查",
       watch: "duck（伏低）并且从这一拍起就变淡（shroud 0.42）+ 收拢的暗环；第三拍他什么也没做，伏低应当解除。",
       steps: [
         step({ states: [who(MO, OPEN), who(SHI, OPEN)] }),
@@ -31,8 +31,8 @@ export function buildCovertScenes({ open: OPEN }: LabPlaces): LabScene[] {
     },
     {
       id: "covert-spotted",
-      group: "潜行",
-      title: "covert · 潜行被发觉",
+      group: "暗中探查",
+      title: "covert · 暗中探查被发觉",
       watch: "同样伏低，但「不变淡」（被看见就等于没藏住），暗环转红。",
       steps: [
         step({ states: [who(MO, OPEN), who(SHI, OPEN)] }),

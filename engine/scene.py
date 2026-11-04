@@ -1,4 +1,4 @@
-"""The adjudication scene — who and what is at an actor's location, rendered for executor prompts.
+"""The adjudication scene — who and what is at a doer's location, rendered for executor prompts.
 
 Narrative-layer text only: names and descriptions, never ids. It lives outside ``engine.executors``
 because modules that are not executors assemble scenes too (``npc_runner``), and importing anything
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from agent.personality import ActionStatus
+from agent.personality import ActionStatus, visible_doing
 from core.interfaces.perception import NpcIdentity, PerceivedNpc, Situation
 from core.prompts import (
     SituationVoice, person_referent, render_condition, render_entity, render_npc,
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from agent.agent import Agent
     from core.interfaces.directory import WorldDirectory
     from engine.environment import EnvironmentSystem
-    from world.models import Npc, WorldEntity
+    from core.interfaces.entity import Npc, WorldEntity
 
 
 def situation_for(environment: "EnvironmentSystem", agent_id: str) -> Situation:
@@ -54,7 +54,8 @@ def _scene_owner_name(
         return None
     if first_person and item.owner_id == viewer_id:
         return "我"
-    return directory.agent_name(item.owner_id)
+    holder = directory.describe(item.owner_id)
+    return holder.name if holder is not None else "某人"
 
 
 def scene_npc_view(npc: "Npc") -> PerceivedNpc:
@@ -141,12 +142,12 @@ def assemble_scene_context(
     list on ``SceneContext.own_entities``, for a caller that has the LLM pick one by number (WORK).
     FIRST voice only: the line says 「我手上的」.
 
-    ``reveal_intents=False`` keeps only whether each present person is busy. The judge needs
+    ``reveal_intents=False`` keeps only what each present person is visibly doing. The judge needs
     intents only to rule whether people would notice; the content otherwise gets written up as if
     it had happened. Turn it off for any judge whose output others read or that enters memory.
 
     ``reveal_all_content`` is NOT implied by the god view: what a thing *says* stays at what
-    ``agent_id`` can read unless this is set. Set it only when the verdict is the actor learning
+    ``agent_id`` can read unless this is set. Set it only when the verdict is the doer learning
     what something says (COVERT); a judge whose prose reaches others (PHYSICAL, TALK) would leak a
     sealed letter's words.
 
@@ -197,10 +198,13 @@ def assemble_scene_context(
                 # Quoted as that person's own unresolved words. An empty intent must be stated,
                 # not dropped: otherwise the judge follows expected_outcome into inventing deeds
                 # for someone who did nothing (see IDLE_BYSTANDER_VERDICT_RULE, reveal_intents).
-                intent_clause = (
-                    (f"此刻意图：「{intent}」" if intent else "此刻没有任何动作") if reveal_intents
-                    else ("此刻正忙着手上的事" if intent else "此刻没有任何动作")
-                )
+                # Without intents, what shows on sight stays: how much attention he has to spare
+                # is what detection turns on.
+                if reveal_intents:
+                    intent_clause = f"此刻意图：「{intent}」" if intent else "此刻没有任何动作"
+                else:
+                    doing = _person_visible_doing(agent_obj, directory, bystander_ids) if intent else ""
+                    intent_clause = f"此刻{doing}" if doing else "此刻没有任何动作"
                 if bg:
                     lines.append(f"  · {bg}；{intent_clause}")
                 else:
@@ -212,7 +216,7 @@ def assemble_scene_context(
     # In the world an Npc is a person; its tier is a code-layer notion, so the line only says he
     # does things when told. Not numbered: a #N with no index contract invites made-up indices.
     if npcs_here:
-        lines.append("- 此处还有(听人吩咐做事的)：" + "、".join(
+        lines.append("- 此处可接受任务指派的人：" + "、".join(
             render_npc(scene_npc_view(npc)) for npc in npcs_here
         ))
 
@@ -221,7 +225,7 @@ def assemble_scene_context(
     first_person = voice is SituationVoice.FIRST
     own_eyes = visibility is SceneVisibility.OWN_EYES
     # Ordering and truncation share ``reachable_in_order`` with the perception layer, or the judge
-    # could rule on something the actor never saw. Filtering stays separate on purpose.
+    # could rule on something the doer never saw. Filtering stays separate on purpose.
     present = environment.items_present_at(loc_id)
     own_entities = (
         environment.reachable_in_order(
@@ -276,10 +280,10 @@ def _person_background(agent: "Agent | None", name: str) -> str:
     parts: list[str] = []
     traits = "、".join(getattr(soul, "core_traits", []) or [])
     if traits:
-        parts.append(f"核心性格特点：{traits}")
+        parts.append(f"性格特点：{traits}")
     values = "、".join(getattr(soul, "core_values", []) or [])
     if values:
-        parts.append(f"核心价值观：{values}")
+        parts.append(f"价值观：{values}")
     bg = (getattr(soul, "background", "") or "").strip()
     if bg:
         parts.append(f"背景：{bg}")
@@ -301,11 +305,22 @@ def _person_current_intent(agent: "Agent | None") -> str:
     return (state.current_action or "").strip()
 
 
+def _person_visible_doing(
+    agent: "Agent", directory: "WorldDirectory", present_ids: list[str],
+) -> str:
+    """What a co-present agent is visibly doing (``visible_doing``). A talk names its partner
+    only when the partner is here too; otherwise the judge is told of someone it can't place."""
+    state = agent.personality.state
+    partner = state.activity_target
+    partners = [directory.agent_name(partner)] if partner and partner in present_ids else []
+    return visible_doing(state.activity_status, partners)
+
+
 def observe_location(environment: "EnvironmentSystem", agent_id: str) -> str:
-    """The narrative name of the actor's current location; the single entry point for every
+    """The narrative name of the doer's current location; the single entry point for every
     executor resolving "where".
 
-    Room name; in transit → "途中" (on the way); unknown → "此处" (here); never a bare id.
+    Room name; in transit → "途中" (on the way); unknown → "某地" (somewhere); never a bare id.
     """
     return environment.narrative_location_name(environment.get_body_location(agent_id))
 

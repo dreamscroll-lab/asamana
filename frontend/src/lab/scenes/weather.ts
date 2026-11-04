@@ -59,8 +59,7 @@ export function buildWeatherScenes({ open: OPEN }: LabPlaces): LabScene[] {
             {
               content: `${label}。`,
               broadcast_type: "world_event",
-              location_scope: scoped ? OPEN.id : null,
-              location_name: scoped ? OPEN.name : "",
+              location_id: scoped ? OPEN.id : null,
               severity,
               phenomenon: key,
               seq: nextSeq(),
@@ -89,8 +88,7 @@ export function buildWeatherScenes({ open: OPEN }: LabPlaces): LabScene[] {
             {
               content: "天边出现了某种从未见过的景象。",
               broadcast_type: "world_event",
-              location_scope: OPEN.id,
-              location_name: OPEN.name,
+              location_id: OPEN.id,
               severity: "high",
               phenomenon: "aurora",   // not in the closed vocabulary
               seq: nextSeq(),
@@ -120,8 +118,7 @@ export function buildWeatherScenes({ open: OPEN }: LabPlaces): LabScene[] {
               {
                 content: `雨势${severity === "low" ? "初起" : severity === "medium" ? "渐密" : "如注"}。`,
                 broadcast_type: "world_event",
-                location_scope: OPEN.id,
-                location_name: OPEN.name,
+                location_id: OPEN.id,
                 severity,
                 phenomenon: "rain",
                 seq: nextSeq(),

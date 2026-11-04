@@ -1,10 +1,15 @@
-/** The hover card over a body with no mind, or over a thing. What it shows, and why hover, is on `show`. */
+/**
+ * The hover card over a body with no mind, over a thing, or over a place. What it shows, and why
+ * hover, is on `show`.
+ */
 
 import Phaser from "phaser";
 
-import type { EntityView, NpcStateSummary } from "../types";
+import type { EntityView, NpcIdentity, NpcView } from "../types";
+import { toHex } from "../lib/color";
 import { entityTipLines } from "../lib/entity";
 import { npcTipLines } from "../lib/npc";
+import { placeTipLines } from "../lib/places";
 import type { TipLine, TipTone } from "../lib/tip";
 import { type AgentToken, FONT, NOTE_WRAP_W, TEXT_RES, drawPlate } from "./types";
 
@@ -39,9 +44,9 @@ export class HoverTip {
    *
    * Agents get no hover card — the character card already owns those facts.
    */
-  show(tok: AgentToken, npc: NpcStateSummary): void {
+  show(tok: AgentToken, npc: NpcView, identity: NpcIdentity | undefined): void {
     this.hide();
-    const card = this.build(npcTipLines(npc), { text: "NPC", color: npc.color });
+    const card = this.build(npcTipLines(npc, identity), { text: "NPC", color: toHex(tok.color) });
     if (!card) return;
     card.setPosition(0, tok.headY - 16);
     tok.container.add(card);
@@ -55,6 +60,17 @@ export class HoverTip {
   showEntity(x: number, y: number, entity: EntityView): void {
     this.hide();
     const card = this.build(entityTipLines(entity));
+    if (!card) return;
+    this.tip = card.setPosition(x, y).setDepth(FREE_TIP_DEPTH);
+  }
+
+  /**
+   * The card over a place's name on the map: what the place is called and what it is. On the
+   * name, not the whole region: regions tile the map, so the card would never come down.
+   */
+  showPlace(x: number, y: number, name: string, description: string): void {
+    this.hide();
+    const card = this.build(placeTipLines(name, description));
     if (!card) return;
     this.tip = card.setPosition(x, y).setDepth(FREE_TIP_DEPTH);
   }

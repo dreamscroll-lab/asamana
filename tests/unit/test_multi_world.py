@@ -11,7 +11,7 @@ import pytest
 from core.container import Container
 from core.event_bus import NarrativeEventBus
 from core.serialization import dump_json
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from providers.message.in_memory import InMemoryMessageProvider
 from providers.snapshot.file import FileSnapshotProvider
 from providers.snapshot.in_memory import InMemorySnapshotProvider
@@ -21,6 +21,7 @@ from core.interfaces.place import Place
 from world.stored_config import StoredWorldConfig, serialize_world_config
 from worlds.tiled import TiledWorldConfig
 from tests.unit.bus_tap import tap
+from tests.unit.confirmed_world import confirmed_world
 
 
 @pytest.fixture()
@@ -101,7 +102,7 @@ async def test_build_copies_template_and_leaves_it_pristine(container, test_conf
     template = TiledWorldConfig(template="changan_iso")
     entity_id = next(iter(template.get_places()))
 
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     assert (
         world.world_config.get_places()[entity_id]
@@ -117,20 +118,16 @@ def test_stored_world_config_round_trips_template_data(container) -> None:
     stored = StoredWorldConfig(data)
 
     assert stored.get_places() == template.get_places()
-    assert stored.get_location_aliases() == template.get_location_aliases()
+    # Aliases only turn location text into ids, and a built world's setup holds ids alone.
+    assert stored.get_location_aliases() == {}
     assert stored.get_world_description() == template.get_world_description()
     assert stored.to_runtime_context() == template.to_runtime_context()
-
-    aliases = template.get_location_aliases()
-    probes = list(template.get_places())[:2] + list(aliases)[:2] + ["不存在的地方"]
-    for probe in probes:
-        assert stored.resolve_location_id(probe) == template.resolve_location_id(probe)
 
 
 @pytest.mark.asyncio
 async def test_restore_uses_persisted_config_not_current_template(container, test_config) -> None:
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     # Edit the template. ``Place`` is frozen (space is fixed at world build), so the only way to
     # edit it is to replace the entry.
@@ -155,20 +152,21 @@ async def test_restore_does_not_resurrect_baked_in_occupancy(container, test_con
     persisted with the world config assets, so this checks the environment's final state.
     """
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=1)
 
     # Simulate the agent having ended the run in a different location.
     agent_id = next(iter(world.agents))
-    stored = await container.agent_store.load_agent_state(world.world_id, agent_id)
-    old_location = stored.current_location
+    committed = await container.snapshot.load_latest(world.world_id)
+    stored = committed.state.agents[agent_id]
+    old_location = stored["current_location"]
     other_location = next(
         eid
         for eid, e in world.world_config.get_places().items()
         if isinstance(e, Place) and eid != old_location
     )
-    stored.current_location = other_location
-    await container.agent_store.save_agent_state(world.world_id, agent_id, stored)
+    stored["current_location"] = other_location
+    await container.snapshot.save(world.world_id, committed.step, committed)
 
     restored = await WorldInitializer(container).restore(world.world_id)
     env = restored.environment
@@ -212,7 +210,7 @@ async def test_snapshot_providers_world_config_asset(tmp_path, container) -> Non
 @pytest.mark.asyncio
 async def test_run_world_rejects_concurrent_runs_of_same_world(container, test_config) -> None:
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     results = await asyncio.gather(
         application.run_world(world.world_id, steps=1),
@@ -226,6 +224,35 @@ async def test_run_world_rejects_concurrent_runs_of_same_world(container, test_c
 
     # The latch resets after the run: the world can run again.
     await application.run_world(world.world_id, steps=1)
+
+
+@pytest.mark.asyncio
+async def test_delete_refuses_a_foreground_run(container, test_config, monkeypatch) -> None:
+    application = NarrativeApplication(container, test_config)
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
+    runtime = application.get_session(world.world_id).runtime
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original = runtime._run_step
+
+    async def suspended_step(agents):
+        entered.set()
+        await release.wait()
+        return await original(agents)
+
+    monkeypatch.setattr(runtime, "_run_step", suspended_step)
+    running = asyncio.create_task(application.run_world(world.world_id, steps=1))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        with pytest.raises(ValueError, match="before deleting"):
+            await application.delete_world(world.world_id)
+        assert application.has_session(world.world_id)
+        assert await container.snapshot.load(world.world_id, 0) is not None
+    finally:
+        release.set()
+        await running
+    await application.delete_world(world.world_id)
+    assert await container.snapshot.list_steps(world.world_id) == []
 
 
 # ---------------------------------------------------------------------------
@@ -272,8 +299,8 @@ async def test_message_provider_isolates_worlds() -> None:
 @pytest.mark.asyncio
 async def test_two_worlds_run_concurrently_without_crosstalk(container, test_config) -> None:
     application = NarrativeApplication(container, test_config)
-    world_a = await application.build_world("玄武门之变", template="changan_iso")
-    world_b = await application.build_world("贞观之治", template="changan_iso")
+    world_a = await confirmed_world(application, "玄武门之变", template="changan_iso")
+    world_b = await confirmed_world(application, "贞观之治", template="changan_iso")
     assert world_a.world_id != world_b.world_id
 
     # Private config copies: same template entity, distinct objects per world.
@@ -301,8 +328,8 @@ async def test_two_worlds_run_concurrently_without_crosstalk(container, test_con
     # Stores stay world-scoped: each world sees exactly its own snapshots and agents.
     assert await container.snapshot.list_steps(world_a.world_id) == [0, 1, 2]
     assert await container.snapshot.list_steps(world_b.world_id) == [0, 1, 2]
-    assert len(await container.agent_store.list_agent_ids(world_a.world_id)) == len(world_a.agents)
-    assert len(await container.agent_store.list_agent_ids(world_b.world_id)) == len(world_b.agents)
+    assert set((await container.snapshot.load(world_a.world_id, 2)).state.agents) == set(world_a.agents)
+    assert set((await container.snapshot.load(world_b.world_id, 2)).state.agents) == set(world_b.agents)
 
 
 @pytest.mark.asyncio
@@ -311,13 +338,13 @@ async def test_restore_does_not_place_dead_agent(container, test_config) -> None
     unconditional place on restore would put it back in the room, visible to everyone there for
     good, since death handling only processes this step's new deaths and would never clear it."""
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=1)
 
     agent_id = next(iter(world.agents))
-    stored = await container.agent_store.load_agent_state(world.world_id, agent_id)
-    stored.vitality = 0.0
-    await container.agent_store.save_agent_state(world.world_id, agent_id, stored)
+    committed = await container.snapshot.load_latest(world.world_id)
+    committed.state.agents[agent_id]["vitality"] = 0.0
+    await container.snapshot.save(world.world_id, committed.step, committed)
 
     restored = await WorldInitializer(container).restore(world.world_id)
     assert restored.agents[agent_id].is_active is False
@@ -338,7 +365,7 @@ async def test_restore_brings_the_mindless_bodies_back(container, test_config) -
     Skip this and the world has no NPCs from step one, so ERRAND silently can never reach one.
     """
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     seeded = {npc.npc_id: npc.name for npc in world.environment.all_npcs()}
     assert seeded, "这个世界本来就没有工具人,测不到东西"
 
@@ -367,7 +394,7 @@ async def test_restoring_at_step_zero_leaves_the_entities_exactly_as_seeded(
     as if created at runtime.
     """
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     built = {
         e.entity_id: (e.state, e.presence, e.presence_ref)
         for e in world.environment.all_live_entities()
@@ -390,8 +417,7 @@ async def test_a_snapshot_written_by_an_older_shape_still_loads(tmp_path) -> Non
     existing snapshot unreadable.
 
     Splatting ``WorldSnapshot(**data)`` directly raises TypeError once a field is removed, breaking
-    that world's restore and replay with a cryptic "unexpected keyword argument". agent_store
-    filters with _AGENT_STATE_FIELDS for the same reason.
+    that world's restore and replay with a cryptic "unexpected keyword argument".
     """
     import json as _json
 
@@ -400,7 +426,7 @@ async def test_a_snapshot_written_by_an_older_shape_still_loads(tmp_path) -> Non
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_json.dumps({
         "world_id": "w", "step": 3, "timestamp": "2026-01-01T00:00:00",
-        "agent_states": {"a1": {"agent_name": "甲"}},
+        "state": {"agents": {"a1": {"agent_name": "甲"}}, "a_state_field_we_since_removed": 1},
         # a field no longer on the dataclass but still present in existing saves
         "a_field_we_since_removed": {"whatever": 1},
     }, ensure_ascii=False), encoding="utf-8")
@@ -408,4 +434,4 @@ async def test_a_snapshot_written_by_an_older_shape_still_loads(tmp_path) -> Non
     snap = await provider.load("w", 3)
 
     assert snap is not None and snap.step == 3
-    assert snap.agent_states["a1"]["agent_name"] == "甲"
+    assert snap.state.agents["a1"]["agent_name"] == "甲"

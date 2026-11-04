@@ -29,6 +29,7 @@ export interface PromptMessage {
 export interface TraceCall {
   call_id: string;
   world_id: string;
+  timestamp: string;
   stage: string;
   scene: string;
   model: string;
@@ -51,6 +52,23 @@ export interface TraceCall {
   adopted: boolean | null;
   reject_reason: string;
   extra: Record<string, unknown>;
+  /** The call exists because an actor performs a character; whose call it is stays agent_id. */
+  actor: boolean;
+}
+
+/** A beat that landed without an LLM call (core.interfaces.trace.BeatTrace). No request was
+ *  made, so it has no tokens or latency and counts toward no call statistics. */
+export interface TraceBeat {
+  world_id: string;
+  step: number;
+  stage: string;
+  beat_kind: string;
+  payload: Record<string, unknown>;
+  timestamp: string;
+  agent_id: string | null;
+  agent_name: string | null;
+  extra: Record<string, unknown>;
+  actor: boolean;
 }
 
 export interface TraceDimensions {
@@ -65,6 +83,7 @@ export interface CallGroup extends CallAggregate {
   key: string;
   label: string;
   items: TraceCall[];
+  beats: TraceBeat[];
 }
 
 export interface CallsPage {

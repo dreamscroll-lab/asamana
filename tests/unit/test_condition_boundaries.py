@@ -73,7 +73,7 @@ _CONDITION_LABEL_SITES = (
     "engine/executors/covert.py:",    # covert-action ruling (stealth depends most on bodily state)
     "engine/executors/social.py:",    # both sides of a dialogue + two first-person conversation memories
     "engine/executors/work.py:",      # solo work self-assessment + the interrupted memory
-    "engine/event.py:",               # event editor's character briefing (condition scalar alongside "体力")
+    "engine/narrative_editor.py:",               # narrative editor's character briefing (condition scalar alongside "生命值")
     "agent/decision.py:",             # decision: first line of 【我所处的现实】
     "agent/agent.py:",                # interrupt weighing + feedback emotion
     "agent/perception_emotion.py:",   # perception emotion
@@ -119,7 +119,7 @@ def test_no_module_builds_a_condition_line_without_the_renderer() -> None:
                  "engine/director.py", "engine/presence.py", "agent/decision.py",
                  "agent/agent.py", "agent/perception_emotion.py", "agent/need.py", "agent/memory.py",
                  "engine/executors/covert.py", "engine/executors/social.py",
-                 "engine/executors/work.py", "engine/event.py"):
+                 "engine/executors/work.py", "engine/narrative_editor.py"):
         assert _grep(("condition_line", "render_condition"), path), \
             f"{path} 用了处境却没走 condition_line / render_condition"
 

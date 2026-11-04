@@ -108,7 +108,7 @@ export class AmbientLight {
   }
 
   /**
-   * Day/night wash from the code-layer hour (`StepEvent.world_time.hour`). NEVER parse the
+   * Day/night wash from the code-layer hour (`StepView.world_time.hour`). NEVER parse the
    * narrative label for the hour: that binds the renderer to one theme's calendar, and other
    * worlds would freeze the wash on its last tint.
    */

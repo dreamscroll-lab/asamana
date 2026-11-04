@@ -40,7 +40,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Sequence
 
-from core.interfaces.message import Message, MessageProvider
+from core.interfaces.message import ANONYMOUS_SENDER_NAME, Message, MessageProvider
 from core.interfaces.urgency import Urgency
 
 if TYPE_CHECKING:
@@ -72,6 +72,7 @@ class MessageDelivery:
                     "id": message.id,
                     "sender_id": message.sender_id,
                     "sender_name": message.sender_name,
+                    "anonymous": message.anonymous,
                     "recipients": list(message.recipients) if message.recipients is not None else None,
                     "location_scope": message.location_scope,
                     "content": message.content,
@@ -169,10 +170,11 @@ class MessageSystem:
             id=str(uuid.uuid4()),
             world_id=self._world_id,
             sender_id=action.agent_id,
-            sender_name=sender_name,
-            # Deliver the exact words addressed to the recipient; action_description is the
-            # sender's own narration of the act, used only when content is missing.
-            content=action.content or action.action_description,
+            sender_name=ANONYMOUS_SENDER_NAME if action.anonymous else sender_name,
+            anonymous=action.anonymous,
+            # The exact words addressed to the recipient; never action_description, the sender's
+            # own account of the act.
+            content=action.content,
             intent=(action.inner_monologue or action.reason or ""),
             recipients=recipients,
             location_scope=location_scope,
@@ -201,11 +203,11 @@ class MessageSystem:
             None         | None           | all agent_ids = world-wide broadcast
             list[str]    | str (L)        | list ∩ (agents at location L)
 
-        All four cells then subtract ``{sender_id} ∪ actor_ids``: nobody receives, over an
+        All four cells then subtract ``{sender_id} ∪ doer_ids``: nobody receives, over an
         external channel, what they did themselves. The exclusion is applied once outside the
         matrix, since it is orthogonal to addressing and four copies drift apart.
         """
-        excluded = {message.sender_id, *message.actor_ids}
+        excluded = {message.sender_id, *message.doer_ids}
         if message.recipients is not None:
             candidates = [aid for aid in message.recipients if aid not in excluded]
             if message.location_scope is None or environment is None:

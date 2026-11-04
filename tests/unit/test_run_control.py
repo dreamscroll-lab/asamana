@@ -3,32 +3,48 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import pytest
 
-from engine.application import NarrativeApplication
-from engine.run_control import RunController, RunState
+from interaction.application import NarrativeApplication
+from core.interfaces.actor import ActorTurn, TurnKind
+from engine.run_control import RunController, RunState, StepWithdrawn
+from tests.unit.confirmed_world import confirmed_world
 
 
 # --- RunController (deterministic, no runtime) ---------------------------------
 
 
-def test_controller_state_transitions() -> None:
+async def _parks(c: RunController) -> bool:
+    """Whether the loop would park at the next step boundary now."""
+    waiter = asyncio.create_task(c.wait_if_paused())
+    await asyncio.sleep(0)
+    parked = not waiter.done()
+    waiter.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await waiter
+    return parked
+
+
+@pytest.mark.asyncio
+async def test_controller_state_transitions() -> None:
     c = RunController()
-    assert not c.is_paused and not c.stop_requested
+    assert not await _parks(c) and not c.stop_requested
     c.pause()
-    assert c.is_paused
+    assert await _parks(c)
     c.resume()
-    assert not c.is_paused
+    assert not await _parks(c)
     c.stop()
-    assert c.stop_requested and not c.is_paused
+    assert c.stop_requested and not await _parks(c)
 
 
-def test_controller_stop_wins_over_pause() -> None:
+@pytest.mark.asyncio
+async def test_controller_stop_wins_over_pause() -> None:
     c = RunController()
     c.stop()
     c.pause()  # no-op once stopping
-    assert not c.is_paused
+    assert not await _parks(c)
     c.resume()  # no-op once stopping
     assert c.stop_requested
 
@@ -72,7 +88,6 @@ async def test_step_once_releases_exactly_one_step_then_parks_again() -> None:
     second = asyncio.create_task(c.wait_if_paused())
     await asyncio.sleep(0)
     assert not second.done()                        # the next step is blocked again
-    assert c.is_paused
 
     c.step_once()                                   # press again, one more step
     await asyncio.wait_for(second, timeout=1.0)
@@ -86,7 +101,6 @@ async def test_step_once_is_a_noop_once_stopping() -> None:
     c.stop()
     c.step_once()
     assert c.stop_requested
-    assert not c.is_paused
     await asyncio.wait_for(asyncio.create_task(c.wait_if_paused()), timeout=1.0)
 
 
@@ -96,7 +110,7 @@ async def test_step_once_is_a_noop_once_stopping() -> None:
 @pytest.mark.asyncio
 async def test_background_run_completes_and_persists(mock_build_container, test_config) -> None:
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
 
     statuses: list[str] = []
@@ -126,7 +140,7 @@ async def test_step_world_advances_one_step_from_idle(mock_build_container, test
     """With no live loop, a single step is a run of exactly one step: it finishes on its own and the
     world goes idle."""
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
     assert app.run_status(wid) == RunState.IDLE
 
@@ -145,7 +159,7 @@ async def test_step_world_on_a_paused_run_advances_one_and_stays_parked(
     """A paused world advanced one step must still be paused; otherwise "advance one step" becomes
     "resume"."""
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
 
     app.start_run(wid, steps=20)   # long enough for the controller to steer it midway
@@ -164,7 +178,6 @@ async def test_step_world_on_a_paused_run_advances_one_and_stays_parked(
 
     assert after == before + 1
     assert app.run_status(wid) == RunState.PAUSED   # still paused, not running
-    assert app.get_session(wid).controller.is_paused
 
     app.stop_run(wid)
     task = app.get_session(wid).task
@@ -175,7 +188,7 @@ async def test_step_world_on_a_paused_run_advances_one_and_stays_parked(
 @pytest.mark.asyncio
 async def test_control_methods_reject_when_not_running(mock_build_container, test_config) -> None:
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
     assert app.run_status(wid) == RunState.IDLE
     for method in (app.pause_run, app.resume_run, app.stop_run):
@@ -188,7 +201,7 @@ async def test_a_run_of_no_steps_is_refused(mock_build_container, test_config) -
     """Steps must be a positive integer: a 0-step run reports "running" while doing nothing, looking
     like it ran."""
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     with pytest.raises(ValueError):
         await app.run_world(world.world_id, steps=0)
 
@@ -196,7 +209,7 @@ async def test_a_run_of_no_steps_is_refused(mock_build_container, test_config) -
 @pytest.mark.asyncio
 async def test_a_long_run_stops_on_request(mock_build_container, test_config) -> None:
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
 
     app.start_run(wid, steps=10_000)  # can't finish, so only stop_run can stop it
@@ -210,9 +223,64 @@ async def test_a_long_run_stops_on_request(mock_build_container, test_config) ->
 
 
 @pytest.mark.asyncio
+async def test_a_step_that_raises_drops_its_half_run_session(mock_build_container, test_config) -> None:
+    """A step that raises halfway has ticked the clock and written part of itself; running on from
+    that session would commit a step that never happened whole. The next access restores from the
+    last committed step instead."""
+    app = NarrativeApplication(mock_build_container, test_config)
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
+    wid = world.world_id
+    runtime = app.get_session(wid).runtime
+
+    async def half_then_raise(_agents):
+        runtime.clock.tick()
+        raise RuntimeError("store down")
+
+    runtime._run_step = half_then_raise
+    queue = mock_build_container.event_bus.subscribe()
+    app.start_run(wid, steps=2)
+    task = app.get_session(wid).task
+    assert task is not None
+    await asyncio.wait_for(task, timeout=30.0)
+
+    statuses = []
+    while not queue.empty():
+        ev = queue.get_nowait()
+        if ev and ev.get("type") == "status" and ev.get("world_id") == wid:
+            statuses.append(ev["status"])
+    assert statuses[-1] == "failed"
+    assert not app.has_session(wid)
+    await app.restore_session(wid)
+    assert app.world_time(wid).step == 0
+
+
+@pytest.mark.asyncio
+async def test_a_stop_before_the_actor_is_asked_still_ends_the_run(mock_build_container, test_config) -> None:
+    """The stop lands while no turn waits (the step is busy elsewhere); the turn the step opens
+    afterwards is withdrawn, so stop and delete don't wait forever."""
+    app = NarrativeApplication(mock_build_container, test_config)
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
+    wid = world.world_id
+    channel = app.get_session(wid).runtime.actor
+    channel.follow(next(iter(world.agents)))
+    app.start_run(wid, steps=10_000)
+    # Let the run enter its step first: a stop before the task starts is undone by the run's
+    # own reopen, and whether the request below runs before that task differs across Pythons.
+    await asyncio.sleep(0)
+    app.stop_run(wid)                         # nothing pending yet
+
+    with pytest.raises(StepWithdrawn):
+        await asyncio.wait_for(
+            channel.request(ActorTurn(channel.agent_id, 1, TurnKind.DECIDE)), timeout=1,
+        )
+    task = app.get_session(wid).task
+    await asyncio.wait_for(task, timeout=30.0)
+
+
+@pytest.mark.asyncio
 async def test_delete_world_purges_and_stops(mock_build_container, test_config) -> None:
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
     app.start_run(wid, steps=3)
     await app.delete_world(wid)  # stops the run, then purges
@@ -230,14 +298,36 @@ async def test_delete_world_purges_and_stops(mock_build_container, test_config) 
 
 def _make_store_yield(container) -> None:
     """Make the first store call inside reset_session yield, like a file-backed store."""
-    store = container.agent_store
-    original = store.clear_relations
+    store = container.message_provider
+    original = store.clear
 
-    async def slow_clear_relations(world_id: str) -> None:
+    async def slow_clear(world_id: str) -> None:
         await asyncio.sleep(0.05)
         await original(world_id)
 
-    store.clear_relations = slow_clear_relations  # type: ignore[method-assign]
+    store.clear = slow_clear  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_a_reset_that_fails_halfway_leaves_no_stale_session(
+    mock_build_container, test_config, monkeypatch,
+) -> None:
+    """Once the stores are rewound, the step-N session must not survive a failed restore: a run
+    from it would commit step N+1 on top of step 0."""
+    from world.initializer import WorldInitializer
+
+    app = NarrativeApplication(mock_build_container, test_config)
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
+    wid = world.world_id
+    await app.run_world(wid, steps=1)
+
+    async def broken_restore(self, world_id, **_kw):
+        raise OSError("snapshot store down")
+
+    monkeypatch.setattr(WorldInitializer, "restore", broken_restore)
+    with pytest.raises(OSError):
+        await app.reset_session(wid)
+    assert not app.has_session(wid)
 
 
 @pytest.mark.asyncio
@@ -250,7 +340,7 @@ async def test_run_refused_while_a_reset_is_in_flight(mock_build_container, test
     out of stop's reach.
     """
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
     _make_store_yield(mock_build_container)
 
@@ -274,7 +364,7 @@ async def test_reset_refused_while_a_run_is_live(mock_build_container, test_conf
     """No reset while running; the check is redone inside the lock, not based on the run state the
     caller read before entering."""
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
 
     app.start_run(wid, steps=10_000)   # reset while running, so it mustn't finish on its own first
@@ -300,7 +390,7 @@ async def test_run_refused_while_a_delete_is_in_flight(mock_build_container, tes
     the catalog.
     """
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
 
     app.start_run(wid, steps=1)
@@ -343,7 +433,7 @@ async def test_a_directive_accepted_during_the_last_step_still_lands(
     from core.interfaces.llm import LLMScene
 
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
     mock_build_container.llm_router.get(LLMScene.DIRECTIVE).fixed_response = json.dumps({
         "reason": "r", "feasible": True, "refusal": "",
@@ -378,7 +468,7 @@ async def test_restore_sees_changes_no_act_of_the_agent_made(mock_build_containe
     survive a restore even if the agent itself did nothing since: agent state is saved at every
     step's end, not only when the agent's own action lands."""
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(app, "玄武门之变", template="changan_iso")
     wid = world.world_id
     await app.run_world(wid, steps=1)
     env = world.environment
@@ -405,7 +495,7 @@ async def test_shutdown_stops_runs_at_a_step_boundary_and_starts_no_more(
     """A step writes memories as it goes and its snapshot at the end; shutting down mid-step
     would replay it on restore. Shutdown waits for the boundary, and refuses new runs."""
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
     app.start_run(wid, steps=50)
     task = app.get_session(wid).task
@@ -424,7 +514,7 @@ async def test_a_stopping_world_refuses_pause_resume_and_step(mock_build_contain
     """After stop the controller ignores them, so accepting them would report a state the loop
     never enters and hide STOPPING."""
     app = NarrativeApplication(mock_build_container, test_config)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     wid = world.world_id
     app.start_run(wid, steps=20)
     app.stop_run(wid)

@@ -1,13 +1,13 @@
 // Visual FX for the world map: impacts, shockwaves, message arcs. Leaf effects that spawn
 // ephemeral objects and tween them out, through an `FxHost` (the scene).
 //
-// No connector LINES between actor and target, by design: see "The language of FORCE" below.
+// No connector LINES between doer and target, by design: see "The language of FORCE" below.
 
 import Phaser from "phaser";
 
-import type { ActionSummary } from "../types";
+import type { Beat } from "./figures";
 import { toHex } from "../lib/color";
-import { Deed, actedOnAgents } from "../lib/contract";
+import { Deed, actedOnAgents, reachedAgents } from "../lib/contract";
 import type { Dir } from "./skins";
 import { type AgentToken, FONT, TEXT_RES } from "./types";
 
@@ -243,7 +243,8 @@ export function joltNearbyEntities(host: FxHost, x: number, y: number, radius = 
   }
 }
 
-// A ✉ lofted along a quadratic Bézier arc, with a faint dashed trail and a ripple on arrival.
+// A glyph lofted along a quadratic Bézier arc, with a faint dashed trail and a ripple on arrival:
+// a ✉ for a letter, or whatever the caller passes (a thing changing hands flies as itself).
 //
 // Everything it spawns fades on its own; pushEphemeral is only a safety net for a scrub, and
 // relying on clearEphemeral would CUT the effect mid-air. Resolves only once the letter has
@@ -254,8 +255,9 @@ export function flyMessageArc(
   y0: number,
   x1: number,
   y1: number,
-  // The sender's identity color. Omitted → an unsigned letter (see arrivingMessage).
-  seal?: { color: number; glyph?: string },
+  // A letter's sender color (omitted → an unsigned letter, see arrivingMessage), or the color of
+  // the thing flown. `ripple` defaults to correspondence blue, which is a letter's arrival only.
+  seal?: { color: number; glyph?: string; ripple?: number },
 ): Promise<void> {
   const inkInt = seal?.color ?? 0x8fbfe6;                                  // correspondence blue
   const ink = toHex(inkInt);
@@ -301,7 +303,7 @@ export function flyMessageArc(
       },
       onComplete: () => {
         host.removeCanceler(cancel);
-        emanateRings(host, x1, y1, 0x8fbfe6, { count: 2, maxR: 30, ground: false, duration: 640, stagger: 100, width: 2.5 });
+        emanateRings(host, x1, y1, seal?.ripple ?? 0x8fbfe6, { count: 2, maxR: 30, ground: false, duration: 640, stagger: 100, width: 2.5 });
         // Delivered into the recipient's hands; the beat ends only once it is gone.
         host.tweens.add({
           targets: env,
@@ -347,17 +349,11 @@ export function directedMessages(host: FxHost, tok: AgentToken, targetIds: strin
   return Promise.all(flights).then(() => undefined);
 }
 
-/**
- * A letter with NO SENDER (the EventSystem posts as narrator: "不知来源"), landing on its reader.
- * With no origin on the map, it arcs in from beyond the world, in neutral slate, marked ？.
- *
- * This idiom means only that: a signed letter is drawn once, when it leaves its sender's hand
- * (directedMessages), and never on the step it lands.
- */
-export function arrivingMessage(host: FxHost, rt: AgentToken): Promise<void> {
+/** A letter from beyond the visible map; only an unsigned one uses slate and ？. */
+export function arrivingMessage(host: FxHost, rt: AgentToken, seal?: { color: number }): Promise<void> {
   const origin = host.beyondTheMap(rt.container.x, rt.container.y);
   return flyMessageArc(host, origin.x, origin.y, rt.container.x, rt.container.y, {
-    color: 0x8a94a8, glyph: "✉？",
+    color: seal?.color ?? 0x8a94a8, glyph: seal ? "✉" : "✉？",
   });
 }
 
@@ -382,18 +378,23 @@ export function localAnnounce(host: FxHost, tok: AgentToken): Promise<void> {
 // in the arm. One table would draw taking a letter as smashing it.
 //
 // Failure is a modifier: whatever the deed, the world shows "nothing landed" (missEffect),
-// while the body still performs the deed (deedBody).
-export function physicalEffect(host: FxHost, tok: AgentToken, act: ActionSummary): void {
-  if (act.succeeded === false) {
-    missEffect(host, tok, actedOnAgents(act.target));
+// while the body still performs the deed (deedBody). Seen from outside the verdict is unknown
+// (`shared` null): only what the things themselves show is drawn (`affected_entity_ids`, empty
+// when nothing gave), never a blow landing or missing.
+export function physicalEffect(host: FxHost, tok: AgentToken, act: Beat): void {
+  const verdict = act.shared?.succeeded ?? null;
+  if (verdict === false) {
+    // A thing in someone's hands is defended by him, so a failed snatch rings off its holder.
+    const people = actedOnAgents(act.target);
+    missEffect(host, tok, people.length ? people : reachedAgents(act.target));
     return;
   }
   switch (act.deed) {
     case Deed.strike:
-      combatStrike(host, tok, actedOnAgents(act.target));
+      if (verdict) combatStrike(host, tok, actedOnAgents(act.target));
       break;
     case Deed.restrain:
-      subdueEffect(host, tok, actedOnAgents(act.target));
+      if (verdict) subdueEffect(host, tok, actedOnAgents(act.target));
       break;
     case Deed.destroy:
       smashEffect(host, tok, act);
@@ -402,10 +403,11 @@ export function physicalEffect(host: FxHost, tok: AgentToken, act: ActionSummary
       seizeEffect(host, tok, act);
       break;
     case Deed.operate:
-      operateEffect(host, act);
+      operateEffect(host, tok, act);
       break;
     case Deed.exert:
       // Force spent on nothing in particular: no victim, no debris.
+      if (!verdict) break;
       emanateRings(host, tok.container.x, tok.container.y + 4, 0x9a8a6a, { count: 2, maxR: 46, duration: 560, width: 3 });
       burstParticles(host, tok.container.x, tok.container.y, 0xb0a080, { count: 12, speed: 62, size: 4 });
       break;
@@ -413,11 +415,30 @@ export function physicalEffect(host: FxHost, tok: AgentToken, act: ActionSummary
   }
 }
 
-// Take a thing: no violence. A gold gleam gathers INWARD onto the actor, the opposite of a smash.
-function seizeEffect(host: FxHost, tok: AgentToken, act: ActionSummary): void {
+/**
+ * Where each thing a deed changed stands on screen: its marker, or, for a thing in someone's
+ * hands (held things have no marker), its holder — the person the act reaches.
+ * `marker` is set only for a marker, the one point that can itself be shaken.
+ */
+function thingPoints(
+  host: FxHost, tok: AgentToken, act: Beat,
+): { x: number; y: number; marker?: Phaser.GameObjects.Container }[] {
+  const holder = reachedAgents(act.target).map((id) => host.token(id)).find((t) => !!t && t !== tok);
+  const points: { x: number; y: number; marker?: Phaser.GameObjects.Container }[] = [];
   for (const eid of act.affected_entity_ids) {
     const m = host.entityMarkers.get(eid);
-    if (!m || !m.visible) continue;
+    if (m?.visible) points.push({ x: m.x, y: m.y, marker: m });
+    else if (holder) points.push({ x: holder.container.x, y: holder.container.y - 6 });
+  }
+  return points;
+}
+
+// Take a thing: no violence. A gold gleam gathers INWARD onto the doer, the opposite of a smash.
+// Only from a marker: a thing taken from someone's hands already flies from him to the doer when
+// its change is revealed (entities.ts), so don't gleam it from the holder as well.
+function seizeEffect(host: FxHost, tok: AgentToken, act: Beat): void {
+  for (const m of thingPoints(host, tok, act)) {
+    if (!m.marker) continue;
     const gleam = host.add.circle(m.x, m.y, 12).setStrokeStyle(2.5, 0xd9a441).setDepth(31);
     host.pushEphemeral(gleam);
     host.tweens.add({ targets: gleam, x: tok.container.x, y: tok.container.y - 6, scale: 0.3, alpha: 0, duration: 480, ease: "Cubic.easeIn" });
@@ -427,28 +448,26 @@ function seizeEffect(host: FxHost, tok: AgentToken, act: ActionSummary): void {
 
 // Work a thing where it stands: it pulses in place. No shards (nothing broke), no gleam (nothing
 // changed hands).
-function operateEffect(host: FxHost, act: ActionSummary): void {
-  for (const eid of act.affected_entity_ids) {
-    const m = host.entityMarkers.get(eid);
-    if (!m || !m.visible) continue;
-    const pulse = host.add.circle(m.x, m.y, 9).setStrokeStyle(2.5, 0x7fb4c9).setDepth(31);
+function operateEffect(host: FxHost, tok: AgentToken, act: Beat): void {
+  for (const { x, y, marker } of thingPoints(host, tok, act)) {
+    const pulse = host.add.circle(x, y, 9).setStrokeStyle(2.5, 0x7fb4c9).setDepth(31);
     host.pushEphemeral(pulse);
     host.tweens.add({ targets: pulse, scale: 2.2, alpha: 0, duration: 560, ease: "Quad.easeOut" });
-    host.tweens.add({ targets: m, y: m.y - 3, duration: 140, yoyo: true, ease: "Sine.easeInOut" });
+    if (marker) host.tweens.add({ targets: marker, y: y - 3, duration: 140, yoyo: true, ease: "Sine.easeInOut" });
   }
 }
 
 // Wreck an object: shards, a shockwave, a crack ring. No red, no victim flash.
-function smashEffect(host: FxHost, tok: AgentToken, act: ActionSummary): void {
+function smashEffect(host: FxHost, tok: AgentToken, act: Beat): void {
   // As in combatStrike: debris erupts from the THING along the blow, never from the man.
   let struck = false;
-  for (const eid of act.affected_entity_ids) {
-    const m = host.entityMarkers.get(eid);
-    if (!m || !m.visible) continue;
+  for (const { marker, ...m } of thingPoints(host, tok, act)) {
     struck = true;
     const axis = Math.atan2(m.y - tok.container.y, m.x - tok.container.x);
     lunge(host, tok, axis, 9, 100); // he drives into it
-    host.tweens.add({ targets: m, angle: 9, duration: 55, yoyo: true, repeat: 3, onComplete: () => m.setAngle(0) });
+    if (marker) {
+      host.tweens.add({ targets: marker, angle: 9, duration: 55, yoyo: true, repeat: 3, onComplete: () => marker.setAngle(0) });
+    }
     impactArc(host, m.x, m.y, axis + Math.PI, 0xe0c090);
     directionalBurst(host, m.x, m.y, axis, 0x8a7a5a, { count: 14, speed: 84, size: 4, duration: 700 });
     directionalBurst(host, m.x, m.y, axis, 0xcabfa0, { count: 7, speed: 50, size: 3, duration: 640, spread: 1.9 });
@@ -463,14 +482,14 @@ function smashEffect(host: FxHost, tok: AgentToken, act: ActionSummary): void {
   }
 }
 
-// ANY deed that failed: no red, shards, gleam or shockwave. A person aimed at gets a cold clank
-// ring and pale sparks; a thing gets silence. It must not say WHICH deed failed: the body
+// ANY deed that failed: no red, shards, gleam or shockwave. A person aimed at, or holding the
+// thing aimed at, gets a cold clank ring and pale sparks; a thing nobody holds gets silence. It must not say WHICH deed failed: the body
 // already performs that.
 function missEffect(host: FxHost, tok: AgentToken, targetIds: string[]): void {
   const victims = targetIds.map((id) => host.token(id)).filter((v): v is AgentToken => !!v && v !== tok);
   for (const vt of victims) {
     const axis = axisBetween(tok, vt);
-    // The actor OVERSHOOTS; the victim slips SIDEWAYS off the axis, not back along it: dodged,
+    // The doer OVERSHOOTS; the victim slips SIDEWAYS off the axis, not back along it: dodged,
     // not pushed.
     lunge(host, tok, axis, 13, 130);
     lunge(host, vt, axis + Math.PI / 2, 6, 120);
@@ -496,7 +515,7 @@ function subdueEffect(host: FxHost, tok: AgentToken, targetIds: string[]): void 
 }
 
 // A blow that LANDS: the whole impact is at the VICTIM, debris flying away from the blow. Don't
-// put it on the actor: that reads as "the attacker exploded". The two bodies perform the axis.
+// put it on the doer: that reads as "the attacker exploded". The two bodies perform the axis.
 function combatStrike(host: FxHost, tok: AgentToken, targetIds: string[]): Promise<void> {
   const victims = targetIds.map((id) => host.token(id)).filter((v): v is AgentToken => !!v && v !== tok);
   if (!victims.length) {
@@ -528,7 +547,7 @@ function turnToward(host: FxHost, tok: AgentToken, x: number, y: number): void {
   host.reface(tok);
 }
 
-// Turn the actor and its primary target to face each other, until either moves. The strongest
+// Turn the doer and its primary target to face each other, until either moves. The strongest
 // carrier of "who is acting on whom".
 //
 // Returns whether anyone turned (the target may be off the map), so the caller can fall through.
@@ -555,7 +574,7 @@ export function faceOnlooker(host: FxHost, tok: AgentToken, towardIds: string[])
   return false;
 }
 
-// Turn the actor toward the THING he acts on (entities live in affected_entity_ids, so they never
+// Turn the doer toward the THING he acts on (entities live in affected_entity_ids, so they never
 // reach faceInteraction).
 //
 // Relies on the marker still being on the map: renderStep withholds a deed's changes until after

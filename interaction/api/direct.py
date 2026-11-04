@@ -1,7 +1,10 @@
 """Director routes: how a human author reaches into the world.
 
-The only routes in ``interaction/`` that change the world (besides lifecycle). Not gated by
-``dev_tools_enabled``: a product feature, not a developer tool.
+The routes where the director changes a running world; lifecycle, setup and actor routes are
+the other surfaces that change a world. Not gated by ``dev_tools_enabled``: a product feature,
+not a developer tool. While an actor performs a
+character, the directive routes are closed (``ApiServices.require_director``); ``/step`` stays
+open, since advancing the world is run control, which the actor has too.
 
 - ``POST /direct``: submit one line of free text. Parsing runs synchronously so a directive
   that can't be carried out is refused on the spot with a reason and nothing is injected;
@@ -20,7 +23,7 @@ from typing import Any
 from core.logging import get_logger
 
 from interaction.api.app import ApiServices
-from interaction.api.serialization import to_jsonable
+from interaction.api.serialization import to_wire_json
 
 logger = get_logger(__name__)
 
@@ -53,9 +56,10 @@ def build_direct_router(services: ApiServices) -> Any:
         if len(text) > _MAX_DIRECTIVE_CHARS:
             raise HTTPException(
                 status_code=400,
-                detail=f"指令过长（{len(text)} 字），请压缩到 {_MAX_DIRECTIVE_CHARS} 字以内。",
+                detail=f"Directive too long ({len(text)} chars); keep it within {_MAX_DIRECTIVE_CHARS}.",
             )
 
+        services.require_director(world_id)
         await services.ensure_advanceable(world_id)
         try:
             result = await application.submit_directive(world_id, text)
@@ -89,6 +93,7 @@ def build_direct_router(services: ApiServices) -> Any:
         Read from snapshots: the narrative feed starts empty on reload and replay doesn't backfill
         unwatched steps, so it can't answer this.
         """
+        services.require_director(world_id)
         replayer = manager.create_replayer(world_id)
         steps = await replayer.list_steps()
         latest = steps[-1] if steps else -1
@@ -99,7 +104,7 @@ def build_direct_router(services: ApiServices) -> Any:
         recorded_steps = {r["step"] for r in records}
         fresh = await replayer.list_interventions(after=scanned)
         records = records + [
-            to_jsonable(r) for r in fresh if r.step not in recorded_steps
+            to_wire_json(r) for r in fresh if r.step not in recorded_steps
         ]
         history[world_id] = (latest, records)
         return records

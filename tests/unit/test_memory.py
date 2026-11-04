@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from core.interfaces.perception import PerceivedIdentity
+
 from collections.abc import Callable
 
 import pytest
@@ -145,6 +147,26 @@ async def test_sample_recent_events_pairs_streams_and_includes_factual_only(cont
 
 
 @pytest.mark.asyncio
+async def test_sample_recent_events_keeps_newer_on_importance_tie(container: object) -> None:
+    """When the top_k cut falls inside one importance tier, the newer events survive it, and a
+    newer but less important event still doesn't displace an older, more important one."""
+    system = _make_memory_system(container, provider=SequentialMockLLM([]), is_main_character=True)
+    personality = _make_personality()
+    await system.write("要事一桩。", MemoryStream.FACTUAL, personality=personality,
+                       importance=MemoryImportance.HIGH, current_step=1, event_group_id="old_high")
+    for step in (2, 3, 4):
+        await system.write(f"第{step}件事。", MemoryStream.FACTUAL, personality=personality,
+                           importance=MemoryImportance.MEDIUM, current_step=step,
+                           event_group_id=f"mid_{step}")
+    await system.write("琐事一桩。", MemoryStream.FACTUAL, personality=personality,
+                       importance=MemoryImportance.LOW, current_step=5, event_group_id="new_low")
+
+    events = system.sample_recent_events(current_step=6, lookback=10, top_k=3)
+
+    assert [(f or e).event_group_id for f, e in events] == ["old_high", "mid_4", "mid_3"]
+
+
+@pytest.mark.asyncio
 async def test_record_event_creates_dual_streams_with_event_group_id(container: object) -> None:
     """The factual and experiential entries of one event share event_group_id."""
     provider = SequentialMockLLM(["A messenger arrived.", "I felt alarmed by the messenger."])
@@ -171,7 +193,9 @@ async def test_record_event_creates_dual_streams_with_event_group_id(container: 
 async def test_record_event_skips_experiential_when_rewrite_fails(container: object) -> None:
     """If the rewrite LLM fails, keep only factual. Don't store the raw text as the inner stream,
     or the same event takes two slots in recall."""
-    system = _make_memory_system(container, is_main_character=True)  # default mock reply is unusable
+    system = _make_memory_system(
+        container, provider=MockLLMProvider(fixed_response=""), is_main_character=True,
+    )
     personality = _make_personality(
         emotion=EmotionState(primary="fear", intensity=0.6, valence=-0.4),
     )
@@ -238,7 +262,7 @@ async def test_importance_prompt_uses_names_not_ids(container: object) -> None:
         "朝堂上发生了争执。",
         personality=personality,
         related_agents=["a_id", "unknown_id"],
-        related_directory={"a_id": "李四", "unknown_id": ""},
+        related_directory={"a_id": PerceivedIdentity(name="李四"), "unknown_id": PerceivedIdentity(name="")},
         related_relations_text="",
         dominant_need_label="",
     )
@@ -266,7 +290,7 @@ async def test_importance_prompt_third_person_multidim_with_relations(container:
         "他又一次背着我行事。",
         personality=personality,
         related_agents=["x"],
-        related_directory={"x": "李四"},
+        related_directory={"x": PerceivedIdentity(name="李四")},
         related_relations_text="  - 李四：关系[政敌:对手]，信任度0.10、好感度-0.60",
         dominant_need_label="渴望重获父亲的认可",
     )
@@ -293,7 +317,7 @@ async def test_experiential_prompt_has_negative_constraint_and_relations(contain
     await system._write_experiential(
         raw_content="他在朝堂当众反对我。",
         personality=personality,
-        related_agent_directory={"x": "李四"},
+        related_agent_directory={"x": PerceivedIdentity(name="李四", gender="男")},
         related_relations_text="  - 李四：关系[政敌:对手]，信任度0.10、好感度-0.60",
     )
 
@@ -311,6 +335,7 @@ async def test_experiential_prompt_has_negative_constraint_and_relations(contain
     assert "我与他们的关系" in prompt and "政敌:对手" in prompt
     # Related people are a closed set, so the model can't invent anyone.
     assert "李四" in prompt
+    assert "李四（男）" in prompt      # the monologue says 他/她 of him: gender, not a guess
 
 
 @pytest.mark.asyncio
@@ -326,7 +351,7 @@ async def test_experiential_prompt_includes_situation_header(container: object) 
     await system._write_experiential(
         raw_content="他在朝堂当众反对我。",
         personality=personality,
-        related_agent_directory={"x": "李四"},
+        related_agent_directory={"x": PerceivedIdentity(name="李四", gender="男")},
         related_relations_text="  - 李四：关系[政敌:对手]，信任度0.10、好感度-0.60",
         situation=Situation(location_view=LocationView(name="朝堂", description="百官议事的正殿"), time_label="辰时"),
     )
@@ -607,6 +632,21 @@ async def test_retrieval_floor_compares_fused_score() -> None:
                            importance=MemoryImportance.MEDIUM, current_step=1)
         results = await system.retrieve("alpha", current_step=5, top_k=10, stream=MemoryStream.FACTUAL)
         assert [m.stored_content for m in results] == expected
+
+
+@pytest.mark.asyncio
+async def test_a_call_may_hold_its_recall_to_a_stricter_floor() -> None:
+    """``score_floor`` overrides the system's floor for that one call only."""
+    dense_w = VECTOR_WEIGHTS[0]
+    system = _make_floor_system(floor=dense_w - 0.1)
+    await system.ensure_collections()
+    await system.write("alpha 事件", MemoryStream.FACTUAL, personality=_make_personality(),
+                       importance=MemoryImportance.MEDIUM, current_step=1)
+
+    strict = await system.retrieve("alpha", current_step=5, stream=MemoryStream.FACTUAL, score_floor=dense_w + 0.1)
+    default = await system.retrieve("alpha", current_step=5, stream=MemoryStream.FACTUAL)
+
+    assert strict == [] and [m.stored_content for m in default] == ["alpha 事件"]
 
 
 @pytest.mark.asyncio
@@ -923,6 +963,36 @@ async def test_compression_with_strict_filter_and_source_ids(container: object) 
     assert len(await container.vector_store.list_all(collection)) < 35
     summaries = [m for m in system._entries.values() if m.kind == "summary"]
     assert any(s.source_ids for s in summaries)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_provider", ["embedding", "vector_store"])
+async def test_compression_preserves_sources_when_summary_persistence_fails(
+    container: object, monkeypatch: pytest.MonkeyPatch, failed_provider: str,
+) -> None:
+    provider = MockLLMProvider(fixed_response='{"points": ["市集如常。"]}')
+    system = _make_memory_system(container, provider=provider)
+    personality = _make_personality()
+    for index in range(30):
+        await system.write(
+            f"Routine market observation #{index}.", MemoryStream.FACTUAL,
+            personality=personality, importance=0.2,
+            current_step=5 + index % 15, decay_score=0.15,
+        )
+    collection = system._namespace(MemoryStream.FACTUAL)
+    original_ids = {row.id for row in await container.vector_store.list_all(collection)}
+
+    async def fail(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("Persistence unavailable")
+
+    if failed_provider == "embedding":
+        monkeypatch.setattr(container.embedding, "embed", fail)
+    else:
+        monkeypatch.setattr(container.vector_store, "upsert", fail)
+
+    assert await system.compress(MemoryStream.FACTUAL, current_step=200) == 0
+    assert {row.id for row in await container.vector_store.list_all(collection)} == original_ids
+    assert set(system._entries) == original_ids
 
 
 def test_summary_prompt_renders_time_range_not_step(container: object) -> None:
@@ -1306,7 +1376,6 @@ async def test_retrieve_both_returns_retrieval_result(container: object) -> None
     assert isinstance(result.events, list)
     assert isinstance(result.insights, list)
     assert isinstance(result.period_summaries, list)
-    assert isinstance(result.stream_links, dict)
     assert isinstance(result.insight_sources, dict)
 
 
@@ -1862,6 +1931,36 @@ async def test_drain_writes_completes_experiential_rewrite(container) -> None:
     assert experiential.id in system._entries  # added to _entries only once rewritten
 
 
+@pytest.mark.asyncio
+async def test_background_rewrite_uses_event_time_personality(container: object) -> None:
+    from agent.personality import EmotionType
+    from core.interfaces.condition import BodyCondition
+
+    provider = MockLLMProvider(fixed_response="那阵脚步声让我害怕。")
+    system = _make_memory_system(container, provider=provider, is_main_character=True)
+    await system.ensure_collections()
+    personality = _make_personality(
+        emotion=EmotionState(primary=EmotionType.FEAR, intensity=0.7, valence=-0.5),
+    )
+    personality.set_condition(BodyCondition(description="双手被缚", since_step=1))
+    entries = await system.record_event(
+        current_step=2, raw_content="门外传来脚步声", personality=personality,
+        importance=MemoryImportance.HIGH,
+    )
+    personality.update_emotion(primary=EmotionType.JOY, intensity=0.8, valence=0.7)
+    personality.set_condition(BodyCondition(description="伤口疼痛", since_step=3))
+    await system.drain_writes()
+
+    prompt = provider.call_history[-1][-1].content
+    assert "恐惧" in prompt
+    assert "喜悦" not in prompt
+    assert "双手被缚" in prompt
+    assert "伤口疼痛" not in prompt
+    experiential = next(m for m in entries if m.stream == MemoryStream.EXPERIENTIAL)
+    assert experiential.emotion_label == EmotionType.FEAR
+    assert experiential.stored_content == "那阵脚步声让我害怕。"
+
+
 def test_foiled_attempt_is_transient_never_persisted(container) -> None:
     """A not_executed foiled attempt goes only to the transient ring buffer: not to _entries, not
     to the vector store, and it doesn't consume a _seq.
@@ -1939,7 +2038,7 @@ def test_foiled_single_attempt_carries_no_count(container) -> None:
 
 
 def test_foiled_different_keys_never_merge(container) -> None:
-    """Different keys get one line each. Merging only happens within the same actor and action."""
+    """Different keys get one line each. Merging only happens within the same doer and action."""
     system = _make_memory_system(container)
     system.note_foiled_attempt(step=1, text="我想找甲说话。", key=("talk", "agent-a"), gist="找甲说话")
     system.note_foiled_attempt(step=2, text="我想找乙说话。", key=("talk", "agent-b"), gist="找乙说话")

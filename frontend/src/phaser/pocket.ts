@@ -227,11 +227,13 @@ export class PocketLayer {
       // says it in words.
       const hidden = it.concealed === true;
       const label = worth ? `${it.name} · ${it.state}` : it.name;
-      rows.push(row(hidden ? `✧ ${label}（不公开）` : `✦ ${label}`, ITEM_INK));
+      const itemRow = row(hidden ? `✧ ${label}（不公开）` : `✦ ${label}`, ITEM_INK);
+      itemRow.setInteractive({ useHandCursor: true }).setData("entityId", it.id).setData("entityKind", "item");
+      rows.push(itemRow);
       const desc = (it.description ?? "").trim();
       const content = (it.content ?? "").trim();
-      if (desc) rows.push(row(desc, ITEM_DESC_INK));
-      if (content) rows.push(row(`「${content}」`, ITEM_CONTENT_INK));
+      if (desc) rows.push(row(desc, ITEM_DESC_INK).setInteractive({ useHandCursor: true }).setData("entityId", it.id).setData("entityKind", "item"));
+      if (content) rows.push(row(`「${content}」`, ITEM_CONTENT_INK).setInteractive({ useHandCursor: true }).setData("entityId", it.id).setData("entityKind", "item"));
     }
 
     // A rule between the two blocks: at this size the bead and star alone don't part them.

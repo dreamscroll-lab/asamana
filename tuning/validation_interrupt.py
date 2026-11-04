@@ -23,6 +23,7 @@ from core.container import Container
 from core.interfaces.llm import LLMProvider, LLMScene
 from core.logging import get_logger
 from world.initializer import WorldInitializer
+from tuning.dry_run import isolate_container
 
 from tuning.judge_interrupt import judge_interrupt
 from tuning.judge_llm import create_judge
@@ -139,7 +140,7 @@ async def validate_interrupt(
     judge_llm = judge_provider or create_judge(config, judge_model)
 
     # restore once just to surface a clear error early if the world is missing.
-    await WorldInitializer(container).restore(world_id)
+    await WorldInitializer(await isolate_container(container, world_id)).restore(world_id)
     out_dir = Path(trace_dir) / world_id / "validation" / "interrupt"
 
     async def _one(meta: dict) -> dict:

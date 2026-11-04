@@ -9,7 +9,9 @@
 
 import Phaser from "phaser";
 
-import type { ActionSummary, AgentStateSummary, EntityView, GraphEdge } from "../types";
+import type { GraphEdge } from "../types";
+import type { PlacedEntity } from "../lib/step";
+import type { Beat, Figure } from "./figures";
 import { ActionType, actedOnAgents, actedOnEntities, actedOnNpcs, reachedAgents } from "../lib/contract";
 import type { EntityLayer } from "./entities";
 import { type AgentToken, PLATE_GAP } from "./types";
@@ -21,25 +23,29 @@ import type { Room, WorldMap } from "./worldMap";
 // encounter settles; adjacency itself is guaranteed by assignSlots, which seats engaged groups
 // (and anyone acting on a fixture) first, since quantising onto cells can separate them.
 const ENGAGE_PULL = 0.55;
+// A cell's cost per step of StandRank: larger than any squared distance inside the
+// ROOM_STAND_REACH band, so every free cell of a better rank comes first.
+const RANK_COST = 1e6;
 // Unordered pair key, so a relation or an encounter is one entry however it is named.
 const pairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`);
 /**
- * The PEOPLE a beat is about — who its actor turns toward and stands beside, primary first.
+ * The PEOPLE a beat is about — who its doer turns toward and stands beside, primary first.
  *
- * Agents before NPCs, so a deed naming both turns to the one who can answer; receivers last: a
- * hand-over is done to the thing, and its receiver is the only person it names.
+ * Agents before NPCs, so a deed naming both turns to the one who can answer; the people it reaches
+ * last: an act on a thing changing hands, or on a thing someone holds, is done to the thing, and
+ * its receiver or holder is the only person it names.
  */
-export const subjectPeopleIds = (act: ActionSummary): string[] => [
+export const subjectPeopleIds = (act: Beat): string[] => [
   ...actedOnAgents(act.target), ...actedOnNpcs(act.target), ...reachedAgents(act.target),
 ];
 /**
- * The THINGS a beat is about — what its actor turns toward and stands beside.
+ * The THINGS a beat is about — what its doer turns toward and stands beside.
  *
  * Aim first, effect second: `affected_entity_ids` (what the step changed) is empty when a man
  * heaved at a gate and it held, while `target.acts_on` survives failure. The fallback is still
  * needed: a seize names its prize only through the change (its target may have been a person).
  */
-export const subjectEntityIds = (act: ActionSummary): string[] => {
+export const subjectEntityIds = (act: Beat): string[] => {
   const aimed = actedOnEntities(act.target);
   return aimed.length ? aimed : act.affected_entity_ids ?? [];
 };
@@ -48,8 +54,8 @@ export const subjectEntityIds = (act: ActionSummary): string[] => {
 export interface StagingHost {
   readonly map: WorldMap;
   token(id: string): AgentToken | undefined;
-  /** Reported dead with no token left on the map — takes no room. */
-  gone(state: AgentStateSummary): boolean;
+  /** Died before the step being drawn: no body on the map, so takes no room. */
+  gone(state: Figure): boolean;
 }
 
 export class Staging {
@@ -67,7 +73,7 @@ export class Staging {
   constructor(private host: StagingHost, private entities: EntityLayer) {}
 
   /**
-   * Feed the step's relationship edges (`StepEvent.relations`). Collapsed to a
+   * Feed the step's relationship edges (every agent's relations). Collapsed to a
    * symmetric per-pair affinity in [-1,1] that the resting layout uses to draw
    * allies together and push rivals apart.
    */
@@ -104,16 +110,16 @@ export class Staging {
    * Called once per render, before the scene's moveAgent and layoutLabels read positionFor.
    */
   layoutRooms(
-    states: AgentStateSummary[],
-    actions: ActionSummary[],
-    entities: Record<string, EntityView>,
+    states: Figure[],
+    actions: Beat[],
+    entities: Record<string, PlacedEntity>,
   ): Map<string, number> {
     this.slotOf.clear();
-    const byRoom = new Map<string, AgentStateSummary[]>();
+    const byRoom = new Map<string, Figure[]>();
     for (const s of states) {
       if (s.transit) continue;
       // The long dead take no room, or each would hold a cell where he died for the rest of
-      // the run. Whoever is falling this step still has a token and is still seated.
+      // the run. Whoever is falling this step is still seated.
       if (this.host.gone(s)) continue;
       const roomId = s.location_id;
       if (!this.host.map.rooms.has(roomId)) continue;
@@ -125,7 +131,7 @@ export class Staging {
     // Who is dealing with whom this step, symmetric. A not_executed action draws no one: pulling
     // him toward someone he never reached would assert the opposite of what happened.
     const engaged = new Set<string>();
-    // Where the thing he is about to act on stands, for an actor acting on a thing, not a person.
+    // Where the thing he is about to act on stands, for a doer acting on a thing, not a person.
     const anchor = new Map<string, { gx: number; gy: number }>();
     for (const a of actions) {
       if (a.not_executed) continue;
@@ -252,8 +258,12 @@ export class Staging {
       taken.add(c);
       this.slotOf.set(ids[i], this.host.map.iso(cells[c].x + 0.5, cells[c].y + 0.5));
     };
+    // A cell of a worse rank (see StandRank) only once every better one is taken: the sim's wanted
+    // spot can sit on a roof, and the nearest open cell to a roof is often the street or the next
+    // place over, which would show him somewhere he is not.
     const cost = (c: number, i: number) =>
-      (cells[c].x + 0.5 - want[i].gx) ** 2 + (cells[c].y + 0.5 - want[i].gy) ** 2;
+      cells[c].rank * RANK_COST
+      + (cells[c].x + 0.5 - want[i].gx) ** 2 + (cells[c].y + 0.5 - want[i].gy) ** 2;
     const nearestFree = (i: number): number => {
       let best = -1;
       let bestD = Infinity;
@@ -426,16 +436,16 @@ export class Staging {
    *  2. A thing's cell depends on the room and its id, not on who is present, so a chest
    *     doesn't shuffle every time someone walks in.
    *
-   * Held and destroyed things have no marker and get no cell. Called with the map as drawn,
+   * Held things have no marker and get no cell. Called with the map as drawn,
    * not as the step reported it, so a withheld change is laid out in the visible state.
    */
-  layoutFixtures(entities: Record<string, EntityView>): void {
+  layoutFixtures(entities: Record<string, PlacedEntity>): void {
     this.entities.entitySlotOf.clear();
     this.fixtureCells.clear();
     const byLoc = new Map<string, string[]>();
     for (const [eid, e] of Object.entries(entities)) {
-      if (e.presence === "held" || e.presence === "destroyed") continue;
-      const locId = e.presence_ref ?? "";
+      if (e.presence === "held") continue;
+      const locId = e.presence_ref;
       if (!this.host.map.rooms.has(locId)) continue;
       (byLoc.get(locId) ?? byLoc.set(locId, []).get(locId)!).push(eid);
     }
@@ -460,8 +470,8 @@ export class Staging {
   // Resting slot only (from the cached layoutRooms result); in-transit agents are
   // driven by Walker.walkTransit (path-follow).
   positionFor(
-    state: AgentStateSummary,
-    _all: AgentStateSummary[],
+    state: Figure,
+    _all: Figure[],
   ): { x: number; y: number } | null {
     const slot = this.slotOf.get(state.agent_id);
     if (slot) return slot;
@@ -475,7 +485,7 @@ export class Staging {
   // roster). Co-located figures can crowd, so de-collide only vertically: sort by
   // screen-x and lift alternating plates a row higher, so horizontal neighbors don't
   // overprint.
-  layoutLabels(states: AgentStateSummary[]): void {
+  layoutLabels(states: Figure[]): void {
     for (const s of states) {
       const tok = this.host.token(s.agent_id);
       if (tok) {

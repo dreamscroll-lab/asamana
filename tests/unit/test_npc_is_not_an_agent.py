@@ -21,8 +21,10 @@ from core.interfaces.perception import (
     LocationView, NpcIdentity, PerceivedIdentity, PerceivedNpc, SpatialPerception,
 )
 from engine.environment import EnvironmentSystem
-from world.models import Npc, NpcSeed
+from core.interfaces.entity import Npc
 from core.interfaces.place import Place
+from tests.unit.env_state import restore, saved
+from tests.unit.world_setups import make_npc
 
 
 def _action_space():
@@ -59,7 +61,7 @@ def test_it_never_enters_the_roster_the_whole_cognition_loop_runs_on() -> None:
     never see them and need no filtering code at all.
     """
     env = _env()
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
+    env.spawn_npc(make_npc("王二"), location_id="hall")
     npc_id = env.all_npcs()[0].npc_id
 
     agents: dict[str, object] = {"a1": object()}
@@ -77,7 +79,7 @@ def test_the_present_roster_keeps_the_two_kinds_apart() -> None:
     adjudication, where it becomes a silent null step.
     """
     env = _env()
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
+    env.spawn_npc(make_npc("王二"), location_id="hall")
     env.place_agent(agent_id="a1", location_id="hall")
     env.place_agent(agent_id="a2", location_id="hall")
 
@@ -96,7 +98,7 @@ def test_binding_never_puts_one_where_arbitration_would_look_for_an_agent() -> N
         payload={"errand_npc_index": 1, "errand_destination_index": 1},
         packet=_packet(),
         visible_ids=[], roster_ids=[], reachable_ids=["gate"],
-        entity_ids=[], entity_types={}, npc_ids=["npc_x"], own_item_ids=[],
+        entity_ids=[], entity_types={}, entity_holders={}, npc_ids=["npc_x"], own_item_ids=[],
     )
     bound = _bind_errand(slots)
     assert bound is not None
@@ -125,7 +127,7 @@ def test_the_thing_it_carries_is_numbered_off_the_list_that_was_printed() -> Non
             visible_ids=[], roster_ids=["a2"], reachable_ids=["gate"],
             # Three items in the printed list; only the second is in my hand.
             entity_ids=["floor_lamp", "my_letter", "his_seal"],
-            entity_types={}, npc_ids=["npc_x"], own_item_ids=["my_letter"],
+            entity_types={}, entity_holders={}, npc_ids=["npc_x"], own_item_ids=["my_letter"],
         ))
 
     bound = _bind(2)                      # the second printed item = the letter in my hand
@@ -166,32 +168,26 @@ def test_a_report_from_one_is_not_a_correspondent() -> None:
 
 
 def test_the_read_model_does_not_call_one_an_agent() -> None:
-    """The read model must not lie: it's not in ``agent_states``, so the relation graph and
+    """The read model must not lie: it's not among the agents, so the relation graph and
     character cards never include it."""
-    from core.interfaces.snapshot import WorldSnapshot
-    from interaction.models import StepEvent
-    from world.identity_color import _PALETTE, MINDLESS_BODY_COLOR
+    from interaction.models import StepView
+    from tests.unit.step_view import agents, npcs, snapshot_of
+    from dataclasses import asdict
 
     env = _env()
     env.spawn_npc(
-        NpcSeed(name="王二", gender="男", age=34, description="跑得快"), location_id="hall",
+        make_npc("王二", gender="男", age=34, description="跑得快"), location_id="hall",
     )
     npc_id = env.all_npcs()[0].npc_id
-    snapshot = WorldSnapshot(
-        world_id="w", step=1, timestamp=None, world_time={},
-        agent_states={}, metadata={"environment": env.snapshot_state()},
-    )
-    event = StepEvent.from_snapshot(snapshot)
+    world = env.world_state()
+    snapshot = snapshot_of(npcs=world["npcs"], entities=world["entities"])
+    view = StepView.from_snapshot(snapshot)
 
-    assert npc_id not in event.agent_states
-    assert [n.npc_id for n in event.npcs] == [npc_id]
-    seen = event.npcs[0]
-    assert (seen.name, seen.gender, seen.age) == ("王二", "男", 34)
-    assert seen.location == "大殿"                 # narrative name, not an id
-    # This tier has no identity, so it gets the reserved value, not a slot from the character
-    # palette.
-    assert seen.color == MINDLESS_BODY_COLOR
-    assert seen.color not in _PALETTE
+    assert npc_id not in agents(view)
+    assert list(npcs(view)) == [npc_id]
+    where, seen = npcs(view)[npc_id]
+    assert where == "hall"
+    assert set(asdict(seen)) == {"npc_id", "public", "private"}
 
 
 def test_the_code_layer_tier_never_crosses_into_the_narrative_layer() -> None:
@@ -205,11 +201,10 @@ def test_the_code_layer_tier_never_crosses_into_the_narrative_layer() -> None:
     from engine.directory import LiveWorldDirectory
     from engine.scene import SceneVisibility, assemble_scene_context
     from agent.decision import DecisionEngine
-    from world.models import NpcSeed
 
     env = _env()
     env.spawn_npc(
-        NpcSeed(name="王二", gender="男", age=34, description="跑得快"), location_id="hall",
+        make_npc("王二", gender="男", age=34, description="跑得快"), location_id="hall",
     )
     env.place_agent(agent_id="a1", location_id="hall")
     banned = ("NPC", "npc", "工具人")
@@ -219,7 +214,7 @@ def test_the_code_layer_tier_never_crosses_into_the_narrative_layer() -> None:
         "a1", environment=env, directory=LiveWorldDirectory.from_agents({}, env),
         visibility=SceneVisibility.GOD,
     ).text
-    assert "此处还有" in scene                      # the information that should be there is
+    assert "此处可接受任务指派的人" in scene                      # the information that should be there is
     for word in banned:
         assert word not in scene, f"判官现场泄漏代码层档次「{word}」：{scene}"
 
@@ -229,10 +224,14 @@ def test_the_code_layer_tier_never_crosses_into_the_narrative_layer() -> None:
     # Scan only the human-readable half: key names (errand_npc_index etc.) are machine contract,
     # like physical_entity_index; the model just fills them and never writes them into narrative.
     # The text after the colon does.
-    from agent import decision as _d
+    import inspect
+
+    prompt_source = "\n".join(inspect.getsource(method) for method in (
+        DecisionEngine._build_decision_prompt, DecisionEngine._intent_output_fields,
+    ))
     source_schema = "\n".join(
         ln.split(":", 1)[1] if ":" in ln else ln
-        for ln in pathlib.Path(_d.__file__).read_text().splitlines()
+        for ln in prompt_source.splitlines()
         if ln.lstrip().startswith(('"errand_', '"physical_npc'))
     )
     for text, where in ((menu, "行动菜单"), (schema, "prompt docstring"),
@@ -294,7 +293,7 @@ def test_the_place_tells_bodies_from_people() -> None:
     else is a second copy, and a stale copy doesn't error.
     """
     env = _env()
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
+    env.spawn_npc(make_npc("王二"), location_id="hall")
     npc_id = env.all_npcs()[0].npc_id
     env.place_agent(agent_id="a1", location_id="hall")
 
@@ -317,7 +316,7 @@ async def test_speaking_to_a_room_of_tool_bodies_is_speaking_to_nobody() -> None
     from core.interfaces.urgency import Urgency
 
     env = _env()
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
+    env.spawn_npc(make_npc("王二"), location_id="hall")
     npc_id = env.all_npcs()[0].npc_id
     env.place_agent(agent_id="a1", location_id="hall")
 
@@ -361,17 +360,17 @@ def test_a_trace_it_leaves_never_enters_the_identity_index() -> None:
     may only contain beings with cognition.
     """
     env = _env()
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
+    env.spawn_npc(make_npc("王二"), location_id="hall")
     npc_id = env.all_npcs()[0].npc_id
     env.place_agent(agent_id="a1", location_id="hall")
 
     env.record_carry_observation(
         location_id="hall", observation="在大殿，王二把木匣搁下了。",
-        actor_ids=(npc_id, "a1"),
+        doer_ids=(npc_id, "a1"),
     )
     event = env._carry_annotations["hall"][0]
-    assert event.actor_ids == (npc_id, "a1")       # who did it: both tiers
-    assert event.agent_actor_ids == ("a1",)        # which people: only those with cognition
+    assert event.doer_ids == (npc_id, "a1")       # who did it: both tiers
+    assert event.doer_agent_ids == ("a1",)        # which people: only those with cognition
 
 
 def _environment_functions():
@@ -449,7 +448,7 @@ def test_a_third_kind_of_body_is_neither_an_agent_nor_an_npc() -> None:
     """
     env = _env()
     env.place_agent(agent_id="a1", location_id="hall")
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
+    env.spawn_npc(make_npc("王二"), location_id="hall")
     npc_id = env.all_npcs()[0].npc_id
 
     env._place_body("beast1", "hall", "beast")   # a kind outside BodyKind
@@ -474,19 +473,19 @@ def test_the_npc_roster_holds_exactly_the_bodies_registered_as_npcs() -> None:
     """
     env = _env()
     env.place_agent(agent_id="a1", location_id="hall")
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
-    env.spawn_npc(NpcSeed(name="张三"), location_id="hall")
+    env.spawn_npc(make_npc("王二"), location_id="hall")
+    env.spawn_npc(make_npc("张三"), location_id="hall")
 
     def _invariant() -> None:
-        from world.models import BodyKind
+        from core.interfaces.entity import BodyKind
         kinded = {bid for bid, kind in env._bodies.items() if kind is BodyKind.NPC}
         assert set(env._npcs) == kinded, (set(env._npcs), kinded)
 
     _invariant()
 
     restored = _env()
-    restored.restore_state(env.snapshot_state())
-    from world.models import BodyKind
+    restore(restored, saved(env))
+    from core.interfaces.entity import BodyKind
     assert {bid for bid, k in restored._bodies.items() if k is BodyKind.NPC} == set(restored._npcs)
     assert set(restored._npcs) == set(env._npcs), "还原过来的名册要一样"
 
@@ -518,7 +517,7 @@ def test_a_body_leaving_the_map_is_not_the_same_as_leaving_the_world() -> None:
     agents refute daily (the dead are removed from the environment but stay in ``agents_dict``).
     """
     env = _env()
-    env.spawn_npc(NpcSeed(name="王二"), location_id="hall")
+    env.spawn_npc(make_npc("王二"), location_id="hall")
     npc_id = env.all_npcs()[0].npc_id
 
     env.remove_body(npc_id)
@@ -528,12 +527,10 @@ def test_a_body_leaving_the_map_is_not_the_same_as_leaving_the_world() -> None:
 
 
 def test_one_criterion_decides_whether_a_sender_is_someone() -> None:
-    """Whether a sender is someone I can form a relation with has one answer: ``sender_is_agent``
-    (Message's contract: the sender declares what it is).
+    """Sender cognition is declared by ``sender_is_agent``, never inferred from id membership.
 
-    Any other criterion leaks: an id whitelist only knows the ids it spells out (miss the director
-    and you render a relation line for "不知来源"), and an id set built from perception requires
-    having met the sender. This blocks comparing an id against a set or a literal.
+    An anonymous message additionally withholds the sender's identity. An id whitelist misses
+    non-agent senders, while an id set built from perception excludes people not yet encountered.
     """
     import ast
     from pathlib import Path
@@ -576,14 +573,14 @@ def test_a_word_with_no_audience_is_not_shouted_but_kept_as_the_briefing() -> No
             payload={"errand_npc_index": 1, "errand_destination_index": 1, **extra},
             packet=_packet(),
             visible_ids=[], roster_ids=["a2"], reachable_ids=["gate"],
-            entity_ids=[], entity_types={}, npc_ids=["npc_x"], own_item_ids=[],
+            entity_ids=[], entity_types={}, entity_holders={}, npc_ids=["npc_x"], own_item_ids=[],
         ))
 
     # No listener: the words aren't spoken, but they don't vanish either; they go into the
     # description
     briefing = _bind(errand_message="你去东宫外头转一圈，回来报我")
     assert briefing.errand.message == ""
-    assert briefing.description_suffix == "（我吩咐他：你去东宫外头转一圈，回来报我）"
+    assert briefing.description_suffix == "（我向他指派任务：你去东宫外头转一圈，回来报我）"
 
     # A named recipient: said only to him
     direct = _bind(errand_recipient_index=1, errand_message="殿下召见")

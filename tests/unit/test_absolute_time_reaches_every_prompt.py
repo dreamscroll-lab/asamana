@@ -171,6 +171,9 @@ def _agent(agent_id: str = "a2", name: str = "长孙无忌"):
             )
             self.relation_system = _Rel()
 
+        async def relation_context(self, agent_ids) -> str:  # noqa: ANN001
+            return ""  # nobody present this agent has a substantive relation with
+
     return _A()
 
 
@@ -382,7 +385,7 @@ async def test_social_memory_summary_carries_the_rule_and_the_clock() -> None:
     ex = SocialExecutor(llm, _directory(), seconds_per_step=3600)
     await ex._memory_summary(  # noqa: SLF001
         agent=_agent(), other_id="a3", other_name="李世民", transcript="……",
-        purpose="约定面谈", fallback_fact="谈了一场。", is_initiator=True, now_step=0,
+        purpose="约定面谈", is_initiator=True, now_step=0,
         environment=_environment_at(agent_ids=("a2", "a3")),
     )
     text = llm.text()
@@ -510,7 +513,7 @@ async def test_physical_target_reaction_stays_out_of_scope() -> None:
     )
     ex = PhysicalExecutor(llm, _directory(), seconds_per_step=3600)
     await ex._llm_target_reaction(  # noqa: SLF001
-        target_agent=_agent(), actor_id="a3", actor_name="李世民",
+        target_agent=_agent(), doer_id="a3", doer_name="李世民",
         event_line="李世民揪住尉迟恭的衣领，将他按在墙上", succeeded=True, target_damage=0.0, target_relief=0.0, step=0,
     )
     assert MARK not in llm.text()

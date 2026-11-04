@@ -8,11 +8,13 @@ state.
 
 from __future__ import annotations
 
+import dataclasses
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List
 
 from agent.decision import DecisionStatus
+from agent.personality import activity_status_for, visible_doing
 from core.context import observe_stage
 from core.interfaces.action import ActionResult, ActionTarget, ActionType, AgentAction
 from core.interfaces.directory import WorldDirectory
@@ -41,17 +43,7 @@ logger = get_logger(__name__)
 _FOILED_MISS_PRIORITY_THRESHOLD = 3
 
 
-# What the committed body is visibly doing, as the rejected agent sees it face to face. COVERT
-# isn't listed: naming it would expose it, so it falls through to the vague phrase. TALK is
-# built in _busy_reason (it names the partner).
-_BUSY_WITH: dict[ActionType, str] = {
-    ActionType.REST: "正在歇息",
-    ActionType.WORK: "正埋头忙着手上的事",
-    ActionType.MOVE: "正要动身离开",
-    ActionType.PHYSICAL: "正在动手做别的事",
-    ActionType.SEND_MESSAGE: "正忙着传讯",
-    ActionType.ERRAND: "正在吩咐人办事",
-}
+# A committed body whose activity doesn't show (COVERT) still turned the request down.
 _BUSY_UNSEEN = "正忙于他事"
 
 
@@ -66,6 +58,11 @@ class ArbitratedAction:
     message_ids: List[str] = field(default_factory=list)
     ongoing_execution_id: str | None = None  # None means immediate completion
     is_passive_join: bool = False
+    # A passive join the joiner accepted: the inviter's id. "" when compelled or not a join; the
+    # joiner's dropped intent is told differently for each (``Agent.defer_decided_intent``).
+    invited_by: str = ""
+    # The invitee refused: a failure that happened to the doer, unlike a rejection.
+    refused: bool = False
 
 
 @dataclass
@@ -191,7 +188,7 @@ class ExecutionArbiter:
         if exec_state is None:
             return None
         executor = self._executor_registry.get_executor(exec_state.action_type)
-        return getattr(executor, "conscription", None)
+        return executor.conscription if executor is not None else None
 
     def _conscription_of(self, action: "AgentAction | None") -> "Conscription | None":
         """The mode by which this act takes others' bodies; ``None`` = it takes nobody this time.
@@ -202,7 +199,7 @@ class ExecutionArbiter:
         if action is None or not action.target.claims:
             return None
         executor = self._executor_registry.get_executor(action.action_type)
-        return getattr(executor, "conscription", None)
+        return executor.conscription if executor is not None else None
 
     async def arbitrate(
         self,
@@ -222,25 +219,26 @@ class ExecutionArbiter:
         ``ExecutionProcessor.teardown_with_writeback``, i.e. in the feedback layer.
         """
         plans_by_id = {plan.agent_id: plan for _phase, _agent, plan in planned_steps}
-        admissions, claimed_by, denied = self._resolve(
+        admissions, claimed_by, denied, refused = await self._resolve(
             planned_steps, plans_by_id, agents_dict, step, in_progress_at_step_start,
         )
-        return await self._enact(admissions, claimed_by, denied, plans_by_id, agents_dict, step)
+        return await self._enact(admissions, claimed_by, denied, refused, plans_by_id, agents_dict, step)
 
-    def _resolve(
+    async def _resolve(
         self,
         planned_steps: List[tuple[str, "Agent", AgentStepPlan]],
         plans_by_id: dict[str, AgentStepPlan],
         agents_dict: Dict[str, "Agent"],
         step: int,
         in_progress_at_step_start: set[str],
-    ) -> tuple[dict[str, _Admission], dict[str, str], dict[str, str]]:
+    ) -> tuple[dict[str, _Admission], dict[str, str], dict[str, str], set[str]]:
         """Adjudication: who is admitted, whom they enlist, who is rejected. Pure bookkeeping;
-        the world and registry it reads are as of step start.
+        the world and registry it reads are as of step start. It writes nothing, so a step
+        withdrawn while it waits on an invitee's answer leaves nothing behind.
 
-        Returns ``(admissions, claimed_by, denied)``: admissions in adjudication order (which is
-        landing order); ``claimed_by`` maps enlisted → initiator; ``denied`` maps rejected →
-        reason.
+        Returns ``(admissions, claimed_by, denied, refused)``: admissions in adjudication order
+        (which is landing order); ``claimed_by`` maps enlisted → initiator; ``denied`` maps
+        rejected → reason; ``refused`` are the rejected whose invitation was refused.
 
         Walks ``planned_steps`` in initiative order. Two gates:
 
@@ -252,6 +250,11 @@ class ExecutionArbiter:
           denied bodies are never added (the denial changed nothing). A body belongs to at most
           one admission.
         - ``claimed_by``: a body enrolled as a co-participant of someone else's action.
+
+        Under ``Conscription.INVITE`` each free body is asked whether it joins
+        (``Agent.accepts_invitation``; an AI character always does), once per inviter per step.
+        One refusal rejects the action; the refusing body stays free, its own plan untouched.
+        Unlike a rejection, a refusal happened to the inviter, so he remembers it.
 
         Being the *target* of an immediate action (PHYSICAL/COVERT/SEND) consumes nothing; only
         enrollment does. Contention branches on conscription mode, never action type; who is
@@ -274,6 +277,9 @@ class ExecutionArbiter:
         queue: deque[AgentStepPlan] = deque(plan for _p, _a, plan in self._initiative_order(planned_steps))
         reached: set[str] = set()
         requeued: set[str] = set()
+        # (invitee, inviter) → whether the invitee joins: a re-queued inviter isn't asked about twice.
+        accepted: dict[tuple[str, str], bool] = {}
+        refused: set[str] = set()
 
         def revoke(owner: str, *, seized: set[str], by: str) -> list[str]:
             """Revoke the action owner admitted this step; return the bodies it would have torn
@@ -411,6 +417,29 @@ class ExecutionArbiter:
                 )
                 continue
 
+            if mode is Conscription.INVITE:
+                refusers = []
+                for pid in co_participants:
+                    if (pid, agent_id) not in accepted:
+                        accepted[pid, agent_id] = await agents_dict[pid].accepts_invitation(
+                            plans_by_id[pid], inviter_id=agent_id, action_type=plan.action.action_type,
+                            talk_topic=plan.action.talk_topic,
+                        )
+                    if not accepted[pid, agent_id]:
+                        refusers.append(pid)
+                if refusers:
+                    # Not in blocked_by: a refusal stands whatever is revoked later.
+                    denied[agent_id] = f"{'、'.join(self._directory.agent_name(pid) for pid in refusers)}拒绝了邀请"
+                    refused.add(agent_id)
+                    logger.info(
+                        "admission_denied",
+                        extra={
+                            "step": step, "agent_id": agent_id,
+                            "action_type": plan.action.action_type.value, "refused_by": refusers,
+                        },
+                    )
+                    continue
+
             # Admitted earlier this step → revoke. In an execution from before this step → tear it
             # down at landing (it really happened; each side remembers it).
             to_tear_down: list[str] = []
@@ -432,13 +461,14 @@ class ExecutionArbiter:
                 claimed_by[pid] = agent_id
                 consumed.add(pid)
 
-        return admissions, claimed_by, denied
+        return admissions, claimed_by, denied, refused
 
     async def _enact(
         self,
         admissions: dict[str, _Admission],
         claimed_by: dict[str, str],
         denied: dict[str, str],
+        refused: set[str],
         plans_by_id: dict[str, AgentStepPlan],
         agents_dict: Dict[str, "Agent"],
         step: int,
@@ -562,15 +592,21 @@ class ExecutionArbiter:
                 continue
             plan = plans_by_id[agent_id]
             rejection = self._rejected_result(plan, reason=reason)
+            # A refusal happened to him (he remembers it); any other denial changed nothing.
+            was_refused = agent_id in refused
             # The decision's own text: a denied action never starts to generate one.
             failed_state = ActionExecutionState.create_failed(
                 action_type=plan.action.action_type, initiator_id=agent_id,
                 failure_result=rejection, started_step=step,
                 purpose=plan.action.action_description or plan.action.action_type.value,
+                not_executed=not was_refused,
             )
             self._executor_registry.add_active(failed_state)
-            arbitration[agent_id] = self._start_arbitrated(
-                plan, failed_state, location_id=self._environment.get_body_location(agent_id),
+            arbitration[agent_id] = dataclasses.replace(
+                self._start_arbitrated(
+                    plan, failed_state, location_id=self._environment.get_body_location(agent_id),
+                ),
+                refused=was_refused,
             )
 
         return arbitration, seize_records
@@ -588,7 +624,7 @@ class ExecutionArbiter:
         """The initiator's record for a newly admitted execution's first beat.
 
         Surfaces the executor's opening_outcome, else a generic marker that also names the
-        actor. The real outcome lands at complete().
+        doer. The real outcome lands at complete().
         """
         marker = exec_state.opening_outcome or (
             f"{self._directory.agent_name(plan.agent_id)}着手{exec_state.purpose}"
@@ -632,8 +668,7 @@ class ExecutionArbiter:
         authoritative.
         """
         initiator_name = self._directory.agent_name(exec_state.initiator_id) if exec_state else "对方"
-        # Joiner's viewpoint: the initiator's purpose ("与李世民交谈") would be self-referential here.
-        
+        # The joiner's own line; the initiator's purpose is the initiator's alone.
         action_description = (
             participant_action_desc(self._directory, plan.agent_id, exec_state) if exec_state
             else (plan.action.action_description if plan.action else "")
@@ -647,7 +682,8 @@ class ExecutionArbiter:
         participant_name = self._directory.agent_name(plan.agent_id)
         # Wording follows the mode: "invited" for someone dragged off would launder compulsion
         # into consent.
-        joined = "邀入" if self._mode_of_execution(exec_state) is Conscription.INVITE else "强制拉入"
+        invited = self._mode_of_execution(exec_state) is Conscription.INVITE
+        joined = "邀入" if invited else "强制拉入"
         outcome = f"{participant_name}被{initiator_name}{joined}「{purpose}」"
         joined_at = self._environment.get_body_location(plan.agent_id)
         # No onlooker narration for joining: the starting execution already named both sides,
@@ -678,12 +714,13 @@ class ExecutionArbiter:
             message_ids=[m.id for m in plan.inbox],
             ongoing_execution_id=exec_id,
             is_passive_join=True,
+            invited_by=exec_state.initiator_id if (invited and exec_state) else "",
         )
 
     def _busy_reason(
         self, pid: str, admissions: dict[str, _Admission], claimed_by: dict[str, str],
     ) -> str:
-        """What X is doing, as the rejected agent sees it (see _BUSY_WITH).
+        """What X is visibly doing, as the rejected agent sees it face to face (``visible_doing``).
 
         Read from the books for this step's admissions, else the registry; an execution that
         finished on the step-start tick falls back to the vague phrase.
@@ -700,12 +737,8 @@ class ExecutionArbiter:
                 return f"{name}{_BUSY_UNSEEN}"
             action_type = exec_state.action_type
             members = list(exec_state.participant_ids)
-        if action_type == ActionType.TALK:
-            partners = [p for p in members if p != pid]
-            if partners:
-                who = "、".join(self._directory.agent_name(p) for p in partners)
-                return f"{name}正与{who}交谈"
-        return f"{name}{_BUSY_WITH.get(action_type, _BUSY_UNSEEN)}"
+        partners = [self._directory.agent_name(p) for p in members if p != pid]
+        return f"{name}{visible_doing(activity_status_for(action_type), partners) or _BUSY_UNSEEN}"
 
     def _rejected_result(
         self,
@@ -713,11 +746,13 @@ class ExecutionArbiter:
         *,
         reason: str,
     ) -> ActionResult:
-        """The failure result for an intent the arbiter denies (enrollment contention).
+        """The failure result for an intent the arbiter denies (enrollment contention, or an
+        invitation refused).
 
         Carried into a create_failed execution, so it takes the one completion path like any
-        other failure. Nothing happened in the world, so onlookers see nothing."""
-        actor_name = self._directory.agent_name(plan.agent_id)
+        other failure. Onlookers see nothing: nothing happened in the world, or, for a refusal,
+        it passed between the two alone."""
+        doer_name = self._directory.agent_name(plan.agent_id)
         desc = plan.action.action_description
         stub = AgentAction(
             agent_id=plan.agent_id,
@@ -726,13 +761,13 @@ class ExecutionArbiter:
             action_description=desc,
             target=plan.action.target,
         )
-        # desc is the actor's own first-person wording: quote it and strip its end punctuation,
+        # desc is the doer's own first-person wording: quote it and strip its end punctuation,
         # or it renders as "我本想我走到他面前…细节。，却因".
         quoted = strip_end_punct(desc)
         return ActionResult(
             action=stub,
             expected_outcome=plan.action.expected_outcome,
-            outcome=f"{actor_name}本想做「{quoted}」，却因{reason}未能如愿。",
+            outcome=f"{doer_name}本想做「{quoted}」，却因{reason}未能如愿。",
             observations=[],
             succeeded=False,
             failure_reason=reason,

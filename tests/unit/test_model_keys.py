@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from config.models import LLMConfig
-from core.container import Container
+from providers.assembly import build_container
 from core.interfaces.llm import LLMMessage, LLMScene
 from core.model_keys import ModelKeysMissing
 from interaction.api import create_app
@@ -49,7 +49,7 @@ def _set_keys(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
 
 def test_all_keys_set_builds_the_real_providers(keyed_config, monkeypatch) -> None:
     _set_keys(monkeypatch, _LLM_KEY, _JUDGE_KEY, _EMBEDDING_KEY)
-    container = Container.from_config(keyed_config)
+    container = build_container(keyed_config)
 
     assert container.model_keys is True
     assert type(container.llm_router.get(LLMScene.WORLD_BUILDING)).__name__ == "OpenAICompatProvider"
@@ -59,7 +59,7 @@ def test_all_keys_set_builds_the_real_providers(keyed_config, monkeypatch) -> No
 @pytest.mark.asyncio
 async def test_no_keys_starts_keyless(keyed_config, monkeypatch) -> None:
     _set_keys(monkeypatch)
-    container = Container.from_config(keyed_config)
+    container = build_container(keyed_config)
 
     assert container.model_keys is False
     with pytest.raises(ModelKeysMissing):
@@ -82,7 +82,7 @@ def test_partly_set_keys_refuse_to_start(keyed_config, monkeypatch, present) -> 
     missing = {_LLM_KEY, _JUDGE_KEY, _EMBEDDING_KEY} - set(present)
 
     with pytest.raises(ValueError, match="all set or all unset") as exc:
-        Container.from_config(keyed_config)
+        build_container(keyed_config)
     assert all(name in str(exc.value) for name in missing)
 
 
@@ -90,7 +90,7 @@ def test_an_empty_value_counts_as_unset(keyed_config, monkeypatch) -> None:
     _set_keys(monkeypatch)
     monkeypatch.setenv(_LLM_KEY, "")
 
-    assert Container.from_config(keyed_config).model_keys is False
+    assert build_container(keyed_config).model_keys is False
 
 
 def test_a_config_without_endpoints_needs_no_keys(container) -> None:
@@ -101,7 +101,7 @@ def test_a_config_without_endpoints_needs_no_keys(container) -> None:
 def keyless_client(keyed_config, monkeypatch) -> TestClient:
     _set_keys(monkeypatch)
     keyed_config.web.dev_tools_enabled = True
-    container = Container.from_config(keyed_config)
+    container = build_container(keyed_config)
     return TestClient(create_app(container, keyed_config, catalog=WorldCatalog(None)))
 
 
@@ -139,7 +139,7 @@ def test_keyless_cli_refuses_to_build(keyed_config, monkeypatch, capsys) -> None
     from interaction.cli import run_cli_async
 
     _set_keys(monkeypatch)
-    container = Container.from_config(keyed_config)
+    container = build_container(keyed_config)
 
     assert asyncio.run(run_cli_async(container, keyed_config, ["build", "长安"])) == 1
     assert "asamana.sh keys" in capsys.readouterr().err

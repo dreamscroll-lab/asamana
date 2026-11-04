@@ -17,10 +17,10 @@ from agent.goals import (
     parse_goal_item, parse_residue, trim_goal_history,
 )
 from agent.personality import SECRET_LABEL, EmotionState, PersonalityLayer
-from core.context import GivenFacts, annotate_active_call, annotate_call
+from core.context import GivenFacts, annotate_active_call, annotate_call, note_active_call_adoption
 from core.duration import describe_duration
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json, output_budget
-from core.interfaces.perception import Situation
+from core.interfaces.perception import Situation, VisibleEntity
 from core.logging import get_logger
 from core.numeric import clamp
 from core.prompts import (
@@ -33,6 +33,7 @@ from core.prompts import (
     condition_line,
     recency_prefix,
     relation_legend,
+    render_entity,
     render_situation_header,
     situation_location,
     urgency_label,
@@ -40,6 +41,15 @@ from core.prompts import (
 )
 
 _logger = get_logger(__name__)
+
+# Said when the hands are empty: left out, a goal or a verdict assumes the thing it needs is there.
+_NOTHING_HELD = "无"
+
+
+def _held_lines(held: "Sequence[VisibleEntity]") -> List[str]:
+    """What the agent has in hand, one rendered item per line; content stays out, since where a
+    goal points needs what the thing is, not every word on it."""
+    return [render_entity(e, held_by_viewer=True) for e in held] or [_NOTHING_HELD]
 
 
 # Prefix-cache split: system is byte-invariant (functional, out-of-character judge); user holds this
@@ -63,6 +73,7 @@ _GOAL_EVALUATION_SYSTEM = """\
 - **警惕「永远 active」**：目标文本后可能标着它「已历约多久仍未了结」。若一个目标已历时明显偏久、且轨迹显示反复推进却始终停在原地（结果一再未达预期、状态毫无实质变化），说明当前手段对它无效——判 failed（搁置），不要无限 active。一个推进不动的目标会锁死后续认知。判 failed（搁置）时，reason 必须点明「反复无进展」的具体依据，落在已记录的轨迹 / 时长上，不臆测。
 - 但别矫枉过正：真正在**逐步推进**（每步能看到可见进展、只是尚未跨过完成线）的多步目标保持 active——搁置只针对「原地打转」，不是「还没做完」；拿不准是「有进展但慢」还是「原地打转」时，倾向保留 active。
 - 判断之前先明确好当前时间和当前地点，避免在结果中涉及到时间问题时出现错乱的情况。
+- 涉及某样东西的目标，要结合所给「被评判者此刻手上的东西」来判，比如要靠手上的东西才能成立的事，就看提前那东西在不在他手上；这里只列他手上的，没列出的东西不等于不存在。比如目标是已经把某样东西交给某人，那东西还在他手上，就是还没交出去。
 - **每个目标必须把判断依据(reason)写在最前面，再给序号(index)与状态(status)——先分析后定状态，不要凭空直接给状态。**
 - 只输出 JSON，不要任何多余内容。
 
@@ -79,6 +90,7 @@ _GOAL_EVALUATION_SYSTEM = """\
 - 没有任何依据或者通过推理也得不到的你自己臆想的事项
 - 与上面待判定目标里已有的那些意思相近或相同的事项
 - **指向所给材料里根本不存在的人、地方或东西的事项**
+- 要用到他手上没有的东西、却没把「先去得到它」算进去的事项
 - 不属于被评判者的事项
 
 约束：
@@ -90,7 +102,7 @@ _GOAL_EVALUATION_SYSTEM = """\
   **但 text 里若已经写下了一个具体时点，due_in_hours 就不可以为 null**——那个时候是这条事项自己
   带着的，把它折算成小时填上即可，不是另添一个期限。
 - 每条事项必须具体，明确，不能模糊不清，模糊不清的事项不用生成，比如“我需要立刻质问小A”这个就非常模糊，因为它根本没有说明“需要质问的内容是什么？”
-- **绝大多数行动不留下任何没有了结事项**（歇息、赶路、寒暄、独自琢磨都是如此）——这时给空数组
+- **绝大多数行动不留下任何没有了结事项**（休息、赶路、寒暄、独自琢磨都是如此）——这时给空数组
   `[]`，这是正常且被期望的结果。不要为了填满而胡编乱造，宁可给空。
 
 【输出】
@@ -117,6 +129,8 @@ _GOAL_EVALUATION_USER = """\
 本轮行动：{action_description}
 本轮行动期望的结果：{expected_outcome}
 行动结果：{action_result}
+被评判者此刻手上的东西：
+{held_items}
 {recent_experience}待判定的目标（按序号）：
 {goals_numbered}
 
@@ -150,11 +164,15 @@ _SHORT_TERM_GOAL_SYSTEM = """\
 - 短期目标是一个方向，不是具体的行动指南或具体行动，禁止直接把具体行动作为短期目标。
 - 直接照搬当前情绪当目标，或形成违背我价值观的目标
 - 因为某人**只是在场**（并没有对我做什么）就生成**针对他的激烈目标**（对抗、铲除、严防到行动）——在场至多让我"留意、相机行事"，激烈目标得有指向我的具体事件或压力撑着
-- 重复我刚刚已经做完的事，要往前推进
+- 重复我刚刚已经做完的事，或结果已经明确的事（不论好坏，比如对方已明确拒绝，或已说过不知道），要往前推进
 - 跳出第一人称，用旁观者口吻、或事后才有的命名去指代正在发生的事
 - 预设未来某件事必然发生——只依据我此刻已经知道的
+- 要靠手上的东西才能做成、那东西却不在我手上的目标——我手上有什么，以所给「我手上的东西」为准；比如想把某样东西交给某人，它却不在我手上，目标该是先去拿到它。
 - 综合所有信息后，如果存在明显的事实性冲突，禁止直接忽略严重的或需要关注的事实性冲突，必须要思考为什么会有这样的冲突，必要时可以在新的目标中体现。
 """ + ABSOLUTE_TIME_RULE_FIRST_PERSON + """
+
+【说明】
+此刻相关的人与我的关系各栏的含义：""" + relation_legend() + """
 
 【输出】
 只输出 JSON，不要任何多余内容。先在 thought 里（≤75 字、以"我"的口吻）把眼下想清楚——此刻真正在驱动我的是哪个需求、我刚感知到了什么、我的短期目标里哪些已经覆盖到了（这些不必再提）、哪个长期方向我一直没沾——由此推出真正还**新**缺的方向，再落到 goals：先写这件事本身（text，每条不超过 32 字；里头若提到时间，写具体时间点，不写「明日 / 今夜」等），再看它有没有定下时候（due_in_hours）。
@@ -173,10 +191,12 @@ _SHORT_TERM_GOAL_USER = """\
 我是{agent_name}。下面全部以"我"的第一人称、就在此刻的视角去想：我接下来到底想做什么。
 
 【我的人设与处境】
-我的性格：{core_traits}
+我的性格特点：{core_traits}
 我的价值观：{core_values}{secret_line}
 我此刻的情绪：{emotion}
 我眼下最迫切的需求：{dominant_need_label}
+我手上的东西：
+{held_items}
 我的长期目标：
 {long_term_goals}
 {relations_section}
@@ -201,7 +221,7 @@ _LONG_TERM_GOAL_UPDATE_SYSTEM = """\
 
 【我要避开的】
 - 为变而变：方向没真变，就别动那几条长期目标
-- 背弃或改写我的毕生追求：北极星只用来校准长期目标，不能被推翻
+- 背弃或改写我的人生目标：北极星只用来校准长期目标，不能被推翻
 - 把长期目标缩成手头的事：眼下的小事、一时的情绪、或几步就能了结的某桩具体事，都不是长期目标——它是要走很长一段路的奔头
 - 把长期目标锁成一桩具体的事或一次具体行动：那就成了计划——它该是个能长出很多种走法、容得下变化的【方向】
 - 把长期目标吹成空话：大到像句喊给人听的口号、这辈子也不必真使劲，那是北极星的事——它该是要我持续奋斗才能推进或维系的真实奔头
@@ -222,7 +242,7 @@ _LONG_TERM_GOAL_UPDATE_USER = """\
 {persona}
 
 【我心里的方向】
-- 我的毕生追求（上面那条"毕生追求"）是北极星：无论发生什么都不动摇、不可背弃；我能调整的只是"怎么走向它"。
+- 我的人生目标（上面那条"人生目标"）是北极星：无论发生什么都不动摇、不可背弃；我能调整的只是"怎么走向它"。
 - 我此刻为追求它而立的长期目标（这才是我要重新衡量的）——它们是要走很长一段路才能推进或守住的【方向】：比手头的小事远得多，又不像北极星那样遥不可及；是要我持续奋斗、不会轻易到手的奔头，而非某一桩具体的事、某一次具体的行动：
 {current_long_term}
 - 我眼下手头在忙的小事（只作参照，别当长期目标）：
@@ -372,6 +392,10 @@ def _apply_prepotency(
     return winner
 
 
+NEED_INTENSITY_RANGE: tuple[float, float] = (0.0, 1.0)
+NEED_WEIGHT_RANGE: tuple[float, float] = (0.1, 2.0)
+
+
 @dataclass
 class NeedState:
     """A single need: its static makeup (type/label/weight/is_hidden) + an intensity.
@@ -388,9 +412,9 @@ class NeedState:
 
     type: NeedType
     label: str
-    intensity: float  # current urgency [0,1]; moves with action outcomes and event shocks (the build seed on innate)
+    intensity: float  # current urgency, in NEED_INTENSITY_RANGE; moves with action outcomes and event shocks (the build seed on innate)
     is_hidden: bool = False
-    weight: float = 1.0  # structural importance in the character's makeup [0.1,2]; semi-static, unaffected by outcomes
+    weight: float = 1.0  # structural importance in the character's makeup, in NEED_WEIGHT_RANGE; semi-static, unaffected by outcomes
 
 
 @dataclass
@@ -459,7 +483,7 @@ class NeedEngine:
     never mutates personality. Single source of truth = personality.
     """
 
-    def __init__(self, llm_router: LLMRouter | None = None, *, seconds_per_step: int = 3600,
+    def __init__(self, llm_router: LLMRouter, *, seconds_per_step: int = 3600,
                  world_start_second_of_day: int = 0) -> None:
         from agent.motivation import MotivationBlender
 
@@ -487,12 +511,15 @@ class NeedEngine:
         external_goals: "List[ExternalGoal] | None" = None,
         need_relevance: dict[NeedType, float] | None = None,
         perceived_relations: "List[PerceivedRelation] | None" = None,
+        held: "Sequence[VisibleEntity]" = (),
+        generate_goals: bool = True,
     ) -> NeedEvaluation:
         """Evaluate motivations against the current context — **reads personality, writes nothing**.
 
         The returned ``NeedEvaluation`` carries the (possibly topped-up) short-term goal entities;
         the agent commits them via a personality mutator. ``need_relevance`` is the perception
-        appraisal's per-need activation (see ``_score_needs``).
+        appraisal's per-need activation (see ``_score_needs``). ``generate_goals=False`` is for a
+        actor-controlled character, whose goals come from the actor: needs are still scored.
         """
 
         state = personality.state
@@ -551,7 +578,7 @@ class NeedEngine:
         recently_completed_goals = [g for g in entities if g.status == GoalStatus.COMPLETED]
         recently_failed_goals = [g for g in entities if g.status == GoalStatus.FAILED]
 
-        should_generate = (
+        should_generate = generate_goals and (
             force_goal_update
             or prepotent_need is not None
             or self._should_update_goals(dominant_need, entities, agent_id=state.agent_id)
@@ -578,6 +605,7 @@ class NeedEngine:
                 # Use the prompt's own renderer: a separate rendering would drop gender and declare
                 # lines beyond the cap that the model never saw.
                 .add("关系", render_relation_lines(perceived_relations or []))
+                .add("我手上的东西", _held_lines(held))
             )
             with annotate_call(
                 given_facts=given_facts,
@@ -601,6 +629,7 @@ class NeedEngine:
                     external_goals=external_goals,
                     emotion=current_emotion,
                     perceived_relations=perceived_relations,
+                    held=held,
                     now_step=current_step,
                 )
             entities = enqueue_goals(
@@ -669,6 +698,7 @@ class NeedEngine:
         situation: Situation = Situation(),
         recent_factuals: list[str] = (),
         expected_outcome: str = "",
+        held: "Sequence[VisibleEntity]" = (),
     ) -> List[GoalEntity]:
         """LLM-judge short-term goal progress and enqueue this action's **residue**; returns the
         updated queue without writing back (the agent commits).
@@ -710,7 +740,7 @@ class NeedEngine:
         )
         # Trajectory evidence, so the judge can spot goals completed cumulatively over several steps.
         recent_block = (
-            f"该角色近期的客观经历（已发生的客观记录，供判断「跨多步累积达成」；{MEMORY_ORDER_HINT}）：\n"
+            f"该角色近期的客观经历（已发生的客观记录（注意计划做的事和已经发生的事的区别，绝对不能把计划的事当作已经发生的客观事实，这个是禁止的），供判断「跨多步累积达成」；{MEMORY_ORDER_HINT}）：\n"
             + "\n".join(f"- {t}" for t in recent_factuals if t)
             + "\n"
             if any(recent_factuals) else ""
@@ -723,49 +753,53 @@ class NeedEngine:
             action_description=action_description,
             expected_outcome=expected_outcome or "（无）",
             action_result=action_result,
+            held_items="\n".join(f"- {line}" for line in _held_lines(held)),
             recent_experience=recent_block,
             goals_numbered=goals_numbered,
         )
         residue_goals: List[tuple[str, int | None]] = []
-        if self._llm_router is not None:
-            try:
-                with annotate_call(
-                    # Same sources as user_prompt above: every fact this verdict can see.
-                    given_facts=GivenFacts()
-                    .add("此刻何时何地", situation_header)
-                    .add("我刚做了", action_description)
-                    .add("我原本期望", expected_outcome or "（无）")
-                    .add("实际结果", action_result)
-                    .add("近来的经历", recent_block.splitlines()),
-                    goal_texts=goal_texts_by_index,
-                    location=situation_location(situation),
-                ):
-                    response = await self._llm_router.complete(
-                        LLMScene.NEED_GOAL_GENERATION,
-                        [
-                            LLMMessage(role="system", content=system_prompt),
-                            LLMMessage(role="user", content=user_prompt),
-                        ],
-                        temperature=0.3,
-                        # goals: up to _SHORT_TERM_GOAL_CAP (6) items × (reason ≤100 chars ≈150 tok +
-                        # index/status ≈6 + structure ≈15) ≈171 → ~1026; residue_reason (≤60 chars ≈90)
-                        # + residue (2 × ≤28 chars ≈84) + structure ≈189; wrapper ≈10. Estimate ~1225.
-                        # A budget short of a full queue truncates into unparseable JSON and loses the
-                        # whole verdict.
-                        max_tokens=output_budget(1225),
-                        json_mode=True,
-                    )
-                parse_goal_evaluation(response.content, active, step)
-                residue_goals, residue_reason = parse_residue(response.content)
-                # Both go into the trace: audits need to see why the judge ruled, not just what.
-                annotate_active_call(
-                    residue=[t for t, _ in residue_goals], residue_reason=residue_reason,
+        try:
+            with annotate_call(
+                # Same sources as user_prompt above: every fact this verdict can see.
+                given_facts=GivenFacts()
+                .add("此刻何时何地", situation_header)
+                .add("我刚做了", action_description)
+                .add("我原本期望", expected_outcome or "（无）")
+                .add("实际结果", action_result)
+                .add("此刻手上的东西", _held_lines(held))
+                .add("近来的经历", recent_block.splitlines()),
+                goal_texts=goal_texts_by_index,
+                location=situation_location(situation),
+            ):
+                response = await self._llm_router.complete(
+                    LLMScene.NEED_GOAL_GENERATION,
+                    [
+                        LLMMessage(role="system", content=system_prompt),
+                        LLMMessage(role="user", content=user_prompt),
+                    ],
+                    temperature=0.3,
+                    # goals: up to _SHORT_TERM_GOAL_CAP (6) items × (reason ≤100 chars ≈150 tok +
+                    # index/status ≈6 + structure ≈15) ≈171 → ~1026; residue_reason (≤60 chars ≈90)
+                    # + residue (2 × ≤28 chars ≈84) + structure ≈189; wrapper ≈10. Estimate ~1225.
+                    # A budget short of a full queue truncates into unparseable JSON and loses the
+                    # whole verdict.
+                    max_tokens=output_budget(1225),
+                    json_mode=True,
                 )
-            except Exception as exc:
-                _logger.warning(
-                    "llm_call_failed",
-                    extra={"method": "evaluate_goal_progress", "error": str(exc)},
-                )
+            verdict_used = parse_goal_evaluation(response.content, active, step)
+            residue_goals, residue_reason = parse_residue(response.content)
+            if not verdict_used and not residue_goals:
+                note_active_call_adoption(False, "no_usable_goal_evaluation")
+            # Both go into the trace: audits need to see why the judge ruled, not just what.
+            annotate_active_call(
+                residue=[t for t, _ in residue_goals], residue_reason=residue_reason,
+            )
+        except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
+            _logger.warning(
+                "llm_call_failed",
+                extra={"method": "evaluate_goal_progress", "error": str(exc)},
+            )
 
         # Deadline fallback (also runs on LLM failure): any non-terminal goal past its allowance is
         # shelved as FAILED. It caps a stuck goal the judge keeps ruling active, and is the only way
@@ -815,13 +849,11 @@ class NeedEngine:
         ``recent_memory_texts`` covers both factual and experiential streams: a goal achieved or
         invalidated is an objective fact, so this doesn't depend on reflection insight.
 
-        Returns None for no update (no router, ``[]``, unchanged, or error), else the new goal texts
+        Returns None for no update (``[]``, unchanged, or error), else the new goal texts
         for the caller to write via ``personality.set_long_term_goals``. Writes nothing.
         """
         state = personality.state
         current = [e.text for e in state.long_term_goal_entities]
-        if self._llm_router is None:
-            return None
 
         current_long_term = "\n".join(f"  · {g}" for g in current) or "  · （暂无）"
         # ACTIVE only: INTERRUPTED goals are offered only at decision time, to be picked back up.
@@ -854,26 +886,32 @@ class NeedEngine:
         # thought (≤250 chars ≈375) + goals (the prompt's cap of 5 × (25 chars ≈38 + structure 5)); estimate
         # ~605 tok.
         try:
-            if is_main_character:
-                response = await self._llm_router.complete_with_retry(
-                    LLMScene.NEED_GOAL_GENERATION, messages, temperature=0.6,
-                    max_tokens=output_budget(605), json_mode=True,
-                )
-            else:
-                response = await self._llm_router.complete(
-                    LLMScene.NEED_GOAL_GENERATION, messages, temperature=0.6,
-                    max_tokens=output_budget(605), json_mode=True,
-                )
+            router = self._llm_router
+            complete = router.complete_with_retry if is_main_character else router.complete
+            response = await complete(
+                LLMScene.NEED_GOAL_GENERATION, messages, temperature=0.6,
+                max_tokens=output_budget(605), json_mode=True,
+            )
             # thought is lite-CoT only and isn't parsed.
             data = extract_json(response.content)
+            raw_goals = data.get("goals")
+            if not isinstance(raw_goals, list):
+                note_active_call_adoption(False, "no_usable_goals")
+                return None
+            # An explicit empty list is the prompt's valid verdict to keep the current direction.
+            if not raw_goals:
+                return None
             revised = [
                 text
-                for raw in data.get("goals", [])
-                if (text := str(raw).strip()) and len(text) <= 50
+                for raw in raw_goals
+                if isinstance(raw, str) and (text := raw.strip()) and len(text) <= 50
             ]
+            if not revised:
+                note_active_call_adoption(False, "no_usable_goals")
             if revised and revised != current:
                 return revised
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             _logger.warning(
                 "llm_call_failed",
                 extra={"method": "revise_long_term_goals", "error": str(exc)},
@@ -992,9 +1030,10 @@ class NeedEngine:
         external_goals: "List[ExternalGoal] | None" = None,
         emotion: EmotionState | None = None,
         perceived_relations: "List[PerceivedRelation] | None" = None,
+        held: "Sequence[VisibleEntity]" = (),
         now_step: int = 0,
     ) -> List[tuple[str, int | None]]:
-        if self._llm_router is not None and personality is not None and dominant_need is not None:
+        if personality is not None and dominant_need is not None:
             from agent.relation import render_relation_lines
             dominant_label = f"{dominant_need.value}（{personality.need_label(dominant_need)}）"
             core_traits = personality.soul.traits_text()
@@ -1016,7 +1055,6 @@ class NeedEngine:
             relation_lines = render_relation_lines(perceived_relations or [])
             relations_section = (
                 "此刻相关的人与我的关系：\n"
-                + f"关系刻度：{relation_legend()}\n"
                 + "\n".join(f"- {l}" for l in relation_lines) + "\n"
                 if relation_lines else ""
             )
@@ -1116,6 +1154,7 @@ class NeedEngine:
                 ),
                 emotion=emotion_text,
                 dominant_need_label=dominant_label,
+                held_items="\n".join(f"- {line}" for line in _held_lines(held)),
                 long_term_goals=long_term_goals_text,
                 recent_events=recent_events,
                 recent_memory_section=recent_memory_section,
@@ -1145,9 +1184,13 @@ class NeedEngine:
                     for raw in data.get("goals", [])
                     if (parsed := parse_goal_item(raw)) and len(parsed[0]) <= 50
                 ]
+                raw_goals = data.get("goals")
+                if not isinstance(raw_goals, list) or (raw_goals and not goals):
+                    note_active_call_adoption(False, "no_usable_goals")
                 # Empty goals is a valid answer: no new direction this step.
                 return goals[:2]
             except Exception as exc:
+                note_active_call_adoption(False, "unusable_payload")
                 _logger.warning(
                     "llm_call_failed",
                     extra={"method": "_generate_short_term_goals", "error": str(exc)},

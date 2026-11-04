@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any, Dict
 
 from core.factory import ComponentKind, ProviderFactory
@@ -35,7 +36,7 @@ class InMemoryVectorStore(VectorStoreProvider):
         collection_records[id] = {
             "dense": list(dense_vector),
             "sparse": dict(sparse_vector or {}),
-            "payload": dict(payload),
+            "payload": deepcopy(payload),
         }
 
     async def search(
@@ -57,7 +58,7 @@ class InMemoryVectorStore(VectorStoreProvider):
         record = self._records.get(collection, {}).get(id)
         if record is None:
             return False
-        record["payload"] = dict(payload)
+        record["payload"] = deepcopy(payload)
         return True
 
     async def delete(self, collection: str, id: str) -> None:
@@ -66,7 +67,7 @@ class InMemoryVectorStore(VectorStoreProvider):
     async def list_all(self, collection: str) -> list[SearchResult]:
         collection_records = self._records.get(collection, {})
         return [
-            SearchResult(id=record_id, score=1.0, payload=record["payload"])
+            SearchResult(id=record_id, score=1.0, payload=deepcopy(record["payload"]))
             for record_id, record in collection_records.items()
         ]
 

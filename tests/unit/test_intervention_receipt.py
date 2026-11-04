@@ -21,13 +21,11 @@ from agent.personality import (
     StateLayer,
 )
 from core.interfaces.urgency import Urgency
-from engine.directory import LiveWorldDirectory
-from engine.environment import EnvironmentSystem
 from engine.intervention_receipt import build_receipt
 
 
 class _Agent:
-    """The receipt reads only pending_external_goals and the name; no full Agent needed."""
+    """The receipt reads only pending_external_goals; no full Agent needed."""
 
     def __init__(self, agent_id: str, name: str, goals: list[ExternalGoal] | None = None) -> None:
         self.agent_id = agent_id
@@ -45,26 +43,22 @@ class _Agent:
 
 def _goal(urgency: Urgency) -> ExternalGoal:
     return ExternalGoal(
-        text="立刻离开", source_id="world", urgency=urgency,
+        text="立刻离开", source_ids=(), urgency=urgency,
         drive_type=ExternalDriveType.THREAT,
     )
-
-
-def _directory(agents: dict[str, _Agent]) -> LiveWorldDirectory:
-    return LiveWorldDirectory.from_agents(agents, EnvironmentSystem())
 
 
 def test_receipt_reports_who_it_reached_and_who_it_actually_moved() -> None:
     agents = {"a2": _Agent("a2", "李建成", [_goal(Urgency.HIGH)])}
 
     receipt = build_receipt(
-        ["a2"], agents=agents, directory=_directory(agents),
+        ["a2"], agents=agents,
         decided_ids={"a2"}, interrupted_ids=set(),
     )
 
-    assert receipt["delivered_to"] == [{"agent_id": "a2", "name": "李建成"}]
-    assert receipt["pressure"] == [{"agent_id": "a2", "name": "李建成", "urgency": "紧急"}]
-    assert receipt["decided"] == [{"agent_id": "a2", "name": "李建成"}]
+    assert receipt["delivered_to"] == ["a2"]
+    assert receipt["pressure"] == [{"agent_id": "a2", "urgency": "high"}]
+    assert receipt["decided"] == ["a2"]
     assert receipt["interrupted"] == []
 
 
@@ -77,7 +71,7 @@ def test_receipt_shows_an_intervention_that_moved_nobody() -> None:
     agents = {"a2": _Agent("a2", "李建成", goals=[])}
 
     receipt = build_receipt(
-        ["a2"], agents=agents, directory=_directory(agents),
+        ["a2"], agents=agents,
         decided_ids=set(), interrupted_ids=set(),
     )
 
@@ -92,11 +86,11 @@ def test_receipt_reports_the_heaviest_pressure_not_every_stirring() -> None:
     agents = {"a2": _Agent("a2", "李建成", [_goal(Urgency.LOW), _goal(Urgency.CRITICAL)])}
 
     receipt = build_receipt(
-        ["a2"], agents=agents, directory=_directory(agents),
+        ["a2"], agents=agents,
         decided_ids=set(), interrupted_ids=set(),
     )
 
-    assert receipt["pressure"] == [{"agent_id": "a2", "name": "李建成", "urgency": "危急"}]
+    assert receipt["pressure"] == [{"agent_id": "a2", "urgency": "critical"}]
 
 
 def test_other_columns_stay_inside_the_set_this_intervention_touched() -> None:
@@ -111,11 +105,11 @@ def test_other_columns_stay_inside_the_set_this_intervention_touched() -> None:
     }
 
     receipt = build_receipt(
-        ["a2"], agents=agents, directory=_directory(agents),
+        ["a2"], agents=agents,
         decided_ids={"a1", "a2"}, interrupted_ids={"a1"},
     )
 
-    assert [d["agent_id"] for d in receipt["decided"]] == ["a2"]
+    assert receipt["decided"] == ["a2"]
     assert receipt["interrupted"] == []      # a1 was interrupted by something else
     assert [p["agent_id"] for p in receipt["pressure"]] == ["a2"]
 
@@ -125,9 +119,9 @@ def test_an_unknown_target_is_skipped_rather_than_faked() -> None:
     skipped rather than given a made-up row."""
     agents: dict[str, _Agent] = {}
     receipt = build_receipt(
-        ["ghost"], agents=agents, directory=_directory(agents),
+        ["ghost"], agents=agents,
         decided_ids=set(), interrupted_ids=set(),
     )
     assert receipt["pressure"] == []
     # Delivery is still recorded: the message was sent, the recipient is just gone.
-    assert receipt["delivered_to"] == [{"agent_id": "ghost", "name": "某人"}]
+    assert receipt["delivered_to"] == ["ghost"]

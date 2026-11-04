@@ -6,7 +6,7 @@
 
 import Phaser from "phaser";
 
-import type { AgentStateSummary } from "../types";
+import type { Transit } from "../types";
 import { type FxHost, footDust } from "./effects";
 import { astar, computeMainComponent, foldStairs, snap } from "./pathfinding";
 import { routeFraction } from "./transitProgress";
@@ -84,7 +84,7 @@ export class Walker {
   // each leg's pixel length and the step it ends on. Falls back to a direct from→to
   // route (one leg, reached at total_steps) if any leg is unroutable.
   private transitRoutePixels(
-    t: NonNullable<AgentStateSummary["transit"]>,
+    t: Transit,
   ): { pts: { x: number; y: number }[]; legLengths: number[]; arrivals: number[] } | null {
     const direct = () => {
       const leg = this.transitPixelPath(t.from_location_id ?? "", t.to_location_id ?? "");
@@ -111,7 +111,7 @@ export class Walker {
   walkTransit(
     tok: AgentToken,
     agentId: string,
-    t: NonNullable<AgentStateSummary["transit"]>,
+    t: Transit,
     standAt: { x: number; y: number } | null = null,
   ): Promise<void> {
     const { path, curP, trip } = this.progressOf(t);
@@ -155,7 +155,7 @@ export class Walker {
   placeOnTransit(
     tok: AgentToken,
     agentId: string,
-    t: NonNullable<AgentStateSummary["transit"]>,
+    t: Transit,
   ): void {
     const { path, curP, trip } = this.progressOf(t);
     this.host.killTweens(tok.container);
@@ -171,7 +171,7 @@ export class Walker {
     this.placed.add(agentId);
   }
 
-  private progressOf(t: NonNullable<AgentStateSummary["transit"]>): {
+  private progressOf(t: Transit): {
     path: { x: number; y: number }[] | null;
     curP: number;
     trip: string;
@@ -197,14 +197,14 @@ export class Walker {
    * never outstays the step. Each leg gets time in proportion to its length; an even split
    * would make the figure crawl across short legs and bolt down long ones.
    */
-  walkAlong(tok: AgentToken, pts: { x: number; y: number }[]): Promise<void> {
+  walkAlong(tok: AgentToken, pts: { x: number; y: number }[], duration?: number): Promise<void> {
     if (this.host.unwinding) return Promise.resolve();
     if (pts.length < 2) {
       return this.host.tweenP({ targets: tok.container, x: pts[0].x, y: pts[0].y, duration: 400, ease: "Linear" });
     }
     const legs = pts.slice(1).map((p, i) => Phaser.Math.Distance.BetweenPoints(pts[i], p));
     const dist = legs.reduce((sum, d) => sum + d, 0);
-    const total = Phaser.Math.Clamp(dist * WALK_MS_PER_PX, 1400, 20000);
+    const total = duration ?? Phaser.Math.Clamp(dist * WALK_MS_PER_PX, 1400, 20000);
     return new Promise((resolve) => {
       const settle = this.host.awaitTweens(tok.container, () => {
         this.host.removeCanceler(cancel);
@@ -224,6 +224,36 @@ export class Walker {
         onStop: settle,
       });
     });
+  }
+
+  /** Only the visible end of a journey: never infer a hidden origin or destination. */
+  presenceRoute(roomId: string, at: { x: number; y: number }): { x: number; y: number }[] | null {
+    const map = this.host.map;
+    const room = map.rooms.get(roomId);
+    if (!room) return null;
+    const cells: { x: number; y: number; edge: number; distance: number }[] = [];
+    for (let y = Math.max(0, Math.floor(room.gy0)); y < Math.min(map.rows, Math.ceil(room.gy0 + room.gh)); y++) {
+      for (let x = Math.max(0, Math.floor(room.gx0)); x < Math.min(map.cols, Math.ceil(room.gx0 + room.gw)); x++) {
+        if (!this.mainComponent.has(y * map.cols + x) || !map.standable[y]?.[x]) continue;
+        const p = map.iso(x + 0.5, y + 0.5);
+        const distance = Math.hypot(p.x - at.x, p.y - at.y);
+        if (distance < Math.hypot(map.tileW / 2, map.tileH / 2)) continue;
+        cells.push({ x: p.x, y: p.y, distance, edge: Math.min(
+          x + 0.5 - room.gx0, room.gx0 + room.gw - x - 0.5,
+          y + 0.5 - room.gy0, room.gy0 + room.gh - y - 0.5,
+        ) });
+      }
+    }
+    cells.sort((a, b) => a.edge - b.edge || a.distance - b.distance);
+    for (const cell of cells) {
+      const route = this.groundRoute(at, cell);
+      if (route?.every((p) => {
+        const g = map.unproject(p.x, p.y);
+        return g.gx >= room.gx0 && g.gx <= room.gx0 + room.gw
+          && g.gy >= room.gy0 && g.gy <= room.gy0 + room.gh;
+      })) return route;
+    }
+    return null;
   }
 
   /**

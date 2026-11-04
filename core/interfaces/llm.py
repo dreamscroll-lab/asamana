@@ -135,25 +135,16 @@ def coerce_bool(value: object, default: bool) -> bool:
 
 
 def extract_json(text: str) -> dict:
-    """Extract the first JSON object from an LLM response, tolerating markdown fences.
+    """The first JSON object in an LLM response (see :func:`extract_json_object`); raises
+    ``ValueError`` when there is none, so callers' try/except fallbacks apply.
 
-    Records a parse-outcome event (for the parse-failure rate) and re-raises on
-    failure so existing callers' try/except fallbacks are unaffected.
+    Records one parse-outcome event (for the parse-failure rate).
     """
-    try:
-        result = _extract_json_impl(text)
-    except Exception:
-        _note_parse(False)
-        raise
-    _note_parse(True)
+    result = _extract_json_object_impl(text)
+    _note_parse(result is not None)
+    if result is None:
+        raise ValueError("LLM response contains no parseable JSON object")
     return result
-
-
-def _extract_json_impl(text: str) -> dict:
-    """The first bracket-balanced object in the response, parsed; the whole text when there is
-    none. Raises when that candidate is not valid JSON, repair included."""
-    candidate = next(_top_level_objects(text), None)
-    return _loads_or_repair(candidate if candidate is not None else text.strip())
 
 
 _STRING_TERMINATORS = frozenset(",}]:")
@@ -213,7 +204,7 @@ _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def extract_json_object(text: str) -> dict | None:
-    """Extract the first JSON *object* from an LLM response, never raising.
+    """The first JSON *object* in an LLM response, or ``None``; never raises.
 
     Records a parse-outcome event (None result ⇒ parse failure) for the
     parse-failure rate.
@@ -224,8 +215,8 @@ def extract_json_object(text: str) -> dict | None:
 
 
 def _extract_json_object_impl(text: str) -> dict | None:
-    """Unlike :func:`extract_json` (which raises and may return any JSON value), skips balanced
-    spans that don't parse, accepts only ``dict`` payloads, and returns ``None`` on failure.
+    """The one scanner behind both extractors: tolerates markdown fences, skips balanced spans
+    that don't parse, accepts only ``dict`` payloads, and returns ``None`` on failure.
     """
     if not text:
         return None
@@ -255,7 +246,7 @@ def _extract_json_object_impl(text: str) -> dict | None:
 
 
 def _top_level_objects(text: str) -> Iterator[str]:
-    """Each bracket-balanced ``{...}`` span, in order — the one scanner both extractors share.
+    """Each bracket-balanced ``{...}`` span, in order.
 
     Braces inside JSON strings (escapes included) do not count, so trailing prose containing
     ``}`` cannot corrupt a span.
@@ -310,10 +301,13 @@ class LLMScene(str, Enum):
     AGENT_ACTION_NARRATION = "agent_action_narration"
     MEMORY_SUMMARIZATION = "memory_summarization"
     NEED_GOAL_GENERATION = "need_goal_generation"
-    EVENT_TIMING = "event_timing"
+    NARRATIVE_EDITOR = "narrative_editor"
     # A human director's sentence → injection plan. Translation, not authoring: worth a different
     # tier than the editor's pacing gate / event authoring, so each is tuned separately.
     DIRECTIVE = "directive"
+    # An actor's words → the answer to their character's turn (a decision, or whether to break
+    # off), for them to confirm. Translation like DIRECTIVE, per character, while a turn is open.
+    ACTOR_INTENT = "actor_intent"
     PERSONA_GENERATION = "persona_generation"
     WORLD_BUILDING = "world_building"
     # Pick an installed map for the theme. Separate from WORLD_BUILDING because the two are worth
@@ -399,7 +393,7 @@ class LLMRouter:
         self._semaphore: asyncio.Semaphore | None = (
             asyncio.Semaphore(max_concurrent) if max_concurrent > 0 else None
         )
-        # One gate per endpoint (see core.container._build_rate_gates), looked up by scene.
+        # One gate per endpoint (see providers.assembly._build_rate_gates), looked up by scene.
         # Acquired *before* the semaphore so a call under cooldown doesn't hold an in-flight slot.
         self._rate_gates = dict(rate_gates or {})
         # None → no recording. The router is the single LLM chokepoint, so this sees every call.
@@ -421,14 +415,18 @@ class LLMRouter:
     ) -> LLMResponse:
         """Complete through the provider configured for a scene. See LLMProvider.complete."""
 
+        from core.context import set_active_call
+
+        # A failed trace write must not leave parsing pointed at an earlier completion.
+        set_active_call(None)
         _t = time.perf_counter()
         # Shared by the runtime log and the trace record, to locate a call across both.
         call_id = str(uuid4())
         gate = self._semaphore if self._semaphore is not None else nullcontext()
         rate_gate = self._rate_gates.get(scene)
-        if rate_gate is not None:
-            await rate_gate.acquire()
         try:
+            if rate_gate is not None:
+                await rate_gate.acquire()
             async with gate:
                 result = await self._scene_providers[scene].complete(
                     messages,
@@ -436,6 +434,14 @@ class LLMRouter:
                     max_tokens=max_tokens,
                     json_mode=json_mode,
                 )
+        except asyncio.CancelledError:
+            if self._trace_sink is not None:
+                self._record_trace(
+                    scene, messages, None, temperature, max_tokens,
+                    round((time.perf_counter() - _t) * 1000, 1),
+                    call_id=call_id, error="cancelled", json_mode=json_mode,
+                )
+            raise
         except Exception as exc:
             # A rate-limit / overload arms the shared cooldown so sibling callers back off
             # together. Re-raise: callers own the fallback (CLAUDE.md Rule 1).
@@ -488,7 +494,7 @@ class LLMRouter:
         Recording must never break the observed call."""
         from datetime import datetime
 
-        from core.context import get_call_annotations, get_log_context, set_active_call
+        from core.context import get_call_annotations, get_log_context, in_actor_call, set_active_call
         from core.interfaces.trace import LLMCallTrace, Stage
 
         try:
@@ -515,9 +521,11 @@ class LLMRouter:
                 agent_id=ctx.get("agent_id") or None,
                 step=int(step_raw) if step_raw and step_raw.isdigit() else None,
                 ok=response is not None,
+                adopted=True if response is not None else None,
                 error=error,
                 call_id=call_id,
                 extra=get_call_annotations(),
+                actor=in_actor_call(),
             )
             self._trace_sink.record_llm_call(call)  # type: ignore[union-attr]
             # The shared parser fills in this call's parse_ok next.

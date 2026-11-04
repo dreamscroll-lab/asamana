@@ -67,14 +67,14 @@ export default function Sidebar({ collapsed, onToggle }: { collapsed: boolean; o
       <aside className="w-14 shrink-0 h-screen border-r border-slate-800/70 bg-slate-950 flex flex-col items-center py-3 gap-2">
         <button
           onClick={onToggle}
-          title="展开世界栏"
+          title="展开世界列表"
           className="w-9 h-9 rounded-lg text-slate-400 hover:text-white hover:bg-slate-900 grid place-items-center transition"
         >
           ☰
         </button>
         <button
           onClick={() => navigate("/")}
-          title="新世界"
+          title="创建世界"
           className="w-9 h-9 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-lg leading-none grid place-items-center border border-indigo-500 transition"
         >
           ＋
@@ -114,7 +114,7 @@ export default function Sidebar({ collapsed, onToggle }: { collapsed: boolean; o
         </Link>
         <button
           onClick={onToggle}
-          title="收起世界栏"
+          title="收起世界列表"
           className="shrink-0 w-7 h-7 rounded-lg text-slate-400 hover:text-white hover:bg-slate-900 grid place-items-center transition"
         >
           «
@@ -126,13 +126,13 @@ export default function Sidebar({ collapsed, onToggle }: { collapsed: boolean; o
           onClick={() => navigate("/")}
           className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold border border-indigo-500 shadow-lg shadow-indigo-600/20 transition"
         >
-          <span className="text-base leading-none">＋</span> 新世界
+          <span className="text-base leading-none">＋</span> 创建世界
         </button>
       </div>
 
       <div className="mt-4 px-2 flex-1 overflow-y-auto">
         <div className="px-2 mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-600">
-          世界{worlds.length > 0 && ` · ${worlds.length}`}
+          世界列表{worlds.length > 0 && ` · ${worlds.length}`}
         </div>
         {worlds.length === 0 && status === "offline" ? (
           // Not the empty state: drawn the same, a backend that won't boot reads as
@@ -148,7 +148,7 @@ export default function Sidebar({ collapsed, onToggle }: { collapsed: boolean; o
           </div>
         ) : worlds.length === 0 ? (
           <div className="px-2 py-6 text-xs text-slate-600 leading-relaxed">
-            {status === "loading" ? "载入中…" : "什么都没有~"}
+            {status === "loading" ? "正在加载世界…" : "暂无世界"}
           </div>
         ) : (
           <div className="space-y-0.5">

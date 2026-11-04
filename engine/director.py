@@ -1,6 +1,6 @@
 """Director channel: the only way a human author reaches into this world.
 
-``EventSystem`` (the automatic LLM editor) is bound by a pacing gate, a quota and no-resolution
+``NarrativeEditor`` (the automatic LLM editor) is bound by a pacing gate, a quota and no-resolution
 rules because an automatic LLM shouldn't have god powers; the director is bound by none of
 them. The two share only the record, channel specs and dispatcher (``engine/injection.py``).
 
@@ -55,7 +55,7 @@ from engine.injection import (
     parse_broadcast_spec,
     parse_message_spec,
 )
-from world.models import Npc, WorldEntity, WorldEntityType
+from core.interfaces.entity import Npc, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
 from engine.world_mutation import (
     ConditionMutation,
@@ -65,6 +65,7 @@ from engine.world_mutation import (
     SpawnMutation,
     VitalityEffect,
     VitalityMutation,
+    parse_entity_mutation,
     parse_spawn,
 )
 
@@ -82,15 +83,15 @@ _SCENE = LLMScene.DIRECTIVE
 _TEMPERATURE = 0.2   # translation, not creation
 # reason ≤80 chars (120) + feasible (3) + refusal ≤40 chars (60)
 # + broadcast{scope 3 + content ≤80 chars 120 + severity 3 + phenomenon 3 + 4 fields 20} = 149
-# + message{recipients ~6 + content ≤80 chars 120 + urgency 3 + 3 fields 15} = 144
+# + message{≤10 recipients ×3 =30 + content ≤80 chars 120 + urgency 3 + 3 fields 15} = 168
 # + mutations 5 × the longest kind (spawn, same length as a full entity){location/entity 3
 #   + type/destroyed 3 + name/state ≤12 chars 18 + description ≤40 chars 60
 #   + content ≤80 chars 120 + observation ≤40 chars 60 + kind 3 + 7 fields 35} = 5×302 = 1510
-# + narrative_desc ≤60 chars (90) + top-level 7-field structure (35); ~2111 tok
+# + narrative_desc ≤60 chars (90) + top-level 7-field structure (35); ~2135 tok
 #
 # Mutations are budgeted at 5, not the prompt's "at most 3": `_parse_mutations` doesn't
 # truncate (that would silently drop what the director asked for), so the realistic bound is higher.
-_MAX_TOKENS = output_budget(2111)
+_MAX_TOKENS = output_budget(2135)
 
 
 @dataclass(frozen=True)
@@ -188,18 +189,19 @@ _SYSTEM_PROMPT = f"""\
    地方不是东西:一座城、一条街改不了 —— 那里发生了什么,用第 1 条讲出来。
    新东西只能落在某个地方,不会凭空到谁手里:要让某人得到它,就放在他所在的地方,
    别写成送到他手中。
-   名单上标着「听吩咐办事」的人没有生死那一种:伤着他、治好他,都用处境来写。
+   名单上标着「可接受任务指派」的人不支持生命值变更；伤害或治疗造成的影响，用处境来表达。
 
 【你做不到的事】(只有这些才拒绝)
 - 造出名单上没有的人或地方。
 - 让一件东西换到别人手里,或把它从一处挪到另一处。
 - 直接改一个人的情绪、记忆或他与谁的关系 —— 想让他恨谁,就让一件值得恨的事发生。
-- 对名单上标着「听吩咐办事」的人:所以给他递话、让他去做某事、杀死他。
+- 向名单上标着「可接受任务指派」的人发送消息、指派任务或将其杀死。
 「让某人去做某事」对其余的人**不在此列**:它照铁律 2 落成送到他面前的一句话,不要拒绝。
 
 【怎么填这些字段】
-- 名单里的身份与位置**只为认人认物**:导演常不报名字,只说「那个太子」「守门的那位」
-  「桌上那把刀」。认出来之后就别再回头看它 —— 把名单里的细节写进你投出去的内容,
+- message 通道统一匿名投递，不会附带任何角色身份，正文不要出现导演或系统等幕后身份。
+- 名单里的身份与位置**只为认人认物**:导演常不报名字,只说「那个负责人」「守门的那位」
+  「桌上那件东西」。认出来之后就别再回头看它 —— 把名单里的细节写进你投出去的内容,
   就是加戏。
 - **序号(#N)只填在引用位置**:recipients、location_scope,以及每条改变世界的
   person / location / entity(放下新东西的 location 也是)。
@@ -225,17 +227,17 @@ entity_type 仅 item(拿得走的物品)或 landmark(拿不走的固着物);
   "feasible": true 或 false,
   "refusal": "feasible=false 时,给他看的一句话:卡在哪、可以怎么改;写名字不写编号。不超过 40 字;可落实时留空字符串",
   "broadcast": {{"location_scope": 发生地的地点序号(笼罩全域就填 null,或整个不写这一项), "content": "公开发生了什么,不超过 80 字", "severity": "{Severity.prompt_choices()}", "phenomenon": "{Phenomenon.prompt_choices()}"}} 或 null,
-  "message": {{"recipients": [人物序号], "content": "送到他们面前的话,不超过 80 字", "urgency": "low|normal|high|critical"}} 或 null,
+  "message": {{"recipients": [人物序号，最多10个], "content": "送到他们面前的话,不超过 80 字", "urgency": "low|normal|high|critical"}} 或 null,
   "mutations": [
-    {{"kind": "entity", "entity": 物件序号, "destroyed": true 或 false, "state": "变化后的状态词,不超过 12 字,不变就留空", "description": "变化后它看上去的样子,不超过 40 字,不变就留空", "content": "改动后上面写着的全文,不超过 80 字,不变就留空", "observation": "旁人看见的一句话,不超过 40 字"}},
-    {{"kind": "spawn", "location": 地点序号, "entity_type": "item 或 landmark", "name": "它叫什么,不超过 12 字", "description": "它看上去是什么样,不超过 40 字", "content": "只有写着字、记着东西的才有(信、告示、账册);大多数东西没有,留空字符串。有则不超过 80 字", "observation": "在场的人看见的一句话,不超过 40 字"}},
+    {{"kind": "entity", "entity": 物件序号, "destroyed": true 或 false, "state": "变化后的状态词,不超过 12 字,不变就留空", "description": "变化后它看上去的样子,不超过 40 字,不变就留空", "content": "改动后上面写着的全文,要有具体、实质内容,不超过 80 字,不变就留空", "observation": "旁人看见的一句话,不超过 40 字"}}(不毁掉时,state/description/content 至少改一项;物件本身没变、只是让人察觉到一件事,用 broadcast),
+    {{"kind": "spawn", "location": 地点序号, "entity_type": "item 或 landmark", "name": "它叫什么,不超过 12 字", "description": "它看上去是什么样,不超过 40 字", "content": "只有写着字、记着东西的才有(信、告示、账册);大多数东西没有,留空字符串。有则要有具体、实质内容,不超过 80 字", "observation": "在场的人看见的一句话,不超过 40 字"}},
     {{"kind": "vitality", "person": 人物序号, "effect": "{VitalityEffect.prompt_choices()}", "observation": "旁人看见的一句话,不超过 40 字"}},
     {{"kind": "relocate", "person": 人物序号, "location": 地点序号, "observation": "旁人在**目的地**看见的一句话,不超过 40 字"}},
-    {{"kind": "condition", "person": 人物序号, "condition": "他此后身处的处境,不超过 15 字;解开原有处境就留空字符串", "observation": "旁人看见的一句话,不超过 40 字"}}
+    {{"kind": "condition", "person": 人物序号, "condition": "他此后身处的处境,不超过 15 字;解开原有处境就留空字符串", "confined": true 或 false(这个处境是否限制了他的行动自由;condition 为空时填 false), "observation": "旁人看见的一句话,不超过 40 字"}}
   ],
   "narrative_desc": "这一拍实际投出去了什么,不超过 60 字。**把上面填过的序号换回名字再写**：写「某地起了大火」,不是「#18 起了大火」"
 }}
-mutations 没有就给 []。上面五种形状只是格式示例,不是让你五种都用。
+mutations 最多 3 条，没有就给 []。上面五种形状只是格式示例,不是让你五种都用。
 最后回读一遍 content / observation / narrative_desc:里面只要还剩一个 # 号,就是写错了,改掉再交。
 """
 
@@ -284,7 +286,7 @@ def _without_npc_recipients(
 class DirectorChannel:
     """Queue, parsing and dispatch for director instructions, plus its own injection ledger.
 
-    The ledger is separate from ``EventSystem``'s so the editor's quota structurally can't see
+    The ledger is separate from ``NarrativeEditor``'s so the editor's quota structurally can't see
     director injections.
     """
 
@@ -304,15 +306,16 @@ class DirectorChannel:
     def pending_count(self) -> int:
         return len(self._queue)
 
-    def restore_state(self, fired_events: Iterable[Mapping[str, Any]]) -> None:
+    def restore_state(self, landed_injections: Iterable[Mapping[str, Any]]) -> None:
         """Restore the director's past injections. Gates nothing; it's only for complete replay."""
-        self._ledger.restore(fired_events)
+        self._ledger.restore(landed_injections)
 
     async def submit(
         self,
         text: str,
         *,
         all_agents: Mapping[str, "Agent"],
+        agent_locations: Mapping[str, str],
         npcs: Sequence[NpcOnMenu],
         locations: Sequence[Place],
         entities: Sequence[WorldEntity],
@@ -329,6 +332,7 @@ class DirectorChannel:
         prompt = self.build_prompt(
             text,
             all_agents=all_agents,
+            agent_locations=agent_locations,
             npcs=npcs,
             locations=locations,
             entities=entities,
@@ -374,19 +378,25 @@ class DirectorChannel:
         text: str,
         *,
         all_agents: Mapping[str, "Agent"],
+        agent_locations: Mapping[str, str],
         npcs: Sequence[NpcOnMenu],
         locations: Sequence[Place],
         entities: Sequence[WorldEntity],
         world_time: WorldTime,
     ) -> DirectivePrompt:
         """Assemble everything this parse would send, without sending; shared with the
-        developer console."""
+        developer console.
+
+        ``agent_locations`` maps agent id → where his body is (``EnvironmentSystem.body_locations``,
+        read by the caller as ``NpcOnMenu.location_id`` is); an unplaced agent has no entry.
+        """
         names = _people_names(all_agents, npcs)
         return DirectivePrompt(
             system=_SYSTEM_PROMPT,
             user=self._build_user_prompt(
                 text,
                 all_agents=all_agents,
+                agent_locations=agent_locations,
                 npcs=npcs,
                 locations=locations,
                 entities=entities,
@@ -420,6 +430,7 @@ class DirectorChannel:
         try:
             data = extract_json(raw_response)
         except Exception as exc:  # noqa: BLE001 — an unreadable response means rejection
+            note_active_call_adoption(False, "invalid_json")
             logger.warning("directive_parse_failed", extra={"error": str(exc)})
             return DirectiveResult(accepted=False, reason="没能读懂这条指令,请换一种说法。"), None
 
@@ -442,7 +453,8 @@ class DirectorChannel:
         )
         if plan is None:
             # Declared feasible but nothing dispatchable parsed (out-of-range indices, mutations
-            # without an observation): reject rather than inject an empty event.
+            # without an observation, an entity change that changes nothing): reject rather than
+            # inject an empty event.
             note_active_call_adoption(False, reason="no_dispatchable_channel")
             logger.warning("directive_plan_empty", extra={"text": text[:80]})
             return DirectiveResult(
@@ -457,7 +469,6 @@ class DirectorChannel:
             logger.warning("directive_index_ref_in_narrative", extra={"text": leaked[:80]})
 
         # The plan's shape is the first thing to check when reviewing translation vs. overreach.
-        note_active_call_adoption(True)
         annotate_active_call(
             channels=self._channels_of(plan),
             mutation_kinds=[type(m).__name__ for m in plan.mutations],
@@ -537,6 +548,7 @@ class DirectorChannel:
         text: str,
         *,
         all_agents: Mapping[str, "Agent"],
+        agent_locations: Mapping[str, str],
         npcs: Sequence[NpcOnMenu],
         locations: Sequence[Place],
         entities: Sequence[WorldEntity],
@@ -548,7 +560,10 @@ class DirectorChannel:
         # list's index into the other's slot. Code decides the tier from the resolved id.
         names = _people_names(all_agents, npcs)
         agent_lines = "\n".join(
-            [self._agent_line(i + 1, a) for i, a in enumerate(all_agents.values())]
+            [
+                self._agent_line(i + 1, a, agent_locations.get(aid))
+                for i, (aid, a) in enumerate(all_agents.items())
+            ]
             + [
                 self._npc_line(len(all_agents) + i + 1, npc, names)
                 for i, npc in enumerate(npcs)
@@ -581,14 +596,17 @@ class DirectorChannel:
 照上面说定的 JSON 格式把这条指令翻出来(reason 在前),只输出 JSON、不写任何多余内容。
 记住:忠实翻译,不加戏;落实不了就 feasible=false 并说清卡在哪。"""
 
-    def _agent_line(self, index: int, agent: "Agent") -> str:
+    def _agent_line(self, index: int, agent: "Agent", location_id: str | None) -> str:
         """One line of identifying facts plus one of background. Every item helps match "the
         one at the gate" / "his brother" to a person: gender and age separate same-surname
         siblings, and death must be marked."""
         soul = agent.personality.soul
         facts = [f for f in (
             soul.role,
-            f"现于{self._directory.location_name(agent.personality.state.current_location)}",
+            # Where his body is, not his own ``current_location``, which lags while he travels.
+            # The dead have no body in the world; an unplaced one has no place to name.
+            f"现于{self._directory.location_name(location_id)}"
+            if agent.is_active and location_id else "",
             # Needed to lift or replace a condition and to write an observation that fits it.
             render_condition(agent.personality.state.condition),
             "" if agent.is_active else DECEASED_MARK,
@@ -602,7 +620,7 @@ class DirectorChannel:
         return "\n".join([head, *(f"    {line}" for line in detail)])
 
     def _npc_line(self, index: int, npc: NpcOnMenu, names: Mapping[str, str]) -> str:
-        """List form (``person_referent``) plus a background line. The "听吩咐办事" mark is
+        """List form (``person_referent``) plus a background line. The task-assignable mark is
         what the prompt's errand-runner rules key on; the errand helps match "the one carrying
         the letter"."""
         body = npc.npc
@@ -610,10 +628,10 @@ class DirectorChannel:
         head = person_referent(
             body.name, body.gender,
             f"{body.age}岁" if body.age else "",
-            "听吩咐办事",
+            "可接受任务指派",
             f"现于{self._directory.location_name(npc.location_id)}",
             render_condition(body.condition),
-            f"正替{names.get(errand.requester_id) or '某人'}办一趟差事" if errand is not None else "",
+            f"正在执行{names.get(errand.requester_id) or '某人'}指派的任务" if errand is not None else "",
         )
         line = f"#{index} {head}"
         return f"{line}\n    {body.description}" if body.description else line
@@ -709,17 +727,13 @@ class DirectorChannel:
                 continue
             kind = str(item.get("kind", "")).strip().lower()
             if kind == "entity":
-                resolved = entity_ref.resolve([item.get("entity")])
-                if not resolved:
+                entity = parse_entity_mutation(
+                    item, entity_ref, destroyed=coerce_bool(item.get("destroyed"), False),
+                )
+                if entity is None:
+                    logger.warning("directive_entity_mutation_dropped", extra={"entity": item.get("entity")})
                     continue
-                out.append(EntityMutation(
-                    observation=observation,
-                    entity_id=resolved[0],
-                    new_state=str(item.get("state", "")).strip(),
-                    new_description=str(item.get("description", "")).strip(),
-                    new_content=str(item.get("content", "")).strip(),
-                    destroyed=coerce_bool(item.get("destroyed"), False),
-                ))
+                out.append(entity)
             elif kind == "spawn":
                 spawn = parse_spawn(item, location_ref)
                 if spawn is None:
@@ -756,10 +770,13 @@ class DirectorChannel:
                 who = person_ref.resolve([item.get("person")])
                 if not who:
                     continue
+                condition = str(item.get("condition", "") or "").strip()
                 out.append(ConditionMutation(
                     observation=observation,
                     body_id=who[0],
-                    description=str(item.get("condition", "") or "").strip(),
+                    description=condition,
+                    # Lifting a condition confines nobody, whatever the model put here.
+                    confined=bool(condition) and coerce_bool(item.get("confined"), False),
                 ))
         return out
 
@@ -782,6 +799,6 @@ class DirectorChannel:
                 directive_text=plan.directive_text,
             )
             if committed is not None:
-                self._ledger.record(committed.event)
+                self._ledger.record(committed.record)
                 drained.append(committed)
         return drained

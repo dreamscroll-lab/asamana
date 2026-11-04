@@ -22,9 +22,10 @@ from core.interfaces.action import (
     ActionResult, ActionType, AgentAction, EntityStateChange, ErrandOrder,
 )
 from core.interfaces.directory import WorldDirectory
+from core.action_duration import action_duration_steps
 from core.logging import get_logger
 from core.interfaces.execution import TickResult
-from engine.executors.base import ActionExecutionState, ActionExecutor
+from engine.executors.base import ActionExecutionState, ActionExecutor, adjudication_failed_result
 from engine.narration import observed_here, scene_line
 from engine.scene import observe_location
 
@@ -67,7 +68,7 @@ def _render_errand(
             else f"去{destination}当众说出：「{order.message}」"
         )
     # All four axes empty = go take a look. That is a task, not "no instructions".
-    return lines or [f"去{destination}走一趟"]
+    return lines or [f"前往{destination}看看"]
 
 
 class ErrandExecutor(ActionExecutor):
@@ -95,9 +96,9 @@ class ErrandExecutor(ActionExecutor):
         # Objective feasibility only ("can it be spared"), never "is it willing".
         reason = ""
         if not isinstance(order, ErrandOrder) or npc is None:
-            reason = "此处没有可派的人手"
+            reason = "此处没有可接受任务指派的人"
         elif npc.errand is not None:
-            reason = f"{npc.name or '那人'}正为旁人跑一趟，一时抽不开身"
+            reason = f"{npc.name or '那人'}正在执行别人指派的任务"
         elif npc.condition is not None:
             reason = f"{npc.name or '那人'}此刻动弹不得"
         elif order.item_id:
@@ -122,12 +123,12 @@ class ErrandExecutor(ActionExecutor):
             action_type=ActionType.ERRAND,
             initiator_id=action.agent_id,
             participant_ids=[action.agent_id],
-            purpose=action.action_description or "派人办事",
+            purpose=action.action_description or "给别人指派任务",
             started_step=step,
             # Giving an order takes one beat however far the bearer goes (see
-            # test_executor_duration_authority). Don't trust the actor's estimate: one sentence
+            # test_executor_duration_authority). Don't trust the doer's estimate: one sentence
             # would pin him in place.
-            estimated_steps=1,
+            estimated_steps=action_duration_steps(action.action_type, action.estimated_steps),
             opening_outcome="",
             target=action.target,
             expected_outcome=action.expected_outcome,
@@ -169,29 +170,44 @@ class ErrandExecutor(ActionExecutor):
                 "errand_bearer_vanished",
                 extra={"agent_id": state.initiator_id, "step": step},
             )
-            return [self._null_step(state, step=step, location=location)]
+            # Asserts neither that it was sent nor that it wasn't.
+            return [adjudication_failed_result(state, step, outcome=scene_line(location, (
+                f"{self._directory.agent_name(state.initiator_id)}想给人指派任务，"
+                "一时未能确定是否指派成功。"
+            )))]
 
-        actor_name = self._directory.agent_name(state.initiator_id)
+        if order.item_id:
+            item = environment.get_entity(order.item_id)
+            if item is None or item.is_destroyed or item.owner_id != state.initiator_id:
+                environment.clear_errand(order.npc_id)
+                failed = self._unavailable(
+                    self._stub(state, step), step,
+                    f"{(item.name if item is not None else '') or '那样东西'}已不在他手上",
+                    environment=environment,
+                )
+                return [failed.extra["completed_result"]]
+
+        doer_name = self._directory.agent_name(state.initiator_id)
         bearer = npc.name or "那人"
         errand_clause = "，".join(_render_errand(
             order, environment=environment, directory=self._directory,
         ))
         # The item must reach the bearer now, or every carrying errand arrives empty-handed.
-        # The gate in ``start`` guarantees he still holds it. No ``perception``: the handover is
+        # Revalidated after earlier item-changing actions. No ``perception``: the handover is
         # folded into the single observation below.
         handover = [EntityStateChange(entity_id=order.item_id, owner_id=order.npc_id)] if (
             order.item_id
         ) else []
 
         # Three channels written separately: the observation must not contain what was ordered.
-        outcome = scene_line(location, f"{actor_name}派{bearer}{errand_clause}。")
+        outcome = scene_line(location, f"{doer_name}向{bearer}指派任务：{errand_clause}。")
         item = environment.get_entity(order.item_id) if order.item_id else None
         handover_clause = f"把{(item.name if item is not None else '') or '某物'}交到他手上，" if (
             order.item_id
         ) else ""
         observation = scene_line(
             location,
-            f"{actor_name}叫住{bearer}交代了几句，{handover_clause}{bearer}随即动身。",
+            f"{doer_name}叫住{bearer}交代了几句，{handover_clause}{bearer}随即动身。",
         )
         return [ActionResult(
             action=self._stub(state, step),
@@ -201,7 +217,7 @@ class ErrandExecutor(ActionExecutor):
             observations=observed_here(environment, state.initiator_id, observation),
             # A lurker nearby hears what was ordered.
             happening=outcome,
-            factual_memory=f"我派{bearer}{errand_clause}。",
+            factual_memory=f"我向{bearer}指派任务：{errand_clause}。",
             # A receipt, not an instruction: ``start`` already sent this errand out.
             errand_orders=[order],
             entity_state_changes=handover,
@@ -224,8 +240,8 @@ class ErrandExecutor(ActionExecutor):
         """Can't send it: unavailable, not unwilling (an Npc has no will to reject with). A real
         world event, remembered normally; ``reason`` is a structured fact."""
         location = observe_location(environment, action.agent_id)
-        actor_name = self._directory.agent_name(action.agent_id)
-        outcome = scene_line(location, f"{actor_name}本想派人跑一趟，却因{reason}未能成行。")
+        doer_name = self._directory.agent_name(action.agent_id)
+        outcome = scene_line(location, f"{doer_name}本想给别人指派任务，却因{reason}未能完成指派。")
         return ActionExecutionState.create_failed(
             action_type=ActionType.ERRAND,
             initiator_id=action.agent_id,
@@ -236,24 +252,8 @@ class ErrandExecutor(ActionExecutor):
                 observations=observed_here(environment, action.agent_id, outcome),
                 succeeded=False,
                 failure_reason=reason,
-                factual_memory=f"想派人跑一趟未果：{reason}",
+                factual_memory=f"给别人指派任务没有成功：{reason}",
             ),
             started_step=step,
-            purpose=action.action_description or "派人办事",
-        )
-
-    def _null_step(
-        self, state: ActionExecutionState, *, step: int, location: str,
-    ) -> ActionResult:
-        """The honest product when the bearer vanished: asserts neither that it was sent nor
-        that it wasn't."""
-        return ActionResult(
-            action=self._stub(state, step),
-            expected_outcome=state.expected_outcome or state.purpose,
-            outcome=scene_line(location, (
-                f"{self._directory.agent_name(state.initiator_id)}想派人办一件事，"
-                f"一时未能确知派没派出去。"
-            )),
-            succeeded=False,
-            adjudication_failed=True,
+            purpose=action.action_description or "给别人指派任务",
         )

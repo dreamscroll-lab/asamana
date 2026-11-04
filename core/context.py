@@ -47,6 +47,8 @@ _call_annotations_var: contextvars.ContextVar[dict[str, Any]] = contextvars.Cont
     "call_annotations",
     default={},
 )
+# Read by LLMRouter into LLMCallTrace.actor; set via observe_actor().
+_actor_var: contextvars.ContextVar[bool] = contextvars.ContextVar("actor", default=False)
 
 
 def set_active_call(call: Any) -> None:
@@ -63,15 +65,14 @@ def note_active_call_parse(ok: bool) -> None:
 
 
 def note_call_adoption(call: Any, adopted: bool, reason: str = "") -> None:
-    """Record whether the consumer **used** *call*'s output (``reject_reason`` when not).
-    First verdict wins; no-op when *call* is None.
+    """Reject a call's output with its reason; successful output is adopted by default.
+    The first rejection wins; acceptance never clears it. No-op without provider output.
 
     Observability only. Never read back into logic, a prompt, or an embedding.
     """
-    if call is not None and getattr(call, "adopted", "x") is None:
-        call.adopted = adopted
-        if not adopted:
-            call.reject_reason = reason
+    if call is not None and not adopted and getattr(call, "adopted", None) is True:
+        call.adopted = False
+        call.reject_reason = reason
 
 
 def note_active_call_adoption(adopted: bool, reason: str = "") -> None:
@@ -95,9 +96,19 @@ def annotate_active_call(**fields: Any) -> None:
         call.extra.update(fields)
 
 
+def get_active_call() -> Any:
+    """The LLM call most recently recorded in this task, or None after a failed one."""
+    return _active_call_var.get()
+
+
 def get_call_annotations() -> dict[str, Any]:
     """A fresh copy, so LLMRouter can store it without aliasing the contextvar state."""
     return dict(_call_annotations_var.get())
+
+
+def in_actor_call() -> bool:
+    """Whether the enclosing block runs because an actor performs a character."""
+    return _actor_var.get()
 
 
 def set_log_context(
@@ -165,6 +176,18 @@ def observe_step(step: "int | str") -> Iterator[None]:
         yield
     finally:
         _step_var.reset(token)
+
+
+@contextmanager
+def observe_actor() -> Iterator[None]:
+    """Tag every LLM call recorded within this block as existing because an actor performs a
+    character (``LLMCallTrace.actor``). Observability only: whose call it is stays the stage's
+    ``agent_id``, and nothing reads the tag back into logic or a prompt."""
+    token = _actor_var.set(True)
+    try:
+        yield
+    finally:
+        _actor_var.reset(token)
 
 
 class GivenFacts(list):

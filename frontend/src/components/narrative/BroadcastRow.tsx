@@ -7,9 +7,9 @@ import type { BroadcastSummary } from "../../types";
  * (BroadcastChannel.for_location() reaches only the agents standing there). `severity` is the
  * producer's mark (a death is HIGH), so HIGH burns amber.
  */
-export default function BroadcastRow({ b }: { b: BroadcastSummary }) {
+export default function BroadcastRow({ b, place }: { b: BroadcastSummary; place: string }) {
   const high = b.severity === "high";
-  const reach = b.location_name || "世界广播"; // name baked by the producer; "" = whole world
+  const reach = place || "世界广播"; // "" = the world scope
   return (
     <div
       className={`flex items-start gap-1.5 rounded-lg border px-2.5 py-1.5 text-[13px] ${

@@ -17,7 +17,12 @@ from core.interfaces.place import Place
 
 
 def serialize_world_config(config: WorldConfig) -> dict[str, Any]:
-    """Capture a WorldConfig's four data facets as a JSON-serializable dict.
+    """Capture what a built world reads from its WorldConfig as a JSON-serializable dict.
+
+    It overlaps the frozen render map (``save_world_map``), which it is parsed from, on purpose:
+    that freezes the raw document for the renderer, this freezes the engine's reading of it. Don't
+    re-derive this from the frozen map on restore: a later change to how maps are read (travel
+    costs, defaults) would then quietly reshape every built world.
 
     This asset must be a clean base: step-0 occupancy baked in here would come back as ghost
     occupants on restore. Nothing needs guarding against that here: ``Place`` has no occupancy
@@ -29,9 +34,10 @@ def serialize_world_config(config: WorldConfig) -> dict[str, Any]:
     places: dict[str, dict[str, Any]] = {}
     for place_id, place in config.get_places().items():
         places[str(place_id)] = dataclasses.asdict(place)
+    # No location aliases: aliases only turn location text into ids, and a built world's setup
+    # holds ids alone (the build resolved them on the map's own rules).
     return {
         "places": places,
-        "location_aliases": dict(config.get_location_aliases()),
         "world_description": config.get_world_description(),
         "runtime_context": dict(config.to_runtime_context()),
     }
@@ -40,10 +46,8 @@ def serialize_world_config(config: WorldConfig) -> dict[str, Any]:
 class StoredWorldConfig(WorldConfig):
     """WorldConfig rebuilt from a world's persisted config asset.
 
-    Covers the full contract from data alone: ``resolve_location_id`` is the
-    generic base-class implementation over places + aliases. Known boundary:
-    a template that overrides ``resolve_location_id`` falls back to the generic
-    implementation after a persist/restore round-trip.
+    Covers what a built world reads from its map, from data alone. It has no aliases (see
+    ``serialize_world_config``): nothing after the build resolves location text.
     """
 
     def __init__(self, data: dict[str, Any]) -> None:
@@ -54,9 +58,6 @@ class StoredWorldConfig(WorldConfig):
             str(place_id): Place.from_dict(payload)
             for place_id, payload in places.items()
         }
-        self._location_aliases: dict[str, str] = {
-            str(k): str(v) for k, v in dict(data.get("location_aliases", {})).items()
-        }
         self._world_description: str = str(data.get("world_description", ""))
         self._runtime_context: dict[str, Any] = dict(data.get("runtime_context", {}))
 
@@ -64,7 +65,7 @@ class StoredWorldConfig(WorldConfig):
         return self._places
 
     def get_location_aliases(self) -> dict[str, str]:
-        return dict(self._location_aliases)
+        return {}
 
     def get_world_description(self) -> str:
         return self._world_description

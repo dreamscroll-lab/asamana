@@ -20,7 +20,7 @@ from config.models import Config
 from core.container import Container
 from core.logging import get_logger
 from core.model_keys import ModelKeysMissing
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from world import DEFAULT_CATALOG_PATH, WorldCatalog
 
 from interaction.models import WorldMeta
@@ -67,6 +67,17 @@ class ApiServices:
             )
         if not self.application.has_session(world_id):
             await self.application.restore_session(world_id)
+
+    def require_director(self, world_id: str) -> None:
+        """403 while an actor performs a character in this world: steering the world and
+        reading the director's record are the director's, and the actor's world is one they
+        live in, not one they author. One gate for every director route."""
+        from fastapi import HTTPException
+
+        if self.application.performing_character(world_id) is not None:
+            raise HTTPException(
+                status_code=403, detail="An actor is performing in this world; director routes are closed."
+            )
 
     async def _existing_world(self, world_id: str) -> WorldMeta:
         """The world's metadata, read once; model keys required, 404 if it doesn't exist."""
@@ -150,17 +161,23 @@ def create_app(
         allow_headers=["*"],
     )
 
+    from interaction.api.actor import build_actor_router
     from interaction.api.direct import build_direct_router
     from interaction.api.lifecycle import build_lifecycle_router
     from interaction.api.maps import build_maps_router
     from interaction.api.observe import build_observe_router
+    from interaction.api.setup import build_setup_router
+    from interaction.api.vocabulary import build_vocabulary_router
 
     app.include_router(build_lifecycle_router(services))
     app.include_router(build_observe_router(services))
+    app.include_router(build_setup_router(services))
+    app.include_router(build_vocabulary_router())
     app.include_router(build_maps_router(services))
     # Director routes are a product feature, not a developer instrument — they ship in
     # every deployment, unlike the dev_tools block below.
     app.include_router(build_direct_router(services))
+    app.include_router(build_actor_router(services))
 
     # What this deployment offers, fixed for the process's lifetime. Each flag is reported from
     # the same value its gate reads, so a client never infers a gate from 404s or 503s.

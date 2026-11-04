@@ -292,6 +292,7 @@ setup() {
     fi
   fi
 
+  if [[ -e .env ]]; then chmod 600 .env; fi
   (umask 077 && printf '%s\n' "${lines[@]}" > .env)
   echo
   if has_model_keys; then
@@ -318,6 +319,7 @@ keys() {
       kept+=("$line")
     done < .env
   fi
+  if [[ -e .env ]]; then chmod 600 .env; fi
   (umask 077 && printf '%s\n' "${MODEL_LINES[@]}" "${kept[@]+"${kept[@]}"}" > .env)
   echo
   echo "Wrote the model keys to deploy/.env."

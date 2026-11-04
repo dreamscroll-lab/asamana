@@ -57,11 +57,6 @@ vector_store:
     # Clear this directory before changing dimension: upsert raises on a dimension mismatch.
     path: ./data/vectors
 
-agent_store:
-  provider: file
-  params:
-    path: ./data/agents
-
 message:
   provider: in_memory
   params: {}
@@ -87,10 +82,10 @@ world:
 engine:
   max_concurrent_llm: 16
   decay_interval: 5
-  event_system_enabled: true
-  max_events_per_window: 2
-  event_quota_window: 20
-  event_check_interval: 6
+  narrative_editor_enabled: true
+  max_injections_per_window: 3
+  injection_quota_window: 20
+  injection_check_interval: 5
   main_max_idle_steps: 2
   background_max_idle_steps: 6
   max_npcs: 6                  # the cost is prompt space, not memory: each takes a line in main-character decision prompts

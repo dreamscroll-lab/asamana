@@ -5,23 +5,25 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from core.container import Container
-from engine.application import NarrativeApplication
+from providers.assembly import build_container
+from interaction.application import NarrativeApplication
 from core.interfaces.llm import LLMMessage, LLMProvider, LLMResponse, LLMRouter, LLMScene
 from providers.llm.mock import MockLLMProvider
-from world.builder import _canonicalize_agent_locations, _purge_orphan_references
+from world.builder import _canonicalize_agent_locations, _canonicalize_seed_locations, _purge_orphan_references
 from world.builders.agent_generator import AgentGenerator
 from world.builders.cast_designer import CastDesigner
 from world.builders.theme_analyzer import (
     ThemeAnalyzer,
-    _distinct_figures,
-    _distinct_npc_seeds,
+    _distinct_names,
     _normalize_gender,
 )
 from world.initializer import WorldInitializer
-from world.models import AgentDefinition, AgentTier, HistoricalEventSeed, LocationSeed, NpcSeed, RelationSeed, ThemeAnalysis, ThemeFigure
+from world.setup import WorldSetup
+from world.models import AgentDefinition, AgentTier, HistoricalEventSeed, LocationSeed, NpcSeed, RelationSeed, ThemeAnalysis, ThemeFigure, WorldEntitySeed
+from agent.state_codec import agent_state_from_record
 from agent.personality import EmotionState, SoulLayer
 from worlds.tiled import TiledWorldConfig
+from tests.unit.confirmed_world import confirmed_world
 
 
 class FailingLLMProvider(LLMProvider):
@@ -74,6 +76,17 @@ class TrackingLLMProvider(LLMProvider):
         yield response.content
 
 
+async def _materialize(container, analysis, definitions, world_id: str):
+    """Persist a setup on the map and materialize it, as building and confirming would."""
+    initializer = WorldInitializer(container)
+    await initializer.prepare(
+        world_id,
+        WorldSetup.from_build(analysis.theme_input, analysis, definitions),
+        TiledWorldConfig(template="changan_iso"),
+    )
+    return await initializer.initialize(world_id)
+
+
 def _analysis() -> ThemeAnalysis:
     return ThemeAnalysis(
         theme_input="audit theme",
@@ -82,7 +95,7 @@ def _analysis() -> ThemeAnalysis:
         core_tension="A and B want different outcomes; what each will choose is open.",
         narrative_theme="The weight of unspoken positions.",
         narrative_pitch="A and B are about to choose; what each chooses is undecided.",
-        world_time_config={"era_name": "Audit Era", "start_month": 1, "start_day": 1, "start_hour": 6},
+        world_time_config={"era_name": "Audit Era", "start_year": 1, "start_month": 1, "start_day": 1, "start_hour": 6, "seconds_per_step": 3600},
         key_figures=[
             ThemeFigure("A", role="leader", importance="main", brief="Acts first."),
             ThemeFigure("B", role="rival", importance="main", brief="Answers pressure."),
@@ -94,7 +107,7 @@ def _analysis() -> ThemeAnalysis:
         historical_events=[
             HistoricalEventSeed(
                 event="A and B disagreed before the opening step.",
-                step_offset=-24,
+                hours_before_start=24,
                 related_figures=["A", "B"],
                 importance=0.72,
             )
@@ -106,7 +119,7 @@ def _analysis() -> ThemeAnalysis:
 @pytest.fixture()
 def container(test_config):
     """Container with PERSONA_GENERATION returning valid JSON for world-builder tests."""
-    c = Container.from_config(test_config)
+    c = build_container(test_config)
     providers = {scene: c.llm_router.get(scene) for scene in LLMScene}
     providers[LLMScene.PERSONA_GENERATION] = MockLLMProvider(fixed_response="{}")
     c.llm_router = LLMRouter(providers)
@@ -137,7 +150,7 @@ async def test_each_persona_call_is_traced_under_the_figure_it_builds(container)
     definitions = await AgentGenerator(router).generate(_analysis())
 
     calls = [c for c in sink.llm_calls if c.scene == LLMScene.PERSONA_GENERATION.value]
-    by_id = {d.agent_id: d.name for d in definitions}
+    by_id = {d.agent_id: d.soul.name for d in definitions}
     assert len(calls) == len(definitions)
     assert {c.agent_id for c in calls} == set(by_id)
     for c in calls:
@@ -149,18 +162,12 @@ async def test_world_initializer_creates_memory_streams_bidirectional_relations_
     analysis = _analysis()
     definitions = await AgentGenerator(container.llm_router).generate(analysis)
 
-    world = await WorldInitializer(container).initialize(
-        theme=analysis.theme_input,
-        analysis=analysis,
-        agent_definitions=definitions,
-        world_id="world-builder-audit",
-        world_config=TiledWorldConfig(template="changan_iso"),
-    )
+    world = await _materialize(container, analysis, definitions, "world-builder-audit")
 
     agent_a = world.agents["a"]
     agent_b = world.agents["b"]
-    relation_a_b = await container.agent_store.load_relation(world.world_id, "a", "b")
-    relation_b_a = await container.agent_store.load_relation(world.world_id, "b", "a")
+    relation_a_b = await agent_a.relation_system.load_existing("b")
+    relation_b_a = await agent_b.relation_system.load_existing("a")
 
     assert relation_a_b is not None
     assert relation_b_a is not None
@@ -200,9 +207,9 @@ def test_purge_orphan_references_removes_dropped_figures() -> None:
             RelationSeed("C", "B", trust=0.4, labels=["orphan"]),   # C is dropped
         ],
         historical_events=[
-            HistoricalEventSeed(event="A and B clashed.", step_offset=-3, related_figures=["A", "B"]),
-            HistoricalEventSeed(event="C did something.", step_offset=-5, related_figures=["C"]),   # fully orphaned
-            HistoricalEventSeed(event="A, B, C met.", step_offset=-6, related_figures=["A", "B", "C"]),  # C stripped
+            HistoricalEventSeed(event="A and B clashed.", hours_before_start=3, related_figures=["A", "B"]),
+            HistoricalEventSeed(event="C did something.", hours_before_start=5, related_figures=["C"]),   # fully orphaned
+            HistoricalEventSeed(event="A, B, C met.", hours_before_start=6, related_figures=["A", "B", "C"]),  # C stripped
         ],
         key_locations=[LocationSeed("loc", "")],
     )
@@ -255,11 +262,11 @@ def test_drop_seeds_shadowing_locations() -> None:
         narrative_pitch="",
         key_figures=[],
         world_entity_seeds=[
-            WorldEntitySeed(name="玄武门", entity_type="landmark", location_name="xuanwu_gate"),
-            WorldEntitySeed(name="  Xuanwu_Gate ", entity_type="landmark", location_name="xuanwu_gate"),
-            WorldEntitySeed(name="东宫", entity_type="item", location_name="donggong"),
-            WorldEntitySeed(name="玄武门前的石狮", entity_type="landmark", location_name="xuanwu_gate"),
-            WorldEntitySeed(name="高祖调兵虎符", entity_type="item", location_name="taiji_palace"),
+            WorldEntitySeed(name="玄武门", entity_type="landmark", location="xuanwu_gate"),
+            WorldEntitySeed(name="  Xuanwu_Gate ", entity_type="landmark", location="xuanwu_gate"),
+            WorldEntitySeed(name="东宫", entity_type="item", location="donggong"),
+            WorldEntitySeed(name="玄武门前的石狮", entity_type="landmark", location="xuanwu_gate"),
+            WorldEntitySeed(name="高祖调兵虎符", entity_type="item", location="taiji_palace"),
         ],
     )
 
@@ -280,7 +287,6 @@ def test_canonicalize_agent_locations_falls_back_on_unknown_location(container) 
     definitions = [
         AgentDefinition(
             agent_id="x",
-            name="X",
             tier=AgentTier.BACKGROUND,
             soul=SoulLayer(name="X", role="", agent_id="x"),
             initial_location="unknown-place-xyz",
@@ -323,14 +329,8 @@ async def test_world_initializer_rejects_locations_outside_world_graph(container
     definitions = await AgentGenerator(container.llm_router).generate(analysis)
     definitions[0].initial_location = "unknown-place"
 
-    with pytest.raises(ValueError, match="Unknown initial location"):
-        await WorldInitializer(container).initialize(
-            theme=analysis.theme_input,
-            analysis=analysis,
-            agent_definitions=definitions,
-            world_id="world-builder-bad-location",
-            world_config=TiledWorldConfig(template="changan_iso"),
-        )
+    with pytest.raises(ValueError, match="initial_location must be one of"):
+        await _materialize(container, analysis, definitions, "world-builder-bad-location")
 
 
 @pytest.mark.asyncio
@@ -436,6 +436,22 @@ async def test_agent_generator_prompt_contains_all_three_invariants() -> None:
 
 
 @pytest.mark.asyncio
+async def test_agent_generator_says_which_side_holds_each_relation_field() -> None:
+    """Relations reach the persona prompt as from/to JSON while the label legend speaks of holder
+    and other party; the prompt must map one onto the other, or a kinship label can be read
+    backwards."""
+    analysis = _analysis()
+    router, spy = _spy_router_capturing_scene(LLMScene.PERSONA_GENERATION, "{}")
+
+    await AgentGenerator(router).generate(analysis)
+
+    prompt = _prompt_text(spy, 0)
+    assert '"from": "A"' in prompt
+    assert "labels / trust / affection 的持有者是 from、对方是 to" in prompt
+    assert "reverse_labels / reverse_trust / reverse_affection 的持有者是 to" in prompt
+
+
+@pytest.mark.asyncio
 async def test_agent_generator_schema_does_not_ask_to_echo_identity() -> None:
     """name / role / agent_id are fixed by code: the schema doesn't ask for them back, and echoes
     are ignored."""
@@ -468,36 +484,24 @@ async def test_agent_generator_prompt_splits_need_weight_from_intensity() -> Non
 
 @pytest.mark.asyncio
 async def test_initial_snapshot_manifest_persists_invariants(container) -> None:
-    """Step-0 snapshot must surface all three invariants both in
-    manifest.analysis and as redundant top-level metadata.world fields."""
+    """The setup frozen into step 0 must carry all three invariants in its lore."""
     analysis = _analysis()
     definitions = await AgentGenerator(container.llm_router).generate(analysis)
 
-    world = await WorldInitializer(container).initialize(
-        theme=analysis.theme_input,
-        analysis=analysis,
-        agent_definitions=definitions,
-        world_id="world-invariants-persisted",
-        world_config=TiledWorldConfig(template="changan_iso"),
-    )
+    world = await _materialize(container, analysis, definitions, "world-invariants-persisted")
 
     snapshot = await container.snapshot.load(world.world_id, 0)
     assert snapshot is not None
-    world_meta = snapshot.metadata["world"]
-    assert world_meta["core_tension"] == analysis.core_tension
-    assert world_meta["narrative_theme"] == analysis.narrative_theme
-    assert world_meta["narrative_pitch"] == analysis.narrative_pitch
+    lore = snapshot.setup["lore"]
+    assert lore["core_tension"] == analysis.core_tension
+    assert lore["narrative_theme"] == analysis.narrative_theme
+    assert lore["narrative_pitch"] == analysis.narrative_pitch
 
-    manifest_analysis = snapshot.metadata["manifest"]["analysis"]
-    assert manifest_analysis["core_tension"] == analysis.core_tension
-    assert manifest_analysis["narrative_theme"] == analysis.narrative_theme
-    assert manifest_analysis["narrative_pitch"] == analysis.narrative_pitch
-
-    # Step-0 agent_states carry the god-view location_name (id→narrative name), so
-    # the map/observer shows real homes at init, not the "某地" fallback.
-    for state in snapshot.agent_states.values():
-        assert state.get("location_id")
-        assert state.get("location_name"), state.get("location_id")
+    # Every agent stands in a real place the world names, so the observer shows real homes at
+    # init, not the "某地" fallback.
+    places = world.world_config.get_places()
+    for state in snapshot.state.agents.values():
+        assert places[state["location_id"]].name, state.get("location_id")
 
 
 @pytest.mark.asyncio
@@ -542,10 +546,10 @@ async def test_runtime_decision_prompt_does_not_leak_narrative_pitch(container, 
     providers[LLMScene.AGENT_DECISION_MAIN] = decision_spy_main
     container.llm_router = LLMRouter(providers)
 
-    from engine.application import NarrativeApplication
+    from interaction.application import NarrativeApplication
 
     app = NarrativeApplication(container, test_config)
-    world = await app.build_world("leak-test", template="changan_iso")
+    world = await confirmed_world(app, "leak-test", template="changan_iso")
     await app.run_world(world.world_id, steps=1)
 
     for msgs in decision_spy_main.call_history:
@@ -667,64 +671,17 @@ def test_a_world_without_a_year_fails_the_build_rather_than_being_dated_by_defau
         _analyze(_theme_payload(world_time_config=time_config))
 
 
-def test_two_seeds_that_would_share_an_id_are_reduced_to_one(caplog) -> None:
-    """When two seeds map to the same entity_id only one can stay, and it must be reported.
+def test_loose_opening_time_is_repaired_at_the_llm_boundary() -> None:
+    """WorldSetup.validate is strict about the opening time, so the analysis must hand it clean
+    values: a stringly-typed or out-of-range answer is repaired here, never a failed build."""
+    analysis = _analyze(_theme_payload(world_time_config={
+        "era_name": None, "start_year": 2023, "start_month": "9", "start_day": 31, "start_hour": 20.0,
+    }))
 
-    register_entity assigns unconditionally, so the later one silently replaces the earlier: the
-    world is missing a catalyst item while the log says both were "built". On the content axis it's
-    worse: two letters' contents become one.
-
-    The criterion is the derived entity_id, not the name: "Letter" and "letter" differ in name
-    but map to the same slug, and dedup by name misses exactly this case.
-    """
-    from world.builders.theme_analyzer import _distinct_entity_seeds
-    from world.models import WorldEntitySeed
-
-    def _seed(name: str) -> WorldEntitySeed:
-        return WorldEntitySeed(name=name, entity_type="item")
-
-    with caplog.at_level("WARNING", logger="world.builders.theme_analyzer"):
-        kept = _distinct_entity_seeds([
-            _seed("密信"), _seed("玉佩"), _seed("密信"),   # literal duplicate names
-            _seed("Letter"), _seed("letter"),              # different names, same slug
-        ])
-
-    assert [x.name for x in kept] == ["密信", "玉佩", "Letter"]
-    dropped = [r for r in caplog.records if r.message == "entity_seed_duplicate_id"]
-    assert [r.seed_name for r in dropped] == ["密信", "letter"]
-
-
-def test_the_analysis_itself_comes_back_deduped() -> None:
-    """Dedup must live on the parse path: a correct deduplicator nobody calls is the same bug in
-    another form.
-
-    Closing it on the analysis side (not the initializer) keeps what the world builds and what the
-    analysis says it has identical.
-    """
-    seeds = [
-        {"name": "密信", "entity_type": "item", "location_name": ""},
-        {"name": "密信", "entity_type": "item", "location_name": ""},
-        {"name": "玉佩", "entity_type": "item", "location_name": ""},
-    ]
-    analysis = _analyze(_theme_payload(world_entity_seeds=seeds))
-
-    assert [e.name for e in analysis.world_entity_seeds] == ["密信", "玉佩"]
-
-
-def test_a_seed_knows_its_own_id() -> None:
-    """The id derives from the name with a single owner: the initializer and the deduplicator must
-    read the same one.
-
-    Each building its own slugify makes two sources of truth; once they drift, dedup judges by one
-    and placement builds by the other.
-    """
-    from world.models import WorldEntitySeed
-
-    assert WorldEntitySeed(name="Letter", entity_type="item").entity_id == "seed_letter"
-    assert (
-        WorldEntitySeed(name="letter", entity_type="item").entity_id
-        == WorldEntitySeed(name="Letter", entity_type="item").entity_id
-    )
+    time_config = analysis.world_time_config
+    assert time_config["era_name"] == ""
+    assert (time_config["start_month"], time_config["start_day"], time_config["start_hour"]) == (9, 30, 20)
+    assert all(type(time_config[key]) is int for key in ("start_month", "start_day", "start_hour"))
 
 
 def test_a_missing_social_graph_or_prehistory_stays_empty_instead_of_being_invented(caplog) -> None:
@@ -749,6 +706,16 @@ def test_a_missing_social_graph_or_prehistory_stays_empty_instead_of_being_inven
         r for r in caplog.records if r.message == "theme_analysis_fields_missing"
     )
     assert set(missing.fields) == {"initial_relations", "historical_events"}
+
+
+def test_the_relation_schema_carries_the_writer_s_direction_check() -> None:
+    """ThemeAnalyzer writes labels, so its schema carries the self-check that the shared legend,
+    which also reaches reader prompts, leaves out."""
+    from world.builders.theme_analyzer import ThemeAnalyzer
+
+    router = LLMRouter({scene: MockLLMProvider(fixed_response="{}") for scene in LLMScene})
+    system, _user = ThemeAnalyzer(router)._build_prompt("any theme", {})
+    assert "写完按「B 是 A 的<角色>」读一遍，读不通就是写反了" in system
 
 
 def test_the_analyzer_is_not_shown_the_map_s_own_name() -> None:
@@ -805,13 +772,9 @@ def test_step_duration_is_authored_in_hours_and_stored_in_seconds(
     assert "hours_per_step" not in analysis.world_time_config  # one source of truth
 
 
-def test_historical_events_convert_hours_with_the_authored_step_duration() -> None:
-    """Pre-history "hours ago" converts to steps using the step length just decided; both ends are
-    narrative durations, the conversion is code-layer work.
-
-    24 hours ago at 6 hours per step → 4 steps ago. Don't use an externally injected
-    seconds_per_step: that would be a second source alongside the world's own step length.
-    """
+def test_historical_events_keep_the_authored_hours() -> None:
+    """Backstory time stays a narrative duration: the step length may still be revised before the
+    world runs, so the conversion to steps waits for the initializer."""
     analysis = _analyze(_theme_payload(
         world_time_config={"start_year": 1, "hours_per_step": 6},
         historical_events=[{
@@ -822,7 +785,7 @@ def test_historical_events_convert_hours_with_the_authored_step_duration() -> No
         }],
     ))
 
-    assert [e.step_offset for e in analysis.historical_events] == [-4]
+    assert [e.hours_before_start for e in analysis.historical_events] == [24]
 
 
 def test_world_entity_seeds_schema_excludes_narrative_meaning_hint() -> None:
@@ -839,36 +802,18 @@ def test_world_entity_seeds_schema_excludes_narrative_meaning_hint() -> None:
 
 
 @pytest.mark.asyncio
-async def test_world_initializer_persists_each_agent_state_exactly_once(container) -> None:
+async def test_world_initializer_commits_every_agent_state_at_step_zero(container) -> None:
     analysis = _analysis()
     definitions = await AgentGenerator(container.llm_router).generate(analysis)
 
-    agent_store = container.agent_store
-    original_save = agent_store.save_agent_state
-    save_call_count: dict[str, int] = {}
+    world = await _materialize(container, analysis, definitions, "world-commit-step-zero")
 
-    async def counting_save(world_id: str, agent_id: str, state) -> None:
-        save_call_count[agent_id] = save_call_count.get(agent_id, 0) + 1
-        return await original_save(world_id, agent_id, state)
-
-    agent_store.save_agent_state = counting_save  # type: ignore[method-assign]
-    try:
-        await WorldInitializer(container).initialize(
-            theme=analysis.theme_input,
-            analysis=analysis,
-            agent_definitions=definitions,
-            world_id="world-persist-once",
-            world_config=TiledWorldConfig(template="changan_iso"),
-        )
-    finally:
-        agent_store.save_agent_state = original_save  # type: ignore[method-assign]
-
-    assert save_call_count, "save_agent_state was never called"
-    for agent_id, count in save_call_count.items():
-        assert count == 1, (
-            f"agent {agent_id!r} state persisted {count} times during build; "
-            "expected exactly 1 (Phase F removed the duplicate persist call)"
-        )
+    step_zero = await container.snapshot.load(world.world_id, 0)
+    assert step_zero is not None
+    assert set(step_zero.state.agents) == set(world.agents)
+    for agent_id, record in step_zero.state.agents.items():
+        state = agent_state_from_record(record)
+        assert (state.world_id, state.agent_id, state.step) == (world.world_id, agent_id, 0)
 
 
 # ---- TemplateSelector: which land a story belongs on -------------------------
@@ -972,7 +917,7 @@ async def test_a_build_with_no_map_fails_instead_of_falling_back(container) -> N
     from world.builder import WorldBuilder
 
     with pytest.raises(ValueError, match="No world templates"):
-        await WorldBuilder(container).build(theme="任意主题", world_configs=[])
+        await WorldBuilder(container).build(theme="任意主题", world_id="w", world_configs=[])
 
 
 def test_a_cast_below_the_floor_fails_the_build_rather_than_being_padded() -> None:
@@ -1033,29 +978,46 @@ def test_an_unsatisfiable_cast_range_raises_before_any_llm_call() -> None:
     assert provider.calls == []
 
 
-def test_one_body_per_appellation_and_none_wearing_a_key_figure_s_name():
-    """One label refers to one group: drop it if it collides with a key_figure, and keep only one of
-    its own duplicates."""
-    seeds = [
-        NpcSeed(name="李世民", gender="男", age=27, description="", location_name=""),
-        NpcSeed(name="脚夫", gender="男", age=30, description="跑得快", location_name=""),
-        NpcSeed(name="脚夫", gender="男", age=41, description="认得路", location_name=""),
-    ]
-    kept = _distinct_npc_seeds(seeds, {"李世民", "李建成"})
-    assert [seed.name for seed in kept] == ["脚夫"]
-    assert kept[0].description == "跑得快"  # first of a repeated appellation wins
-
-
 def test_a_key_figure_named_twice_becomes_one_agent():
     """Two agents with the same name can't be told apart downstream: keep only the first."""
     figures = [
         ThemeFigure("李建成", role="太子", importance="main", brief="先写的"),
         ThemeFigure("李世民", role="秦王", importance="main", brief=""),
-        ThemeFigure("李建成", role="太子", importance="main", brief="重写的"),
+        ThemeFigure(" 李建成 ", role="太子", importance="main", brief="重写的"),
     ]
-    kept = _distinct_figures(figures)
+    kept, _, _ = _distinct_names(figures, [], [])
     assert [f.name for f in kept] == ["李建成", "李世民"]
     assert kept[0].brief == "先写的"
+
+
+def test_one_name_names_one_referent_across_the_cast_npcs_and_things():
+    """The cast keeps its names before NPCs, NPCs before things; within a kind the first stands.
+    Case and padding don't make a second name."""
+    figures = [ThemeFigure("李世民", role="秦王", importance="main")]
+    npcs = [NpcSeed(name="李世民"), NpcSeed(name="脚夫"), NpcSeed(name="脚夫", description="又一个")]
+    things = [
+        WorldEntitySeed(name="脚夫", entity_type="item"),
+        WorldEntitySeed(name="Letter", entity_type="item"),
+        WorldEntitySeed(name="letter", entity_type="item"),
+    ]
+    kept_figures, kept_npcs, kept_things = _distinct_names(figures, npcs, things)
+    assert [f.name for f in kept_figures] == ["李世民"]
+    assert [(n.name, n.description) for n in kept_npcs] == [("脚夫", "")]
+    assert [t.name for t in kept_things] == ["Letter"]
+
+
+def test_the_analysis_itself_comes_back_with_distinct_names() -> None:
+    """The dedup lives on the parse path: what the analysis says the world has is what it builds."""
+    analysis = _analyze(_theme_payload(
+        npcs=[{"name": "A", "location_name": ""}, {"name": "门房", "location_name": ""}],
+        world_entity_seeds=[
+            {"name": "门房", "entity_type": "item", "location_name": ""},
+            {"name": "密信", "entity_type": "item", "location_name": ""},
+            {"name": "密信", "entity_type": "item", "location_name": ""},
+        ],
+    ))
+    assert [n.name for n in analysis.npc_seeds] == ["门房"]
+    assert [e.name for e in analysis.world_entity_seeds] == ["密信"]
 
 
 def test_the_mindless_tier_is_named_by_appellation_not_by_person():
@@ -1117,31 +1079,31 @@ def test_entity_seed_content_is_parsed_and_absent_content_stays_empty() -> None:
     assert [s.content for s in analysis.world_entity_seeds] == ["敢有擅入者斩", ""]
 
 
+def test_an_entity_seed_of_unknown_type_is_dropped_alone(caplog: pytest.LogCaptureFixture) -> None:
+    analysis = _analyze(_theme_payload(world_entity_seeds=[
+        {"name": "石碑", "entity_type": "landmark", "location_name": "x"},
+        {"name": "长枪", "entity_type": "weapon", "location_name": "x"},
+        {"name": "佩刀", "location_name": "x"},
+    ]))
+    assert [(s.name, s.entity_type) for s in analysis.world_entity_seeds] == [("石碑", "landmark"), ("佩刀", "item")]
+    assert any(r.message == "entity_seed_type_unknown" for r in caplog.records)
+
+
+def test_an_npc_seed_without_a_description_is_marked_undescribed(caplog: pytest.LogCaptureFixture) -> None:
+    from world.builders.theme_analyzer import NPC_NO_DESCRIPTION
+
+    analysis = _analyze(_theme_payload(npcs=[
+        {"name": "脚夫", "gender": "男", "age": 30, "location_name": "x"},
+        {"name": "更夫", "gender": "男", "age": 50, "description": "打更", "location_name": "x"},
+    ]))
+    assert [s.description for s in analysis.npc_seeds] == [NPC_NO_DESCRIPTION, "打更"]
+    assert any(r.message == "npc_seed_description_missing" for r in caplog.records)
+
+
 # --- Build-time write failures must propagate (Rule 2/6) -------------------------------------
 #
-# Relations and pre-history are written once by the LLM for this world and never come again: initial
-# relation labels are never rewritten (rule 3), and pre-history has no second write. So these two
-# rank with the initial state write; logging an error and letting build report ready would have the
-# user confirm a world permanently missing content.
-
-
-@pytest.mark.asyncio
-async def test_build_raises_when_a_relation_write_fails(mock_build_container, test_config) -> None:
-    store = mock_build_container.agent_store
-    original = store.save_relation
-    seen = {"n": 0}
-
-    async def flaky_save_relation(relation):  # type: ignore[no-untyped-def]
-        seen["n"] += 1
-        if seen["n"] == 2:
-            raise OSError("disk full")
-        await original(relation)
-
-    store.save_relation = flaky_save_relation  # type: ignore[method-assign]
-
-    app = NarrativeApplication(mock_build_container, test_config)
-    with pytest.raises(OSError):
-        await app.build_world("宫廷权谋", template="changan_iso")
+# Pre-history is written once for this world and never comes again, so logging an error and letting
+# build report ready would have the user confirm a world permanently missing content.
 
 
 @pytest.mark.asyncio
@@ -1165,7 +1127,7 @@ async def test_build_raises_when_a_historical_memory_write_fails(
     # seed path raises based on "did it persist".
     app = NarrativeApplication(mock_build_container, test_config)
     with pytest.raises(RuntimeError, match="could not be persisted"):
-        await app.build_world("宫廷权谋", template="changan_iso")
+        await confirmed_world(app, "宫廷权谋", template="changan_iso")
 
 
 def test_repeated_traits_and_values_are_kept_once_in_order() -> None:
@@ -1222,3 +1184,18 @@ async def test_a_figure_given_twice_does_not_cover_one_left_out() -> None:
 def test_gender_is_normalized_to_the_two_canonical_values(raw, expected) -> None:
     """Consumers compare against 「男」/「女」 exactly; an unreadable label is unknown, not guessed."""
     assert _normalize_gender(raw) == expected
+
+
+def test_the_build_resolves_where_npcs_and_things_stand_once() -> None:
+    """Names and aliases become location ids at build, and text no place answers to falls back to
+    the first location: after the build nothing resolves location text again."""
+    world_config = TiledWorldConfig(template="changan_iso")
+    analysis = _analysis()
+    analysis.npc_seeds = [NpcSeed(name="脚夫", location="东宫"), NpcSeed(name="更夫", location="不存在的地方")]
+    analysis.world_entity_seeds = [WorldEntitySeed(name="碑", entity_type="landmark", location="大雁塔")]
+
+    _canonicalize_seed_locations(analysis, world_config)
+
+    first = sorted(world_config.get_places())[0]
+    assert [n.location for n in analysis.npc_seeds] == ["donggong", first]
+    assert [e.location for e in analysis.world_entity_seeds] == ["daci_en_temple"]

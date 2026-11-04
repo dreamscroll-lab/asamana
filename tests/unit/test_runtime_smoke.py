@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from agent.state_codec import agent_state_from_record
 from agent.agent import Agent, AgentStepPlan
 from agent.decision import ActionType, AgentAction, DecisionEngine, DecisionStatus
 from core.interfaces.action import ActionResult, ActionTarget, Observed, Ref
@@ -19,7 +20,7 @@ from engine.broadcast import BroadcastChannel
 from engine.clock import GlobalClock, WorldTimeConfig
 from engine.directory import LiveWorldDirectory
 from engine.environment import SALIENT_AMBIENT_STRENGTH, IN_TRANSIT, EnvironmentSystem
-from engine.event import EventSettings
+from engine.narrative_editor import NarrativeEditorSettings
 from engine.executors import build_default_registry
 from engine.executors.base import ActionExecutionState, ActionExecutor
 from engine.execution_processor import ExecutionProcessor
@@ -31,6 +32,8 @@ from providers.trace.in_memory import InMemoryTraceSink
 from core.interfaces.place import Place
 from worlds.tiled import TiledWorldConfig
 from tests.unit.bus_tap import tap
+from tests.unit.step_view import beats
+from tests.unit.world_setups import make_npc
 
 
 def _build_agent(container, *, world_id: str, agent_id: str, name: str, is_main_character: bool) -> Agent:
@@ -59,9 +62,8 @@ def _build_agent(container, *, world_id: str, agent_id: str, name: str, is_main_
             world_id=world_id,
             agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
-        relation_system=RelationSystem(container.agent_store, world_id=world_id, agent_id=agent_id),
-        agent_store=container.agent_store,
+        need_engine=NeedEngine(container.llm_router),
+        relation_system=RelationSystem(world_id=world_id, agent_id=agent_id),
         is_main_character=is_main_character,
     )
 
@@ -82,28 +84,24 @@ def _set_work_decision(container) -> None:
 
 class _SignalPressure:
     """Test double for WorldPressureEvaluator: emits one external goal for any agent the
-    world put a signal in front of this step (an inbox message, a perceivable broadcast, an
-    ambient trace where it stands).
+    world put a signal in front of this step (``PerceivedSignals``: an inbox message, a perceivable
+    broadcast, an ambient trace where it stands, an act landing on it).
 
     In production the cadence gate wakes an agent on ``pending_external_goals``, which the LLM
     pressure evaluator fills from those signals. With a mock LLM nothing fills it and signaled
     agents never wake; this reproduces the path deterministically through the real channel.
     """
 
-    async def evaluate(self, *, agents, agent_inboxes, broadcasts, world_time_label, agent_spatials):
+    async def evaluate(self, *, agents, signals, world_time_label, step, agent_spatials, doings=None):
         from agent.motivation import ExternalDriveType, ExternalGoal
         from core.interfaces.action import Urgency
-        from engine.broadcast import BroadcastChannel
 
         out: dict[str, list] = {}
-        for agent_id, agent in agents.items():
-            spatial = agent_spatials.get(agent_id) if agent_spatials else None
-            location = agent.personality.state.current_location or (spatial.location_id if spatial else "")
-            ambient = list(spatial.ambient_events) if spatial is not None else []
-            if agent_inboxes.get(agent_id) or BroadcastChannel.for_location(broadcasts, location) or ambient:
+        for agent_id in agents:
+            if signals.get(agent_id):
                 out[agent_id] = [ExternalGoal(
                     text="respond to what just happened",
-                    source_id="world",
+                    source_ids=(),
                     urgency=Urgency.NORMAL,
                     drive_type=ExternalDriveType.EVENT,
                 )]
@@ -129,16 +127,15 @@ def _build_runtime(
         registry = build_default_registry(
             container.llm_router, LiveWorldDirectory.from_agents({}, environment),
         )
-    event_settings = EventSettings(check_interval=2, max_events_per_window=1)
+    narrative_editor_settings = NarrativeEditorSettings(check_interval=2, max_injections_per_window=1)
     runtime = NarrativeRuntime(
         world_id=world_id,
         clock=GlobalClock(WorldTimeConfig(start_hour=6, seconds_per_step=60)),
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=event_settings,
+        narrative_editor_settings=narrative_editor_settings,
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=LiveWorldDirectory.from_agents({}, environment),
@@ -160,7 +157,6 @@ async def test_a_step_hands_agents_a_named_body_not_a_bare_id(container) -> None
     just prints "#1 某人", losing the blurb the judge rules the errand on. Only a full step shows it.
     """
     from core.interfaces.llm import LLMScene
-    from world.models import NpcSeed
 
     world_id = "world-npc"
     runtime, environment, _ = _build_runtime(container, world_id=world_id)
@@ -171,7 +167,7 @@ async def test_a_step_hands_agents_a_named_body_not_a_bare_id(container) -> None
     where = environment.space.all_place_ids()[0]
     environment.place_agent(agent_id="agent-1", location_id=where)
     assert environment.spawn_npc(
-        NpcSeed(name="Wang Er", gender="male", age=34, description="fast on foot; cannot read"),
+        make_npc("Wang Er", gender="male", age=34, description="fast on foot; cannot read"),
         location_id=where,
     )
     npc_id = environment.all_npcs()[0].npc_id
@@ -215,24 +211,21 @@ async def test_narrative_runtime_runs_one_step_and_persists_contract_state(conta
     result = await runtime.run_step(agents)
     event = published()[0]
     snapshot = await container.snapshot.load(world_id, 1)
-    main_state = await container.agent_store.load_agent_state(world_id, "agent-1")
-    bg_state = await container.agent_store.load_agent_state(world_id, "agent-2")
-    action_records = event["actions"]
+    main_state = agent_state_from_record(snapshot.state.agents["agent-1"])
+    bg_state = agent_state_from_record(snapshot.state.agents["agent-2"])
+    action_events = snapshot.events_of("action")
 
     assert result.step == 1
     assert result.world_time.startswith("step=0001 ")
     assert result.delivered_message_count == 0
     assert result.scheduled_agent_ids == ["agent-1", "agent-2"]
     assert len(result.action_summaries) == 2
-    assert result.event_summaries == []
+    assert result.injection_summaries == []
     assert snapshot is not None
-    # The snapshot carries the clock on BOTH channels, in the one shape the live payload uses
-    # — not the label in `world_time` plus a second copy in `metadata`, which would make the
-    # same name mean the machine clock live and prose in replay.
+    # The snapshot carries the clock on both channels under one key.
     assert snapshot.clock.startswith("step=0001 ")  # code layer: the map parses its hour
     assert snapshot.time_label and "step=" not in snapshot.time_label  # narrative layer
-    assert "time_label" not in snapshot.metadata and "world_time" not in snapshot.metadata
-    assert snapshot.metadata["schedule"] == {
+    assert snapshot.engine.schedule == {
         "step": 1,
         "batches": [
             {
@@ -247,35 +240,25 @@ async def test_narrative_runtime_runs_one_step_and_persists_contract_state(conta
             },
         ],
     }
-    assert snapshot.metadata["messages"] == {
-        "step": 1,
-        "delivered": [],
-        "inboxes": {"agent-1": [], "agent-2": []},
-        "undelivered": [],
+    assert snapshot.events_of("message") == []
+    assert {aid: a["location_id"] for aid, a in snapshot.state.agents.items()} == {
+        "agent-1": "palace", "agent-2": "palace",
     }
-    assert snapshot.metadata["environment"]["body_locations"] == {"agent-1": "palace", "agent-2": "palace"}
-    assert snapshot.agent_summaries == action_records
-    assert snapshot.event_summaries == []
+    assert snapshot.events_of("injection") == []
     assert main_state is not None
     assert main_state.dominant_need == "social"
     assert main_state.current_location == "palace"
     assert bg_state is not None
     assert bg_state.current_location == "palace"
-    assert [record["agent_id"] for record in action_records] == ["agent-1", "agent-2"]
+    assert [e["initiator_id"] for e in action_events] == ["agent-1", "agent-2"]
     # Born-zero (the helper pins estimated_steps=1): the same-step sweep folds each completion
     # into its begin record, which is re-stamped "settled" — one beat, opened and closed.
-    assert [record["phase"] for record in action_records] == ["settled", "settled"]
-    assert action_records[0]["visible_agent_ids"] == ["agent-2"]
-    assert action_records[1]["visible_agent_ids"] == ["agent-1"]
-    assert action_records[0]["message_ids"] == []
-    assert action_records[1]["message_ids"] == []
+    assert [e["phase"] for e in action_events] == ["settled", "settled"]
     assert event["type"] == "step"
     assert event["world_id"] == world_id
     assert event["step"] == 1
-    assert event["schedule"] == snapshot.metadata["schedule"]
-    assert event["messages"] == snapshot.metadata["messages"]
-    assert event["events"] == []
-    assert event["environment"] == snapshot.metadata["environment"]
+    # Live observers get the very record that was saved.
+    assert event["snapshot"] == snapshot
 
 
 @pytest.mark.asyncio
@@ -295,9 +278,8 @@ async def test_runtime_fallback_move_updates_environment_and_agent_location(cont
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=EventSettings(check_interval=2, max_events_per_window=0),
+        narrative_editor_settings=NarrativeEditorSettings(check_interval=2, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=directory,
@@ -355,10 +337,10 @@ async def test_runtime_fallback_move_updates_environment_and_agent_location(cont
     assert environment.get_body_location(agent.agent_id) == "chongren_fang"
     assert agent.personality.state.current_location == "chongren_fang"
     assert snapshot is not None
-    assert snapshot.agent_states[agent.agent_id]["current_location"] == "chongren_fang"
+    assert snapshot.state.agents[agent.agent_id]["location_id"] == "chongren_fang"
     # The trip opened and closed in one step, yet the origin still saw him leave: the completion
     # supersedes the opening only where the completion itself is seen.
-    (record,) = snapshot.actions_this_step
+    (record,) = snapshot.events_of("action")
     assert record["phase"] == "settled"
     observed_at = {o["location_id"]: o["text"] for o in record["observations"]}
     assert "离开此地" in observed_at["donggong"]
@@ -423,9 +405,8 @@ async def test_runtime_interrupts_executor_owned_action(container) -> None:
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=EventSettings(check_interval=2, max_events_per_window=0),
+        narrative_editor_settings=NarrativeEditorSettings(check_interval=2, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=directory,
@@ -460,7 +441,7 @@ async def test_runtime_interrupts_executor_owned_action(container) -> None:
     # Drive the real production apply path directly (the decide step is covered by
     # test_agent_interrupt / test_runtime_interrupt_eval). Asserts the executor
     # interrupt tears down the ongoing action and writes back a failed result.
-    await runtime._interrupts._apply_interrupt(
+    await runtime._interrupts.apply_interrupt(
         agent_id=agent.agent_id,
         # Only the thought crosses into the executor — the triggering signals stopped at the
         # decision (see ActionExecutor.interrupt).
@@ -514,12 +495,12 @@ async def test_multi_step_action_defers_redecision_to_settle_step(container) -> 
 
     s1 = await runtime.run_step([agent])
     assert "agent-1" in s1.scheduled_agent_ids
-    st1 = await container.agent_store.load_agent_state(world_id, "agent-1")
+    st1 = agent_state_from_record((await container.snapshot.load(world_id, 1)).state.agents["agent-1"])
     assert st1.action_status == ActionStatus.IN_PROGRESS.value  # multi-step started
 
     s2 = await runtime.run_step([agent])
     assert "agent-1" not in s2.scheduled_agent_ids  # final tick completes, but no re-decision
-    st2 = await container.agent_store.load_agent_state(world_id, "agent-1")
+    st2 = agent_state_from_record((await container.snapshot.load(world_id, 2)).state.agents["agent-1"])
     assert st2.action_status != ActionStatus.IN_PROGRESS.value  # action actually completed
 
     s3 = await runtime.run_step([agent])
@@ -533,7 +514,7 @@ async def test_interrupted_agent_re_decides_in_the_same_step(container) -> None:
     Natural completion means his own action used this step; an interrupt means something more
     urgent stopped him. Freezing him a step would cancel that urgency and lose this step's
     pending_external_goals and perception appraisal, neither recoverable. It's safe: the interrupt's
-    feedback has already landed synchronously in _apply_interrupt.
+    feedback has already landed synchronously in apply_interrupt.
     """
     from core.interfaces.llm import LLMScene
 
@@ -642,34 +623,27 @@ async def test_narrative_runtime_delivers_targeted_messages_without_llm_event_ap
     )
 
     first_step = await runtime.run_step(agents)
-    assert first_step.event_summaries == []
+    assert first_step.injection_summaries == []
     assert published()[0]["step"] == 1
 
     second_step = await runtime.run_step(agents)
     second_event = published()[0]
     second_snapshot = await container.snapshot.load(world_id, 2)
-    main_state = await container.agent_store.load_agent_state(world_id, "agent-1")
-    bg_state = await container.agent_store.load_agent_state(world_id, "agent-2")
+    main_state = agent_state_from_record(second_snapshot.state.agents["agent-1"])
+    bg_state = agent_state_from_record(second_snapshot.state.agents["agent-2"])
 
     assert second_step.step == 2
     assert second_step.delivered_message_count == 1
     assert second_step.scheduled_agent_ids == ["agent-1", "agent-2"]
     assert len(second_step.action_summaries) == 2
-    assert second_step.event_summaries == []
+    assert second_step.injection_summaries == []
     assert second_snapshot is not None
-    messages_metadata = second_snapshot.metadata["messages"]
-    actions_by_id = {record["agent_id"]: record for record in second_event["actions"]}
-    assert second_snapshot.event_summaries == []
-    assert messages_metadata["step"] == 2
-    assert len(messages_metadata["delivered"]) == 1
-    assert messages_metadata["undelivered"] == []
-    assert "direct-1" in messages_metadata["inboxes"]["agent-1"]
-    assert "direct-1" not in messages_metadata["inboxes"]["agent-2"]
-    assert len(messages_metadata["inboxes"]["agent-1"]) == 1
-    assert len(messages_metadata["inboxes"]["agent-2"]) == 0
+    assert second_snapshot.events_of("injection") == []
+    (delivered_dict,) = second_snapshot.events_of("message")
+    # Reached agent-1 only, where he stood when it reached him.
+    assert delivered_dict["receivers"] == [{"agent_id": "agent-1", "location_id": "palace"}]
     # Lossless transport: delivered content is byte-identical to what was sent
-    delivered_dict = messages_metadata["delivered"][0]
-    assert delivered_dict["id"] == "direct-1"
+    assert delivered_dict["message_id"] == "direct-1"
     assert delivered_dict["content"] == "Meet me at dawn"
     assert delivered_dict["recipients"] == ["agent-1"]
     assert any(
@@ -684,17 +658,12 @@ async def test_narrative_runtime_delivers_targeted_messages_without_llm_event_ap
     assert main_state.current_location == "palace"
     assert bg_state is not None
     assert bg_state.current_location == "palace"
-    assert "direct-1" in actions_by_id["agent-1"]["message_ids"]
-    assert "direct-1" not in actions_by_id["agent-2"]["message_ids"]
-    assert len(actions_by_id["agent-1"]["message_ids"]) == 1
-    assert actions_by_id["agent-2"]["message_ids"] == []
     assert second_event["type"] == "step"
     assert second_event["world_id"] == world_id
     assert second_event["step"] == 2
-    assert second_event["messages"] == messages_metadata
-    assert second_event["events"] == second_snapshot.event_summaries
-    assert second_event["schedule"]["batches"][0]["agent_ids"] == ["agent-1"]
-    assert second_event["schedule"]["batches"][1]["agent_ids"] == ["agent-2"]
+    assert second_event["snapshot"] == second_snapshot
+    assert second_snapshot.engine.schedule["batches"][0]["agent_ids"] == ["agent-1"]
+    assert second_snapshot.engine.schedule["batches"][1]["agent_ids"] == ["agent-2"]
 
 
 # ---------------------------------------------------------------------------
@@ -725,9 +694,8 @@ async def test_talk_to_active_agent_is_rejected_without_double_booking(container
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=EventSettings(check_interval=99, max_events_per_window=0),
+        narrative_editor_settings=NarrativeEditorSettings(check_interval=99, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=directory,
@@ -779,7 +747,7 @@ async def test_talk_to_active_agent_is_rejected_without_double_booking(container
     actions = await container.snapshot.load_latest(world_id)
     assert actions is not None
     agent_a_record = next(
-        (r for r in actions.actions_this_step if r["agent_id"] == "agent-a"), None
+        (r for r in beats(actions) if r["agent_id"] == "agent-a"), None
     )
     assert agent_a_record is not None
     assert agent_a_record["succeeded"] is False
@@ -806,9 +774,8 @@ def _arb_runtime(container, world_id, agents_dict, environment, *, trace_sink=No
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=ms,
-        event_settings=EventSettings(check_interval=99, max_events_per_window=0),
+        narrative_editor_settings=NarrativeEditorSettings(check_interval=99, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=bc,
         directory=directory,
@@ -852,7 +819,7 @@ def _pressure(urgency: Urgency, text: str = "即刻动身面圣，否则以抗�
     """An external pressure item: preemption only reads urgency; other fields just need valid
     values."""
     return ExternalGoal(
-        text=text, source_id="agent-sovereign", urgency=urgency,
+        text=text, source_ids=("agent-sovereign",), urgency=urgency,
         drive_type=ExternalDriveType.AUTHORITY, related_need=NeedType.SAFETY,
     )
 
@@ -932,7 +899,7 @@ async def test_conscripted_agent_defers_decided_intent_into_foiled_buffer(contai
     # defer, never in the executed record).
     b_rec = next(r for r in records if r["agent_id"] == "agent-b")
     assert b_rec["action_type"] == ActionType.TALK
-    assert "独自前往城防查探敌情" not in b_rec["summary"]
+    assert "独自前往城防查探敌情" not in b_rec["action_description"]
     assert "李世民" in b_rec["outcome"]
 
 
@@ -971,7 +938,7 @@ async def test_conscription_leaves_its_two_marks_on_the_step_traces(container) -
     marked = {c.agent_id: (c.adopted, c.reject_reason) for c in sink.llm_calls
               if c.stage == Stage.MOTIVATION.value}
     assert marked["agent-b"] == (False, "conscripted")
-    assert marked["agent-a"] == (None, ""), "发起方没被征召,他那次不该被判未采纳"
+    assert marked["agent-a"] == (True, ""), "发起方没被征召,他那次不该被判未采纳"
     # The decision isn't void (it survives to the next step via defer_decided_intent), but what the
     # world did with it must be stamped. One verdict field answers it, so audit doesn't have to
     # infer the same thing from side signals (is there an execution_id, an action call, is talk_role
@@ -1023,7 +990,7 @@ async def test_carry_skips_adjudication_failed_null_step(container) -> None:
     from engine.clock import WorldTime
     world_id = "world-carry-null"
     env = EnvironmentSystem(TiledWorldConfig(template="changan_iso"))
-    env.place_agent(agent_id="agent-a", location_id="palace")  # actor
+    env.place_agent(agent_id="agent-a", location_id="palace")  # doer
     env.place_agent(agent_id="agent-b", location_id="palace")  # bystander
     a = _build_agent(container, world_id=world_id, agent_id="agent-a", name="李世民", is_main_character=True)
     b = _build_agent(container, world_id=world_id, agent_id="agent-b", name="李建成", is_main_character=False)
@@ -1078,7 +1045,8 @@ async def test_the_one_acted_upon_does_not_read_a_third_person_copy_of_it(contai
     victim = [ev.content for ev in env.spatial_for(agent_id="agent-b").ambient_events]
     [seen] = [ev for ev in env.spatial_for(agent_id="agent-c").ambient_events if "制服" in ev.content]
     assert not any("制服" in c for c in victim)
-    assert "agent-b" in seen.agent_actor_ids
+    assert "agent-b" in seen.doer_agent_ids
+    assert seen.acted_upon_ids == ("agent-b",)      # who it landed on, not who did it
 
 
 def test_acted_upon_lists_landed_effects_but_not_listeners(container) -> None:
@@ -1153,15 +1121,15 @@ async def test_collaborative_action_ambient_carried_once_for_bystander(container
 
 @pytest.mark.asyncio
 async def test_covert_undetected_carries_nothing_detected_exposes_publicly(container) -> None:
-    """COVERT has no private perception channel: the actor knows what it did from factual_memory,
+    """COVERT has no private perception channel: the doer knows what it did from factual_memory,
     not perception.
     - not exposed → bystanders get no ambient (observation is empty, nothing carried);
-    - exposed → bystanders get a public "[秘密行动暴露] …" ambient; the exposed actor filters itself out
-      via actor_ids."""
+    - exposed → bystanders get a public "[暗中探查暴露] …" ambient; the exposed doer filters itself out
+      via doer_ids."""
     from engine.clock import WorldTime
     world_id = "world-covert-carry"
     env = EnvironmentSystem(TiledWorldConfig(template="changan_iso"))
-    env.place_agent(agent_id="agent-a", location_id="vault")   # actor
+    env.place_agent(agent_id="agent-a", location_id="vault")   # doer
     env.place_agent(agent_id="agent-b", location_id="vault")   # bystander
     a = _build_agent(container, world_id=world_id, agent_id="agent-a", name="李世民", is_main_character=True)
     b = _build_agent(container, world_id=world_id, agent_id="agent-b", name="李建成", is_main_character=False)
@@ -1190,7 +1158,7 @@ async def test_covert_undetected_carries_nothing_detected_exposes_publicly(conta
              "outcome": "在vault，李世民窃取了密信，被撞见。",
              "observations": [{
                  "location_id": "vault",
-                 "text": "[秘密行动暴露] 在vault，李世民窃取了密信，被撞见。",
+                 "text": "[暗中探查暴露] 在vault，李世民窃取了密信，被撞见。",
                  "strength": SALIENT_AMBIENT_STRENGTH,
              }],
              "adjudication_failed": False, "detected": True},
@@ -1198,14 +1166,14 @@ async def test_covert_undetected_carries_nothing_detected_exposes_publicly(conta
         tick_records=[],
     )
     env.begin_step(step=3, world_time=WorldTime(step=3, elapsed_seconds=10800))
-    assert any("[秘密行动暴露]" in ev.content for ev in env.spatial_for(agent_id="agent-b").ambient_events)
+    assert any("[暗中探查暴露]" in ev.content for ev in env.spatial_for(agent_id="agent-b").ambient_events)
     assert env.spatial_for(agent_id="agent-a").ambient_events == [], "暴露者不应读到自己的暴露 ambient"
 
 
 @pytest.mark.asyncio
-async def test_arbitrate_acting_actor_cannot_be_enrolled(container) -> None:
+async def test_arbitrate_acting_doer_cannot_be_enrolled(container) -> None:
     """A body already used this step (B doing its own WORK) can't also be conscripted into A's TALK
-    (no double consumption). A vetoed TALK isn't an immediate failure result but an actor-only
+    (no double consumption). A vetoed TALK isn't an immediate failure result but a doer-only
     failed execution (born at zero): the failure is stored in extra["completed_result"] and lands as
     feedback in the same-step sweep. The rejection text uses names, not ids, and no steps."""
     world_id = "world-arb-double"
@@ -1230,11 +1198,11 @@ async def test_arbitrate_acting_actor_cannot_be_enrolled(container) -> None:
     assert b_aa.is_passive_join is False
     assert b_aa.action_result.action.action_type == ActionType.WORK
     assert b_aa.action_result.action.action_description == "批阅文书"
-    # A's TALK is vetoed → an actor-only failed execution (B isn't a participant, wasn't
+    # A's TALK is vetoed → a doer-only failed execution (B isn't a participant, wasn't
     # conscripted).
     a_exec = rt._executor_registry.get_active_for_agent("agent-a")  # noqa: SLF001
     assert a_exec is not None
-    assert a_exec.participant_ids == ["agent-a"]              # actor-only, B not conscripted
+    assert a_exec.participant_ids == ["agent-a"]              # doer-only, B not conscripted
     rejection = a_exec.extra["completed_result"]
     assert rejection.succeeded is False
     assert "李建成" in rejection.outcome                       # name, not id
@@ -1276,6 +1244,7 @@ async def test_enrolling_action_is_arbitrated_before_independent_ones_in_same_ph
     arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     # B is conscripted as a passive participant instead of doing its own COVERT
     assert arb["agent-b"].is_passive_join is True
+    assert arb["agent-b"].invited_by == "agent-a"           # TALK invites: B accepted A's invitation
     a_exec = rt._executor_registry.get_active_for_agent("agent-a")  # noqa: SLF001
     assert a_exec is not None and a_exec.action_type == ActionType.TALK
     assert "agent-b" in a_exec.participant_ids
@@ -1314,7 +1283,7 @@ async def test_enrolling_reorder_never_crosses_phases(container) -> None:
     assert arb["agent-a"].action_result.action.action_description == "批阅文书"
     b_exec = rt._executor_registry.get_active_for_agent("agent-b")  # noqa: SLF001
     assert b_exec is not None and b_exec.participant_ids == ["agent-b"]
-    assert "李世民正埋头忙着手上的事" in b_exec.extra["completed_result"].outcome
+    assert "李世民正忙着手上的事" in b_exec.extra["completed_result"].outcome
 
 
 @pytest.mark.asyncio
@@ -1371,8 +1340,8 @@ async def test_deeper_starvation_goes_first_between_two_starved_agents(container
     agents = {"agent-a": a, "agent-b": b, "agent-c": c}
     rt = _arb_runtime(container, world_id, agents, env)
 
-    def talk_to_c(actor):
-        return AgentAction(agent_id=actor, step=1, action_type=ActionType.TALK,
+    def talk_to_c(doer):
+        return AgentAction(agent_id=doer, step=1, action_type=ActionType.TALK,
                            action_description="上前攀谈",
                            target=ActionTarget(acts_on=[Ref.agent("agent-c")], claims=[Ref.agent("agent-c")]), estimated_steps=2)
 
@@ -1456,7 +1425,7 @@ def test_busy_reason_says_what_the_body_is_visibly_doing(container) -> None:
         return rt._arbiter._busy_reason(pid, {}, {})  # noqa: SLF001
 
     assert reason("agent-a") == "李世民正与常何交谈"
-    assert reason("agent-c") == "尉迟恭正在歇息"
+    assert reason("agent-c") == "尉迟恭正在休息"
     assert reason("agent-d") == f"侯君集{_BUSY_UNSEEN}"
 
 
@@ -1543,16 +1512,17 @@ async def test_a_carry_still_takes_a_body_that_means_to_leave(container) -> None
     arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
 
     assert arb["agent-a"].is_passive_join is True
+    assert arb["agent-a"].invited_by == ""                  # carried off, not invited
     assert rt._executor_registry.get_active_for_agent("agent-b").participant_ids == ["agent-b", "agent-a"]  # noqa: SLF001
 
 
-def test_every_action_type_has_a_visible_busy_phrase_or_is_deliberately_unseen() -> None:
-    """A new action type without its phrase would silently fall back to the vague one; only COVERT
-    belongs there."""
-    from engine.arbiter import _BUSY_WITH
+def test_every_activity_shows_on_sight_except_idle_and_covert() -> None:
+    """A new activity without its phrase would silently read as doing nothing; only IDLE and
+    COVERT belong there."""
+    from agent.personality import AgentActivityStatus, visible_doing
 
-    uncovered = set(ActionType) - set(_BUSY_WITH) - {ActionType.TALK}
-    assert uncovered == {ActionType.COVERT}
+    unseen = {s for s in AgentActivityStatus if not visible_doing(s)}
+    assert unseen == {AgentActivityStatus.IDLE, AgentActivityStatus.COVERT}
 
 
 @pytest.mark.asyncio
@@ -1587,12 +1557,12 @@ async def test_critical_pressure_keeps_own_body_against_conscription(container) 
     assert arb["agent-b"].is_passive_join is False
     b_exec = rt._executor_registry.get_active_for_agent("agent-b")  # noqa: SLF001
     assert b_exec is not None and b_exec.action_type == ActionType.WORK
-    # The conscripter fails: an actor-only failed execution, with the reason naming B (name, not id)
+    # The conscripter fails: a doer-only failed execution, with the reason naming B (name, not id)
     a_exec = rt._executor_registry.get_active_for_agent("agent-a")  # noqa: SLF001
     assert a_exec is not None and a_exec.participant_ids == ["agent-a"]
     rejection = a_exec.extra["completed_result"]
     assert rejection.succeeded is False
-    assert "李建成正埋头忙着手上的事" in rejection.outcome
+    assert "李建成正忙着手上的事" in rejection.outcome
 
 
 @pytest.mark.asyncio
@@ -1680,7 +1650,7 @@ async def test_step_start_in_progress_body_cannot_be_conscripted(container) -> N
     arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, {"agent-a"})  # noqa: SLF001
     # A wasn't conscripted: no arbitration entry (no passive join, no second feedback run).
     assert "agent-a" not in arb
-    # B's TALK is vetoed as an actor-only failure: A is busy and not a participant.
+    # B's TALK is vetoed as a doer-only failure: A is busy and not a participant.
     b_aa = arb["agent-b"]
     assert b_aa.is_passive_join is False
     b_exec = rt._executor_registry.get_active_for_agent("agent-b")  # noqa: SLF001
@@ -1692,7 +1662,7 @@ async def test_step_start_in_progress_body_cannot_be_conscripted(container) -> N
 
 
 @pytest.mark.asyncio
-async def test_denied_actor_stays_invitable_same_step(container) -> None:
+async def test_denied_doer_stays_invitable_same_step(container) -> None:
     """A body whose own action was rejected did nothing; later arrivals can still engage it, and it
     mustn't count as "busy".
 
@@ -1749,8 +1719,8 @@ async def test_a_body_one_initiator_could_not_take_is_taken_by_the_next(containe
     }
     rt = _arb_runtime(container, world_id, agents, env)
 
-    def talk(actor, other, desc):
-        return AgentAction(agent_id=actor, step=1, action_type=ActionType.TALK, action_description=desc,
+    def talk(doer, other, desc):
+        return AgentAction(agent_id=doer, step=1, action_type=ActionType.TALK, action_description=desc,
                            target=ActionTarget(acts_on=[Ref.agent(other)], claims=[Ref.agent(other)]),
                            estimated_steps=1)
 
@@ -1799,7 +1769,7 @@ async def test_a_body_one_initiator_could_not_take_is_taken_by_the_next(containe
 
 
 @pytest.mark.asyncio
-async def test_denied_actor_settles_when_nobody_invites_him(container) -> None:
+async def test_denied_doer_settles_when_nobody_invites_him(container) -> None:
     """If nobody engages him, the rejected action still settles as a failure on this step; deferring
     the record isn't skipping it."""
     world_id = "world-arb-denied-settle"
@@ -2066,7 +2036,7 @@ async def test_duration2_talk_still_spans_two_steps(container) -> None:
 async def test_duration1_record_shows_completion_not_opening_marker(container) -> None:
     """Double-display guard: for a duration-1 action, begin produces an opening marker record and
     the sweep produces the completion; they must merge in place into one record with the completed
-    outcome. The snapshot's actions_this_step has exactly one entry for the agent, with the
+    outcome. The snapshot's action events have exactly one beat for the agent, with the
     completed outcome (the background WORK template "做完了"), not the opening marker ("着手"), and no
     duplicate."""
     world_id = "world-d1-display"
@@ -2085,7 +2055,7 @@ async def test_duration1_record_shows_completion_not_opening_marker(container) -
 
     await rt.run_step([a])
     snapshot = await container.snapshot.load(world_id, 1)
-    recs = [r for r in snapshot.actions_this_step if r["agent_id"] == "agent-a"]
+    recs = [r for r in beats(snapshot) if r["agent_id"] == "agent-a"]
     # Exactly one record (not "opening marker + completion").
     assert len(recs) == 1
     rec = recs[0]
@@ -2121,11 +2091,11 @@ async def test_decision_monologue_reaches_record_and_survives_d1_fold(container)
 
     await rt.run_step([a])
     snapshot = await container.snapshot.load(world_id, 1)
-    rec = next(r for r in snapshot.actions_this_step if r["agent_id"] == "agent-a")
+    rec = next(r for r in beats(snapshot) if r["agent_id"] == "agent-a")
     assert rec["inner_monologue"] == "父皇明日要问，我今夜须把奏疏理清。"
     # Background agents use the same LLM decision path (CLAUDE.md §5), so the monologue isn't split
     # by tier; agent-a here is is_main_character=False.
-    assert rec["is_main_character"] is False
+    assert snapshot.state.agents["agent-a"]["is_main_character"] is False
 
 
 @pytest.mark.asyncio
@@ -2157,7 +2127,7 @@ async def test_conscripted_participant_record_carries_no_monologue(container) ->
 
     await rt.run_step([a, b])
     snapshot = await container.snapshot.load(world_id, 1)
-    by_agent = {r["agent_id"]: r for r in snapshot.actions_this_step}
+    by_agent = {r["agent_id"]: r for r in beats(snapshot)}
     assert by_agent["agent-a"]["inner_monologue"] == "他若肯让步，今夜便无须动刀。"
     assert by_agent["agent-b"]["inner_monologue"] == ""
 
@@ -2165,9 +2135,9 @@ async def test_conscripted_participant_record_carries_no_monologue(container) ->
 @pytest.mark.asyncio
 async def test_finalize_skips_self_targeted_effect(container) -> None:
     """Self-target guard: a self-targeted action's target_effect must not be applied back to
-    the actor. Otherwise the actor gets its own feedback via finalize_ongoing_action and a second
+    the doer. Otherwise the doer gets its own feedback via finalize_ongoing_action and a second
     write as a target via apply_target_effect (vitality deducted twice / two memories).
-    _finalize_execution must skip effects where effect.agent_id == the actor."""
+    _finalize_execution must skip effects where effect.agent_id == the doer."""
     from core.interfaces.action import ActionResult, ActionTarget, TargetAgentEffect
     world_id = "world-selfguard"
     env = EnvironmentSystem(TiledWorldConfig(template="changan_iso"))
@@ -2183,7 +2153,7 @@ async def test_finalize_skips_self_targeted_effect(container) -> None:
     rt._executor_registry.add_active(exec_state)  # noqa: SLF001
     stub = AgentAction(agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL,
                        action_description="自伤", target=ActionTarget(acts_on=[Ref.agent("agent-a")]))
-    # The result points a target_effect at the actor itself (vitality_damage=0.5); the actor's own
+    # The result points a target_effect at the doer itself (vitality_damage=0.5); the doer's own
     # result.vitality_damage=0.0.
     self_effect = TargetAgentEffect(agent_id="agent-a", factual_memory="x", vitality_damage=0.5)
     result = ActionResult(action=stub, expected_outcome="", outcome="在宫中，李世民自伤。",
@@ -2347,6 +2317,10 @@ async def test_a_declared_product_reaches_the_world(container) -> None:
     await rt._processor.land_result_feedback(result, agents, step=1)  # noqa: SLF001
 
     assert "换防部署令" in [e.name for e in env.all_live_entities()]
+    from engine.executors.base import action_semantics
+
+    created_ids = action_semantics(action, result)["created_entity_ids"]
+    assert created_ids == [e.entity_id for e in env.all_live_entities() if e.name == "换防部署令"]
     assert [e.name for e in env.spatial_for(agent_id="agent-a").visible_entities] == ["换防部署令"]
     # Private property stays private through the feedback layer.
     assert env.spatial_for(agent_id="agent-b").visible_entities == []
@@ -2364,6 +2338,8 @@ async def test_executor_complete_failure_releases_participants(container) -> Non
     rt = _arb_runtime(container, world_id, agents, env)
 
     class _FailingExecutor:
+        mutates_world_during_complete = False
+
         async def complete(self, *args, **kwargs):
             raise RuntimeError("adjudication infra down")
 
@@ -2729,10 +2705,10 @@ async def test_executor_tick_failure_skips_narrative_only(container) -> None:
 
 
 @pytest.mark.asyncio
-async def test_multistep_move_emits_transit_contract_in_step_event(container) -> None:
+async def test_multistep_move_emits_transit_contract_in_the_snapshot(container) -> None:
     """A weight-2 move exposes {from,to,elapsed,total} on the mover's step state.
 
-    The render-side transit contract: while an agent is IN_TRANSIT, the step event carries its
+    The render-side transit contract: while an agent is IN_TRANSIT, the step record carries its
     origin/destination + progress so a 2D renderer animates the walk ALONG the edge (see
     engine.runtime + AgentStateSummary). The edge is built here, a two-hour walk under the default
     registry's one-hour step, independent of any map's geometry.
@@ -2776,7 +2752,7 @@ async def test_multistep_move_emits_transit_contract_in_step_event(container) ->
     # Step 1: the move starts; the agent is still traveling → transit present.
     await runtime.run_step([agent])
     event = published()[0]
-    transit = event["agent_states"]["agent-1"].get("transit")
+    transit = event["snapshot"].state.agents["agent-1"].get("transit")
     assert transit is not None, "in-transit agent must carry the transit contract"
     assert transit["from_location_id"] == "near_gate"
     assert transit["to_location_id"] == "far_gate"
@@ -2787,19 +2763,83 @@ async def test_multistep_move_emits_transit_contract_in_step_event(container) ->
     # Step 2: arrival — no more transit, landed at the destination.
     agent.plan_step = plan_move  # ignored while the executor owns the agent
     await runtime.run_step([agent])
-    event2 = published()[0]
-    assert event2["agent_states"]["agent-1"].get("transit") is None
-    assert event2["agent_states"]["agent-1"]["arrival"]["path"] == ["near_gate", "far_gate"]
+    snapshot2 = published()[0]["snapshot"]
+    assert snapshot2.state.agents["agent-1"].get("transit") is None
+    # The route walked rides the beat the MOVE ended on.
+    (closing,) = [e for e in snapshot2.events_of("action") if e["action_type"] == "move"]
+    assert closing["route"]["path"] == ["near_gate", "far_gate"]
     assert environment.get_body_location("agent-1") == "far_gate"
     # The step after landing carries no trip at all.
     await runtime.run_step([agent])
-    assert "arrival" not in published()[0]["agent_states"]["agent-1"]
+    assert all(e.get("route") is None for e in published()[0]["snapshot"].events_of("action"))
 
 
 @pytest.mark.asyncio
-async def test_a_trip_crossed_within_one_step_carries_its_route_as_an_arrival(container) -> None:
+async def test_the_one_carried_rides_the_same_transit_as_the_one_carrying_him(container) -> None:
+    """A carried body travels with his carrier, so on the way he carries the same trip: without
+    it the renderer could not walk him beside the one taking him."""
+    published = tap(container.event_bus)
+    world_id = "world-carry-transit"
+    runtime, environment, _ = _build_runtime(container, world_id=world_id)
+    for entity_id, name, links in (
+        ("near_gate", "近门", {"far_gate": 2 * 3600}),
+        ("far_gate", "远门", {"near_gate": 2 * 3600}),
+    ):
+        environment.space.register_place(Place(
+            place_id=entity_id, name=name, description=name, connections=dict(links),
+        ))
+    environment.place_agent(agent_id="agent-1", location_id="near_gate")
+    environment.place_agent(agent_id="agent-2", location_id="near_gate")
+    carrier = _build_agent(
+        container, world_id=world_id, agent_id="agent-1", name="Li Shimin", is_main_character=True,
+    )
+    carried = _build_agent(
+        container, world_id=world_id, agent_id="agent-2", name="Yuchi Gong", is_main_character=False,
+    )
+
+    async def plan_carry(*, step, spatial, inbox, broadcasts, **_kw):
+        need = NeedEvaluation(
+            dominant_need=NeedType.SAFETY,
+            scores={NeedType.SAFETY: 1.0},
+            active_needs=[NeedState(NeedType.SAFETY, "safety", 1.0)],
+            short_term_goals=["reach the gate"],
+            long_term_goals=[],
+            prompt_context="safety",
+        )
+        return AgentStepPlan(
+            agent_id=carrier.agent_id, step=step, spatial=spatial,
+            inbox=list(inbox), broadcasts=list(broadcasts), need_evaluation=need,
+            action=AgentAction(
+                agent_id=carrier.agent_id, step=step, action_type=ActionType.MOVE,
+                action_description="带着尉迟恭前往远门",
+                target=ActionTarget(acts_on=[Ref.place("far_gate")], claims=[Ref.agent("agent-2")]),
+            ),
+        )
+
+    async def plan_nothing(*, step, spatial, inbox, broadcasts, **_kw):
+        return AgentStepPlan(
+            agent_id=carried.agent_id, step=step, spatial=spatial,
+            inbox=list(inbox), broadcasts=list(broadcasts), need_evaluation=None, action=None,
+        )
+
+    carrier.plan_step = plan_carry
+    carried.plan_step = plan_nothing
+
+    await runtime.run_step([carrier, carried])
+    agents = published()[0]["snapshot"].state.agents
+    assert environment.get_body_location("agent-2") == environment.get_body_location("agent-1")
+    assert agents["agent-1"].get("transit") is not None
+    assert agents["agent-2"].get("transit") == agents["agent-1"]["transit"]
+    # The carrier's act is told in his own words; the one carried knows who takes him, not
+    # where: he learns that on arrival.
+    assert runtime._executor_registry.get_active_for_agent("agent-1").purpose == "带着尉迟恭前往远门"
+    assert carried.personality.state.current_action == "被某人强行带着走"  # the test directory knows no names
+
+
+@pytest.mark.asyncio
+async def test_a_trip_crossed_within_one_step_carries_its_route_on_its_move(container) -> None:
     """Three short hops under the default one-hour step land in one step, with no transit ever;
-    the arrival gives the renderer the waypoints the engine reported him passing."""
+    the MOVE's route gives the renderer the waypoints the engine reported him passing."""
     published = tap(container.event_bus)
     world_id = "world-arrival"
     runtime, environment, _ = _build_runtime(container, world_id=world_id)
@@ -2834,9 +2874,10 @@ async def test_a_trip_crossed_within_one_step_carries_its_route_as_an_arrival(co
 
     agent.plan_step = plan_move
     await runtime.run_step([agent])
-    state = published()[0]["agent_states"]["agent-1"]
-    assert state.get("transit") is None
-    assert state["arrival"]["path"] == ["gate", "yard", "hall"]
+    snapshot = published()[0]["snapshot"]
+    assert snapshot.state.agents["agent-1"].get("transit") is None
+    (move,) = snapshot.events_of("action")
+    assert move["route"]["path"] == ["gate", "yard", "hall"]
     assert environment.get_body_location("agent-1") == "hall"
 
 
@@ -2907,7 +2948,7 @@ async def test_independent_adjudication_runs_concurrently(container) -> None:
 
     async def _noop_land(result, agents_dict, step):  # isolate adjudication
         pass
-    rt._processor.land_result_feedback = _noop_land  # type: ignore[method-assign]  # noqa: SLF001
+    rt._processor.land_agent_feedback = _noop_land  # type: ignore[method-assign]  # noqa: SLF001
 
     exec_states = [_add_work_exec(rt, f"agent-{i}") for i in range(n)]
     results = await rt._processor.finalize_executions_batch(exec_states, agents, step=1)  # noqa: SLF001
@@ -2949,7 +2990,7 @@ async def test_adjudication_exception_isolated(container) -> None:
 
     async def _noop_land(result, agents_dict, step):
         pass
-    rt._processor.land_result_feedback = _noop_land  # type: ignore[method-assign]  # noqa: SLF001
+    rt._processor.land_agent_feedback = _noop_land  # type: ignore[method-assign]  # noqa: SLF001
 
     exec_states = []
     for aid in ids:
@@ -2982,8 +3023,8 @@ async def test_same_target_apply_serialized_no_lost_update(container) -> None:
     rt = _arb_runtime(container, world_id, agents, env)
     from core.interfaces.action import ActionResult, ActionTarget, TargetAgentEffect
 
-    def _hit(actor: str) -> ActionResult:
-        stub = AgentAction(agent_id=actor, step=1, action_type=ActionType.PHYSICAL, action_description="击打",
+    def _hit(doer: str) -> ActionResult:
+        stub = AgentAction(agent_id=doer, step=1, action_type=ActionType.PHYSICAL, action_description="击打",
                            target=ActionTarget(acts_on=[Ref.agent("victim")]))
         return ActionResult(action=stub, expected_outcome="", outcome="击中", observations=[Observed(location_id="palace", text="击中")], succeeded=True,
                             target_effects=[TargetAgentEffect(agent_id="victim", factual_memory="被击", vitality_damage=0.3)])
@@ -3006,10 +3047,10 @@ async def test_same_target_apply_serialized_no_lost_update(container) -> None:
     b.finalize_ongoing_action = _noop_finalize  # type: ignore[method-assign]
 
     es_list = []
-    for actor in ("agent-a", "agent-b"):
+    for doer in ("agent-a", "agent-b"):
         es = ActionExecutionState.create(
             target=ActionTarget(),
-            action_type=ActionType.PHYSICAL, initiator_id=actor, participant_ids=[actor],
+            action_type=ActionType.PHYSICAL, initiator_id=doer, participant_ids=[doer],
             purpose="击打", started_step=1, estimated_steps=1, opening_outcome="")
         rt._executor_registry.add_active(es)  # noqa: SLF001
         es_list.append(es)
@@ -3076,7 +3117,7 @@ async def _land_pair(container, world_id: str, *, hit_partner: bool) -> tuple[in
             pass
         landed.append(result.action.agent_id)
         inflight -= 1
-    rt._processor.land_result_feedback = _barrier_land  # type: ignore[method-assign]  # noqa: SLF001
+    rt._processor.land_agent_feedback = _barrier_land  # type: ignore[method-assign]  # noqa: SLF001
 
     es = ActionExecutionState.create(
         target=ActionTarget(),
@@ -3106,10 +3147,10 @@ async def test_same_execution_shared_key_results_land_in_order(container) -> Non
     assert landed == ["agent-b", "agent-a"]
 
 
-def _landing_result(actor: str, *hit: str) -> ActionResult:
+def _landing_result(doer: str, *hit: str) -> ActionResult:
     from core.interfaces.action import TargetAgentEffect
 
-    stub = AgentAction(agent_id=actor, step=1, action_type=ActionType.PHYSICAL, action_description="x")
+    stub = AgentAction(agent_id=doer, step=1, action_type=ActionType.PHYSICAL, action_description="x")
     return ActionResult(action=stub, expected_outcome="", outcome="x", succeeded=True,
                         target_effects=[TargetAgentEffect(agent_id=t, factual_memory="x") for t in hit])
 
@@ -3171,11 +3212,10 @@ async def test_adjudication_failure_never_reaches_the_observer(container, caplog
     event = published()[0]
     snapshot = await container.snapshot.load(world_id, 1)
 
-    assert event["actions"] == [], "空步不得出现在叙事流/地图的 actions 通道"
+    assert event["snapshot"].events_of("action") == [], "空步不得出现在叙事流/地图的行动事件里"
     assert result.action_summaries == [], "空步不得出现在观察者摘要"
-    # The snapshot shares the source (actions_this_step comes from the same filtered list) → replay
-    # and event briefings are clean too.
-    assert snapshot is not None and snapshot.actions_this_step == []
+    # Live and replay read the one saved record → replay and event briefings are clean too.
+    assert snapshot is not None and event["snapshot"] == snapshot
     # The step did run (agent scheduled, decision succeeded); it just left no observable event in
     # the world.
     assert result.scheduled_agent_ids == ["agent-1"]
@@ -3214,7 +3254,7 @@ async def test_executor_crash_on_a_born_zero_act_never_reaches_the_observer(
         result = await runtime.run_step(agents)
     event = published()[0]
 
-    assert event["actions"] == []
+    assert event["snapshot"].events_of("action") == []
     assert result.action_summaries == []
     withheld = [r for r in caplog.records if r.message == "null_steps_withheld_from_observer"]
     assert len(withheld) == 1 and withheld[0].agent_ids == ["agent-1"]
@@ -3291,7 +3331,7 @@ async def test_elsewhere_observations_are_routed_by_the_single_owner(container) 
     assert "离开此地" in stayed, "记录落在 IN_TRANSIT 不该连累它声明的别处痕迹"
     assert "赶路" not in stayed, "IN_TRANSIT 那份本身仍不可 carry（没人在「途中」）"
 
-    # Self-exclusion: the actor shouldn't read third-person text about itself as an external signal.
+    # Self-exclusion: the doer shouldn't read third-person text about itself as an external signal.
     assert "离开此地" not in "".join(
         e.content for e in environment.spatial_for(agent_id="mover").ambient_events
     )
@@ -3319,9 +3359,8 @@ async def test_setting_out_moves_the_anchor_with_the_body(container) -> None:
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=EventSettings(check_interval=2, max_events_per_window=0),
+        narrative_editor_settings=NarrativeEditorSettings(check_interval=2, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=directory,
@@ -3428,7 +3467,7 @@ async def test_happenings_track_drops_an_exposed_covert_it_adds_nothing(containe
              "outcome": "在hall，己在帘后窥探，被人瞧见了。",
              # Covert actions never declare this layer (see CovertExecutor), exposed or not.
              "observations": [{"location_id": "hall",
-                               "text": "[秘密行动暴露] 在hall，己在帘后窥探，被人瞧见了。"}],
+                               "text": "[暗中探查暴露] 在hall，己在帘后窥探，被人瞧见了。"}],
              "adjudication_failed": False, "detected": True},
         ],
         tick_records=[],
@@ -3611,10 +3650,10 @@ async def test_a_finished_run_leaves_the_event_being_generated_alone(container) 
     """
     runtime, _env, _msgs = _build_runtime(container, world_id="w-event-lifecycle")
     inflight = asyncio.create_task(asyncio.sleep(0.05))
-    runtime._event_system._inflight = inflight
+    runtime._narrative_editor._inflight = inflight
 
     await runtime.run([], total_steps=1)
-    assert runtime._event_system._inflight is inflight, "run 收尾丢掉了在途生成"
+    assert runtime._narrative_editor._inflight is inflight, "run 收尾丢掉了在途生成"
 
     await runtime.aclose()
-    assert runtime._event_system._inflight is None, "停机时才清在途生成"
+    assert runtime._narrative_editor._inflight is None, "停机时才清在途生成"

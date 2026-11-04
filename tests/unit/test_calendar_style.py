@@ -130,7 +130,7 @@ def test_the_runtime_clock_keeps_the_world_s_whole_clock_config(container, test_
     import dataclasses
     from types import SimpleNamespace
 
-    from engine.application import NarrativeApplication
+    from interaction.application import NarrativeApplication
     from engine.directory import LiveWorldDirectory
     from engine.environment import EnvironmentSystem
 
@@ -153,7 +153,8 @@ def test_the_runtime_clock_keeps_the_world_s_whole_clock_config(container, test_
         clock_config=built,
         environment=environment,
         directory=LiveWorldDirectory.from_agents({}, environment),
-        analysis=SimpleNamespace(core_tension="", narrative_theme=""),
+        setup=SimpleNamespace(lore=SimpleNamespace(core_tension="", narrative_theme="")),
+        active_executions=[],
     )
     runtime = NarrativeApplication(container, test_config)._build_runtime(world)
 

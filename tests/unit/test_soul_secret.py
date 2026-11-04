@@ -96,16 +96,16 @@ async def test_inner_monologue_carries_the_secret(container) -> None:
 def test_event_brief_and_director_line_carry_the_secret() -> None:
     """The author layer plants clues and resolves "the traitor", so it must know the truth."""
     from engine.director import DirectorChannel
-    from engine.event import EventSystem
+    from engine.narrative_editor import NarrativeEditor
 
-    brief = EventSystem._brief_characters(  # noqa: SLF001
-        SimpleNamespace(directory=_directory()), {"a1": _agent()},
+    brief = NarrativeEditor._brief_characters(  # noqa: SLF001
+        SimpleNamespace(directory=_directory()), {"a1": _agent()}, {},
     )
     assert SECRET in brief
 
     channel = DirectorChannel.__new__(DirectorChannel)
     channel._directory = _directory()  # noqa: SLF001
-    assert SECRET in channel._agent_line(1, _agent())  # noqa: SLF001
+    assert SECRET in channel._agent_line(1, _agent(), "")  # noqa: SLF001
 
 
 # --- views of the person from outside ----------------------------------------
@@ -139,19 +139,21 @@ async def test_world_pressure_shows_the_target_s_secret_but_not_a_co_present_per
     knows."""
     from engine.world_pressure import WorldPressureEvaluator
 
-    class _Store:
-        async def load_relation(self, *_a):  # noqa: ANN002
+    class _Relations:
+        async def load_existing(self, *_a):  # noqa: ANN002
             return None
 
     target = _agent("我欠了外人一大笔钱", agent_id="t")
     target.world_id = "w"
-    target.agent_store = _Store()
+    target.relation_system = _Relations()
     other = _agent(agent_id="o")
     ev = WorldPressureEvaluator(llm_router=None)
-    co_located = await ev._co_located(target, {"t": target, "o": other}, None, ["o"])  # noqa: SLF001
+    co_located = await ev._co_located(target, None, [other.agent_id])  # noqa: SLF001
+    signals = ev._signals(  # noqa: SLF001
+        inbox=[], broadcasts=[], ambient=[], sender_relations={}, visible_ids=set(),
+    )
     prompt = ev._build_agent_prompt(  # noqa: SLF001
-        target, inbox=[], broadcasts=[], ambient=[], co_located=co_located,
-        sender_relations={}, situation_header="",
+        target, signals=signals, co_located=co_located, situation_header="",
     )
     assert "我欠了外人一大笔钱" in prompt
     assert co_located  # the co-present person is rendered

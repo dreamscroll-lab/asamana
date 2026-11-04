@@ -16,7 +16,7 @@ from core.interfaces.perception import Broadcast, SpatialPerception
 from core.interfaces.urgency import Urgency
 from core.logging import get_logger
 from core.interfaces.severity import severity_to_urgency
-from core.prompts import URGENCY_TO_STRENGTH
+from core.prompts import AMBIENT_TAG, MESSAGE_TAG, URGENCY_TO_STRENGTH, broadcast_tag
 
 if TYPE_CHECKING:
     from agent.memory import MemorySystem
@@ -52,13 +52,6 @@ class PerceptionTuning:
     # Memory's bucket edges, so the HIGH bar can't diverge from importance_level.
     importance_high_cutoff: float = IMPORTANCE_HIGH_CUTOFF
     importance_medium_cutoff: float = IMPORTANCE_MEDIUM_CUTOFF
-
-
-_PREFIX: dict[str, str] = {
-    "ambient": "[环境感知]",
-    "broadcast": "[世界广播]",
-    "message": "[消息]",
-}
 
 
 @dataclass
@@ -135,10 +128,10 @@ class PerceptionMemoryLayer:
             items.append(PerceptionItem(
                 content=ev.content,
                 source="ambient",
-                # agent_actor_ids, not actor_ids: cognition-less bodies must not enter the identity
+                # doer_agent_ids, not doer_ids: cognition-less bodies must not enter the identity
                 # index or they become relation-evolution candidates. Left empty, observed memories
                 # have no owner and identity-scoped retrieval misses them.
-                related_agents=list(ev.agent_actor_ids),
+                related_agents=list(ev.doer_agent_ids),
                 signal_strength=ev.strength if ev.strength is not None else self._tuning.ambient_default_strength,
                 metadata={"source": "ambient", "explicit_strength": ev.strength is not None},
             ))
@@ -152,28 +145,25 @@ class PerceptionMemoryLayer:
                 source="broadcast",
                 related_agents=[],
                 signal_strength=URGENCY_TO_STRENGTH[severity_to_urgency(bc.severity)],
-                metadata={"source": "broadcast", "severity": bc.severity.value},
+                metadata={"source": "broadcast", "severity": bc.severity.value,
+                          "location_scope": bc.location_scope},
             ))
 
-        # related_agents holds only senders with cognition; _write_item reads it to decide whether
-        # a message is a relation signal. Excluded: narrator pseudo-senders (narration is not a
-        # person) and cognition-less bodies (people, but they don't form relations; they still
-        # keep sender_name so memory knows who said it).
+        # Only identified senders with cognition can be relation signals.
         for msg in inbox:
             if not msg.content:
                 continue
             urgency = getattr(msg, "urgency", Urgency.NORMAL)
-            is_narrative = bool(msg.metadata.get("narrative"))
             related = [msg.sender_id] if (
-                msg.sender_id and not is_narrative and msg.sender_is_agent
+                msg.sender_id and not msg.anonymous and msg.sender_is_agent
             ) else []
             # Weave the sender into the text, or a recalled memory loses who said it.
-            sender_name = (getattr(msg, "sender_name", "") or "某人") if not is_narrative else ""
+            sender_name = msg.sender_name
             # Memory keeps only the speech (metadata "spoken"), not attached material: an
             # errand-runner's scene report is long, stale next step, and would crowd out recall.
             # With no mark, the whole text is speech (a letter).
             body = str(msg.metadata.get("spoken") or "") or msg.content
-            content = f"来自{sender_name}的消息：{body}" if sender_name else body
+            content = f"来自{sender_name}的消息：{body}"
             items.append(PerceptionItem(
                 content=content,
                 source="message",
@@ -181,9 +171,9 @@ class PerceptionMemoryLayer:
                 signal_strength=URGENCY_TO_STRENGTH[urgency],
                 metadata={
                     "source": "message",
-                    "sender_id": msg.sender_id,
+                    "sender_id": None if msg.anonymous else msg.sender_id,
                     "message_id": msg.id,
-                    "narrative": is_narrative,
+                    "anonymous": msg.anonymous,
                 },
             ))
 
@@ -226,8 +216,12 @@ class PerceptionMemoryLayer:
         personality: "PersonalityLayer",
         step: int,
     ) -> None:
-        prefix = _PREFIX.get(item.source, "[感知]")
-        content = f"{prefix} {item.content}"
+        tag = {
+            "ambient": AMBIENT_TAG,
+            "message": MESSAGE_TAG,
+            "broadcast": broadcast_tag(item.metadata.get("location_scope")),
+        }[item.source]
+        content = f"[{tag}] {item.content}"
         importance = _strength_to_importance(
             item.signal_strength,
             self._tuning.importance_high_cutoff,

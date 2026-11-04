@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from core.interfaces.llm import LLMRouter, LLMScene
-from core.interfaces.trace import LLMCallTrace, to_jsonable
+from core.interfaces.trace import BeatTrace, LLMCallTrace, to_jsonable
 from core.logging import get_logger
 from providers.trace.in_memory import InMemoryTraceSink as _RecordingSink
 
@@ -105,7 +105,7 @@ class JsonlTraceSink(InMemoryTraceSink):
     """Appends records to ``{base}/{world_id}/{segment}.jsonl`` as well as keeping them in memory.
 
     ``segment`` selects the file within a world's trace directory (default ``build``).
-    Each line is ``{"kind": "llm_call" | "phase", ...}``.
+    Each line is ``{"kind": "llm_call" | "beat" | "phase", ...}``.
     """
 
     def __init__(self, base_dir: str = _DEFAULT_TRACE_DIR, *, segment: str = "build") -> None:
@@ -136,6 +136,10 @@ class JsonlTraceSink(InMemoryTraceSink):
     def record_llm_call(self, trace: LLMCallTrace) -> None:
         super().record_llm_call(trace)
         self._append(trace.world_id, {"kind": "llm_call", **dataclasses.asdict(trace)})
+
+    def record_beat(self, trace: BeatTrace) -> None:
+        super().record_beat(trace)
+        self._append(trace.world_id, {"kind": "beat", **dataclasses.asdict(trace)})
 
     def record_phase(self, trace: PhaseTrace) -> None:
         super().record_phase(trace)

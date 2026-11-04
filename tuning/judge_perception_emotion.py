@@ -48,9 +48,9 @@ def _agent_block(per_agent: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for a in per_agent:
         inp = a.get("inputs", {}) or {}
-        tier = "主角" if inp.get("is_main_character") else "背景"
+        tier = "主角" if inp.get("is_main_character") else "背景角色"
         traits = "、".join(inp.get("core_traits") or []) or "—"
-        lines.append(f"### {a.get('agent_name')}（{tier}，位于 {inp.get('location', '?')}；性格：{traits}）")
+        lines.append(f"### {a.get('agent_name')}（{tier}，位于 {inp.get('location', '?')}；性格特点：{traits}）")
         bcs = inp.get("injected_broadcasts") or []
         if bcs:
             lines.append("  可感知广播：" + "；".join(
@@ -75,7 +75,7 @@ def _agent_block(per_agent: list[dict[str, Any]]) -> str:
             lines.append("  对在场之人的关系：" + "；".join(
                 f"{r.get('name')}["
                 + ("、".join(r.get("labels") or []) or "关系未明")
-                + f",信任{r.get('trust')},好感{r.get('affection')}]"
+                + f",信任度{r.get('trust')},好感度{r.get('affection')}]"
                 for r in rels
             ))
         elif inp.get("visible_agents"):
@@ -84,13 +84,13 @@ def _agent_block(per_agent: list[dict[str, Any]]) -> str:
         if ce and float(ce.get("intensity") or 0) > 0:
             lines.append(
                 f"  · 感知前心境（既有情绪底色；省略 emotion 即表示沿用它）：{ce.get('primary')}"
-                f"（强度{ce.get('intensity')}，效价{ce.get('valence')}）"
+                f"（强度{ce.get('intensity')}，情绪正负值{ce.get('valence')}）"
             )
         emo = (a.get("outputs", {}) or {}).get("emotion")
         if emo:
             lines.append(
                 f"  → 即时情绪：{emo.get('primary')}"
-                f"（强度{emo.get('intensity')}，效价{emo.get('valence')}）"
+                f"（强度{emo.get('intensity')}，情绪正负值{emo.get('valence')}）"
                 f" 理由：「{emo.get('reason')}」"
             )
         else:
@@ -132,7 +132,8 @@ def _build_prompt(scenario_meta: dict, per_agent: list[dict], det_findings: dict
         "2. semantic（语义）——**逐角色、只依据它自己列出的可感知信号 / 性格 / 关系**判断，出现以下即扣：\n"
         "   - 情绪或 need_activation 与该角色可感知处境明显不符（方向相反，或强度严重失配）；\n"
         "   - reason 引用了该角色无从得知的信息，或凭空虚构信号中不存在的对象 / 关系 / 事件；\n"
-        "   - 把关系亲近、信任度高的人当作威胁或需防范的对象；\n"
+        "   - 缺乏该角色实际感知到的具体信号，却把关系亲近、信任度高的人当作威胁或需防范的对象；"
+        "若感知到背叛、胁迫或伤害等具体信号，据此作出相称反应不扣分；\n"
         "   - 与处境无关的 need 被高激活，或处境明显在压迫的 need 却缺失 / 极低；\n"
         "   - need_activation 不论这一刻是关于什么、都按角色的惯常底色给同一个 need 兜底高分（用长期倾向"
         "盖过了这一刻的信号；人设可以解读这一刻，但不能替代这一刻）；\n"

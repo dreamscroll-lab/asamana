@@ -7,6 +7,7 @@ import Phaser from "phaser";
 
 import { mix, toHex } from "../lib/color";
 import type { BroadcastSummary } from "../types";
+import type { Scoped } from "../lib/step";
 import { type FxHost, emanateRings } from "./effects";
 import type { MapHud } from "./hud";
 import { FONT, PLATE_R, TEXT_RES, WRAP_W, drawPlate } from "./types";
@@ -118,14 +119,14 @@ export class Announcer {
     };
   }
 
-  // A broadcast's WORDS — the map's only public announcement (`world_events` are not drawn;
+  // A broadcast's WORDS — the map's only public announcement (injections are not drawn;
   // see TiledWorldScene.draw). Location-scoped → a subtitle over the place + ground waves;
   // world-wide → playWorldBroadcast. The phenomenon is played separately, before the deeds;
   // callers skip this for a broadcast whose weather drew.
-  playBroadcast(b: Pick<BroadcastSummary, "content" | "location_scope">, from?: { name: string; ink: number }): Promise<void> {
+  playBroadcast(b: Pick<Scoped<BroadcastSummary>, "content" | "location_id">, from?: { name: string; ink: number }): Promise<void> {
     const content = String(b.content ?? "");
     if (!content) return Promise.resolve();
-    const room = this.host.map.rooms.get(String(b.location_scope ?? ""));
+    const room = this.host.map.rooms.get(String(b.location_id ?? ""));
     if (!room) return this.playWorldBroadcast(content, from);
     // -46 clears the room's own name (which reaches up to about sy - 20).
     const text = this.host.add
@@ -203,7 +204,7 @@ export class Announcer {
       .setResolution(TEXT_RES);
     // Generic channel eyebrow (not theme content), so the sentence isn't unlabeled floating text.
     const tag = this.host.add
-      .text(0, 0, from ? `◈ ${from.name}信息 ◈` : "◈ 世界广播 ◈", {
+      .text(0, 0, from ? `◈ ${from.name}的消息 ◈` : "◈ 世界广播 ◈", {
         fontFamily: FONT,
         fontSize: "12px",
         fontStyle: "bold",

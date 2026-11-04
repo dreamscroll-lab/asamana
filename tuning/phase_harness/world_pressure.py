@@ -7,8 +7,10 @@ from datetime import datetime
 from config.models import Config
 from core.container import Container
 from core.context import clear_log_context, set_log_context
+from core.interfaces.llm import LLMScene
 from core.interfaces.trace import to_jsonable
 from core.logging import get_logger
+from engine.signals import perceived_signals
 from engine.world_pressure import WorldPressureEvaluator
 
 from tuning.fixtures import load_fixture, save_fixture
@@ -56,14 +58,25 @@ async def run_world_pressure(
     inboxes = inboxes_from_scenario(scenario, world_id, run_step, active, name_by_id)
     apply_ambient_from_scenario(scenario, spatials, active, name_by_id)  # mutates spatials in place
 
+    # Built as the runtime builds them, so the dry run reads what a real step would.
+    signals = {
+        aid: perceived_signals(
+            location_id=spatials[aid].location_id,
+            inbox=inboxes.get(aid, []),
+            broadcasts=injected,
+            ambient=spatials[aid].ambient_events,
+            acted_upon=agent.personality.state.acted_upon,
+        )
+        for aid, agent in active.items()
+    }
     evaluator = WorldPressureEvaluator(llm_router=traced_container.llm_router)
     set_log_context(world_id=world_id, step=str(run_step))  # world-level, no single agent
     try:
         pressure_map = await evaluator.evaluate(
             agents=active,
-            agent_inboxes=inboxes,
-            broadcasts=injected,
+            signals=signals,
             world_time_label=world_time_label,
+            step=run_step,
             agent_spatials=spatials,
         )
     except Exception as exc:  # noqa: BLE001
@@ -75,31 +88,21 @@ async def run_world_pressure(
     bc_view = [{"content": b.content, "severity": b.severity, "location_scope": b.location_scope} for b in injected]
     goals_json = {aid: [to_jsonable(g) for g in goals] for aid, goals in pressure_map.items()}
 
-    # Per-agent view of co-located others (role + this agent's own relation) — surfaced
-    # so the judge / deterministic checks can spot ally-as-threat.
+    # Co-located others as each agent perceives them, with his own relation — surfaced so the
+    # judge / deterministic checks can spot ally-as-threat.
     co_located_by_aid: dict[str, list[dict]] = {}
-    for aid in active:
+    for aid, agent in active.items():
         sp = spatials[aid]
-        rels = []
-        for vid in sp.visible_agent_ids:
-            rel = None
-            try:
-                rel = await world.agents[aid].agent_store.load_relation(world_id, aid, vid)
-            except Exception:  # noqa: BLE001
-                rel = None
-            other = world.agents.get(vid)
-            osoul = other.personality.soul if other is not None else None
-            rels.append({
-                "name": presence_name(sp, vid),
-                "role": osoul.role if osoul is not None else "",
-                "traits": list(osoul.core_traits) if osoul is not None else [],
-                "background": (osoul.background or "")[:150] if osoul is not None else "",
-                "trust": round(rel.trust_objective, 2) if rel is not None else None,
-                "affection": round(rel.affection_objective, 2) if rel is not None else None,
-                "labels": list(rel.labels) if rel is not None else [],
-            })
-        co_located_by_aid[aid] = rels
-
+        co_located_by_aid[aid] = await evaluator._co_located(  # noqa: SLF001
+            agent, sp, list(sp.visible_agent_ids),
+        )
+    # What each call actually held (its own memories included), read back from the call rather
+    # than rebuilt: a second recall could differ from what the model saw.
+    given_by_aid = {
+        c.agent_id: list(c.extra.get("given_facts") or [])
+        for c in trace_sink.llm_calls
+        if c.scene == LLMScene.WORLD_PRESSURE.value and c.agent_id
+    }
     for aid in active:
         sp = spatials[aid]
         msg_view = [{"from": m.sender_name or m.sender_id, "content": m.content, "urgency": m.urgency.value}
@@ -121,6 +124,7 @@ async def run_world_pressure(
                     "injected_messages": msg_view,
                     "injected_ambient": amb_view,
                     "co_located": co_located_by_aid.get(aid, []),
+                    "given_facts": given_by_aid.get(aid, []),
                 },
                 outputs={"agent_name": name_by_id.get(aid, aid), "external_goals": goals_json.get(aid, [])},
                 timestamp=datetime.now().isoformat(),

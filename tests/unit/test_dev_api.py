@@ -15,10 +15,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from core.interfaces.trace import LLMCallTrace
+from core.interfaces.trace import CONSCRIPTED, SUPERSEDED, BeatTrace, LLMCallTrace
 from world import WorldCatalog
 
 from interaction.api import create_app
+from tests.unit.world_setups import setup_dict
+from tests.unit.confirmed_world import confirmed_world
 
 
 def _client(container, test_config) -> TestClient:
@@ -90,25 +92,57 @@ def test_trace_calls_filter_by_call_id_prefix(container, test_config) -> None:
     assert client.get("/api/worlds/w1/trace/calls").json()["total"]["calls"] == 2
 
 
+def test_trace_calls_list_beats_beside_calls_and_count_only_calls(container, test_config) -> None:
+    """A beat made no request: it is listed in its group, never in the call numbers. Actor only
+    keeps what exists because an actor performs a character, calls and beats alike."""
+    tagged = dataclasses.replace(_call("c-actor"), actor=True)
+    container.trace_sink.read_calls = lambda world_id, **k: [_call("c-ai"), tagged]  # type: ignore[method-assign]
+    beat = BeatTrace(world_id="w1", step=3, stage="decision", beat_kind="decision",
+                     payload={"action_type": "WORK"}, timestamp=datetime.now().isoformat(),
+                     agent_id="agent-1", actor=True)
+    container.trace_sink.read_beats = lambda world_id, **k: [beat]  # type: ignore[method-assign]
+    client = _client(container, test_config)
+
+    body = client.get("/api/worlds/w1/trace/calls", params={"group_by": "stage"}).json()
+    [group] = body["groups"]
+    assert group["calls"] == 2 and body["total"]["calls"] == 2
+    assert [b["beat_kind"] for b in group["beats"]] == ["decision"]
+
+    only = client.get("/api/worlds/w1/trace/calls", params={"actor": "true"}).json()
+    [group] = only["groups"]
+    assert [c["call_id"] for c in group["items"]] == ["c-actor"] and len(group["beats"]) == 1
+    # A call id names a call; no beat has one.
+    by_id = client.get("/api/worlds/w1/trace/calls", params={"call_id": "c-ai"}).json()
+    assert by_id["groups"][0]["beats"] == []
+
+
+def test_output_set_aside_for_what_happened_around_it_is_no_discard(container, test_config) -> None:
+    """A reading the actor didn't confirm, and a motivation voided because its character was
+    drawn into someone else's act, had nothing wrong with them: they count toward no discard
+    statistic, while output the engine threw away still does."""
+    passed_over = dataclasses.replace(_call("c-1"), adopted=False, reject_reason=SUPERSEDED)
+    voided = dataclasses.replace(_call("c-3"), adopted=False, reject_reason=CONSCRIPTED)
+    thrown_away = dataclasses.replace(_call("c-2"), adopted=False, reject_reason="unclear")
+    calls = [passed_over, voided, thrown_away]
+    container.trace_sink.read_calls = lambda world_id, **k: calls  # type: ignore[method-assign]
+    container.trace_sink.read_beats = lambda world_id, **k: []  # type: ignore[method-assign]
+    client = _client(container, test_config)
+
+    total = client.get("/api/worlds/w1/trace/calls").json()["total"]
+    assert (total["calls"], total["adoption_verdicts"], total["discarded"]) == (3, 1, 1)
+
+
 @pytest.mark.asyncio
 async def test_trace_build_names_the_figure_a_persona_call_built(container, test_config) -> None:
     """Persona-generation traces carry agent_id, which the build view uses to show names. If the
     world fails to build at this step and there's no snapshot, the name is still in the call's own
     extra."""
-    from core.interfaces.snapshot import WorldSnapshot
-    from engine.clock import WorldTime, WorldTimeConfig
-
     persona = dataclasses.replace(
         _call("p-1", step=None), stage="world_init", scene="persona_generation",
         agent_id="agent-1", extra={"agent_name": "李世民"},
     )
     container.trace_sink.read_calls = lambda world_id, **k: [persona]  # type: ignore[method-assign]
-    await container.snapshot.save("w1", 0, WorldSnapshot(
-        world_id="w1", step=0, timestamp=datetime.now(),
-        world_time=WorldTime.from_step(0, WorldTimeConfig()).clock_payload(),
-        agent_states={"agent-1": {"agent_id": "agent-1", "agent_name": "李世民"}},
-        agent_relations={}, metadata={"character_profiles": {"agent-1": {"name": "李世民"}}},
-    ))
+    await container.snapshot.save_world_setup("w1", setup_dict({"agent-1": {"name": "李世民"}}))
     client = _client(container, test_config)
 
     [item] = [c for g in client.get("/api/worlds/w1/trace/build").json()["groups"] for c in g["items"]]
@@ -161,7 +195,7 @@ def test_trace_build_filter_by_keywords(container, test_config) -> None:
 
 
 def test_trace_dimensions_carry_each_steps_world_time_as_an_object(container, test_config) -> None:
-    """World time in the step summary has the same shape as StepEvent.world_time: label +
+    """World time in the step summary has the same shape as StepView.world_time: label +
     hour/minute."""
     from core.interfaces.trace import StepTrace
 
@@ -424,7 +458,9 @@ def test_stage_scenarios_keeps_perception_knob_sets(container, test_config) -> N
 # --------------------------------------------------------------------------- #
 
 def _scenario_file(stage: str) -> Path:
-    return Path(__file__).resolve().parents[2] / "tuning" / "scenarios" / f"{stage}.json"
+    from tuning.scenario_store import scenario_path
+
+    return scenario_path(stage)
 
 
 @pytest.fixture
@@ -538,10 +574,10 @@ def test_stage_report_404_before_any_run(container, test_config) -> None:
 
 async def _built_world(container, test_config, catalog: WorldCatalog) -> str:
     """A built world with persisted state — the dev routes rehydrate it like /direct does."""
-    from engine.application import NarrativeApplication
+    from interaction.application import NarrativeApplication
 
     app = NarrativeApplication(container, test_config, catalog=catalog)
-    world = await app.build_world("宫廷权谋", template="changan_iso")
+    world = await confirmed_world(app, "宫廷权谋", template="changan_iso")
     catalog.set_confirmed(world.world_id)
     return world.world_id
 
@@ -588,7 +624,7 @@ async def test_director_prompt_hands_back_the_production_prompt_and_its_menus(
     # Index → name: the LLM only outputs indices, and this table is the only way to check who it
     # pointed at.
     assert body["menus"]["cast"] and "1" in body["menus"]["cast"]
-    # Same shape as StepEvent.world_time: label is for people, hour/minute is the machine clock.
+    # Same shape as StepView.world_time: label is for people, hour/minute is the machine clock.
     assert set(body["world_time"]) == {"label", "hour", "minute"}
     assert body["world_time"]["label"] and isinstance(body["world_time"]["hour"], int)
 
@@ -611,7 +647,7 @@ async def test_director_console_never_reaches_the_paths_that_change_the_world(
     console went through them, a world that should only be observed would advance a step and get a
     memory injected that can never be removed.
     """
-    from engine.application import NarrativeApplication
+    from interaction.application import NarrativeApplication
 
     def _boom(*args, **kwargs):
         raise AssertionError("dev console must not touch the world")

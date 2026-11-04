@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Awaitable, Callable, TypeVar
 
 from core.interfaces.snapshot import SnapshotProvider, WorldSnapshot
 from world import WorldCatalog
+from world.setup import WorldSetup
+from world.stored_config import StoredWorldConfig
 
-from interaction.models import WorldMeta, build_world_meta
+from interaction.models import (
+    AgentProfile,
+    CharacterIdentity,
+    NpcIdentity,
+    PlaceIdentity,
+    WorldMeta,
+    agent_profile,
+    build_world_meta,
+)
 from interaction.replayer import Replayer
+
+_Table = TypeVar("_Table")
 
 
 class WorldManager:
@@ -21,11 +33,11 @@ class WorldManager:
         catalog: WorldCatalog | None = None,
     ) -> None:
         self._snapshot_provider = snapshot_provider
-        # Step-0 character_profiles cache, keyed by world_id. Shared by the API
-        # routers so the static-identity read (name/role/color) happens once. Step 0 is
-        # frozen at build, so an entry never goes stale; a deleted world's entry is a few
-        # KB of dead weight, cheaper than a delete hook (same trade as maps._ground_cache).
-        self._profile_cache: dict[str, dict[str, Any]] = {}
+        # Per-world tables kept by ``_confirmed_table``: only a confirmed world's are final.
+        self._profile_cache: dict[str, dict[str, AgentProfile]] = {}
+        self._character_identity_cache: dict[str, dict[str, CharacterIdentity]] = {}
+        self._npc_identity_cache: dict[str, dict[str, NpcIdentity]] = {}
+        self._place_identity_cache: dict[str, dict[str, PlaceIdentity]] = {}
         # Share the same WorldCatalog instance the build path writes to (so a world
         # registered during build_world is visible here without a reload). When none
         # is injected, an in-memory one (tests).
@@ -35,23 +47,10 @@ class WorldManager:
     def snapshot_provider(self) -> SnapshotProvider:
         return self._snapshot_provider
 
-    async def confirm_world(self, world_id: str) -> WorldMeta:
-        """Lock a world's initialization after the user reviews it.
-
-        Idempotent. Raises ``ValueError`` if the world is unknown so the API can
-        map it to a 404.
-        """
-
-        meta = await self.get_world(world_id)
-        if meta is None:
-            raise ValueError(f"World not found: {world_id}")
-        self._catalog.set_confirmed(world_id, True)
-        return await self.get_world(world_id)
-
     async def rename_world(self, world_id: str, world_name: str) -> WorldMeta:
         """Change a world's display name (the catalog entry only).
 
-        The step-0 ``analysis.world_name`` only fed the build prompts, so it is left alone.
+        The setup's ``analysis.world_name`` only fed the build prompts, so it is left alone.
         Raises ``ValueError`` (→ 404) if the world has no catalog entry. Checked against the
         catalog, not ``get_world``: ``set_name`` would silently no-op on a world without one.
         """
@@ -81,40 +80,110 @@ class WorldManager:
     async def get_world(self, world_id: str) -> WorldMeta | None:
         """Return derived metadata for one known world."""
 
-        # Read only two snapshots. The world list polls this every few seconds for every world,
-        # and snapshot reads are synchronous JSON parsing, so reading the whole history would
-        # block the event loop and stall running worlds. Identity (main characters, description,
-        # step length) is fixed at build time in step 0, and progress only needs the last step.
-        steps = await self._snapshot_provider.list_steps(world_id)
-        wanted = sorted({0, max(steps)} & set(steps)) if steps else []
-        snapshots = [
-            snapshot
-            for step in wanted
-            if (snapshot := await self._snapshot_provider.load(world_id, step)) is not None
-        ]
+        # The world list polls this every few seconds for every world, and reads are synchronous
+        # JSON parsing: read the setup and the latest snapshot only, never the history.
         entry = self._catalog.get(world_id)
-        if not snapshots and entry is None:
+        setup = await self.world_setup(world_id)
+        latest = await self._snapshot_provider.load_latest(world_id)
+        if entry is None and setup is None and latest is None:
             return None
-        return build_world_meta(world_id=world_id, snapshots=snapshots, catalog_entry=entry)
+        return build_world_meta(world_id=world_id, latest_snapshot=latest, setup=setup, catalog=self._catalog)
+
+    async def world_setup(self, world_id: str) -> WorldSetup | None:
+        """The world's setup (see ``WorldSetup.load``); None for a world that has none."""
+        return await WorldSetup.load(self._snapshot_provider, world_id)
 
     async def latest_snapshot(self, world_id: str) -> WorldSnapshot | None:
         """Return the latest persisted snapshot for a world."""
 
         return await self._snapshot_provider.load_latest(world_id)
 
-    async def character_profiles(self, world_id: str) -> dict[str, Any]:
-        """Static per-agent identity written at step 0, keyed by agent_id.
+    async def _confirmed_table(
+        self,
+        cache: dict[str, _Table],
+        world_id: str,
+        read: Callable[[], Awaitable[_Table | None]],
+    ) -> _Table | None:
+        """A per-world table, kept once the world is confirmed: from then on it is final.
 
-        Cached per world (identity is frozen at build). Returns an empty mapping
-        for worlds with no step-0 snapshot.
+        A draft's table is read anew on each request, since its setup is still being revised.
+        Confirmation is checked before the read, so one landing mid-read never keeps a draft.
         """
+        if world_id in cache:
+            return cache[world_id]
+        confirmed = self._catalog.is_confirmed(world_id)
+        table = await read()
+        if confirmed and table is not None:
+            cache[world_id] = table
+        return table
 
-        if world_id not in self._profile_cache:
-            initial = await self._snapshot_provider.load(world_id, 0)
-            self._profile_cache[world_id] = (
-                dict(initial.metadata.get("character_profiles", {})) if initial else {}
-            )
-        return self._profile_cache[world_id]
+    async def character_profiles(self, world_id: str) -> dict[str, AgentProfile]:
+        """Per-character profiles, public identity and inner life; empty for a world with no setup."""
+
+        async def read() -> dict[str, AgentProfile] | None:
+            setup = await self.world_setup(world_id)
+            return {d.agent_id: agent_profile(d) for d in setup.characters} if setup else None
+
+        profiles = await self._confirmed_table(self._profile_cache, world_id, read)
+        return profiles if profiles is not None else {}
+
+    async def character_identities(self, world_id: str) -> dict[str, CharacterIdentity]:
+        """The characters' public identities; empty for a world with no setup."""
+
+        async def read() -> dict[str, CharacterIdentity] | None:
+            setup = await self.world_setup(world_id)
+            if setup is None:
+                return None
+            return {
+                d.agent_id: CharacterIdentity(
+                    agent_id=d.agent_id,
+                    name=d.soul.name,
+                    gender=d.soul.gender,
+                    age=d.soul.age,
+                    role=d.soul.role,
+                    background=d.soul.background,
+                    appearance=d.soul.appearance,
+                    color=d.soul.color,
+                )
+                for d in setup.characters
+            }
+
+        identities = await self._confirmed_table(self._character_identity_cache, world_id, read)
+        return identities if identities is not None else {}
+
+    async def npc_identities(self, world_id: str) -> dict[str, NpcIdentity] | None:
+        """The NPCs' public identities; None for a world with no setup."""
+
+        async def read() -> dict[str, NpcIdentity] | None:
+            setup = await self.world_setup(world_id)
+            if setup is None:
+                return None
+            return {
+                seed.npc_id: NpcIdentity(
+                    npc_id=seed.npc_id,
+                    name=seed.name,
+                    gender=seed.gender,
+                    age=seed.age,
+                    description=seed.description,
+                )
+                for seed in setup.npc_seeds
+            }
+
+        return await self._confirmed_table(self._npc_identity_cache, world_id, read)
+
+    async def place_identities(self, world_id: str) -> dict[str, PlaceIdentity] | None:
+        """The places' public identities, from the map frozen at build; None for a world with none."""
+
+        async def read() -> dict[str, PlaceIdentity] | None:
+            data = await self._snapshot_provider.load_world_config(world_id)
+            if not data:
+                return None
+            return {
+                place_id: PlaceIdentity(location_id=place_id, name=place.name, description=place.description)
+                for place_id, place in StoredWorldConfig(data).get_places().items()
+            }
+
+        return await self._confirmed_table(self._place_identity_cache, world_id, read)
 
     async def list_steps(self, world_id: str) -> list[int]:
         """Return persisted steps for a known world."""
@@ -125,4 +194,3 @@ class WorldManager:
         """Build a snapshot-backed replayer for one world."""
 
         return Replayer(world_id, self._snapshot_provider)
-

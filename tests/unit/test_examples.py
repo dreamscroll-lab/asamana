@@ -12,7 +12,6 @@ from config import load_config
 from config.models import Config, ProviderConfig
 from interaction.examples import EXAMPLES_DIR, SEEDED_MARKER, seed_examples
 from interaction.world_manager import WorldManager
-from providers.agent_store.file import FileAgentStore
 from providers.snapshot.file import FileSnapshotProvider
 from providers.vector_store.file import FileVectorStore
 from world import WorldCatalog
@@ -21,7 +20,6 @@ from world import WorldCatalog
 def _file_config(root: Path) -> Config:
     config = load_config(Path("config/config.test.yaml"))
     config.snapshot = ProviderConfig(provider="file", params={"path": str(root / "snapshots")})
-    config.agent_store = ProviderConfig(provider="file", params={"path": str(root / "agents")})
     config.vector_store = ProviderConfig(provider="file", params={"path": str(root / "vectors")})
     config.observability.enabled = True
     config.observability.provider = "jsonl"
@@ -36,8 +34,6 @@ def _bundle(root: Path, world_ids: list[str]) -> Path:
     for world_id in world_ids:
         (bundle / "snapshots" / world_id).mkdir(parents=True)
         (bundle / "snapshots" / world_id / "step_000000.json").write_text("{}", encoding="utf-8")
-        (bundle / "agents" / world_id).mkdir(parents=True)
-        (bundle / "agents" / world_id / "agent-a.json").write_text("{}", encoding="utf-8")
         (bundle / "traces" / world_id).mkdir(parents=True)
         (bundle / "traces" / world_id / "build.jsonl").write_text("", encoding="utf-8")
         (bundle / "vectors").mkdir(exist_ok=True)
@@ -63,7 +59,6 @@ def test_a_fresh_install_gets_every_store_and_a_confirmed_catalog_entry(tmp_path
     assert seeded == ["w1", "w2"]
     for world_id in seeded:
         assert (data / "snapshots" / world_id / "step_000000.json").exists()
-        assert (data / "agents" / world_id / "agent-a.json").exists()
         assert (data / "traces" / world_id / "build.jsonl").exists()
         assert (data / "vectors" / f"{world_id}_agent-a_memory.0000.jsonl").exists()
         entry = WorldCatalog(catalog_path).get(world_id)
@@ -169,7 +164,6 @@ async def test_the_bundled_worlds_load_with_the_current_code(tmp_path: Path) -> 
     assert sorted(seed_examples(config, catalog_path)) == sorted(entries)
 
     snapshots = FileSnapshotProvider(str(data / "snapshots"))
-    agents = FileAgentStore(str(data / "agents"))
     manager = WorldManager(snapshot_provider=snapshots, catalog=WorldCatalog(catalog_path))
     vectors = FileVectorStore(str(data / "vectors"))
     for world_id in entries:
@@ -181,10 +175,6 @@ async def test_the_bundled_worlds_load_with_the_current_code(tmp_path: Path) -> 
         assert meta is not None
         assert meta.confirmed
         assert meta.current_step == max(steps)
-        agent_ids = await agents.list_agent_ids(world_id)
-        assert agent_ids
-        for agent_id in agent_ids:
-            assert await agents.load_agent_state(world_id, agent_id) is not None, (world_id, agent_id)
         vector_files = sorted((data / "vectors").glob(f"{world_id}_*.jsonl"))
         assert vector_files, world_id
         for vector_file in vector_files:

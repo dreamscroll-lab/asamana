@@ -1,15 +1,10 @@
 import Phaser from "phaser";
 
-import type {
-  ActionSummary,
-  AgentStateSummary,
-  BroadcastSummary,
-  EntityView,
-  MapFocus,
-  MapSelect,
-  NpcStateSummary,
-  StepEvent,
-} from "../types";
+import type { Cast } from "../lib/cast";
+import type { Places } from "../lib/places";
+import type { ActorTarget, BroadcastSummary, MapFocus, MapSelect, NpcView, StepView } from "../types";
+import { type Placed, type PlacedEntity, type Scoped, indexStep } from "../lib/step";
+import { type Beat, type Figure, beatsOf, drawsVeil, figuresOf } from "./figures";
 import { THEME } from "../lib/theme";
 import { ActionType, type ActionTypeValue, Phase, actedOnAgents } from "../lib/contract";
 import { ACTION_IDENTITY } from "../lib/actionIdentity";
@@ -24,20 +19,24 @@ import { HIDDEN_ALPHA, HIDDEN_FADE_MS, sortDepth } from "./isoDepth";
 import { RECOLOR_FX, RecolorFX } from "./recolorPipeline";
 import type { MapSource } from "./mapSource";
 import { type CharacterSet, type Demographics, type Dir, type PoseName, bearing, dirOf } from "./skins";
+import { operationTarget } from "./operationTarget";
 import { PocketLayer } from "./pocket";
 import { type AmbientHost, AmbientLight } from "./ambient";
 import { type AnnounceHost, Announcer } from "./announce";
 import { type CameraHost, MapCamera } from "./camera";
 import { type StagingHost, Staging, subjectEntityIds, subjectPeopleIds } from "./staging";
 import { type WalkHost, Walker } from "./walking";
+import { Presence, type PresenceView, continuesPresence } from "./presence";
 import { HoverTip } from "./hoverTip";
 import { type PostHost, PostLayer } from "./post";
 import { FONT, INITIAL_DIR, PLATE_GAP, PLATE_RISE, SPRITE_FOOT_Y, TEXT_RES, type AgentToken, type CarriedItem } from "./types";
 import { reportedDead } from "../lib/agentState";
+import { type Viewer, isWholeWorld } from "../lib/viewer";
+import type { Npcs } from "../lib/npcs";
+import { identityOf } from "../lib/worldTable";
 import { identityColor, toHex } from "../lib/color";
 import {
   type FxHost,
-
   directedMessages,
   faceEntity,
   faceInteraction,
@@ -53,41 +52,8 @@ import {
 // art is served from. Nothing about a particular map is compiled in here.
 
 const NPC_DEED_INK = 0x8a93a6;
-
-/**
- * Present a mindless body to the figure pipeline as one more figure. It is drawn like a
- * person but is not an agent, so the adaptation happens here rather than by widening
- * agent_states upstream. Liveness fields are pinned: NPCs have no vitality axis, and the
- * death visuals must never claim one.
- */
-function npcFigures(npcs: NpcStateSummary[]): AgentStateSummary[] {
-  return npcs.map((npc) => ({
-    agent_id: npc.npc_id,
-    agent_name: npc.name,
-    location: npc.location,
-    location_id: npc.location_id,
-    emotion: "",
-    // Pinned to idle: only the character card reads this, and NPCs have no card. The map infers
-    // movement from position.
-    activity_status: "idle",
-    emotion_label: "",
-    activity_label: "",
-    dominant_need_label: "",
-    dominant_need: null,
-    is_main_character: false,
-    color: npc.color,
-    long_term_goals: [],
-    short_term_goals: [],
-    emotion_intensity: null,
-    emotion_valence: null,
-    vitality: 1,
-    is_active: true,
-    condition: npc.condition,
-    transit: null,
-    arrival: null,
-    displaced: npc.displaced,
-  }));
-}
+// The marker over the performed character (see ensureToken): amber, outside the identity palette.
+const SELF_MARK_INK = "#fbbf24";
 
 // The objects a tween config's `targets` names (one or an array).
 function tweenTargets(targets: unknown): object[] {
@@ -126,8 +92,8 @@ const CHIP_TAIL_MS = 1400;
 // A step with weather stays on screen at least this long. A floor on the whole step, not a
 // tail: it only pays out when nothing else showed (e.g. every action focus-gated away).
 const WEATHER_MIN_MS = 1500;
-// How long the opening tableau (step 0) is held. It has no beats (see the initialization
-// filter in playTrack), so this is its whole screen time.
+// How long the opening tableau (step 0) is held. Nothing has happened yet, so it has no beats:
+// this is its whole screen time.
 const SETTLE_MS = 1800;
 
 // No tile-name lookup tables here (name → color, name → height): they would put the map's art
@@ -151,14 +117,19 @@ export class TiledWorldScene
   // Focus/selection state (mirrors React's MapFocus). Drives emphasis/dim, the
   // spotlight overlay, and camera-follow. Empty = no focus → everything normal.
   private focus: MapFocus = { agents: [], place: null, follow: false };
+  // Whose view the steps are filtered to; null for the director (see lib/viewer).
+  private viewer: Viewer = null;
   private spotlight?: Phaser.GameObjects.Rectangle; // dim overlay for a location spotlight
   // agent_id → gender/age (from the step-0 profiles) — the only thing that picks a body.
   private demographics: Record<string, Demographics> = {};
   private tokens = new Map<string, AgentToken>();
   private placed = new Set<string>(); // agents already positioned (no fly-in from 0,0)
-  // The step the last render drew. Only the step right after it is walked to; any other (a seek,
-  // the first render) is a cut: the walk between two distant steps never happened.
+  // The step being drawn, or last drawn (deaths are judged against it).
   private drawnStep: number | null = null;
+  // The step whose render ran to the end, so the map stands as that step left it; null while a
+  // render is under way or after one was superseded. Only the step right after it continues from
+  // the map; any other first establishes the step before it (see drawFrom).
+  private completedStep: number | null = null;
   // A step renders as an awaitable timeline; the driver waits for it before the
   // next step. renderGen supersedes an in-flight render on a deliberate scrub;
   // cancelers force-resolve its pending awaits so nothing hangs.
@@ -209,21 +180,63 @@ export class TiledWorldScene
   }
 
 
-  /**
-   * Feed the cast's gender/age (from the step-0 profiles) so each figure gets the right body;
-   * re-skins tokens created before it landed. Color is not part of this — it comes from each
-   * step's state (see ensureToken → RecolorFX).
-   */
-  setCast(cast: Record<string, Demographics>): void {
-    for (const [id, who] of Object.entries(cast)) this.learnBody(id, who);
+  private castById: Cast = {};
+  private places: Places = {};
+  private npcIdentities: Npcs = {};
+
+  identityColor(id: string): number {
+    return identityColor(identityOf(id, this.castById, this.npcIdentities)?.color, id);
+  }
+
+
+  /** Place identities, for the card over a place-name. The name itself is the map's own label. */
+  setPlaces(places: Places): void {
+    this.places = places;
+  }
+
+  /** Public identities supply bodies and colors independently of the current step. */
+  setCast(cast: Cast): void {
+    this.castById = cast;
+    for (const [id, who] of Object.entries(cast)) {
+      this.learnBody(id, who);
+      this.syncIdentity(id, who);
+    }
+  }
+
+  setNpcs(npcs: Npcs): void {
+    this.npcIdentities = npcs;
+    for (const [id, who] of Object.entries(npcs)) {
+      this.learnBody(id, who);
+      this.syncIdentity(id, who);
+    }
+  }
+
+  private syncIdentity(id: string, who: { name: string; color: string }): void {
+    const tok = this.tokens.get(id);
+    if (!tok) return;
+    const color = identityColor(who.color, id);
+    if (color !== tok.color) {
+      tok.color = color;
+      tok.label.setColor(toHex(color));
+      this.body.dyeGarment(tok.sprite, color);
+      for (const ring of tok.identityRings) ring.setStrokeStyle(ring.lineWidth, color, ring.strokeAlpha);
+    }
+    if (tok.label.text !== who.name) {
+      const pouchGap = tok.pouch.x - tok.label.width / 2;
+      tok.label.setText(who.name);
+      tok.pouch.setX(tok.label.width / 2 + pouchGap);
+      const width = Math.max(14, tok.label.width);
+      tok.vitTrack.setSize(width, tok.vitTrack.height);
+      tok.vitFill.setSize(width, tok.vitFill.height).setX(-width / 2);
+    }
   }
 
   /**
    * Register one figure's (gender, age) and re-skin it if it is already standing.
    *
-   * The only writer of `demographics`: the cast (once per world) and the NPCs (every step) are
-   * disjoint halves, so neither may replace the whole record — the late fetch would drop every
-   * NPC back to the default body.
+   * The only writer of `demographics`: the cast and the NPC tables are disjoint halves, so
+   * neither may replace the whole record, or whichever lands second would drop the other half
+   * back to the default body.
    */
   private learnBody(id: string, who: Demographics): void {
     const known = this.demographics[id];
@@ -259,6 +272,9 @@ export class TiledWorldScene
   private readonly staging = new Staging(this, this.entities);
   /** Routes and walking. See walking.ts. */
   private readonly walker = new Walker(this, this.placed);
+  private readonly presence = new Presence(this, this.walker);
+  private presenceView: PresenceView | null = null;
+  private entering = new Set<string>();
   /** Zoom, pan and follow — the viewer's eye on the map. See camera.ts. */
   private readonly camera: MapCamera;
 
@@ -276,7 +292,7 @@ export class TiledWorldScene
     this.hud.floatNote(x, y, text, accent);
   }
 
-  showEntityTip(x: number, y: number, entity: EntityView): void {
+  showEntityTip(x: number, y: number, entity: PlacedEntity): void {
     this.hoverTip.showEntity(x, y, entity);
   }
 
@@ -298,23 +314,8 @@ export class TiledWorldScene
     return this.map.worldH;
   }
 
-  /** Display name for a location id (for the focus chips), or a description if unknown. */
-  locationName(id: string): string {
-    return this.map.locationName(id);
-  }
-
   private skinFor(agentId: string): string {
     return this.cast.bodyFor(this.demographics[agentId]);
-  }
-
-  /**
-   * Register the bodies that think for nobody. Their (gender, age) arrives on every step
-   * rather than once per world — they can appear mid-run — so this is idempotent and cheap,
-   * and it re-skins a token created before its demographics landed.
-   */
-  private noteNpcs(npcs: NpcStateSummary[]): void {
-    this.npcById = new Map(npcs.map((npc) => [npc.npc_id, npc]));
-    for (const npc of npcs) this.learnBody(npc.npc_id, { gender: npc.gender, age: npc.age });
   }
 
   /**
@@ -323,21 +324,21 @@ export class TiledWorldScene
    *
    * Only lines with a result get a float: an `ongoing` line ("on his way to…") stays in the
    * feed. The float lands over him (not the room, which holds several) because the backend
-   * places a body's line where he ends the step (see `NpcStateSummary.outcome`). Called when
+   * places a body's line where he ends the step (see `NpcView.private.outcome`). Called when
    * his own track's walks land him, not once per step.
    */
   private noteNpcOutcomes(agentIds: string[]): void {
     for (const id of agentIds) {
       const npc = this.npcById.get(id);
-      if (!npc?.outcome || npc.ongoing) continue;
+      if (!npc?.private.outcome || npc.private.ongoing) continue;
       const tok = this.tokens.get(id);
       if (!tok) continue;
-      this.floatNote(tok.container.x, tok.container.y - 34, npc.outcome, NPC_DEED_INK);
+      this.floatNote(tok.container.x, tok.container.y - 34, npc.private.outcome, NPC_DEED_INK);
     }
   }
 
   /** This step's bodies-without-minds, by id — what the errand mark and the hover read. */
-  private npcById = new Map<string, NpcStateSummary>();
+  private npcById = new Map<string, Placed<NpcView>>();
 
   /** This world's character set — the manifest its own map shipped with. */
   get cast(): CharacterSet {
@@ -376,14 +377,19 @@ export class TiledWorldScene
     // How far this frame carries a fade, as a fraction of what is left to travel.
     // Framed in TIME, not frames, so the fade lasts as long on a 30fps tab as on 120.
     const fadeStep = 1 - Math.exp((-dt * 3000) / HIDDEN_FADE_MS);
-    for (const [id, tok] of this.tokens) {
+    const bodies = this.presence.departing.size
+      ? [...this.tokens, ...this.presence.departing] : this.tokens;
+    for (const [id, tok] of bodies) {
       // A figure on ground the map's art hides fades — the only occlusion handling. The test is
       // the backend's `standable` grid, the same one A* tolls (HIDDEN_STEP_TOLL) and findStanding
-      // refuses: one truth, no second opinion about the art.
-      const want = tok.baseAlpha * (this.map.hiddenGround(tok.container.x, tok.container.y) ? HIDDEN_ALPHA : 1);
+      // refuses: one truth, no second opinion about the art. The fade and the focus dim (baseAlpha)
+      // both mean "less prominent", so the dimmer one wins; don't multiply them: a background
+      // figure under a canopy (0.3 × 0.42) vanishes.
+      const hidden = this.map.hiddenGround(tok.container.x, tok.container.y);
+      const want = hidden ? Math.min(tok.baseAlpha, HIDDEN_ALPHA) : tok.baseAlpha;
       tok.container
         .setDepth(sortDepth(tok.container.y, geometry))
-        .setAlpha(tok.container.alpha + (want - tok.container.alpha) * fadeStep)
+        .setAlpha(tok.container.alpha + (want * tok.presenceAlpha - tok.container.alpha) * fadeStep)
         .setScale(lodScale);
       // Idle bob on the sprite only (the container anchors bubbles/effects); the dead lie still.
       // Skipped while posed: writing sprite.y every frame would erase the vertical half of every
@@ -500,7 +506,7 @@ export class TiledWorldScene
    *
    * The dialogue loop does not come here: it turns the speaker to each utterance's listeners.
    */
-  private faceSubject(tok: AgentToken, act: ActionSummary): void {
+  private faceSubject(tok: AgentToken, act: Beat): void {
     if (faceInteraction(this, tok, subjectPeopleIds(act))) return;
     faceEntity(this, tok, subjectEntityIds(act));
   }
@@ -554,6 +560,23 @@ export class TiledWorldScene
     });
   }
 
+  /**
+   * A fetch the render waits on, as a wait the barrier can wake: a superseding render resolves
+   * it to null at once. Don't await a fetch bare inside a render: one stalled request would hold
+   * the barrier, and every later render with it.
+   */
+  private cancellable<T>(fetching: Promise<T | null>): Promise<T | null> {
+    if (this.unwinding) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const cancel = () => resolve(null);
+      this.cancelers.add(cancel);
+      void fetching.then((value) => {
+        this.cancelers.delete(cancel);
+        resolve(value);
+      });
+    });
+  }
+
   // Resolve every pending await (a superseding render calls this so the old
   // render's timeline unblocks; its gen guard then bails without drawing more).
   private cancelPending(): void {
@@ -567,6 +590,7 @@ export class TiledWorldScene
     onReady?: () => void,
     onSelect?: (t: MapSelect) => void,
     onGrabCamera?: () => void,
+    private onOperation?: (target: ActorTarget, clientX: number, clientY: number) => void,
   ) {
     super("tiled-world");
     this.source = source;
@@ -586,6 +610,12 @@ export class TiledWorldScene
   }
 
   create(): void {
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.ready = false;
+      this.unwinding = true;
+      this.renderGen++;
+      this.cancelPending();
+    });
     // The document was already fetched (to resolve its asset URLs), so hand it
     // straight to Phaser instead of making it fetch the same map a second time.
     this.cache.tilemap.add(MAP_KEY, {
@@ -604,10 +634,14 @@ export class TiledWorldScene
     this.walker.mount();
     this.map.drawLabels();
     this.ambient.mount();
-    this.camera.mount(() => this.hoverTip.hide(), (p) => this.handleClick(p));
+    this.camera.mount(() => this.hoverTip.hide(), (p) => this.handleClick(p), (p) => this.handleContext(p));
     // `pointerout` does not fire when the pointer leaves the canvas entirely, so the hover card
     // would stay up indefinitely; `gameout` covers that. (A press hides it too, via camera.mount.)
     this.input.on("gameout", () => this.hoverTip.hide());
+    this.input.on("gameobjectover", (p: Phaser.Input.Pointer, obj: Phaser.GameObjects.GameObject) => this.hoverPlace(p, obj));
+    this.input.on("gameobjectout", (_p: Phaser.Input.Pointer, obj: Phaser.GameObjects.GameObject) => {
+      if (obj.getData?.("locationId")) this.hoverTip.hide();
+    });
     this.ready = true;
     this.onReady?.();
   }
@@ -617,9 +651,28 @@ export class TiledWorldScene
     this.ambient.setHour(hour);
   }
 
-  // Resolve a click into a selection: an agent token, a location region, or
-  // empty → clear. Entity markers are info-only — clicking one does not change
-  // the MapFocus (WorldView ignores the entity variant; MapSelect has none).
+  /** The card over a place-name the pointer rests on, hung just above the name. */
+  private hoverPlace(p: Phaser.Input.Pointer, obj: Phaser.GameObjects.GameObject): void {
+    const id = obj.getData?.("locationId");
+    // A drag pans the map, and touch has no hover.
+    if (!id || p.isDown || p.wasTouch) return;
+    const label = obj as Phaser.GameObjects.Text;
+    const top = label.y - label.displayHeight / 2 - 4;
+    this.hoverTip.showPlace(label.x, top, label.text, identityOf(String(id), this.places)?.description ?? "");
+  }
+
+  private handleContext(p: Phaser.Input.Pointer): void {
+    if (!this.onOperation) return;
+    if (!("clientX" in p.event)) return;
+    const hits = this.input.hitTestPointer(p) as Phaser.GameObjects.GameObject[];
+    const world = this.cameras.main.getWorldPoint(p.x, p.y);
+    const target = operationTarget(hits.map((obj) => ({
+      entityId: obj.getData?.("entityId"), entityKind: obj.getData?.("entityKind"),
+      agentId: obj.getData?.("agentId"), pocketPanel: !!obj.getData?.("pocketPanel"),
+    })), this.map.roomAt(world.x, world.y)?.id ?? null, (id) => this.canSelect(id), (id) => this.npcById.has(id));
+    if (target) this.onOperation(target, p.event.clientX, p.event.clientY);
+  }
+
   private handleClick(p: Phaser.Input.Pointer): void {
     if (!this.onSelect) return;
     const hits = this.input.hitTestPointer(p) as Phaser.GameObjects.GameObject[];
@@ -627,16 +680,27 @@ export class TiledWorldScene
     // in hit order could select the owner on a click meant for the handle.
     for (const obj of hits) {
       const owner = obj.getData?.("pocketOf");
-      if (owner) return this.pockets.toggle(String(owner));
+      if (owner && this.canSelect(String(owner))) return this.pockets.toggle(String(owner));
       if (obj.getData?.("pocketPanel")) return; // reading is not selecting
     }
     for (const obj of hits) {
       const agentId = obj.getData?.("agentId");
-      if (agentId) return this.onSelect({ kind: "agent", id: String(agentId) });
+      if (agentId && this.canSelect(String(agentId))) return this.onSelect({ kind: "agent", id: String(agentId) });
     }
     const world = this.cameras.main.getWorldPoint(p.x, p.y);
     const room = this.map.roomAt(world.x, world.y);
     this.onSelect(room ? { kind: "location", id: room.id } : { kind: "clear" });
+  }
+
+  canSelect(id: string): boolean {
+    const tok = this.tokens.get(id);
+    return !!tok && !this.entering.has(id) && !this.presence.entering.has(tok);
+  }
+
+  /** Whose view the steps handed in are filtered to; read on the next render. */
+  setViewer(viewer: Viewer): void {
+    if (viewer !== this.viewer) this.presenceView = null;
+    this.viewer = viewer;
   }
 
   // --- focus / selection -----------------------------------------------------
@@ -699,11 +763,11 @@ export class TiledWorldScene
   }
 
   /** EntityHost: deal this step's things onto the ground their rooms can spare. */
-  layoutFixtures(entities: Record<string, EntityView>): void {
+  layoutFixtures(entities: Record<string, PlacedEntity>): void {
     this.staging.layoutFixtures(entities);
   }
 
-  private ensureToken(state: AgentStateSummary): AgentToken {
+  private ensureToken(state: Figure): AgentToken {
     let tok = this.tokens.get(state.agent_id);
     if (tok) return tok;
     // The fixed identity color (from the backend) dyes garment, name tag and ground ring.
@@ -720,12 +784,13 @@ export class TiledWorldScene
     // Narrative tier on one channel: double ring for a main character, plain for the cast,
     // thin and faint for an NPC.
     const mindless = this.npcById.has(state.agent_id);
-    parts.push(this.add
+    const identityRings = [this.add
       .ellipse(0, 6, 26, 12)
-      .setStrokeStyle(state.is_main_character ? 3 : mindless ? 1 : 2, color, mindless ? 0.55 : 1));
+      .setStrokeStyle(state.is_main_character ? 3 : mindless ? 1 : 2, color, mindless ? 0.55 : 1)];
     if (state.is_main_character) {
-      parts.push(this.add.ellipse(0, 6, 31, 14.5).setStrokeStyle(1.5, color, 0.7));
+      identityRings.push(this.add.ellipse(0, 6, 31, 14.5).setStrokeStyle(1.5, color, 0.7));
     }
+    parts.push(...identityRings);
     // The body its gender+age picks, feet at the container origin; the garment is dyed with
     // the identity color by RecolorFX. Skin is never touched (see recolorPipeline.ts).
     const skinId = this.skinFor(state.agent_id);
@@ -767,7 +832,29 @@ export class TiledWorldScene
       0, this.body.measureHeadY(skinId) - PLATE_GAP, [vitTrack, vitFill, label, pouch],
     );
     parts.push(plate);
-    const container = this.add.container(0, 0, parts).setDepth(20);
+    // The character the actor performs wears a marker over the head, outside the plate so the
+    // zoom-out LOD that hides plates never hides "this is you".
+    let selfMark: Phaser.GameObjects.Text | undefined;
+    if (state.agent_id === this.viewer) {
+      const you = this.add
+        .text(0, this.body.measureHeadY(skinId) - PLATE_GAP - 16, "▼", {
+          fontFamily: FONT, fontSize: "14px", color: SELF_MARK_INK,
+        })
+        .setOrigin(0.5)
+        .setResolution(TEXT_RES)
+        .setStroke("#0a0e1a", 3);
+      this.tweens.add({ targets: you, y: you.y - 4, duration: 700, yoyo: true, repeat: -1, ease: "Sine.easeInOut" });
+      parts.push(you);
+      selfMark = you;
+    }
+    // Born transparent: the per-frame alpha easing (update) fades him in, so someone coming into
+    // view appears rather than pops.
+    const container = this.add.container(0, 0, parts).setDepth(20).setAlpha(0);
+    // The bob repeats forever: end it with the token, or it keeps driving a destroyed object.
+    if (selfMark) {
+      const mark = selfMark;
+      container.once(Phaser.GameObjects.Events.DESTROY, () => this.tweens.killTweensOf(mark));
+    }
     // Hit area is a circle over the figure, independent of the container's child bounds.
     container.setInteractive(new Phaser.Geom.Circle(0, -16, 22), Phaser.Geom.Circle.Contains);
     container.setData("agentId", state.agent_id);
@@ -777,12 +864,12 @@ export class TiledWorldScene
     container.on("pointerover", () => {
       const npc = this.npcById.get(state.agent_id);
       const tok = this.tokens.get(state.agent_id);
-      if (npc && tok) this.hoverTip.show(tok, npc);
+      if (npc && tok && this.canSelect(state.agent_id)) this.hoverTip.show(tok, npc, identityOf(state.agent_id, this.npcIdentities));
     });
     container.on("pointerout", () => this.hoverTip.hide());
     tok = {
       container, sprite, skinId, posed: false, headY: this.body.measureHeadY(skinId),
-      plate, focusRing, label, color, baseAlpha: 1, floor: 0, vitTrack, vitFill,
+      plate, focusRing, identityRings, label, color, baseAlpha: 1, presenceAlpha: 1, floor: 0, vitTrack, vitFill,
       condPip: pip, pouch, condText: "",
       locationId: state.location_id, dead: false, hurt: false, vit: 1, phase: Math.random() * Math.PI * 2,
       dir: INITIAL_DIR,
@@ -801,9 +888,11 @@ export class TiledWorldScene
    * the `renderGen !== gen` checks only make the unwind prompt (without the barrier, one missed
    * check lets a stale render kill the new one's tweens and hang the player).
    *
-   * Takes the whole `StepEvent` so how its channels degrade is decided here, not per caller.
+   * Takes the whole `StepView` so how its channels degrade is decided here, not per caller.
+   * `previous` fetches another step; it is asked for step N-1 when the map doesn't stand where
+   * step N began (see drawFrom).
    */
-  async renderStep(step: StepEvent): Promise<void> {
+  async renderStep(step: StepView, previous?: (stepNo: number) => Promise<StepView>): Promise<void> {
     if (!this.ready) return;
     const gen = ++this.renderGen;
     this.unwinding = true; // no beat may take time until the old render is out
@@ -814,7 +903,7 @@ export class TiledWorldScene
     // one that clears it, and exactly one of them does.
     if (this.renderGen !== gen) return;
     this.unwinding = false;
-    const running = this.draw(step, gen);
+    const running = this.drawFrom(step, gen, previous);
     // The barrier answers "is the previous render finished", not "did it succeed" — so it
     // never rejects. A thrown render must not poison every render after it; the caller
     // still sees the failure through `running`.
@@ -822,19 +911,57 @@ export class TiledWorldScene
     await running;
   }
 
-  private async draw(step: StepEvent, gen: number): Promise<void> {
-    const cut = this.drawnStep === null || step.step !== this.drawnStep + 1;
+  /**
+   * Step N begins where step N-1 ended. When the map isn't there (a seek either way, the first
+   * render, a superseded render left it mid-way, the same step drawn again), step N-1's end is
+   * established first, at once, so step N plays exactly as it does in continuous playback.
+   * Step 0 has no deeds, so its start is its end and it is drawn as it is. Without step N-1 (the
+   * fetch failed) step N is drawn as a cut.
+   */
+  private async drawFrom(
+    step: StepView, gen: number, previous?: (stepNo: number) => Promise<StepView>,
+  ): Promise<void> {
+    const continues = this.completedStep !== null && step.step === this.completedStep + 1;
+    if (!continues && step.step > 0 && previous) {
+      const before = await this.cancellable(previous(step.step - 1).catch(() => null));
+      if (this.renderGen !== gen) return;
+      if (before) await this.draw(before, gen, true);
+      if (this.renderGen !== gen) return;
+    }
+    await this.draw(step, gen);
+  }
+
+  /**
+   * `establish`: land the step's end state at once and play none of it (see drawFrom); it is
+   * always a cut.
+   */
+  private async draw(step: StepView, gen: number, establish = false): Promise<void> {
+    // A cut: the map isn't where this step began, so nothing may be read off it as this step's
+    // before-state; where the step itself carries none, its end state lands at once. Its deeds
+    // still play.
+    const cut = establish || this.completedStep === null || step.step !== this.completedStep + 1;
+    this.completedStep = null;
     this.drawnStep = step.step;
-    this.noteNpcs(step.npcs ?? []);
-    this.staging.setRelations(step.relations ?? []);
-    const states = [...Object.values(step.agent_states), ...npcFigures(step.npcs ?? [])];
-    const actions = step.actions;
-    const entities = step.entities ?? {};
-    // `step.world_events` is deliberately not read: a WorldEvent is the editor's summary of a
+    const index = indexStep(step);
+    this.npcById = new Map(index.npcs.map((npc) => [npc.npc_id, npc]));
+    this.staging.setRelations(index.relations);
+    // A canceled step can stop before its pending entrances start walking.
+    for (const tok of this.tokens.values()) tok.presenceAlpha = 1;
+    const states = figuresOf(index, this.castById, this.npcIdentities);
+    const location = states.find((s) => s.agent_id === this.viewer)?.location_id ?? "";
+    const view = { viewer: this.viewer, location };
+    const localContinuity = continuesPresence(this.presenceView, view, cut);
+    this.presenceView = view;
+    this.entering = new Set(localContinuity ? states.filter((s) =>
+      !this.tokens.has(s.agent_id) && !s.displaced && !reportedDead(s.is_active, s.vitality),
+    ).map((s) => s.agent_id) : []);
+    const actions = beatsOf(index, this.castById, this.viewer);
+    const entities = index.entities;
+    // `step.observer.injections` is deliberately not read: an injection's record summarizes a
     // broadcast or message this same step already carries, with no place or cast by contract.
     // Drawing it would show one happening twice. The map draws the channels instead.
-    const messages = step.messages ?? [];
-    const broadcasts = step.broadcasts ?? [];
+    const messages = index.messages;
+    const broadcasts = index.broadcasts;
     // The hover card is not ephemeral but is pinned to a token about to move, so hide it here.
     this.hoverTip.hide();
     // Safe only because the previous render has unwound (see the barrier in renderStep): timers
@@ -852,30 +979,48 @@ export class TiledWorldScene
       new Set(
         actions
           .filter((a) => !a.not_executed && a.phase !== Phase.interrupt)
-          .filter((a) => deedBody(a.deed, a.succeeded !== false) !== null)
+          .filter((a) => deedBody(a.deed, a.shared?.succeeded ?? null) !== null)
           .map((a) => a.agent_id),
       ),
     );
     // Withhold every entity change a deed this step will cause, so the map shows cause before
     // effect: a step reports the world after the step, so applying it up front opens the door
-    // before the hand touches it. The test is general — it changed visibly and an action names it
-    // in affected_entity_ids — not a `destroyed` special case.
+    // before the hand touches it. Existing things defer through affected_entity_ids; an unseen
+    // thing has no known before-state unless created_entity_ids explicitly records its creation.
     //
     // Withheld means the previous snapshot keeps drawing, so layout and marker code need not know.
     // playTrack reveals each as its beat ends; the safety net below catches the rest. Computed
     // before layout so a withheld item still on the ground gets a cell from layoutFixtures.
     const causedEntityIds = new Set<string>();
+    const createdEntityIds = new Set<string>();
     for (const a of actions) for (const eid of a.affected_entity_ids ?? []) causedEntityIds.add(eid);
-    const shownEntities = this.entities.beginStep(entities, causedEntityIds);
+    for (const a of actions) for (const eid of a.created_entity_ids) createdEntityIds.add(eid);
+    const shownEntities = this.entities.beginStep(entities, causedEntityIds, createdEntityIds, cut, isWholeWorld(this.viewer));
 
-    // Clear corpses shown dead in a prior step (a backward scrub re-creates them below). Runs
-    // before layout so "has a token" means "has a body on this map" for the rest of the render
-    // — see gone().
+    // Clear corpses shown dead in a prior step, and anyone a seek carried past his death, still
+    // standing as last drawn. Only one dying this step gets a token below (see gone()), so a
+    // backward scrub onto his death step draws him falling again.
+    const goneIds = new Set(states.filter((s) => this.gone(s)).map((s) => s.agent_id));
     for (const [id, tok] of [...this.tokens]) {
-      if (!tok.dead) continue;
+      if (!tok.dead && !goneIds.has(id)) continue;
       this.body.removeToken(tok);
       this.tokens.delete(id);
       this.placed.delete(id);
+    }
+    // A body this step doesn't report is not on the map: out of the viewer's sight. The god view
+    // reports every body every step, so there it never happens. Don't leave the token standing
+    // where it was last seen: letters, dialogue and the camera would treat the ghost as present.
+    const reported = new Set(states.map((s) => s.agent_id));
+    const departures: Promise<void>[] = [];
+    for (const [id, tok] of [...this.tokens]) {
+      if (reported.has(id)) continue;
+      this.pockets.close(id);
+      this.tokens.delete(id);
+      this.placed.delete(id);
+      this.walker.clearTransit(id);
+      if (!isWholeWorld(this.viewer) && !establish) {
+        departures.push(this.presence.leave(id, tok, localContinuity ? "walk" : "fade"));
+      } else this.body.removeToken(tok);
     }
 
     // Resting slots, relationship- and interaction-aware: figures about to deal with each other
@@ -893,29 +1038,38 @@ export class TiledWorldScene
         for (const t of actedOnAgents(a.target)) physicalTargetIds.add(t);
       }
     }
-    // Reads the previous step's token (ensureToken runs below); an unplaced body simply appears.
+    // Reads the previous step's token (ensureToken runs below). A body first seen on this step
+    // shows as reported, except a death this step: he first stands, then falls to its cause.
     const withheldAgents = new Set<string>();
     states.forEach((state) => {
-      const tok = this.tokens.get(state.agent_id);
-      if (!tok || !this.placed.has(state.agent_id)) return;
       const hasVisibleCause = agentIdsWithActions.has(state.agent_id) || physicalTargetIds.has(state.agent_id);
-      if (hasVisibleCause && this.body.bodyChanged(tok, state)) withheldAgents.add(state.agent_id);
+      if (!hasVisibleCause || establish) return;
+      // On a cut the token shows another step's body: only a death this step is known to change.
+      const tok = this.tokens.get(state.agent_id);
+      const changed = !cut && tok && this.placed.has(state.agent_id)
+        ? this.body.bodyChanged(tok, state)
+        : state.death_step === step.step;
+      if (changed) withheldAgents.add(state.agent_id);
     });
 
     // Instant state (no animation): body, chip slots, entity markers.
-    const stateById = new Map<string, AgentStateSummary>();
+    const stateById = new Map<string, Figure>();
     states.forEach((state) => {
-      // Creating a token here would resurrect a corpse every other step. See gone().
       if (this.gone(state)) return;
       const tok = this.ensureToken(state);
+      if (this.entering.has(state.agent_id)) tok.presenceAlpha = 0;
       tok.locationId = state.location_id;
       // A standing condition is state, not a beat: written every step from the report, never
       // withheld, so it also vanishes when it wears off unannounced.
       this.pockets.sync(state.agent_id, tok, state.condition ?? "");
       // A dead man's pocket closes: an open panel over a corpse reads as a live control.
-      if (reportedDead(state)) this.pockets.close(state.agent_id);
+      if (reportedDead(state.is_active, state.vitality)) this.pockets.close(state.agent_id);
       // Withheld → leave the body exactly as it stands; playTrack lands it after the beat.
-      if (!withheldAgents.has(state.agent_id)) this.body.applyBodyState(tok, state, this.placed.has(state.agent_id));
+      if (!withheldAgents.has(state.agent_id)) {
+        // First seen falling with no visible cause: put him where he lies first, so he falls there.
+        if (this.fallsNow(state) && !this.placed.has(state.agent_id)) this.placeAgent(state, states);
+        this.body.applyBodyState(tok, state, this.fallsNow(state));
+      }
       stateById.set(state.agent_id, state);
     });
     this.staging.layoutLabels(states);
@@ -925,12 +1079,13 @@ export class TiledWorldScene
     this.camera.followFocus(this.focus, this.focusActive());
 
     // Weather first, lasting through the step: a broadcast is injected at the step head (at
-    // `poll_event`, before cognition) and the cast perceived it this step, so people act in the
+    // `poll_injection`, before cognition) and the cast perceived it this step, so people act in the
     // rain. Played here, not with the announcements, so it gets the full step weather.ts promises.
-    // `depicted`: broadcasts the map has drawn a picture of.
-    const depicted = new Set<BroadcastSummary>();
+    // `depicted`: broadcasts the map has drawn a picture of. An established step's weather is
+    // drawn too: in continuous playback it is still falling as the next step begins.
+    const depicted = new Set<Scoped<BroadcastSummary>>();
     for (const b of broadcasts) {
-      if (this.announcer.playPhenomenon(b, this.map.rooms.get(String(b.location_scope ?? "")))) depicted.add(b);
+      if (this.announcer.playPhenomenon(b, this.map.rooms.get(String(b.location_id ?? "")))) depicted.add(b);
     }
     const weatherAt = depicted.size > 0 ? this.time.now : null;
 
@@ -938,7 +1093,7 @@ export class TiledWorldScene
     // anything delivered on step N is an input to step N's decisions. Nothing delivered can
     // narrate a deed of this step (`deliver_step` means "when perceived"; see engine/broadcast.py).
     // Don't run these alongside the tracks: a death notice could show while the victim still stands.
-    if (this.renderGen === gen) {
+    if (this.renderGen === gen && !establish) {
       for (const b of broadcasts) {
         if (this.renderGen !== gen) break;
         // A broadcast whose weather drew skips its words (they stay in the feed); one whose
@@ -952,9 +1107,9 @@ export class TiledWorldScene
 
     // Concurrent tracks partitioned by shared agents: sequential within a track, parallel across.
     const tracks = this.partition(states, actions).map((p, i) =>
-      this.playTrack(p, stateById, states, gen, i, withheldAgents, cut),
+      this.playTrack(p, stateById, states, gen, i, withheldAgents, cut, establish),
     );
-    await Promise.all(tracks);
+    await Promise.all([...tracks, ...departures]);
     // Past this line everything writes to the map; a superseded render must not.
     if (this.renderGen !== gen) return;
 
@@ -964,11 +1119,13 @@ export class TiledWorldScene
     for (const id of withheldAgents) {
       const tok = this.tokens.get(id);
       const state = stateById.get(id);
-      if (tok && state) this.body.applyBodyState(tok, state, this.placed.has(state.agent_id));
+      if (tok && state) this.body.applyBodyState(tok, state, this.fallsNow(state));
     }
     // Same net for withheld entity changes: if the causing beat was focus-gated out, land
     // the change now rather than leave the map showing a stale world.
     this.entities.revealWithheld();
+    this.completedStep = step.step;
+    if (establish) return;
     // Weather floor (see WEATHER_MIN_MS), measured from when it started.
     if (weatherAt !== null && this.renderGen === gen) {
       // `time.now` is wall-clock; the floor and delayP are in playback ms.
@@ -980,17 +1137,17 @@ export class TiledWorldScene
       await this.delayP(CHIP_TAIL_MS);
     }
     // Hold the establishing shot (see SETTLE_MS); otherwise step 0 would never be seen.
-    if (this.renderGen === gen && actions.some((a) => a.phase === Phase.initialization)) {
+    if (this.renderGen === gen && step.step === 0) {
       await this.delayP(SETTLE_MS);
     }
   }
 
   // Partition agents+actions into groups connected by shared participants
-  // (actor, targets, dialogue speakers). Disjoint groups render concurrently.
+  // (doer, targets, dialogue speakers). Disjoint groups render concurrently.
   private partition(
-    states: AgentStateSummary[],
-    actions: ActionSummary[],
-  ): Array<{ agentIds: string[]; actions: ActionSummary[] }> {
+    states: Figure[],
+    actions: Beat[],
+  ): Array<{ agentIds: string[]; actions: Beat[] }> {
     const ids = new Set(states.map((s) => s.agent_id));
     const parent = new Map<string, string>();
     const find = (x: string): string => {
@@ -1006,7 +1163,7 @@ export class TiledWorldScene
       find(act.agent_id);
       const linked = [
         ...actedOnAgents(act.target),
-        ...(act.dialogue ?? []).map((t) => t.speaker_id).filter(Boolean),
+        ...(act.shared?.dialogue ?? []).map((t) => t.speaker_id).filter(Boolean),
       ];
       for (const id of linked) if (ids.has(id)) union(act.agent_id, id);
     }
@@ -1022,7 +1179,7 @@ export class TiledWorldScene
     for (const members of byLoc.values()) {
       for (let i = 1; i < members.length; i++) union(members[0], members[i]);
     }
-    const groups = new Map<string, { agentIds: string[]; actions: ActionSummary[] }>();
+    const groups = new Map<string, { agentIds: string[]; actions: Beat[] }>();
     const groupOf = (id: string) => {
       const r = find(id);
       if (!groups.has(r)) groups.set(r, { agentIds: [], actions: [] });
@@ -1036,13 +1193,14 @@ export class TiledWorldScene
   // One partition's timeline: members move concurrently (different agents), then
   // the group's interactions play in narrative order, sequentially.
   private async playTrack(
-    group: { agentIds: string[]; actions: ActionSummary[] },
-    stateById: Map<string, AgentStateSummary>,
-    states: AgentStateSummary[],
+    group: { agentIds: string[]; actions: Beat[] },
+    stateById: Map<string, Figure>,
+    states: Figure[],
     gen: number,
     order: number,
     withheldAgents: Set<string>,
     cut: boolean,
+    establish: boolean,
   ): Promise<void> {
     // A superseded render moves nobody. Don't remove: cancelPending unblocks the old render
     // asynchronously, and its moveAgent (killTweensOf) would kill the new render's walk and
@@ -1059,7 +1217,7 @@ export class TiledWorldScene
         return this.moveAgent(st, states);
       }),
     );
-    if (this.renderGen !== gen) return;
+    if (this.renderGen !== gen || establish) return;
     // Exactly when movement lands: earlier, the note hangs over last beat's room; later, it
     // waits behind dialogue and deeds.
     this.noteNpcOutcomes(group.agentIds);
@@ -1077,14 +1235,11 @@ export class TiledWorldScene
     };
     const acts = [...group.actions]
       .filter((a) => a.action_type !== ActionType.move)
-      // Step-0 seeding is not a deed and gets no beat, like move: the map already shows where
-      // everyone stands, and the record has no type, deed or target to play. Six co-located
-      // agents would otherwise open the world with six queued identical bubbles. The feed keeps it.
-      .filter((a) => a.phase !== Phase.initialization)
       // Under a focus only the subjects' actions play; everyone still moves.
       .filter((a) => !this.focusActive() || this.isFocused(a.agent_id))
-      // Backend emission ordinal = causal order; records without seq sort stably to the end.
-      .sort((a, b) => (a.seq ?? Number.MAX_SAFE_INTEGER) - (b.seq ?? Number.MAX_SAFE_INTEGER));
+      // Backend emission ordinal = causal order; a joint act's beats share it and keep their
+      // participant order (stable sort).
+      .sort((a, b) => a.seq - b.seq);
     // For each withheld agent/entity, the index of the last beat involving it; afterBeat lands
     // the change as that beat ends, so the cause always plays first.
     //   body:   the agent's own last action, OR the last physical strike that targets them.
@@ -1111,9 +1266,12 @@ export class TiledWorldScene
         if (beat !== actIdx) continue;
         const tok = this.tokens.get(id);
         const state = stateById.get(id);
-        if (tok && state) this.body.applyBodyState(tok, state, this.placed.has(state.agent_id));
+        if (tok && state) this.body.applyBodyState(tok, state, this.fallsNow(state));
       }
-      this.entities.revealEntities([...entityBeat].filter(([, beat]) => beat === actIdx).map(([eid]) => eid));
+      this.entities.revealEntities(
+        [...entityBeat].filter(([, beat]) => beat === actIdx).map(([eid]) => eid),
+        new Set(acts[actIdx].created_entity_ids),
+      );
     };
 
     const seenDialogue = new Set<string>();
@@ -1124,10 +1282,10 @@ export class TiledWorldScene
       if (!tok) continue;
       // An interrupt shows the cut, never the deed it cut (no effect, no intent caption). It is a
       // float note, not a result chip: he did nothing this step, and a note also stays out of the
-      // end-of-step chip dwell. The gist only — the reason is in the feed as "心声" — and the
-      // fallback must not be act.action_description, which is the deed again.
+      // end-of-step chip dwell. The gist only — the reason is in the feed as inner monologue — and the
+      // fallback must not be the doer's own description, which is the deed again.
       if (act.phase === Phase.interrupt) {
-        const said = act.gist || "行动被打断";
+        const said = act.shared?.gist || "行动已中断";
         const chars = [...said];
         this.hud.floatNote(
           tok.container.x,
@@ -1154,16 +1312,18 @@ export class TiledWorldScene
         this.body.playDeed(tok, act, this.tokens);
         // The veil is not a result: he is hidden from this beat on. Firing it only with results
         // would make him vanish steps after he crouched.
-        if (act.action_type === ActionType.covert) stealthVeil(this, tok, act.detected);
+        if (drawsVeil(act)) stealthVeil(this, tok, act.detected);
         // Its await also covers the veil above: without a wait, the next clearEphemeral would wipe
         // it mid-draw.
-        await this.hud.playActionCaption(tok, act, chipOf(act.action_type) ?? "•", gen);
+        // Seen from outside with nothing to say (its motion shows it), the pose holds the beat.
+        if (act.caption) await this.hud.playActionCaption(tok, act, chipOf(act.action_type) ?? "•", gen);
+        else await this.delayP(1500);
         // The deed's own icon, not ⏳, so the glyph never switches mid-act; "开始 · 预计X" carries
         // the temporal state.
         this.hud.setActionChip(
           tok, chipOf(act.action_type) ?? "⏳",
-          act.duration_label ? `开始 · 预计${act.duration_label}` : "开始",
-          "ok", undefined, act.action_description,
+          act.shared?.duration_label ? `开始 · 预计${act.shared.duration_label}` : "开始",
+          "ok", undefined, act.caption,
         );
         continue;
       }
@@ -1176,8 +1336,8 @@ export class TiledWorldScene
         // "进行中" + a progress bar; same identity glyph as the other beats, not ⏳.
         this.hud.setActionChip(
           tok, chipOf(act.action_type) ?? "⏳", "进行中", "ok",
-          act.total_steps > 0 ? act.elapsed_steps / act.total_steps : undefined,
-          act.action_description,
+          act.shared && act.shared.total_steps > 0 ? act.shared.elapsed_steps / act.shared.total_steps : undefined,
+          act.caption,
         );
         continue;
       }
@@ -1191,10 +1351,11 @@ export class TiledWorldScene
           const ot = this.token(oid);
           if (ot && ot !== tok) faceOnlooker(this, ot, [act.agent_id]);
         }
-        const sig = (act.dialogue ?? []).map((t) => `${t.speaker}:${t.line}`).join("|");
-        if (act.dialogue?.length && !seenDialogue.has(sig)) {
+        const dialogue = act.shared?.dialogue ?? [];
+        const sig = dialogue.map((t) => `${t.speaker}:${t.line}`).join("|");
+        if (dialogue.length && !seenDialogue.has(sig)) {
           seenDialogue.add(sig);
-          await this.hud.playDialogue(act.dialogue, tok, [act.agent_id, ...subjectPeopleIds(act)], gen);
+          await this.hud.playDialogue(dialogue, tok, [act.agent_id, ...subjectPeopleIds(act)], gen);
         } else {
           await this.delayP(650);
         }
@@ -1204,14 +1365,13 @@ export class TiledWorldScene
       }
       // Non-talk: transient effect, then the intent caption, then the persistent result chip.
       if (act.action_type === ActionType.physical) physicalEffect(this, tok, act);
-      // Covert: a shadow closes in around him (red if spotted) — about the actor, since COVERT has
-      // no structured target. Only where he enters concealment; the closing beat is him leaving it.
-      else if (act.action_type === ActionType.covert && act.phase !== Phase.ongoing_complete)
-        stealthVeil(this, tok, act.detected);
+      // Covert: a shadow closes in around him (red if spotted) — about the doer, since COVERT has
+      // no structured target. See drawsVeil for which beats.
+      else if (drawsVeil(act)) stealthVeil(this, tok, act.detected);
       // The closing beat gets no intent bubble (it was said when he set out; the chip carries it).
       // The wait stays: it covers the fire-and-forget effects above, which the next clearEphemeral
       // would otherwise wipe mid-swing.
-      if (act.phase === Phase.ongoing_complete) {
+      if (act.phase === Phase.ongoing_complete || !act.caption) {
         await this.delayP(1500);
       } else {
         await this.hud.playActionCaption(tok, act, chipOf(act.action_type) ?? "•", gen);
@@ -1222,24 +1382,25 @@ export class TiledWorldScene
       if (act.action_type === ActionType.send_message) {
         const addressees = actedOnAgents(act.target);
         if (addressees.length) await directedMessages(this, tok, addressees);
-        else await localAnnounce(this, tok);
+        else if (!act.anonymous) await localAnnounce(this, tok);
       }
       // On a failure the chip says why: `failure_reason` is a short phrase written for this spot,
-      // never parsed out of `outcome`. Falls back to the gist, then the intent.
+      // never parsed out of `outcome`. Falls back to the gist, then the caption; from outside
+      // there is no gist, and a deed its motion showed gets no chip at all.
       this.hud.setActionChip(
         tok,
         chipOf(act.action_type) ?? "•",
-        act.failure_reason || act.gist || act.action_description,
-        act.succeeded === false ? "fail" : "ok",
+        act.shared?.failure_reason || act.shared?.gist || act.caption,
+        act.shared?.succeeded === false ? "fail" : "ok",
         undefined,
-        act.action_description,
+        act.caption,
       );
       afterBeat(actIdx);
     }
   }
 
   /** Put a figure where this step says he is, at once: the step before it was not drawn. */
-  private placeAgent(state: AgentStateSummary, states: AgentStateSummary[]): void {
+  private placeAgent(state: Figure, states: Figure[]): void {
     const tok = this.tokens.get(state.agent_id);
     if (!tok || tok.dead) return;
     const pos = this.staging.positionFor(state, states);
@@ -1259,18 +1420,27 @@ export class TiledWorldScene
 
   /**
    * Put a figure where this step says he is, on foot over walkable ground; resolves when the
-   * walk finishes. Only for the step right after the one drawn before (see placeAgent).
+   * walk finishes. Only for the step right after a completed render (see placeAgent).
    *
    * Don't add a straight-line branch for moves without a transit: an adjacent-room move
    * arrives with `transit: null` and would slide through the palace wall. The transit only
    * supplies waypoints and this step's portion of the route.
    */
-  private moveAgent(state: AgentStateSummary, states: AgentStateSummary[]): Promise<void> {
+  private moveAgent(state: Figure, states: Figure[]): Promise<void> {
     const tok = this.tokens.get(state.agent_id);
     if (!tok) return Promise.resolve();
     // A body already drawn down does not travel. Keyed on the token, not the report: the report
     // says "dead" for the whole step he dies in, and a withheld death must still walk to the fight.
     if (tok.dead) return Promise.resolve();
+    if (this.entering.delete(state.agent_id)) {
+      const at = this.staging.positionFor(state, states);
+      if (!at) {
+        tok.presenceAlpha = 1;
+        return Promise.resolve();
+      }
+      this.placed.add(state.agent_id);
+      return this.presence.enter(tok, at);
+    }
     if (state.transit && state.transit.total_steps > 0) {
       return this.walker.walkTransit(tok, state.agent_id, state.transit);
     }
@@ -1318,9 +1488,18 @@ export class TiledWorldScene
     return this.walker.walkAlong(tok, route).then(() => footDust(this, pos.x, pos.y + 8));
   }
 
-  /** Reported dead and no token left on the map: a body an earlier step already showed falling. */
-  gone(state: AgentStateSummary): boolean {
-    return reportedDead(state) && !this.tokens.has(state.agent_id);
+  /**
+   * Died before the step being drawn: no body on the map. A body is drawn only on the step it
+   * falls. Keyed on the death's step, not on whether he has a token: someone first seen on the
+   * step he dies has none yet and must still be seen falling.
+   */
+  gone(state: Figure): boolean {
+    return state.death_step !== null && state.death_step < (this.drawnStep ?? 0);
+  }
+
+  /** Dies on the step being drawn: his fall is the death's one-time visual, wherever he was first seen. */
+  private fallsNow(state: Figure): boolean {
+    return state.death_step === this.drawnStep;
   }
 
   // FxHost: a point outward along the ray from the world's center through (x,y), off the map.

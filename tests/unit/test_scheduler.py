@@ -31,6 +31,9 @@ class _StubAgent:
     is_active: bool = True
     pending_external_goals: list = field(default_factory=list)
 
+    def decides_this_step(self, *, step: int, signals) -> None:
+        return None   # paced by the engine's cadence, as the AI is
+
     def __post_init__(self) -> None:
         self.personality = _StubPersonality(StateLayer(agent_id=self.agent_id))
 

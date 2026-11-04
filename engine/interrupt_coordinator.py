@@ -2,20 +2,24 @@
 
 An interrupt is three parts within one step: break off the current action, apply interrupt
 feedback, then think and act anew. Without the third it pays the teardown cost and buys nothing.
-The first two are ``_apply_interrupt``; the third lands in ``NarrativeRuntime.run_step``
+The first two are ``apply_interrupt``; the third lands in ``NarrativeRuntime.run_step``
 (removing the torn-down agent from in_progress_at_step_start) and ``AgentScheduler``
 (``CadenceReason.INTERRUPTED``).
 
-Signals: urgent messages, high-severity broadcasts, external THREAT goals. Teardown lands through
-the ExecutionProcessor; this never calls back into the runtime.
+Signals: urgent messages, high-severity broadcasts, external THREAT goals and one's own agreed
+times falling due raise the reasons; the
+character says whether to weigh them and weighs them itself (``Agent.weighs_interrupt`` /
+``Agent.evaluate_interrupt``), however its cognition is driven. Teardown lands through the
+ExecutionProcessor; this never calls back into the runtime.
 """
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping
 
+from agent.goals import falling_due
 from agent.motivation import ExternalDriveType
 from agent.personality import ActionStatus
 from core.context import annotate_call, observe_stage
@@ -24,6 +28,7 @@ from core.interfaces.severity import Severity
 from core.interfaces.trace import Stage
 from core.interfaces.urgency import URGENCY_INTERRUPT_THRESHOLD
 from core.logging import get_logger
+from core.prompts import broadcast_tag
 from core.duration import describe_duration
 from engine.clock import GlobalClock
 from engine.environment import EnvironmentSystem
@@ -32,6 +37,8 @@ from engine.executors.base import (
     ActionExecutionState, execution_annotations, participant_action_desc, participant_intent,
 )
 from engine.executors.registry import ActionExecutorRegistry
+from core.interfaces.perception import PerceivedSignals
+from engine.run_control import StepWithdrawn
 
 if TYPE_CHECKING:
     from agent.agent import Agent
@@ -40,6 +47,10 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+
+def _in_progress(agent: "Agent") -> bool:
+    return agent.personality.state.action_status == ActionStatus.IN_PROGRESS
 
 
 @dataclass
@@ -74,7 +85,7 @@ class InterruptCoordinator:
         # an agent that decided "finish first" would be re-asked each step and oscillate.
         # Accepted coarseness: the key omits goal.text (a new threat from the same source+drive
         # won't re-trigger), and it is not snapshotted (a restore re-asks once).
-        self._interrupt_seen_goals: Dict[str, set[tuple[str, ExternalDriveType]]] = {}
+        self._interrupt_seen_goals: Dict[str, set[tuple[frozenset[str], ExternalDriveType]]] = {}
 
     async def evaluate_interrupts(
         self,
@@ -82,26 +93,19 @@ class InterruptCoordinator:
         broadcasts: "List[Broadcast]",
         agents: "Dict[str, Agent]",
         step: int,
+        signals: "Mapping[str, PerceivedSignals] | None" = None,
     ) -> List[Dict[str, Any]]:
         """Evaluate interrupt triggers from messages, broadcasts, and external goals.
 
-        Collect merges each agent's signals; Decide runs per-agent decisions concurrently; Apply
-        runs serially, so a shared multi-participant action is torn down only once.
+        Collect raises each agent's reasons and lets the agent say whether to weigh them; Decide
+        runs per-agent decisions concurrently; Apply runs serially, so a shared
+        multi-participant action is torn down only once.
         """
-        candidates: Dict[str, _InterruptCandidate] = {}
+        reasons: Dict[str, List[str]] = {}
 
-        def _register(agent_id: str, reason: str) -> None:
-            agent = agents.get(agent_id)
-            if agent is None or agent.personality.state.action_status != ActionStatus.IN_PROGRESS:
-                return
-            candidate = candidates.get(agent_id)
-            if candidate is None:
-                exec_state = self._executor_registry.get_active_for_agent(agent_id)
-                if exec_state is None:
-                    return
-                candidate = _InterruptCandidate(agent=agent, exec_state=exec_state)
-                candidates[agent_id] = candidate
-            candidate.reason_parts.append(reason)
+        def _note(agent_id: str, reason: str) -> None:
+            if agent_id in agents:
+                reasons.setdefault(agent_id, []).append(reason)
 
         # Path 1: messages the sender marked urgency >= HIGH (a hint; the agent still decides).
         # Must iterate each agent's inbox_for(), not delivered_messages: the latter includes
@@ -112,9 +116,8 @@ class InterruptCoordinator:
                     continue
                 if agent_id == message.sender_id:
                     continue
-                # The sender is always an agent; name it, never the id.
-                sender_name = self._directory.agent_name(message.sender_id)
-                _register(agent_id, f"收到{sender_name}的急讯：{message.content}")
+                sender_name = message.sender_name
+                _note(agent_id, f"收到{sender_name}的急讯：{message.content}")
 
         # Path 2: high-severity broadcasts
         for bc in broadcasts:
@@ -124,29 +127,65 @@ class InterruptCoordinator:
                 if bc.location_scope is not None:
                     if bc.location_scope != self._environment.get_body_location(agent_id):
                         continue
-                _register(agent_id, f"世界广播：{bc.content}")
+                _note(agent_id, f"{broadcast_tag(bc.location_scope)}：{bc.content}")
 
         # Path 3: ExternalGoal THREAT, urgency >= HIGH, edge-triggered
         for agent_id, agent in agents.items():
-            if agent.personality.state.action_status != ActionStatus.IN_PROGRESS:
+            if not _in_progress(agent):
                 self._interrupt_seen_goals.pop(agent_id, None)
                 continue
             seen = self._interrupt_seen_goals.get(agent_id, set())
-            qualifying: set[tuple[str, ExternalDriveType]] = set()
+            qualifying: set[tuple[frozenset[str], ExternalDriveType]] = set()
             for goal in agent.pending_external_goals:
                 if goal.drive_type != ExternalDriveType.THREAT or goal.urgency < URGENCY_INTERRUPT_THRESHOLD:
                     continue
-                key = (goal.source_id, goal.drive_type)
+                key = (frozenset(goal.source_ids), goal.drive_type)
                 qualifying.add(key)
                 if key not in seen:
-                    # Name the source only when it is an agent: it may be an event_id, which the
-                    # directory would render as "某人".
-                    if goal.source_id in agents:
-                        threat_reason = f"我感受到的来自{self._directory.agent_name(goal.source_id)}的外部压力：{goal.text}"
+                    # Name only the sources that are agents: the directory renders an Npc as "某人".
+                    names = [self._directory.agent_name(s) for s in goal.source_ids if s in agents]
+                    if names:
+                        threat_reason = f"我感受到的来自{'、'.join(names)}的外部压力：{goal.text}"
                     else:
                         threat_reason = f"我感受到的外部压力：{goal.text}"
-                    _register(agent_id, threat_reason)
+                    _note(agent_id, threat_reason)
             self._interrupt_seen_goals[agent_id] = qualifying
+
+        # Path 4: an agreed time of one's own falls due mid-action. The cadence gate's DUE wakes
+        # only idle bodies. A time already past isn't asked: an action begun after it was chosen
+        # with the overdue mark in view. Nor is an action ending this step: DUE wakes the agent
+        # next step anyway, and breaking off its last beat only loses what it was about to yield.
+        # A due step covers a span, so the reason says the time lies within it, not that it has
+        # come; "到了" at the span's start sends the agent hours early.
+        window = describe_duration(1, self._clock.config.seconds_per_step)
+        due_now: set[str] = set()
+        for agent_id, agent in agents.items():
+            if not _in_progress(agent):
+                continue
+            exec_state = self._executor_registry.get_active_for_agent(agent_id)
+            if exec_state is None or exec_state.remaining_steps <= 1:
+                continue
+            for goal in falling_due(agent.personality.state.short_term_goal_entities, step):
+                due_now.add(agent_id)
+                _note(agent_id, f"我约定好时间的事项快到了，就在接下来{window}之内：{goal.text}")
+
+        signals = signals or {}
+        candidates: Dict[str, _InterruptCandidate] = {}
+        # Agents with reasons first, in the order their first reason was raised.
+        for agent_id in [*reasons, *(a for a in agents if a not in reasons)]:
+            agent = agents[agent_id]
+            if not _in_progress(agent):
+                continue
+            raised = reasons.get(agent_id, [])
+            if not agent.weighs_interrupt(
+                step=step, reasons=raised, signals=signals.get(agent_id, PerceivedSignals()),
+                falling_due=agent_id in due_now,
+            ):
+                continue
+            exec_state = self._executor_registry.get_active_for_agent(agent_id)
+            if exec_state is None:
+                continue
+            candidates[agent_id] = _InterruptCandidate(agent=agent, exec_state=exec_state, reason_parts=raised)
 
         if not candidates:
             return []
@@ -154,7 +193,9 @@ class InterruptCoordinator:
         ordered = list(candidates.values())
         decisions = await asyncio.gather(
             *(
-                self._decide_interrupt(c.agent, c.exec_state, "\n".join(c.reason_parts), step)
+                self._decide_interrupt(
+                    c.agent, c.exec_state, "\n".join(c.reason_parts), step,
+                )
                 for c in ordered
             ),
             return_exceptions=True,
@@ -162,6 +203,9 @@ class InterruptCoordinator:
 
         interrupt_records: List[Dict[str, Any]] = []
         for candidate, decision in zip(ordered, decisions):
+            # A withdrawn step ends here, not just this decision.
+            if isinstance(decision, StepWithdrawn):
+                raise decision
             if isinstance(decision, BaseException):
                 logger.warning(
                     "interrupt_decision_failed",
@@ -195,7 +239,7 @@ class InterruptCoordinator:
             # Only the THOUGHT travels on, not the signals: reason_parts carries ExternalGoal
             # text, which must never reach memory, and every downstream consumer writes memory.
             # See ActionExecutor.interrupt.
-            interrupt_records.extend(await self._apply_interrupt(
+            interrupt_records.extend(await self.apply_interrupt(
                 agent_id=candidate.agent.agent_id,
                 thought=thought,
                 step=step,
@@ -244,7 +288,7 @@ class InterruptCoordinator:
         duration = describe_duration(elapsed, self._clock.config.seconds_per_step)
         return f"已进行了{duration}，{phase}"
 
-    async def _apply_interrupt(
+    async def apply_interrupt(
         self,
         *,
         agent_id: str,

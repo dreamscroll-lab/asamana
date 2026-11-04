@@ -7,10 +7,14 @@ multi-participant action, and concurrent execution of the decide pass.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import asyncio
 import logging
 
 import pytest
+
+from core.duration import describe_duration
 
 from core.interfaces.llm import LLMScene
 
@@ -28,7 +32,7 @@ from engine.broadcast import BroadcastChannel
 from engine.clock import GlobalClock, WorldTimeConfig
 from engine.directory import LiveWorldDirectory
 from engine.environment import EnvironmentSystem
-from engine.event import EventSettings
+from engine.narrative_editor import NarrativeEditorSettings
 from engine.executors import build_default_registry
 from engine.executors.base import ActionExecutionState
 from engine.message_system import MessageDelivery, MessageSystem
@@ -76,9 +80,8 @@ def _build_agent(container, *, world_id: str, agent_id: str, is_main: bool) -> A
             world_id=world_id,
             agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
-        relation_system=RelationSystem(container.agent_store, world_id=world_id, agent_id=agent_id),
-        agent_store=container.agent_store,
+        need_engine=NeedEngine(container.llm_router),
+        relation_system=RelationSystem(world_id=world_id, agent_id=agent_id),
         is_main_character=is_main,
     )
 
@@ -97,9 +100,8 @@ def _build_runtime(container, world_id: str):
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=EventSettings(check_interval=2, max_events_per_window=0),
+        narrative_editor_settings=NarrativeEditorSettings(check_interval=2, max_injections_per_window=0),
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=directory,
@@ -173,7 +175,7 @@ class _DecisionSpy:
         self._tracker = tracker
 
     async def __call__(self, *, step: int, reason: str, current_action_desc: str,
-                        intent: str, progress_hint: str) -> tuple[bool, str]:
+                        intent: str, progress_hint: str, signals=None) -> tuple[bool, str]:
         self.reasons.append(reason)
         if self._tracker is not None:
             await self._tracker.enter()
@@ -208,7 +210,7 @@ async def test_signals_aggregate_into_single_decision(container) -> None:
 
     deliveries = _delivery(2, _urgent_message("mc", "城门失守"), _urgent_message("mc", "粮仓起火"))
     agent.pending_external_goals = [
-        ExternalGoal(text="刺客逼近", source_id="scout", urgency=Urgency.CRITICAL,
+        ExternalGoal(text="刺客逼近", source_ids=("scout",), urgency=Urgency.CRITICAL,
                      drive_type=ExternalDriveType.THREAT),
     ]
 
@@ -223,9 +225,159 @@ async def test_signals_aggregate_into_single_decision(container) -> None:
     # Channel labels: the interrupt judgment must see each signal's source, not bare content.
     assert "急讯" in reason          # message channel
     assert "外部压力" in reason       # external THREAT driver channel
-    # No id leaks: neither sender_id="sender" nor source_id="scout" may appear in the reason fed to
+    # No id leaks: neither sender_id="sender" nor source_ids=("scout",) may appear in the reason fed to
     # the LLM.
     assert "sender" not in reason and "scout" not in reason
+
+
+def _goal_due(due_step: int, *, settled: bool = False):
+    from agent.goals import GoalEntity, GoalStatus
+    return GoalEntity(
+        id=f"stg-{due_step}", text="今晚十点在中央写字楼与周映荷对账", goal_type="short_term",
+        status=GoalStatus.COMPLETED if settled else GoalStatus.ACTIVE,
+        created_step=1, due_step=due_step,
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_agreed_time_falling_due_mid_action_is_weighed(container) -> None:
+    """A busy body is no candidate for the cadence gate's DUE, so without this an appointment
+    comes and goes while the agent finishes what it was doing."""
+    runtime, registry = _build_runtime(container, "world-due")
+    agent = _build_agent(container, world_id="world-due", agent_id="mc", is_main=False)
+    _start_rest([agent], registry)
+    agent.personality.set_short_term_goal_entities([_goal_due(2)])
+    spy = _DecisionSpy((False, ""))
+    agent.evaluate_interrupt = spy  # type: ignore[method-assign]
+
+    await runtime._interrupts.evaluate_interrupts(_delivery(2), [], {"mc": agent}, step=2)
+
+    # The due step is a span starting now; the reason must not say the time has already come.
+    window = describe_duration(1, runtime._interrupts._clock.config.seconds_per_step)  # noqa: SLF001
+    assert spy.reasons == [f"我约定好时间的事项快到了，就在接下来{window}之内：今晚十点在中央写字楼与周映荷对账"]
+
+
+@pytest.mark.asyncio
+async def test_an_action_ending_this_step_is_not_asked_about_an_agreed_time(container) -> None:
+    """It ends anyway and DUE wakes the agent next step; breaking off its last beat only loses
+    what it was about to yield."""
+    runtime, registry = _build_runtime(container, "world-due-last")
+    agent = _build_agent(container, world_id="world-due-last", agent_id="mc", is_main=False)
+    state = _start_rest([agent], registry, estimated_steps=2)
+    state.remaining_steps = 1  # this step's tick completes it
+    agent.personality.set_short_term_goal_entities([_goal_due(2)])
+    spy = _DecisionSpy((False, ""))
+    agent.evaluate_interrupt = spy  # type: ignore[method-assign]
+
+    await runtime._interrupts.evaluate_interrupts(_delivery(2), [], {"mc": agent}, step=2)
+
+    assert spy.reasons == []
+
+
+@pytest.mark.parametrize("label,goal,step", [
+    ("not yet due", _goal_due(3), 2),
+    ("already past due: the action was chosen with that in view", _goal_due(1), 2),
+    ("already settled", _goal_due(2, settled=True), 2),
+])
+@pytest.mark.asyncio
+async def test_an_agreed_time_is_weighed_only_on_the_step_it_falls_due(
+    container, label, goal, step,
+) -> None:
+    """Asked every step past due, an agent that chose to finish first would waver."""
+    runtime, registry = _build_runtime(container, "world-due-once")
+    agent = _build_agent(container, world_id="world-due-once", agent_id="mc", is_main=False)
+    _start_rest([agent], registry)
+    agent.personality.set_short_term_goal_entities([goal])
+    spy = _DecisionSpy((False, ""))
+    agent.evaluate_interrupt = spy  # type: ignore[method-assign]
+
+    await runtime._interrupts.evaluate_interrupts(_delivery(step), [], {"mc": agent}, step=step)
+
+    assert spy.reasons == [], label
+
+
+@pytest.mark.parametrize("estimated_steps,asked_due", [
+    (8, True),
+    # Ends this step: the same rule as for the AI, decided once by the engine's path.
+    (2, False),
+])
+@pytest.mark.asyncio
+async def test_an_agreed_time_falling_due_reaches_the_actor(
+    container, estimated_steps, asked_due,
+) -> None:
+    """An actor is asked about every interrupt trigger, this one included; it isn't a perceived
+    signal, so the engine tells the character, which tells its actor."""
+    runtime, registry = _build_runtime(container, "world-due-actor")
+    agent = _build_agent(container, world_id="world-due-actor", agent_id="mc", is_main=True)
+    state = _start_rest([agent], registry, estimated_steps=estimated_steps)
+    state.remaining_steps = estimated_steps - 1
+    agent.personality.set_short_term_goal_entities([_goal_due(2)])
+    asked: list[bool] = []
+
+    class _Actor:
+        def weighs_interrupt(self, *, step, signals, falling_due):
+            asked.append(falling_due)
+            return False
+
+    agent.actor = _Actor()  # type: ignore[assignment]
+    await runtime._interrupts.evaluate_interrupts(_delivery(2), [], {"mc": agent}, step=2)
+
+    assert asked == [asked_due]
+
+
+@pytest.mark.asyncio
+async def test_an_urgent_message_names_the_sender_it_carries(container) -> None:
+    """The reason names the sender as the message carries it: an Npc or the narrator is no agent
+    the directory knows, and resolving its id would turn every such sender into 「某人」. A
+    message carrying no name is looked up."""
+    runtime, registry = _build_runtime(container, "world-sender")
+    agent = _build_agent(container, world_id="world-sender", agent_id="mc", is_main=True)
+    sender = _build_agent(container, world_id="world-sender", agent_id="li", is_main=False)
+    runtime._interrupts._directory = LiveWorldDirectory.from_agents(
+        {"mc": agent, "li": sender}, runtime._environment)
+    _start_rest([agent], registry)
+    spy = _DecisionSpy((False, ""))
+    agent.evaluate_interrupt = spy  # type: ignore[method-assign]
+    unsigned = replace(_urgent_message("mc", "阶前拾得铜符"), sender_id="narrator",
+                       sender_name="匿名", sender_is_agent=False)
+    errand = replace(_urgent_message("mc", "承天门无人"), sender_id="npc_1",
+                     sender_name="宫娥", sender_is_agent=False)
+
+    signed = replace(_urgent_message("mc", "速来布政坊"), sender_id="li", sender_name="li")
+
+    await runtime._interrupts.evaluate_interrupts(
+        _delivery(2, unsigned, errand, signed), [], {"mc": agent}, step=2)
+
+    reason = spy.reasons[0]
+    assert "收到匿名的急讯：阶前拾得铜符" in reason
+    assert "收到宫娥的急讯：承天门无人" in reason
+    assert "收到li的急讯：速来布政坊" in reason   # soul.name == agent_id in these fixtures
+    assert "某人" not in reason and "narrator" not in reason and "npc_1" not in reason
+
+
+@pytest.mark.asyncio
+async def test_a_joint_threat_names_every_agent_behind_it(container) -> None:
+    """A pressure several people add up to names each agent among them; an Npc source stays
+    unnamed rather than rendered as 「某人」."""
+    runtime, registry = _build_runtime(container, "world-joint")
+    agent = _build_agent(container, world_id="world-joint", agent_id="mc", is_main=True)
+    li = _build_agent(container, world_id="world-joint", agent_id="li", is_main=False)
+    wang = _build_agent(container, world_id="world-joint", agent_id="wang", is_main=False)
+    agents = {"mc": agent, "li": li, "wang": wang}
+    runtime._interrupts._directory = LiveWorldDirectory.from_agents(agents, runtime._environment)
+    _start_rest([agent], registry)
+    spy = _DecisionSpy((False, ""))
+    agent.evaluate_interrupt = spy  # type: ignore[method-assign]
+    agent.pending_external_goals = [
+        ExternalGoal(text="两人合围", source_ids=("li", "npc_9", "wang"), urgency=Urgency.CRITICAL,
+                     drive_type=ExternalDriveType.THREAT),
+    ]
+
+    await runtime._interrupts.evaluate_interrupts(_delivery(2), [], agents, step=2)
+
+    reason = spy.reasons[0]
+    assert "我感受到的来自li、wang的外部压力：两人合围" in reason  # soul.name == agent_id here
+    assert "某人" not in reason and "npc_9" not in reason
 
 
 @pytest.mark.asyncio
@@ -255,11 +407,13 @@ async def test_passive_participant_action_desc_is_joiner_pov(container) -> None:
 
     # Initiator sees their own framing verbatim.
     assert participant_action_desc(runtime._directory, "a", exec_state) == "与b当面交谈，探明局势"
-    # Passive participant b must NOT get the bare self-referential purpose as "my action";
-    # it's reframed as the initiator's action so b reads it as a's intent, not self-talk.
+    # The one invited knows who drew him in, never what the initiator set out to do.
     joiner_desc = participant_action_desc(runtime._directory, "b", exec_state)
-    assert joiner_desc != exec_state.purpose               # not the self-referential bare purpose
-    assert joiner_desc.startswith("参与a发起的行动")        # framed as "a's action", with b as participant
+    assert joiner_desc == "应a的邀请交谈"
+    assert "探明局势" not in joiner_desc
+    # A topic the initiator stated up front, he knows.
+    exec_state.talk_topic = "近来的局势"
+    assert participant_action_desc(runtime._directory, "b", exec_state) == "应a的邀请交谈，a的来意是近来的局势"
 
 
 @pytest.mark.asyncio
@@ -283,6 +437,27 @@ async def test_participant_intent_belongs_to_the_initiator_only(container) -> No
 
     assert participant_intent("a", exec_state) == "我打算「问出他昨夜的去处」。"
     assert participant_intent("b", exec_state) == ""
+
+
+def test_the_carried_know_who_takes_them_not_where() -> None:
+    """Someone carried off knows who takes him; where to, he learns on arrival."""
+    from engine.directory import LiveWorldDirectory
+    from engine.environment import EnvironmentSystem
+    from engine.executors.base import participant_action_desc
+
+    exec_state = ActionExecutionState.create(
+        target=ActionTarget(),
+        action_type=ActionType.MOVE,
+        initiator_id="a",
+        participant_ids=["a", "b"],
+        purpose="带他去皇城面圣",
+        started_step=1,
+        estimated_steps=2,
+        opening_outcome="开始",
+    )
+    directory = LiveWorldDirectory.from_agents({}, EnvironmentSystem())
+
+    assert participant_action_desc(directory, "b", exec_state) == "被某人强行带着走"
 
 
 @pytest.mark.asyncio
@@ -382,7 +557,7 @@ async def test_path3_threat_is_edge_triggered(container) -> None:
     spy = _DecisionSpy((False, ""))  # decline so the action stays IN_PROGRESS
     agent.evaluate_interrupt = spy  # type: ignore[method-assign]
     agents = {"mc": agent}
-    threat = ExternalGoal(text="叛军压境", source_id="rebels", urgency=Urgency.HIGH,
+    threat = ExternalGoal(text="叛军压境", source_ids=("rebels",), urgency=Urgency.HIGH,
                           drive_type=ExternalDriveType.THREAT)
 
     # Step 1: newly appearing threat → evaluated.
@@ -523,19 +698,20 @@ async def test_interrupt_emits_display_record(container) -> None:
     # The action is actually torn down (the state transition happened).
     assert not registry.is_agent_active("mc")
 
-    # The record maps to a valid ActionSummary → it really reaches step_event / the snapshot display
-    # layer.
-    from interaction.models import _action_from_record
+    # The record maps to a valid ActionSummary → it really reaches the StepView.
+    from tests.unit.step_view import the_action
 
-    summary = _action_from_record(rec)
+    summary = the_action(rec)
     assert summary.phase == "interrupt"
-    assert summary.agent_id == "mc"
-    assert summary.succeeded is False
+    assert summary.initiator_id == "mc"
+    assert summary.shared is not None and summary.shared.succeeded is False
     assert summary.interrupted_by == "mc"
-    assert "我必须立刻动身" in summary.outcome
+    # The thought is the participants' to know, not the onlookers'.
+    assert summary.public is None
+    assert "我必须立刻动身" in summary.shared.outcome
     # The gist reaches the read model without the thought.
-    assert "打断" in summary.gist and "我必须立刻动身" not in summary.gist
-    assert "城门失守" not in summary.outcome  # trigger stays out of narrative
+    assert "打断" in summary.shared.gist and "我必须立刻动身" not in summary.shared.gist
+    assert "城门失守" not in summary.shared.outcome  # trigger stays out of narrative
 
 
 @pytest.mark.asyncio
@@ -692,7 +868,7 @@ async def test_invite_gives_up_when_the_body_is_already_committed(container) -> 
     assert seized == [], "邀请制不拆任何人的行动"
     stub = registry.get_active_for_agent("talker")
     assert stub is not None and stub.extra.get("completed_result") is not None
-    assert "正在歇息" in stub.extra["completed_result"].failure_reason   # what he visibly is doing
+    assert "正在休息" in stub.extra["completed_result"].failure_reason   # what he visibly is doing
     assert registry.get_active_for_agent("busy").action_type == ActionType.REST, "他手上的事没被动"
 
 
@@ -798,11 +974,11 @@ def _same_step_compel_world(container, *, listener_action=None, with_x=False):
     return runtime, registry, env, agents
 
 
-def _talk(actor: str, other: str):
+def _talk(doer: str, other: str):
     from core.interfaces.action import AgentAction
 
     return AgentAction(
-        agent_id=actor, step=2, action_type=ActionType.TALK, action_description=f"{actor}找{other}议事",
+        agent_id=doer, step=2, action_type=ActionType.TALK, action_description=f"{doer}找{other}议事",
         estimated_steps=3, target=ActionTarget(acts_on=[Ref.agent(other)], claims=[Ref.agent(other)]),
     )
 
@@ -887,7 +1063,9 @@ async def test_same_step_compel_gives_a_listener_whose_turn_has_passed_his_own_t
     decision, with no join recorded and no intent lost."""
     runtime, registry, env, agents = _same_step_compel_world(container, with_x=True)
     kept: list = []
-    agents["listener"].defer_decided_intent = lambda action, step: kept.append(action)  # type: ignore[method-assign]
+    async def _keep(action, step, *, invited_by=""):
+        kept.append(action)
+    agents["listener"].defer_decided_intent = _keep  # type: ignore[method-assign]
     plans = [
         ("main", agents["talker"], _plan_for(agents["talker"], env, step=2, action=_talk("talker", "listener"))),
         ("main", agents["listener"], _plan_for(agents["listener"], env, step=2, action=_talk("listener", "x"))),
@@ -908,11 +1086,11 @@ async def test_same_step_compel_gives_a_listener_whose_turn_has_passed_his_own_t
     assert not any(r.message == "stranded_participant_released" for r in caplog.records)
 
 
-def _move_carrying(actor: str, carried: str, to: str = "n1"):
+def _move_carrying(doer: str, carried: str, to: str = "n1"):
     from core.interfaces.action import AgentAction
 
     return AgentAction(
-        agent_id=actor, step=2, action_type=ActionType.MOVE, action_description="拽着他走",
+        agent_id=doer, step=2, action_type=ActionType.MOVE, action_description="拽着他走",
         estimated_steps=1, target=ActionTarget(acts_on=[Ref.place(to)], claims=[Ref.agent(carried)]),
     )
 
@@ -1025,12 +1203,16 @@ async def test_a_refusal_never_cites_an_admission_that_was_revoked(container, se
 @pytest.mark.asyncio
 async def test_commit_releases_a_body_whose_execution_is_already_gone(container, caplog) -> None:
     """Invariant guard: arbitration gave him an execution, but registry has no such execution at
-    commit → don't attach him; reset and log an error."""
+    commit → don't attach him; reset, tell his actor the act ended, and log an error."""
+    from unittest.mock import MagicMock
+
     from agent.personality import ActionStatus
     from engine.arbiter import ArbitratedAction
     from core.interfaces.action import ActionResult
 
     runtime, registry, env, agents = _same_step_compel_world(container)
+    actor = MagicMock()
+    agents["talker"].actor = actor
     plan = _plan_for(agents["talker"], env, step=2, action=_talk("talker", "listener"))
     dangling = ArbitratedAction(
         agent_id="talker", location_id="n0", ongoing_execution_id="talk_gone",
@@ -1040,6 +1222,8 @@ async def test_commit_releases_a_body_whose_execution_is_already_gone(container,
 
     assert agents["talker"].personality.state.action_status == ActionStatus.IDLE
     assert any(r.message == "stranded_participant_released" for r in caplog.records)
+    actor.began.assert_called_once()
+    actor.ended.assert_called_once_with(step=2, fact="", succeeded=False, happened=True)
 
 
 @pytest.mark.asyncio

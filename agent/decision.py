@@ -19,12 +19,12 @@ Through the lens, toward the direction, within reality, pick one concrete feasib
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, List, Sequence
+from typing import Callable, List, NamedTuple, Sequence
 
 from agent.memory_types import Memory
-from agent.need import NeedEvaluation
 from agent.perception import PerceptionPacket
 from agent.relation import describe_relations, render_relation_lines
 from agent.personality import ActionStatus, PersonalityLayer
@@ -39,6 +39,12 @@ from core.interfaces.action import (
     KIND_OBJECT,
     ActionTarget, ActionType, AgentAction, ErrandOrder, Ref,
 )
+from core.interfaces.actor import (
+    ActorAction,
+    ActorAnswerRejected,
+    ActorDecision,
+    ActorIntent,
+)
 from core.duration import describe_duration, describe_seconds
 from core.interfaces.llm import IndexedRef, LLMMessage, LLMRouter, LLMScene, extract_json_object, output_budget
 from core.interfaces.urgency import Urgency, parse_urgency
@@ -46,6 +52,7 @@ from core.logging import get_logger
 from core.interfaces.perception import PerceivedIdentity, Situation, SpatialPerception, VisibleEntity
 from core.prompts import (
     SIGNAL_CAPS,
+    broadcast_tag,
     render_npc,
     ABSOLUTE_TIME_RULE_FIRST_PERSON,
     CLOSED_WORLD_FACT_RULE_FIRST_PERSON,
@@ -59,6 +66,7 @@ from core.prompts import (
     render_entity,
     render_memory,
     render_memory_lines,
+    relation_legend,
     render_situation_header,
     situation_location,
     urgency_label,
@@ -102,17 +110,19 @@ class ActionCandidate:
 # Static action catalog.  Behavior comes from the LLM's choice of type and
 # target, not from filtering this list at runtime.
 _ACTION_SPACE: List[ActionCandidate] = [
-    ActionCandidate(ActionType.TALK,         "与当前场景中某个可见角色面对面同步交谈（1v1，双方共同参与多步完成，生成完整对话，影响双边关系；必须在同一地点），但是交谈内容有可能会被同一地点的人听到。"),
-    ActionCandidate(ActionType.SEND_MESSAGE, "向特定角色发送异步消息（对方下一步收到），或向场景内所有人广播通知（当步生效）；适合单边传达任意意图，收件人不在场也能送达"),
-    ActionCandidate(ActionType.MOVE,         "移动到一个可前往的地点；若这一动还要把在场的某人强行一并带走（不问他愿不愿意），另填 move_carry_indices"),
+    ActionCandidate(ActionType.TALK,         "与当前场景中某个可见角色面对面同步交谈（1v1，双方共同参与多步完成，生成完整对话，影响双边关系；必须在同一地点），但是交谈内容有被同一地点的人听到的风险。"),
+    ActionCandidate(ActionType.SEND_MESSAGE, "向特定角色发送异步消息（对方下一步收到；只有收件人看得到，旁人既看不到也听不到），或向场景内所有人广播通知（当步生效，在场的人都听得到）；适合单边传达任意意图，收件人不在场也能送达"),
+    ActionCandidate(ActionType.MOVE,         "移动到一个可前往的地点——换个地方，有可能会遇见新的人、看到新的东西、碰上新的事等等；若这一动还要把在场的某人强行一并带走（不问他愿不愿意），另填 move_carry_indices"),
     ActionCandidate(ActionType.WORK,         "专注完成某一件自身的事情（写作、练习、制作、经营、整理等）"),
-    ActionCandidate(ActionType.PHYSICAL,     "对特定目标施加直接的、即时的物理干预或身体动作（攻击、推倒、搀扶、保护、制止、夺取、使用、拿起、放下、破坏等，可有益可有害）；对人动手填 physical_person_index，对物动手填 physical_entity_index，对此处听人吩咐做事的动手另有专属的一栏（见输出格式），三者必居其一；若是把手里的东西交给在场某人，另填 physical_recipient_index"),
-    # State only what it can do and its hard constraints. Don't say it may fail, and don't say it
-    # "changes nothing". That is a code-layer fact (the executor has no world write access), and
-    # to the character it reads as "this option is useless", so models almost stop picking it.
-    ActionCandidate(ActionType.COVERT,       "藏在暗处观察此处的某人某事，探听我本来无从得知的情形和情况——听清他们谈的是什么、看清他们做的是什么、看清此处发生了什么事、读到写着的是什么；须与目标同在一地"),
-    ActionCandidate(ActionType.REST,         "暂时搁置外部事务进行休息（生理疲劳、情绪耗尽、心情低落、生命力亏损均可）；需要多个步骤，休息得越久，恢复的生命力越多"),
-    ActionCandidate(ActionType.ERRAND,       "派一个听人吩咐做事的替我跑一趟别处：先定他去哪，再看要不要让他带上东西、指名一个人、**替我把一句话原样说出去**（指了人就说给那人听，没指人就在那处当众说）——填了哪几样就办哪几样。他没有心智：只会走到、交到、把那句话一字不改地说出口、把**眼睛看得见的**（谁在场、有什么东西、刚出了什么事）带回来；他不会打听、不会问话、不会看人脸色，更不会替我劝人、引开人、盯梢。我这一拍交代完就自由，不必等他回来"),
+    ActionCandidate(ActionType.PHYSICAL,     "对特定目标施加直接的、即时的物理干预或身体动作（攻击、推倒、搀扶、保护、制止、夺取、使用、拿起、放下、破坏等，可有益可有害）；对人动手填 physical_person_index，对物动手填 physical_entity_index，对此处可接受任务指派的人动手另有专属的一栏（见输出格式），三者必居其一；若是把“我手上的东西”里的一件交给在场某人，另填 physical_recipient_index"),
+    # State only what it can do, its hard constraints and its risk in the world. Don't say it may
+    # fail, and don't say it "changes nothing". That is a code-layer fact (the executor has no
+    # world write access), and to the character it reads as "this option is useless", so models
+    # almost stop picking it. Exposure is different: a real consequence each character weighs by
+    # temperament, as TALK's being overheard is.
+    ActionCandidate(ActionType.COVERT,       "暗中探查此处的某人某事，探听我本来无从得知的情形和情况——听清他们谈的是什么、看清他们做的是什么、看清此处发生了什么事、读到写着的是什么；须与目标同在一地，但是行迹有可能被在场的人察觉。"),
+    ActionCandidate(ActionType.REST,         "暂时搁置外部事务进行休息（生理疲劳、情绪耗尽、心情低落、生命值亏损均可）；需要多个步骤，休息得越久，恢复的生命值越多"),
+    ActionCandidate(ActionType.ERRAND,       "向此处可接受任务指派的人指派任务，让他替我去一趟别处：先定他去哪，再看要不要让他带上东西、指名一个人、**替我把一句话原样说出去**（指了人就说给那人听，没指人就在那处当众说）——填了哪几样就办哪几样。他按指定内容前往目的地、交付物品、把那句话一字不改地说出口、把**眼睛看得见的**（谁在场、有什么东西、刚出了什么事）带回来；他不会打听、不会问话、不会看人脸色，更不会替我劝人、引开人、盯梢。我这一拍交代完就自由，不必等他回来"),
 ]
 
 # Fixed expectation for SEND_MESSAGE: an async action can only confirm "the message went out"
@@ -125,15 +135,14 @@ def _entity_owner_name(entity: VisibleEntity, *, self_id: str, spatial: SpatialP
     """Narrative referent for the holder: "我" for myself, else the perceived name, "某人" if
     unknown (never an id); None for things on the ground.
 
-    Don't query the directory: names in an agent's prompt may only come from perception (a holder
-    is co-located, so their name is already in visible_agents).
+    Don't query the directory: use only holder identities available in perception.
     """
     holder = entity.holder_id
     if not holder:
         return None
     if holder == self_id:
         return "我"
-    presence = spatial.visible_agents.get(holder)
+    presence = spatial.visible_agents.get(holder) or spatial.visible_npcs.get(holder)
     return ((presence.identity.name if presence is not None else "") or "某人")
 
 
@@ -157,12 +166,14 @@ class LLMSelection:
     inner_monologue: str
     estimated_steps: int = 1
     urgency: Urgency = Urgency.NORMAL
-    llm_model: str = "llm"
     expected_outcome: str = ""
     # SEND_MESSAGE only: the verbatim words for the recipients / everyone present (narrative
     # layer, delivered and read by recipients). A different voice from action_description (my own
     # memory of the act). Empty for other actions.
     message_content: str = ""
+    anonymous: bool = False
+    # TALK only: see AgentAction.talk_topic.
+    talk_topic: str = ""
     # ERRAND only: who runs it, where to, and what to do there. None for other actions.
     errand: "ErrandOrder | None" = None
 
@@ -189,13 +200,23 @@ class _Slots:
     reachable_ids: List[str]    # adjacent locations: destination_index / errand_destination_index
     entity_ids: List[str]       # things within reach: physical_entity_index
     entity_types: dict[str, str]
+    # Who holds each thing within reach: a code-layer key from perception, never a prompt line.
+    entity_holders: dict[str, str]
     npc_ids: List[str]          # people here with no mind of their own: errand_npc_index / physical_npc_index
     # What I'm holding: a membership set, not an indexed list (see ``_own_item_ids``).
     own_item_ids: List[str]
+    # Bare perceived name for each roster id (narrative layer), for text written about recipients.
+    roster_names: dict[str, str] = field(default_factory=dict)
     # Filled indices that fell outside their list. IndexedRef.resolve drops them silently, so
     # record them here or they are lost. Entries name only slot and number, so audits don't
     # depend on slot names or prompt layout.
     dropped: List[str] = field(default_factory=list)
+    # Why a binder refused, for a caller that must say so (the actor's form); see ``reject``.
+    rejections: List[str] = field(default_factory=list)
+
+    def reject(self, reason: str) -> None:
+        self.rejections.append(reason)
+        return _reject(reason)
 
     @property
     def grounded(self) -> bool:
@@ -246,9 +267,10 @@ class _Slots:
 class _Bound:
     """Binding result: the target plus any payload unique to the action type.
 
-    ``description_suffix`` is used only by TALK (appends what will be said); ``errand`` only by
-    ERRAND — the errand's content (where to, what to do there) doesn't fit in target, since it
-    isn't a "who does this point at" relation.
+    ``description_suffix`` is appended to action_description: by TALK (what I mean to say) and
+    by ERRAND (words with no listener, kept as my instructions to the runner). ``errand`` is
+    used only by ERRAND — the errand's content (where to, what to do there) doesn't fit in
+    target, since it isn't a "who does this point at" relation.
     """
 
     target: ActionTarget
@@ -264,13 +286,33 @@ def _bind_send(slots: _Slots) -> "_Bound | None":
     on the list" both look empty, and the lenient reading treats a beat that never touched the
     world as carried out. So reject when neither channel is used, or when no index resolves.
     If both are given, directed wins (declaration order is priority, as in ``_bind_physical``).
+
+    No words, no message: ``action_description`` is the sender's own and is never delivered in
+    their place.
     """
     recipients = slots.many("person_indices", slots.roster_ids)
     if slots.grounded and slots.indices("person_indices") and not recipients:
-        return _reject("send_recipients_unresolvable")
+        return slots.reject("send_recipients_unresolvable")
     if slots.grounded and not recipients and not slots.flag("message_announce"):
-        return _reject("send_without_channel")
+        return slots.reject("send_without_channel")
+    if not _text(slots.payload, "message_content"):
+        return slots.reject("message_required")
     return _Bound(ActionTarget(acts_on=[Ref.agent(aid) for aid in recipients]))
+
+
+def send_description(recipient_names: Sequence[str], *, words: str, anonymous: bool) -> str:
+    """The sender's own act, for a SEND_MESSAGE that came without ``action_description``.
+
+    Worded as a plan ("我打算"), as action_description is written before the act: without it a
+    later reader can take the message as already delivered. A doubled "我打算做：我打算…" where a
+    reader adds its own lead-in is the accepted cost. No recipients means the notice to everyone
+    here, as in ``_bind_send``.
+    """
+    lead = "我打算匿名" if anonymous else "我打算"
+    if recipient_names:
+        names = "、".join(name or "某人" for name in recipient_names)
+        return f"{lead}发消息给{names}说：「{words}」"
+    return f"{lead}向在场众人发通知说：「{words}」"
 
 
 def _bind_talk(slots: _Slots) -> "_Bound | None":
@@ -286,9 +328,9 @@ def _bind_talk(slots: _Slots) -> "_Bound | None":
     people = slots.many("person_indices", slots.roster_ids)
     if slots.grounded:
         if not people:
-            return _reject("talk_without_target")
+            return slots.reject("talk_without_target")
         if people[0] not in slots.visible_ids:
-            return _reject("talk_target_not_present")
+            return slots.reject("talk_target_not_present")
     target = (
         ActionTarget(
             acts_on=[Ref.agent(people[0])],
@@ -323,12 +365,17 @@ def _bind_physical(slots: _Slots) -> "_Bound | None":
     Never fall back across namespaces: retrying an out-of-range person index against the entity
     list turns "pin someone down" into "grab something" while the description still names a person.
 
-    The recipient is a modifier on the entity channel, not a fourth channel; unresolved, it rejects
-    the step, since the recipient is the substance of a hand-over. A PHYSICAL with no target is a
-    broken decision, not a weaker act.
+    The recipient is a modifier on the entity channel, not a fourth channel; unresolved, or named
+    for a thing not in my hands, it rejects the step, since the recipient is the substance of a
+    hand-over. A PHYSICAL with no target is a broken decision, not a weaker act.
+
+    A thing in someone else's hands reaches its holder: taking or working it lands on him. Holder
+    and recipient never meet in one act, since only what I hold can be handed over; the executor
+    relies on that to tell them apart.
     """
     acted_on: "Ref | None" = None
     recipient_id: str | None = None
+    holder_id: str | None = None
     if slots.filled("physical_person_index"):
         person_id = slots.one("physical_person_index", slots.roster_ids)
         if person_id is not None and person_id in slots.visible_ids:   # a person must be present
@@ -341,24 +388,30 @@ def _bind_physical(slots: _Slots) -> "_Bound | None":
         entity_id = slots.one("physical_entity_index", slots.entity_ids)
         if entity_id is not None:
             acted_on = Ref.entity(entity_id, slots.entity_types.get(entity_id) or KIND_ITEM)
+            holder = slots.entity_holders.get(entity_id)
+            if holder and entity_id not in slots.own_item_ids and holder in slots.visible_ids:
+                holder_id = holder
         if slots.filled("physical_recipient_index"):
             recipient_id = slots.one("physical_recipient_index", slots.roster_ids)
             if recipient_id is None or recipient_id not in slots.visible_ids:
-                return _reject("physical_recipient_unresolvable")
+                return slots.reject("physical_recipient_unresolvable")
+            if slots.grounded and entity_id is not None and entity_id not in slots.own_item_ids:
+                return slots.reject("physical_recipient_not_held")
     else:
-        abstract = _text(slots.payload, "item_id")
+        abstract = _text(slots.payload, "item_name")
         if abstract:
             acted_on = Ref.entity(abstract, KIND_OBJECT)
     if slots.filled("physical_recipient_index") and recipient_id is None:
         # A recipient without the entity channel: a hand-over with nothing to hand over.
-        return _reject("physical_recipient_without_entity")
+        return slots.reject("physical_recipient_without_entity")
     if slots.grounded and acted_on is None:
-        return _reject("physical_without_target")
-    # The recipient goes into reaches, not acts_on: the act is on the thing (it changes hands)
-    # and he is only affected. Not claims either — handing something over doesn't spend his turn.
+        return slots.reject("physical_without_target")
+    # Recipient and holder go into reaches, not acts_on: the act is on the thing (it changes hands
+    # or is worked) and they are only affected. Not claims either — neither spends his turn.
+    affected = recipient_id or holder_id
     return _Bound(ActionTarget(
         acts_on=[acted_on] if acted_on else [],
-        reaches=[Ref.agent(recipient_id)] if recipient_id else [],
+        reaches=[Ref.agent(affected)] if affected else [],
     ))
 
 
@@ -372,7 +425,7 @@ def _bind_move(slots: _Slots) -> "_Bound | None":
     """
     destination = slots.one("destination_index", slots.reachable_ids)
     if slots.grounded and destination is None:
-        return _reject("move_without_destination")
+        return slots.reject("move_without_destination")
     carried = [aid for aid in slots.many("move_carry_indices", slots.roster_ids)
                if aid in slots.visible_ids]
     return _Bound(ActionTarget(
@@ -402,15 +455,15 @@ def _bind_errand(slots: _Slots) -> "_Bound | None":
     """
     npc_id = slots.one("errand_npc_index", slots.npc_ids)
     if slots.grounded and npc_id is None:
-        return _reject("errand_without_bearer")
+        return slots.reject("errand_without_bearer")
     destination = slots.one("errand_destination_index", slots.reachable_ids)
     if slots.grounded and destination is None:
-        return _reject("errand_without_destination")
+        return slots.reject("errand_without_destination")
     item_id = slots.one("errand_item_index", slots.entity_ids)
     if slots.grounded and slots.filled("errand_item_index") and (
         item_id is None or item_id not in slots.own_item_ids
     ):
-        return _reject("errand_item_not_in_hand")
+        return slots.reject("errand_item_not_in_hand")
     recipient_id = slots.one("errand_recipient_index", slots.roster_ids)
     message = _text(slots.payload, "errand_message")
     # Words need a listener: a recipient hears them alone, errand_announce says them aloud. With
@@ -421,7 +474,7 @@ def _bind_errand(slots: _Slots) -> "_Bound | None":
     # ErrandOrder.message always has a real listener.
     suffix = ""
     if message and not slots.flag("errand_announce") and not recipient_id:
-        suffix, message = f"（我吩咐他：{message}）", ""
+        suffix, message = f"（我向他指派任务：{message}）", ""
     order = (
         ErrandOrder(
             npc_id=npc_id, destination_id=destination,
@@ -439,7 +492,7 @@ def _bind_errand(slots: _Slots) -> "_Bound | None":
 def _bind_nothing(slots: _Slots) -> "_Bound | None":
     """WORK / REST act only on oneself.
 
-    No catch-all: a slot filled under another type (``destination_index``, ``item_id``) isn't
+    No catch-all: a slot filled under another type (``destination_index``, ``item_name``) isn't
     bound, or the record and the narrative would name different things.
     """
     return _Bound(ActionTarget())
@@ -455,6 +508,131 @@ _TARGET_BINDERS: dict[ActionType, Callable[[_Slots], "_Bound | None"]] = {
     ActionType.MOVE: _bind_move,
     ActionType.ERRAND: _bind_errand,
 }
+
+
+_ACTION_COMMON_FIELDS = frozenset({"action_description", "estimated_steps"})
+_DECISION_FIELDS = frozenset({"inner_monologue", "expected_outcome", "urgency"})
+_ACTION_FIELDS: dict[ActionType, frozenset[str]] = {
+    ActionType.TALK: frozenset({"person_indices", "message_content", "talk_topic"}),
+    ActionType.SEND_MESSAGE: frozenset({"person_indices", "message_content", "message_announce", "anonymous"}),
+    ActionType.MOVE: frozenset({"destination_index", "move_carry_indices"}),
+    ActionType.PHYSICAL: frozenset({
+        "physical_person_index", "physical_npc_index", "physical_entity_index", "physical_recipient_index", "item_name",
+    }),
+    ActionType.ERRAND: frozenset({
+        "errand_npc_index", "errand_destination_index", "errand_item_index", "errand_recipient_index",
+        "errand_message", "errand_announce",
+    }),
+}
+
+
+def _action_fields(action_type: ActionType) -> frozenset[str]:
+    """Action fields shared by autonomous decision parsing and actor interpretation."""
+    return _ACTION_COMMON_FIELDS | _ACTION_FIELDS.get(action_type, frozenset())
+
+
+@dataclass(frozen=True)
+class CandidateLists:
+    """The lists a decision binds its targets against, in prompt order.
+
+    The one source for the decision prompt's #N, the parser's index resolution and the actor's
+    briefing, so a number or an id means the same thing in all three.
+    """
+
+    roster: List[tuple[str, PerceivedIdentity]]   # people reachable (present or not)
+    visible_ids: List[str]                          # the present among them
+    npc_ids: List[str]
+    reachable_ids: List[str]
+    entity_ids: List[str]
+
+    @property
+    def roster_ids(self) -> List[str]:
+        return [aid for aid, _who in self.roster]
+
+
+def candidate_lists(packet: PerceptionPacket) -> CandidateLists:
+    spatial = packet.spatial
+    return CandidateLists(
+        roster=_message_roster(packet),
+        visible_ids=list(spatial.visible_agent_ids),
+        npc_ids=list(spatial.visible_npc_ids),
+        reachable_ids=[rl.location_id for rl in spatial.reachable_locations],
+        entity_ids=[e.entity_id for e in spatial.visible_entities],
+    )
+
+
+def _slots_for(payload: dict, packet: PerceptionPacket | None) -> _Slots:
+    lists = candidate_lists(packet) if packet else None
+    return _Slots(
+        payload=payload,
+        packet=packet,
+        visible_ids=lists.visible_ids if lists else [],
+        roster_ids=lists.roster_ids if lists else [],
+        reachable_ids=lists.reachable_ids if lists else [],
+        entity_ids=lists.entity_ids if lists else [],
+        entity_types=(
+            {e.entity_id: e.entity_type for e in packet.spatial.visible_entities}
+            if packet else {}
+        ),
+        entity_holders=(
+            {e.entity_id: e.holder_id for e in packet.spatial.visible_entities if e.holder_id}
+            if packet else {}
+        ),
+        npc_ids=lists.npc_ids if lists else [],
+        # Sending something requires holding it (see ``_own_item_ids``).
+        own_item_ids=_own_item_ids(packet) if packet else [],
+        roster_names={aid: who.name for aid, who in lists.roster} if lists else {},
+    )
+
+
+def _select(payload: dict, action_type: ActionType, slots: _Slots) -> LLMSelection | None:
+    """One selection of ``action_type`` from the flat slots, bound by that type's binder.
+
+    Shared by the model's answer and the actor's form: both are bound by the same rules.
+    """
+    description = _text(payload, "action_description")
+    if not description and action_type is not ActionType.SEND_MESSAGE:
+        return slots.reject("missing_action_description")
+
+    steps_raw = payload.get("estimated_steps", 1)
+    if isinstance(steps_raw, bool) or not isinstance(steps_raw, int) or steps_raw < 1:
+        estimated_steps = 1
+    else:
+        estimated_steps = steps_raw
+
+    # Targets resolve only via IndexedRef indices; raw ids from the LLM aren't accepted. Each
+    # type's binding and structural checks belong to its binder (see _TARGET_BINDERS); the
+    # default acts only on oneself.
+    bound = _TARGET_BINDERS.get(action_type, _bind_nothing)(slots)
+    if slots.dropped:
+        # Out-of-range indices were dropped silently and the action stands; record them so the
+        # hallucination can be traced later.
+        annotate_active_call(dropped_indices=list(slots.dropped))
+    if bound is None:
+        return None          # the binder already recorded the reason on this call's trace
+    if not description:
+        # SEND_MESSAGE models often fill only message_content; the binder has already required
+        # it and resolved the recipients, so the act can be described from them.
+        description = send_description(
+            [slots.roster_names.get(ref.id, "") for ref in bound.target.acts_on],
+            words=_text(payload, "message_content"),
+            anonymous=payload.get("anonymous") is True,
+        )
+        annotate_active_call(action_description_from_message=True)
+
+    return LLMSelection(
+        action_type=action_type,
+        target=bound.target,
+        errand=bound.errand,
+        action_description=description + bound.description_suffix,
+        inner_monologue=_text(payload, "inner_monologue"),
+        estimated_steps=estimated_steps,
+        urgency=parse_urgency(payload.get("urgency"), default=Urgency.NORMAL),
+        expected_outcome=_text(payload, "expected_outcome"),
+        message_content=_text(payload, "message_content"),
+        anonymous=action_type is ActionType.SEND_MESSAGE and payload.get("anonymous") is True,
+        talk_topic=_text(payload, "talk_topic") if action_type is ActionType.TALK else "",
+    )
 
 
 class DecisionStatus(str, Enum):
@@ -544,10 +722,7 @@ class DecisionEngine:
         if selection.action_type == ActionType.SEND_MESSAGE:
             expected_outcome = _SEND_MESSAGE_EXPECTED_OUTCOME
         else:
-            expected_outcome = (
-                selection.expected_outcome
-                or self._expected_outcome(selection.action_type, packet.internal_context.need_evaluation)
-            )
+            expected_outcome = selection.expected_outcome
         intent = ActionIntent(
             purpose=selection.action_description,
             estimated_steps=selection.estimated_steps,
@@ -564,17 +739,13 @@ class DecisionEngine:
             expected_outcome=expected_outcome,
             estimated_steps=selection.estimated_steps,
             urgency=selection.urgency,
+            talk_topic=selection.talk_topic,
             remaining_steps=selection.estimated_steps,
             status=ActionStatus.IN_PROGRESS,
-            llm_model=selection.llm_model,
-            reason=selection.inner_monologue if selection.inner_monologue else "llm selected",
-            # SEND_MESSAGE: the verbatim words to deliver; otherwise mirrors action_description
-            # (unread downstream).
-            content=(
-                selection.message_content
-                if selection.action_type == ActionType.SEND_MESSAGE and selection.message_content
-                else selection.action_description
-            ),
+            # This can become a message's intent, so it stays narrative.
+            reason=selection.inner_monologue,
+            content=selection.message_content if selection.action_type == ActionType.SEND_MESSAGE else "",
+            anonymous=selection.anonymous,
             intent=intent,
         )
 
@@ -636,7 +807,7 @@ class DecisionEngine:
         #                           indexes candidates directly.
         #   person_candidates     = 1-based, matches #N in "我能触及的人" (_message_roster order).
         #   destination_candidates= 1-based, matches #N in "我可前往" (reachable_locations order).
-        #   item_candidates       = 1-based, matches #N in "我够得着的东西" (visible_entities order;
+        #   item_candidates       = 1-based, matches #N in "眼前的东西" (visible_entities order;
         #                           short name e.name, plus the holder for held items so audits can
         #                           tell whether it was free to take).
         #   npc_candidates        = 1-based, matches #N in the people-here list (visible_npcs
@@ -692,9 +863,10 @@ class DecisionEngine:
                     # + expected_outcome≤30 + several index/enum fields; est. ~380 tok. The last three
                     # may each carry a bracketed date (ABSOLUTE_TIME_RULE, ≈8 chars×3 ≈36 tok) → ~416.
                     # Per-type extras are mutually exclusive: PHYSICAL recipient index ≈11 or
-                    # item_id≤10 chars ≈20 → ≤~436; MOVE move_carry_indices ≈12 → ~439; SEND
-                    # message_announce ≈8 → ~447. ERRAND is costliest: ~416 + errand_message≤60
-                    # chars ≈90 + four index fields ≈44 + errand_announce ≈8 → ~558.
+                    # item_name≤10 chars ≈20 → ≤~436; MOVE ≤10 move_carry_indices ≈35 → ~451; SEND
+                    # message_announce + anonymous ≈16 → ~455; TALK talk_topic≤30 chars ≈50 → ~466. ERRAND is
+                    # costliest: ~416 + errand_message≤60 chars ≈90 + four index fields ≈44 +
+                    # errand_announce ≈8 → ~558.
                     max_tokens=output_budget(558),
                     json_mode=True,
                 )
@@ -718,7 +890,6 @@ class DecisionEngine:
         if act is False or (isinstance(act, str) and act.strip().lower() == "false"):
             # Adopted: the output was used and says "do nothing"; marking it discarded would log
             # deliberate restraint as failure.
-            note_active_call_adoption(True)
             logger.info("decision_no_action", extra={"agent_id": agent_id, "step": step})
             return DecisionResult.no_action()
 
@@ -726,8 +897,6 @@ class DecisionEngine:
         if selection is None:  # _parse_llm_selection already recorded the reason on the trace
             logger.warning("decision_unparseable", extra={"agent_id": agent_id, "step": step})
             return DecisionResult.failed()
-        note_active_call_adoption(True)
-        selection.llm_model = response.model or "llm"
         action = self._build_action(selection, personality, packet)
         target = action.target
         target_ref = ",".join(target.acted_on_ids)
@@ -744,6 +913,227 @@ class DecisionEngine:
             },
         )
         return DecisionResult.acted(action)
+
+
+    # ------------------------------------------------------------------
+    # The actor's action: same slots, same binders
+    # ------------------------------------------------------------------
+
+    def bind_actor_action(
+        self,
+        action: ActorAction,
+        *,
+        personality: PersonalityLayer,
+        packet: PerceptionPacket,
+    ) -> AgentAction:
+        """The actor's form as an executable action, bound by the rules a model's answer is.
+
+        Raises ``ActorAnswerRejected`` with the binder's reason when a target isn't on the
+        character's lists, or the type's structural rules refuse it (talking to someone absent,
+        a physical act with no target...).
+        """
+        payload = _actor_payload(action, candidate_lists(packet))
+        slots = _slots_for(payload, packet)
+        selection = _select(payload, action.action_type, slots)
+        if selection is None:
+            raise ActorAnswerRejected(slots.rejections[-1] if slots.rejections else "unbindable")
+        return self._build_action(selection, personality, packet)
+
+    async def interpret_actor_decision(
+        self,
+        text: str,
+        *,
+        personality: PersonalityLayer,
+        packet: PerceptionPacket,
+        recent: Sequence[str] = (),
+        recalled: Sequence[Memory] = (),
+        intent: ActorIntent | None = None,
+        base: ActorAction | None = None,
+    ) -> tuple[ActorDecision | None, str] | None:
+        """Resolve the character's intent into a decision this step can execute: an action, or
+        doing nothing this step, with the reading's reasoning. The decision is ``None`` when the
+        reading finds the intent unclear; its reasoning then says where the reading got stuck.
+
+        Functional. The ends come only from the intent; what it leaves open is filled from what the
+        character knows (``recent``: his latest doings; ``recalled``: memories the intent brings
+        up), only as far as execution needs. ``base`` is the part already fixed (a chosen operation,
+        its target and parameters): the reading fills around it and never changes it
+        (``ActorAnswerRejected``). Goals are amended in the mind, never read from an intent.
+        ``None`` when the reading names nothing executable, or the call fails (Rule 1: nothing is
+        persisted from it).
+        """
+        has_selected_operation = intent is not None and base is not None
+        fixed_payload = _fixed_intent_payload(packet, intent, base) if has_selected_operation else None
+        agent_id = personality.soul.agent_id
+        try:
+            response = await self._llm_router.complete(
+                LLMScene.ACTOR_INTENT,
+                [
+                    LLMMessage(role="system", content=self._intent_system_prompt()),
+                    LLMMessage(role="user", content=self._intent_user_prompt(
+                        text, personality, packet, recent=recent, recalled=recalled,
+                        fixed=(base, fixed_payload) if has_selected_operation else None,
+                    )),
+                ],
+                temperature=0.2,
+                # reason ≤60 chars ≈90 + action_description ≤40 ≈60 + expected_outcome ≤30 ≈45
+                # + decision/selected_index/estimated_steps ≈9 → ~204, plus per type (exclusive):
+                # SEND_MESSAGE message_content ≤60 ≈90 + urgency ≈3 + ≤10 person indices ≈30 +
+                # announce + anonymous ≈6 → ~333; ERRAND errand_message ≤60 ≈90 + four indices ≈12
+                # + announce ≈3 → ~309; TALK talk_topic ≤30 ≈45 + indices ≈30 → ~279.
+                # SEND_MESSAGE has ≤13 fields × 5 ≈65 structure → ~398.
+                max_tokens=output_budget(398),
+                json_mode=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "actor_decision_interpret_failed", extra={"agent_id": agent_id, "error": str(exc)},
+            )
+            return None
+        payload = extract_json_object(response.content)
+        if not isinstance(payload, dict):
+            note_active_call_adoption(False, "no_json_object")
+            logger.info("actor_decision_unreadable", extra={"agent_id": agent_id})
+            return None
+        reason = _text(payload, "reason")
+        decision = payload.get("decision")
+        # Idling is no reading of an intent that already fixed an act: that conflict is unclear.
+        if decision == "idle" and not has_selected_operation:
+            return ActorDecision(idle=True), reason
+        if decision == "act":
+            lists = candidate_lists(packet)
+            if has_selected_operation:
+                action = _constrained_actor_action_from_payload(payload, fixed_payload, lists, intent, base)
+            else:
+                action = _actor_action_from_payload(payload, lists)
+            if action is not None:
+                return ActorDecision(action=action), reason
+        note_active_call_adoption(False, "invalid_action" if decision == "act" else "unclear")
+        logger.info("actor_decision_unclear", extra={"agent_id": agent_id})
+        return (None, reason) if decision == "unclear" else None
+
+    def _intent_system_prompt(self) -> str:
+        """Byte-identical across calls in a world (the step duration is a world constant): the
+        fixed part of an intent and everything about the character go in the user message."""
+        catalog = "\n".join(_format_candidate_line(i, c) for i, c in enumerate(_ACTION_SPACE))
+        output = ",\n".join(f'  "{key}": {value}' for key, value in self._intent_output_fields().items())
+        return f"""【角色】
+你是意图解析器：把一个角色此刻的意图，解析成他这一步可执行的决策（落到下面的行动类型和带 #序号 的名单上）。目的只来自意图本身；你只为它找到能执行的做法，不替角色另立目的。
+
+【输入】
+- 下面先给出这个角色是谁、他的关系、近来做过的事、记得的相关的事和这一步传到他这里的动静、广播与捎话，再给出他此刻的处境和可指认的名单。都以角色的「我」来写，名单各带 #序号。
+- 若有【已定下的】，那是这个意图里已经定死的行动类型、对象和参数。
+- 最后是他此刻的意图。意图里的「我」、「他」「她」或角色名，都指这个角色。
+
+【任务】
+先看意图具体到哪一档，再照这一档解析：
+1. 说清了一件具体的事：照原样落地，不增不改。
+2. 说了要做什么，但缺对象或参数：从他所知的里补齐，只补到能执行为止。
+3. 只说了方向或目标（比如要知道什么、要讨好谁、要离开……）：拟出此刻最直接、他够得着的第一步，只拟这一步。
+4. 明确说的是这一步先不动（比如先等等、看看再说等等）：decision 填 idle。
+5. 读不出他要什么，或把决定交了出去（比如"看着办""随便"等等）：decision 填 unclear。
+
+【约束】
+- 目的只来自意图：他的关系和所知的信息只用来找做法，不用来添一个意图里没有的目的。
+- 意图里说明了的（行动类型、对象、要说的原话、参数等等）一律不改。【已定下的】栏原样保留，不在输出里重复。
+- 要说出口的话：意图里有原话就照录；只说了要传达的意思，就照这意思写成他会说出口的话；什么都没说就不写。
+- 只用所给的：名单上找不到的对象就留空，不猜一个相近的；不臆造他不知道的人和事。
+- 序号只取自对应名单，各份名单各自从 1 数起，不混用。
+- TALK 只能找标(在场)的人；SEND_MESSAGE 可以发给标(不在场)的人。
+- 拿起、使用、毁坏等等是不同的事，不能互换。指派任务时，去处必须是已定下的或意图里说明的，不替他猜。
+- 有【已定下的】时，decision 只能是 act 或 unclear：意图与已定下的冲突，或超出了它，就填 unclear，不把要求悄悄删掉。
+
+【行动类型】
+{catalog}
+
+【说明】
+相关人物的关系各栏的含义：{relation_legend()}
+
+【输出】
+严格 JSON，字段按下面的次序写，只填与 decision 和所选类型相关的字段，其余省略：
+{{
+{output}
+}}
+（urgency 取值含义：{URGENCY_SCALE_DESCRIPTION}）
+"""
+
+    def _intent_output_fields(self) -> dict[str, str]:
+        step_duration = self._step_duration_hint()
+        return {
+            "reason": '"<先想清楚：这个意图要做什么，怎样落到行动类型和名单上；表达尽量简洁易懂，≤60字>"',
+            "decision": '"<act | idle | unclear>"',
+            "selected_index": '<act 时：【行动类型】里的序号，0 起>',
+            "person_indices": '<最多10个整数，"我能触及的人"的序号；TALK 第一个是交谈对象，其余旁听；SEND_MESSAGE 是收件人>',
+            "message_announce": '<SEND_MESSAGE 不指名、向此处众人发送通知时填 true>',
+            "destination_index": '<MOVE 的去处，"我可前往"的序号>',
+            "move_carry_indices": '<最多10个整数，MOVE 时强行带走的在场者，"我能触及的人"的序号>',
+            "physical_person_index": '<PHYSICAL 对人，"我能触及的人"里标(在场)者的序号>',
+            "physical_npc_index": '<PHYSICAL 对"此处可接受任务指派的人"中的人，其序号>',
+            "physical_entity_index": '<PHYSICAL 对物，"眼前的东西"的序号>',
+            "physical_recipient_index": '<把"我手上的东西"里的一件交给某个在场者时，"我能触及的人"的序号；不在他手上的东西交不出去>',
+            "item_name": '"<PHYSICAL 的对象不在任何名单上时，写它的名称，≤10字>"',
+            "errand_npc_index": '<ERRAND 执行任务的人，"此处可接受任务指派的人"中的序号>',
+            "errand_destination_index": '<ERRAND 去哪，"我可前往"序号>',
+            "errand_item_index": '<ERRAND 让他带上的东西，"眼前的东西"序号，只能是"我手上的东西"里的>',
+            "errand_recipient_index": '<ERRAND 交给或说给谁，"我能触及的人"序号>',
+            "errand_announce": '<ERRAND 到了那处当众说出 errand_message 时填 true>',
+            "action_description": '"<act 时：角色第一人称，写这一步做什么，≤40字>"',
+            "talk_topic": '"<TALK 时，意图里说明的、要让对方一开始就知道的来意，≤30字；没说明就不填>"',
+            "message_content": '"<SEND_MESSAGE 要送出的原话，第一人称对收件人说，≤60字；SEND_MESSAGE 必填。TALK 不填：交谈的话由角色当面一句句说>"',
+            "anonymous": '<仅 SEND_MESSAGE：意图明确要求不让收件人知道是谁发的时填 true，否则填 false；固定参数必须原样保留。匿名只隐藏发送人的名字，跟这话有多机密、多要紧无关：定向消息旁人本来就看不到，比如「私下」「悄悄」「秘密地」「别让旁人知道」说的是保密，一般情况下实名就够了，不用匿名；广播时在场的人都听得到内容，匿名也只是让他们不知道是谁说的。如果意图里确实说了不想让收件人知道是角色自己（如「匿名」「不署名」「别让他知道是我」，比如要给不信他的人发一句假话、误导的话，又不想让对方知道是他发的），填 true>',
+            "errand_message": '"<ERRAND 他到那头要原样说出口的话，≤60字>"',
+            "expected_outcome": '"<act 时：角色第一人称，这一步想带来什么，≤30字；意图里读不出就不填>"',
+            "estimated_steps": f'<act 时：整数，>=1；先定这件事要做多久——意图里说了就照它，没说就按事情本身估——再按每步{step_duration}折成步数，四舍五入、至少为1>',
+            "urgency": '"<SEND_MESSAGE 时：low | normal | high | critical，照上面这句原话有多急来定>"',
+        }
+
+    def _intent_user_prompt(
+        self, text: str, personality: PersonalityLayer, packet: PerceptionPacket, *,
+        recent: Sequence[str], recalled: Sequence[Memory],
+        fixed: "tuple[ActorAction, dict] | None",
+    ) -> str:
+        awareness = packet.internal_context
+        now, sps, day_start = packet.spatial.current_step, self._seconds_per_step, self._world_start_second_of_day
+        lines: List[str] = [
+            "【我是谁】",
+            personality.soul.identity_text() + "。",
+            "",
+            "【我知道的】",
+            describe_relations(awareness.relevant_relations),
+        ]
+        lines.append(f"我近来做过的事（{MEMORY_ORDER_HINT}）：\n{_bullet_block(list(recent))}")
+        recalled_lines = render_memory_lines(
+            recalled, now_step=now, seconds_per_step=sps, world_start_second_of_day=day_start)
+        if recalled_lines:
+            lines.append(f"我记得的、与这个意图相关的事（{MEMORY_ORDER_HINT}）：\n{_bullet_block(recalled_lines)}")
+        _render_perceived_signals(packet, lines, GivenFacts())
+        lines.append("")
+        situation_header = render_situation_header(
+            Situation.from_spatial(packet.spatial), voice=SituationVoice.FIRST,
+        )
+        if situation_header:
+            lines.extend([situation_header, ""])
+        lines.append("【名单】")
+        _render_candidate_lists(personality, packet, lines, GivenFacts())
+        if fixed is not None:
+            base, payload = fixed
+            shown = {k: v for k, v in payload.items() if k not in _INTENT_FILLED_FIELDS}
+            lines.extend([
+                "",
+                "【已定下的】",
+                f"这件事：{base.action_description}",
+                f"已定下的栏（序号沿用上面的名单）：{json.dumps(shown, ensure_ascii=False)}",
+            ])
+            if base.action_type is ActionType.TALK:
+                lines.append("person_indices 的第一个已定下；旁听的人可以按意图再添。")
+        lines.extend([
+            "",
+            "【意图】",
+            text.strip(),
+            "",
+            "依上面说定的规则与 JSON 格式解析，只输出 JSON。",
+        ])
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Prompt construction
@@ -802,7 +1192,7 @@ class DecisionEngine:
         facts.add("外部驱动", [getattr(eg, "text", "")
                               for eg in getattr(awareness.need_evaluation, "external_goals", [])])
         for eg in getattr(awareness.need_evaluation, "external_goals", []):
-            # Neutral prefix; urgency_label ("【留意】"/"【一般】"/"【紧急】"/"【危急】") carries the
+            # Neutral prefix; urgency_label ("【不紧急】"/"【一般】"/"【紧急】"/"【非常紧急】") carries the
             # urgency, so don't presume it's pressing.
             lines.append(f"外部驱动：{urgency_label(eg.urgency)} {eg.text}")
         lines.append("")
@@ -846,31 +1236,7 @@ class DecisionEngine:
                 awareness.period_summaries, now_step=_now, seconds_per_step=_sps, world_start_second_of_day=_day_start)
             facts.add("那段时期的印象", _periods)
             lines.append(f"那段时期给我的整体印象：\n{_bullet_block(_periods)}")
-        # One block per perception channel (public goings-on / world broadcast / direct message),
-        # items listed under one header; an empty channel drops its block.
-        if spatial.ambient_events:                  # location-level public events / action outcomes
-            lines.append("我注意到（周围的动静）：")
-            lines.extend(f"- {ev.content}" for ev in spatial.ambient_events[:SIGNAL_CAPS["ambient"]])
-            facts.add("周围的动静", [ev.content for ev in spatial.ambient_events[:SIGNAL_CAPS["ambient"]]])
-        if packet.broadcasts:
-            lines.append("世界传来的消息：")
-            facts.add("世界传来的消息", [b.content for b in packet.broadcasts[:SIGNAL_CAPS["broadcast"]]])
-            # Content only: broadcast_type is a code-layer category (its only value, WORLD_EVENT,
-            # carries no information) and the header already names the channel; rendering it
-            # into first-person text would leak across layers.
-            lines.extend(f"- {b.content}" for b in packet.broadcasts[:SIGNAL_CAPS["broadcast"]])
-        # The narrator's sender_name is already "不知来源", so it reads as an unknown sender like
-        # any other.
-        if packet.inbox:
-            lines.append("有人捎话给我：")
-            lines.extend(
-                f"- {msg.sender_name or '某人'}：{msg.content}"
-                for msg in packet.inbox[:SIGNAL_CAPS["inbox"]]
-            )
-            facts.add("有人捎话", [
-                f"{msg.sender_name or '某人'}：{msg.content}"
-                for msg in packet.inbox[:SIGNAL_CAPS["inbox"]]
-            ])
+        _render_perceived_signals(packet, lines, facts)
         lines.append("")
 
         # 4) 【我所处的现实】 hard constraints = bottom lines + bindable options (the only place I
@@ -895,79 +1261,12 @@ class DecisionEngine:
         )
         if _self_vitality:
             lines.append(_self_vitality)
-            facts.add("我的体力", _self_vitality)
+            facts.add("我的生命值", _self_vitality)
         if personality.soul.hard_constraints:
             lines.append("我绝不逾越的底线：")
             for constraint in personality.soul.hard_constraints:
                 lines.append(f"  - {constraint}")
-        # One person roster (present + reachable absent), numbering shared by person_indices and
-        # physical_person_index. Marked "在场" / "不在场": TALK and PHYSICAL-on-a-person may only
-        # pick present people; only SEND_MESSAGE may target absent ones. (COVERT doesn't bind
-        # from this list — its object lives in action_description.)
-        roster = _message_roster(packet)
-        if roster:
-            lines.append(f"我能触及的人（默认都是有生命力的人，除非明确标识{DECEASED_MARK}）：")
-            for idx, (aid, who) in enumerate(roster, 1):
-                here = "在场" if aid in spatial.visible_agent_ids else "不在场"
-                # Condition shares the parentheses with gender and presence (person_referent's
-                # marks). Only present people carry one: for the absent it could only be a belief
-                # in memory, not a live field (information asymmetry).
-                cond = (p.condition if (p := spatial.visible_agents.get(aid)) else "")
-                referent = person_referent(who.name, who.gender, here, cond)
-                lines.append(f"  #{idx} {referent}")
-                # The roster isn't just the hard frame to pick from; it is itself fact: who exists,
-                # who is here, who isn't. Undeclared, the judge can't catch an invented person or
-                # see that he's seeking someone absent.
-                facts.add("我能触及的人", referent)
-        else:
-            lines.append("我能触及的人：无")
-            facts.add("我能触及的人", "无")
-        if spatial.visible_npcs:
-            # One list for both "who else is here" and "whom I can send" (two would print the same
-            # people twice). Only people here can be sent. The header must say busy people can't
-            # be sent but can be stopped: errands exclude them, while stopping a runner only makes
-            # sense while he's busy.
-            lines.append(
-                "此处听人吩咐做事的（不自己拿主意，也不会推辞：没在忙的我吩咐一声就去办；"
-                "正在忙的派不出去，但拦得住。**他们不在上面「我能触及的人」名单里** —— "
-                "跟他们打交道只有当面吩咐(ERRAND)或动手(PHYSICAL)这两条路，SEND_MESSAGE, TALK等其他行动不能选这个名单的人）："
-            )
-            for idx, npc_id in enumerate(spatial.visible_npc_ids, 1):
-                rendered = render_npc(spatial.visible_npcs[npc_id], index=idx)
-                lines.append(f"  {rendered}")
-                facts.add("此处听人吩咐做事的", rendered.split(" ", 1)[-1])
-        if spatial.reachable_locations:
-            # Reachable = every location reachable by shortest path (not just adjacent), with travel
-            # time so distance can be weighed.
-            lines.append("我可前往（含需赶路的远处；脚程越远越要想清楚是否值得）：")
-            for idx, rl in enumerate(spatial.reachable_locations, 1):
-                name = rl.view.name or "某处"
-                desc_part = f"：{rl.view.description}" if rl.view.description else ""
-                dist = describe_seconds(rl.travel_seconds)
-                lines.append(f"  #{idx} {name}（脚程{dist}）{desc_part}")
-                facts.add("我可前往", f"{name}（脚程{dist}）")
-        else:
-            lines.append("我可前往：无处")
-            facts.add("我可前往", "无处")
-        if spatial.visible_entities:
-            lines.append("我够得着的东西：")
-            # render_entity is the single format (shared with scene and adjudication). Things in
-            # anyone's hands are listed here too; holding is an attribute of the entry, not a
-            # separate indexed list (see ``_own_item_ids``).
-            for idx, e in enumerate(spatial.visible_entities, 1):
-                rendered = render_entity(
-                    e, owner_name=_entity_owner_name(
-                        e, self_id=personality.soul.agent_id, spatial=spatial),
-                    content=e.content,
-                    held_by_viewer=e.holder_id == personality.soul.agent_id)
-                lines.append(f"  #{idx} {rendered}")
-                facts.add("我够得着的东西", rendered)
-        else:
-            # Say "nothing here" explicitly: omitted, the schema still asks for an entity index
-            # from an unprinted list, so models fill physical_entity_index=1 and get rejected as
-            # physical_without_target (assemble_scene_context treats "nobody here" the same way).
-            lines.append("我够得着的东西：无（此处没有，别人手上也没有）")
-            facts.add("我够得着的东西", "无（此处没有，别人手上也没有）")
+        _render_candidate_lists(personality, packet, lines, facts)
         lines.append("")
 
         # Exclude only types that are structurally impossible (empty target set); otherwise the LLM
@@ -983,17 +1282,17 @@ class DecisionEngine:
         if not present_ids:
             talk_out = "无人可当面交谈：不可选 TALK。"
             restrictions.append(
-                talk_out + "此处只有听人吩咐做事的，动手仍可以落到他们身上（physical_npc_index）"
-                "——但动手是拦住、按住、夺他手里的东西，**不是差遣**：按住他并不会让他替我跑一趟。"
+                talk_out + "此处只有可接受任务指派的人，动手仍可以落到他们身上（physical_npc_index）"
+                "——但动手是拦住、按住、夺他手里的东西，**不是指派任务**：按住他并不会让他替我执行任务。"
                 if spatial.visible_npcs
                 else talk_out + "COVERT / PHYSICAL 也不能以人为对象。"
             )
         if not spatial.reachable_locations:
             restrictions.append("无处可前往：不可选 MOVE。")
         if not spatial.visible_entities and not touchable:
-            restrictions.append("我够不着任何东西、也无人在场：不可选 PHYSICAL。")
+            restrictions.append("眼前没有任何东西、也无人在场：不可选 PHYSICAL。")
         # Busy or restrained runners are excluded here, not just marked: senders pick them anyway
-        # despite the "正忙" mark, and this hard-rule block is where the model excludes options
+        # despite the busy mark, and this hard-rule block is where the model excludes options
         # first. Must agree with ``ErrandExecutor.start`` (rejects on busy and condition). They stay
         # on the list (they are here); each line's marks say why (``render_npc``).
         free_npcs = [
@@ -1001,12 +1300,12 @@ class DecisionEngine:
             if not seen.busy and not seen.condition
         ]
         if not spatial.visible_npcs:
-            restrictions.append("此处没有听人吩咐做事的：不可选 ERRAND。")
+            restrictions.append("此处没有可接受任务指派的人：不可选 ERRAND。")
         elif not free_npcs:
             restrictions.append(
-                "此处听人吩咐做事的都腾不出身，这一拍谁也派不出去：不可选 ERRAND。"
-                "**别改用传讯去够他** —— 他不在「我能触及的人」名单上，传讯到不了他；"
-                "硬挑一个序号，话就落到名单上那个不相干的人头上。要么等他回来，要么我自己跑一趟。"
+                "此处可接受任务指派的人都正在执行任务或行动受限，此刻不能接受新任务：不可选 ERRAND。"
+                "**别改用发送消息去联系他** —— 他不在「我能触及的人」名单上，消息到不了他；"
+                "硬挑一个序号，话就落到名单上那个不相干的人头上。要么等他回来，要么我自己去找他。"
             )
         if restrictions:
             lines.append("【此刻够不着的行动】（硬规则：先据此排除，再在剩下的里挑；若都够不着，就 act:false 什么都不做）")
@@ -1037,34 +1336,37 @@ class DecisionEngine:
 
 【我要做的】
 - 此刻我要为接下来定一件事：从【我能做的】里挑出**恰好一个**最该做的行动，作为我推进需求与目标的下一步；这一动若指向外部的人 / 地点 / 物，就把它落到具体对象上，若只关乎我自己，就没有对象可落。
-- 选之前我先逐条看清【我能做的】里每个选项的**说明**——别只看类型名，要按它实际能做什么来挑那个真正贴合我此刻需求和目标的（比如对方在不在场、是同步当面还是异步传讯、是改变状态还是只是观察等等）。
-- 动手前我先把【我所处的现实】里那几份带 #序号 的名单看清楚——“我能触及的人”有谁(标了在场/不在场)、“可前往”何处、“我够得着的东西”有哪些；我要落到的对象，必须用对应名单里的 #序号来指认，名单上没有的，我此刻就够不着、绝不凭空写一个名字或编号。
+- 选之前我先逐条看清【我能做的】里每个选项的**说明**——别只看类型名，要按它实际能做什么来挑那个真正贴合我此刻需求和目标的（比如对方在不在场、是同步当面还是异步发送消息、是改变状态还是只是观察等等）。
+- 动手前我先把【我所处的现实】里那几份带 #序号 的名单看清楚——“我能触及的人”有谁(标了在场/不在场)、“可前往”何处、“眼前的东西”有哪些、哪些在我手上；我要落到的对象，必须用对应名单里的 #序号来指认，名单上没有的，我此刻就够不着、绝不凭空写一个名字或编号。
 - 想清楚该行动是否需要持续做，如果是，estimated_steps表示的是持续这个行动的时长，可以大些，否则，estimated_steps表示完成该行动的时长。对于单次行动和持续行动都符合的条件下，优先选择持续行动。
 - 选择地点，物品，人物时可以先理解它们的描述并做出合理的选择。如果没有合理的选择，宁愿不选也不要乱选。
 
 【我被约束的】
 - 我想说话/动手的人、想去的地方、想用的东西，只能从【我所处的现实】里带#序号的名单里挑，用序号指认——没列出的，我此刻够不着。
 - “我可前往”的每一处都是一大片地方，里头还有许多具体的去处。我想去的地方若不在名单上，多半就落在其中某一处里头——我照名单上各处的说明判断它最可能在哪一处，就去那一处；若我心里本没有非去不可的地方，就不必硬挑一个。
-- 当面说话/动手（TALK/COVERT/PHYSICAL-对人）只能挑“我能触及的人”里标(在场)的；只有传讯（SEND_MESSAGE）可以发给标(不在场)的人。
-- 动手（PHYSICAL）必须指认出下手的对象，且**只指认一个**：对“我能触及的人”里的人就填 physical_person_index，对“此处听人吩咐做事的”里的人就填 physical_npc_index（两份名单各数各的序号，拿错名单就打到别人身上了），对物就填 physical_entity_index，名单外的抽象之物才自填 item_id——四者填其一，一个都不填等于没动手，这一拍就白费了。
-- 唯一的例外是「把手里的东西交出去」：这一动受动的仍是那样东西（照填 physical_entity_index），只是另可填 physical_recipient_index 指认我要交给谁——他必须是“我能触及的人”里标(在场)的。我只是把东西放下、不交给谁，就不填它。
-- 派人跑腿（ERRAND）时我交代他的话——去看什么、看完回来报我、别惊动人——写进 action_description，绝不写进 errand_message：那一栏他会一字不改说出口，我的交代一旦写进去，就等于我自己把此行的目的喊了出来。
-- 如果要进行的行动涉及到人，行动一定要与【相关人物关系】中描述的关系符合常识，除非有特殊情况。
+- 交谈/暗中探查/动手（TALK/COVERT/PHYSICAL-对人）只能挑“我能触及的人”里标(在场)的；只有发送消息（SEND_MESSAGE）可以发给标(不在场)的人。
+- 动手（PHYSICAL）必须指认出下手的对象，且**只指认一个**：对“我能触及的人”里的人就填 physical_person_index，对“此处可接受任务指派的人”里的人就填 physical_npc_index（两份名单各数各的序号，拿错名单就打到别人身上了），对物就填 physical_entity_index，名单外的抽象之物才自填 item_name——四者填其一，一个都不填等于没动手，这一拍就白费了。
+- 唯一的例外是「把我手上的东西交出去」：这一动受动的仍是那样东西（照填 physical_entity_index），只是另可填 physical_recipient_index 指认我要交给谁——他必须是“我能触及的人”里标(在场)的。我只是把东西放下、不交给谁，就不填它。交得出去的只有“我手上的东西”那一组里的；不在我手上的，得先拿到手。比如某样东西就搁在我身边，这一拍先把它拿起来，交给某人是下一拍的事。
+- 指派任务（ERRAND）时我交代他的话——去看什么、看完回来报我、别惊动人——写进 action_description，绝不写进 errand_message：那一栏他会一字不改说出口，我的交代一旦写进去，就等于我自己把此行的目的喊了出来。
+- 如果要进行的行动涉及到人，行动一定要与下面「相关人物的关系」中描述的关系符合常识，除非有特殊情况。
 - 不要脱离我此刻的需求与目标空转，也别被与我无关的事带跑。
-- 不要重复我刚刚做完的事，要往前推进。
+- 不要重复我刚刚做完的事，也不要再做结果已经明确、再做也不会有新结果的事（不论好坏，比如对方已明确拒绝），要往前推进。
 {CLOSED_WORLD_FACT_RULE_FIRST_PERSON}
 - 我不臆造我没感知到的人、事、动向。同时，注意区分已经发生，正在发生，将要发生的客观事实，不能混为一谈，比如“我要去超市”，“我正在去超市的路上”，“我已经到了超市”，这三个是不一样的客观事实。
 - 在行动前，需要先判断该事之前是不是做过，如果做过现在又重复做，需要先清楚为什么要重复做。宁可什么都不做也不要做一些无意义的重复的事情。
 - 行动前需要分析清楚此刻的自身处境，做出的行动选择需要符合常理，比如我正在被别人攻击，行动选择却是我现在要偷偷观察别人怎么打我，这是明显的不符合常理的。
 - 如果近期经历连续的行动失败，可以考虑换一种行动方式，不要过于一直执着于一种行动方式。比如如果交谈持续失败，可以采用物理方式等等。改变策略的建议：换行动方式，换地点，换目标等等。
-- SEND_MESSAGE/TALK选person_indices的时候要注意，如果你的action_description，message_content不想让person_indices知道，那你就不要选，否则会造成信息泄漏，比如我现在想与A讨论关于B的坏事，那person_indices应该选择是A，而不是B。
-- 只传一句话就用 SEND_MESSAGE：一拍即达、不占人手、对方在哪儿都收得到。派人跑一趟值得占用一个人，是因为它能做 SEND_MESSAGE 做不到的事——把东西送到某人手上、把那边的情形看回来。只为传一句话就派人跑腿，是白费一个人和一个来回；而要打听消息、要人回答我、要说服或引开谁，派人跑腿办不到，他只会走到、说出、看见。
-- 行动前我先认准此刻是什么时候（下面会说明此刻是何年何月何日、几时）：眼下的时辰决定这一行动合不合时宜。如果出现时间错乱，需要先思考为什么会出现时间错乱，同时也会有可能付出必要的行动。
+- 选person_indices的时候要注意谁会知道什么：SEND_MESSAGE的收件人会读到message_content；TALK的对象和旁听的人会知道talk_topic。不想让谁知道的，就别选他、也别写进去，否则会造成信息泄漏，比如我现在想与A讨论关于B的坏事，那person_indices应该选择是A，而不是B。
+- 只传一句话就用 SEND_MESSAGE：一拍即达、不占人手、对方在哪儿都收得到。指派任务值得占用一个人，是因为它能做 SEND_MESSAGE 做不到的事——把东西送到某人手上、把那边的情形看回来。只为传一句话就指派任务，是白费一个人和一个来回；而要打听消息、要人回答我、要说服或引开谁，指派任务办不到，他只会走到、说出、看见。
+- 行动前我先认准此刻是什么时候（下面会说明此刻是何年何月何日、几时）：当前时刻决定这一行动合不合时宜。如果出现时间错乱，需要先思考为什么会出现时间错乱，同时也会有可能付出必要的行动。
 - 对于人的生死我要特别关注，如果出现死者复现的情况，我需要分析是什么原因，比如某人之前已经死亡了，但是现在又感知到他在场，这个我需要特别关注，如果有必要可以做出相应的行动。
 - 在此处无事可做或陷入僵局时，换个地方也是一个选择：所在之处不同，能看到、听到的也不同。
 - 我综合所有信息后，如果存在明显的事实性冲突，我必须要思考为什么会有这样的冲突，同时也会有可能付出必要的行动。
 - 如果行动中涉及到人，先确认“我能触及的人”有没有这个人，如果没有，则不要选择该行动，除非有特殊情况。
 - 我接下来只做一件事：从【我能做的】里选一个。
+
+【说明】
+相关人物的关系各栏的含义：{relation_legend()}
 
 【输出】
 我用严格 JSON 说出我的选择，不写任何多余内容。字段按我心里成形的先后排列，我就照这个次序往下写：
@@ -1075,25 +1377,27 @@ class DecisionEngine:
   "inner_monologue": "<第一人称，我此刻心里是怎么思考的、怎么权衡的、为什么倾向某个选择，20-60字（先想，再据此定 act 与下面的 selected_index）>",
   "act": <true=我要行动；false=我通盘想过，此刻确实没有任何值得行动的事（比如没有该回应的、该推进的等等），于是什么都不做——这是正当选择，不为填满这一拍硬编一个行动，也不用它逃避该面对的抉择。填 false 时，下面 selected_index 及其余字段一律省略>,
   "selected_index": <仅当 act=true：我选的行动，【我能做的】里 0 到 N 的整数>,
-  "person_indices": <整数数组，序号取自"我能触及的人"(1起)。SEND_MESSAGE 可填**多个**序号群发给指定多人；TALK 只填一个(多填只取第一个)，TALK 只能选标(在场)。SEND_MESSAGE 可选(不在场)的>,
-  "message_announce": <仅当 SEND_MESSAGE 且我不指名任何人、就是要向我此刻所在地的众人当众宣告：填 true，同时 person_indices 留空。定向传讯给指定的人则省略此字段。**SEND_MESSAGE 这两条通道必须走一条**：既没填 person_indices、又没写 true，这一行动就作废了——我要找的人若不在"我能触及的人"名单上，那就是此刻传不到他，我该改做别的，而不是把话说给空气听>,
+  "person_indices": <最多10个整数，序号取自"我能触及的人"(1起)。SEND_MESSAGE 可填**多个**序号群发给指定多人；TALK 只填一个(多填只取第一个)，TALK 只能选标(在场)。SEND_MESSAGE 可选(不在场)的>,
+  "message_announce": <仅当 SEND_MESSAGE 且我不指名任何人、就是要向我此刻所在地的众人发送通知：填 true，同时 person_indices 留空。定向发送消息给指定的人则省略此字段。**SEND_MESSAGE 这两条通道必须走一条**：既没填 person_indices、又没写 true，这一行动就作废了——我要找的人若不在"我能触及的人"名单上，那就是此刻传不到他，我该改做别的，而不是把话说给空气听>,
   "destination_index": <若我选 MOVE，填"我可前往"里的序号(1起)，不过如果没有合理的地点，也可以省略，不要乱填；否则省略>,
-  "move_carry_indices": <整数数组，仅当我选 MOVE 且要把人强行一并带走：填"我能触及的人"里那些标(在场)者的序号(1起)；我独自走，或没有非带不可的人，就省略此字段>,
-  "physical_person_index": <若我选 PHYSICAL 且要**对"我能触及的人"里的人**动手：填其中某个标(在场)者的序号(1起)；对此处听人吩咐做事的动手改填 physical_npc_index，其他情况则省略>,
-  "physical_npc_index": <若我选 PHYSICAL 且要对**此处听人吩咐做事的**那些人动手(拦下、按住、夺他手里的东西)：填"此处听人吩咐做事的"里的序号(1起)；否则省略>,
-  "physical_entity_index": <若我选 PHYSICAL 且要**对物**动手：填"我够得着的东西"里那样东西的序号(1起)；对人动手则省略>,
-  "physical_recipient_index": <仅当我这一动是把手中之物交到某人手上：填"我能触及的人"里某个标(在场)者的序号(1起)；只是把东西放下、或这一动与交付无关，一律省略>,
-  "item_id": "<仅当 PHYSICAL 的目标不在上面两份名单里(抽象之物，如'门'、'地面')才自填名称，≤10字；能用序号就别用它；非 PHYSICAL 省略>",
-  "errand_npc_index": <若我选 ERRAND：填"此处听人吩咐做事的"里那个人的序号(1起)；否则省略。**必填**——这一动就是吩咐他去办，没有他就不成立>,
-  "errand_destination_index": <若我选 ERRAND：填"我可前往"里他要去的那个地方的序号(1起)；否则省略。**必填**——一趟不去别处的差事不成立，那种事我自己伸手就够得到>,
-  "errand_item_index": <仅当我要让他带上某样东西：填"我够得着的东西"里那一件的序号(1起)，**只能选标了「由我持有」的**——不能带别人手上、也带不了在地上的东西，得先拿到手才托得出去。不带东西就省略>,
+  "move_carry_indices": <最多10个整数，仅当我选 MOVE 且要把人强行一并带走：填"我能触及的人"里那些标(在场)者的序号(1起)；我独自走，或没有非带不可的人，就省略此字段>,
+  "physical_person_index": <若我选 PHYSICAL 且要**对"我能触及的人"里的人**动手：填其中某个标(在场)者的序号(1起)；对此处可接受任务指派的人动手改填 physical_npc_index，其他情况则省略>,
+  "physical_npc_index": <若我选 PHYSICAL 且要对**此处可接受任务指派的人**动手(拦下、按住、夺他手里的东西)：填"此处可接受任务指派的人"里的序号(1起)；否则省略>,
+  "physical_entity_index": <若我选 PHYSICAL 且要**对物**动手：填"眼前的东西"里那样东西的序号(1起)；对人动手则省略>,
+  "physical_recipient_index": <仅当我这一动是把"我手上的东西"里的一件交到某人手上：填"我能触及的人"里某个标(在场)者的序号(1起)；只是把东西放下、或这一动与交付无关，一律省略>,
+  "item_name": "<仅当 PHYSICAL 的目标不在上面两份名单里(抽象之物，如'门'、'地面')才自填名称，≤10字；能用序号就别用它；非 PHYSICAL 省略>",
+  "errand_npc_index": <若我选 ERRAND：填"此处可接受任务指派的人"里那个人的序号(1起)；否则省略。**必填**——这一动就是向他指派任务，没有执行任务的人就不成立>,
+  "errand_destination_index": <若我选 ERRAND：填"我可前往"里他要去的那个地方的序号(1起)；否则省略。**必填**——不去别处的任务不成立，那种事我自己伸手就够得到>,
+  "errand_item_index": <仅当我要让他带上某样东西：填"眼前的东西"里那一件的序号(1起)，**只能选"我手上的东西"那一组里的**——不能带别人手上、也带不了放在此处的东西，得先拿到手才托得出去。不带东西就省略>,
   "errand_recipient_index": <仅当这一趟是**只限于对某个人的**：填"我能触及的人"里的序号(1起)。**这一栏决定东西和话落到哪儿**——填了就是交到他手上、只说给他听；不填就是把东西搁在那处、把话在那处当众说出。只是去看看情形则省略>,
   "errand_announce": <仅当我要他到了那处把 errand_message *当众*广播宣告给在场的所有听时：填 true。我看不见那处有谁，所以公开是我主动选的，不是默认；只说给某个人听、或那只是我对他的交代，就省略此字段>,
-  "errand_message": "<他到了那头**说出口**的原话。**先定听众**：填了 errand_recipient_index 就只说给那一个人听；填了 errand_announce=true 就是当众宣告。两个都没有，那这句话就不会被他说出口——它会被当成我打发他时的交代收起来。写成能照着说出口的话：第一人称，对听的人说，20-60字。这趟差事是干什么的已经写在 action_description 里，不必在这儿重复。不带话就省略>",
   "action_description": "<**act=true 时必填，任何行动都不可省**。第一人称，写我打算做什么，内容要具体完整：若上面指认了对象，就落到那个人 / 地点 / 物上；若这一动只关乎我自己(无对象可指认)，就直接写我此刻要做的事。描述具体清晰，简洁明了，15-40字>",
-  "message_content": "<仅当 SEND_MESSAGE：我此刻要对**上面 person_indices 指认的那些收件人**(或在场众人)当面说出的**原话**，第一人称直接对其说，像真的在传话/宣告——不是对我自己动作的描述，也不要以第三人称提到对方；20-60字。其他行动一律省略此字段>",
+  "talk_topic": "<仅当 TALK：我找对方谈的来意，谈话一开始对方和旁听的人就都知道；不想让他们事先知道我的来意，就省略此字段。≤30字>",
+  "message_content": "<仅当 SEND_MESSAGE：我此刻要对**上面 person_indices 指认的那些收件人**(或在场众人)传达的**原话**，第一人称直接对其说，像真的在对他们传话——不是对我自己动作的描述，也不要以第三人称提到对方；20-60字。SEND_MESSAGE 必填：没有原话，这一动就作废。其他行动一律省略此字段>",
+  "anonymous": <仅当 SEND_MESSAGE：我要不要隐藏自己的名字，让收到的人不知道这话是我发的；true 为匿名，false 为实名。匿名只管收到的人知不知道是我，跟这话有多机密、多要紧无关：定向消息旁人本来就看不到。比如跟信得过的人说悄悄话、说秘密，一般情况下实名就够了；广播时在场的人都听得到内容，匿名也只是让他们不知道是谁说的。只有我确实不想让收到的人知道是我（比如给不信我的人发送句假话，误导的话，而且不想让他知道是我发的），才填 true。>,
+  "errand_message": "<他到了那头**说出口**的原话。**先定听众**：填了 errand_recipient_index 就只说给那一个人听；填了 errand_announce=true 就是当众宣告。两个都没有，那这句话就不会被他说出口——它会被当成我指派任务时的交代收起来。写成能照着说出口的话：第一人称，对听的人说，20-60字。这次任务是干什么的已经写在 action_description 里，不必在这儿重复。不带话就省略>",
   "expected_outcome": "<我期望这一步带来什么，10-30字>",
-  "estimated_steps": <整数，>=1；每步{step_hint}，完成某件事情或者持续做某件事的时长，MOVE 由距离自动决定，填 1 即可；若选 REST，休息时长看两头——身体亏空越深(越接近垮掉)越要久，手头待办越多/越急则越短(只够缓口气)，在两者间权衡取值。>,
+  "estimated_steps": <整数，>=1；先估这件事要花多久（完成它的时长，或持续做它的时长），再按每步{step_hint}折成步数，四舍五入、至少为1；MOVE 由距离自动决定，填 1 即可；若选 REST，休息时长看两头——身体亏空越深(越接近垮掉)越要久，手头待办越多/越急则越短(只够缓口气)，在两者间权衡取值。>,
   "urgency": <"low"|"normal"|"high"|"critical"，仅 SEND_MESSAGE 有效；照我上面写下的原话有多急来定，对方据此判断是否中断手头事>
 }}
 （urgency 取值含义：{URGENCY_SCALE_DESCRIPTION}）
@@ -1124,81 +1428,9 @@ class DecisionEngine:
         if not 0 <= raw_index < len(candidates):
             return _reject("selected_index_out_of_range")
         chosen = candidates[raw_index]
-
-        description = payload.get("action_description")
-        if not isinstance(description, str) or not description.strip():
-            # SEND_MESSAGE models often fill only message_content ("what I said" ≈ "what I did");
-            # the information isn't missing, so fall back to it. Other types have no such neighbor.
-            spoken = payload.get("message_content")
-            if chosen.action_type is not ActionType.SEND_MESSAGE or not isinstance(spoken, str) or not spoken.strip():
-                return _reject("missing_action_description")
-            description = spoken
-            annotate_active_call(action_description_from_message=True)
-
-        inner_monologue = _text(payload, "inner_monologue")
-        expected_outcome = _text(payload, "expected_outcome")
-        message_content = _text(payload, "message_content")
-        steps_raw = payload.get("estimated_steps", 1)
-        if isinstance(steps_raw, bool) or not isinstance(steps_raw, int) or steps_raw < 1:
-            estimated_steps = 1
-        else:
-            estimated_steps = steps_raw
-        urgency = parse_urgency(payload.get("urgency"), default=Urgency.NORMAL)
-
-        # Targets resolve only via IndexedRef indices; raw ids from the LLM aren't accepted. Each
-        # type's binding and structural checks belong to its binder (see _TARGET_BINDERS); the
-        # default acts only on oneself.
-        slots = _Slots(
-            payload=payload,
-            packet=packet,
-            visible_ids=list(packet.spatial.visible_agent_ids) if packet else [],
-            roster_ids=[aid for aid, _who in _message_roster(packet)] if packet else [],
-            reachable_ids=(
-                [rl.location_id for rl in packet.spatial.reachable_locations] if packet else []
-            ),
-            entity_ids=[e.entity_id for e in packet.spatial.visible_entities] if packet else [],
-            entity_types=(
-                {e.entity_id: e.entity_type for e in packet.spatial.visible_entities}
-                if packet else {}
-            ),
-            npc_ids=list(packet.spatial.visible_npc_ids) if packet else [],
-            # Sending something requires holding it (see ``_own_item_ids``).
-            own_item_ids=_own_item_ids(packet) if packet else [],
-        )
-        bound = _TARGET_BINDERS.get(chosen.action_type, _bind_nothing)(slots)
-        if slots.dropped:
-            # Out-of-range indices were dropped silently and the action stands; record them so the
-            # hallucination can be traced later.
-            annotate_active_call(dropped_indices=list(slots.dropped))
-        if bound is None:
-            return None          # the binder already recorded the reason on this call's trace
-
-        return LLMSelection(
-            action_type=chosen.action_type,
-            target=bound.target,
-            errand=bound.errand,
-            action_description=description.strip() + bound.description_suffix,
-            inner_monologue=inner_monologue,
-            estimated_steps=estimated_steps,
-            urgency=urgency,
-            llm_model="llm",
-            expected_outcome=expected_outcome,
-            message_content=message_content,
-        )
-
-    def _expected_outcome(self, action_type: ActionType, needs: NeedEvaluation) -> str:
-        if action_type == ActionType.TALK:
-            return "通过交谈更清晰地了解对方意图，减少不确定性。"
-        if action_type == ActionType.REST:
-            return "恢复平静，消除内心噪音。"
-        if action_type == ActionType.ERRAND:
-            return "把这个行动指派出去，等他回来带话。"
-        if action_type == ActionType.PHYSICAL:
-            return "通过直接的物理行为改变环境状态或影响他人。"
-        if action_type == ActionType.COVERT:
-            return "在不被察觉的情况下，探到我本来无从得知的事情。"
-        dominant_label = _dominant_need_label(needs) if needs.dominant_need is not None else "稳定"
-        return f"推进「{dominant_label}」需求。"
+        applicable = _action_fields(chosen.action_type) | _DECISION_FIELDS
+        payload = {key: value for key, value in payload.items() if key in applicable}
+        return _select(payload, chosen.action_type, _slots_for(payload, packet))
 
 
 # ----------------------------------------------------------------------
@@ -1232,7 +1464,6 @@ def _insights_with_sources(
     rendered: list[str] = []
     # Same oldest-first contract as the experience lists (order_memories_chrono).
     for insight in order_memories_chrono(insights):
-        # render_memory renders insights as timeless beliefs (no recency prefix).
         line = f"- {render_memory(insight, now_step=now_step, seconds_per_step=seconds_per_step, world_start_second_of_day=world_start_second_of_day)}"
         sources = insight_sources.get(insight.id, [])
         if sources:
@@ -1243,20 +1474,6 @@ def _insights_with_sources(
             line += f"（依据：{snippets}）"
         rendered.append(line)
     return "\n".join(rendered)
-
-
-def _dominant_need_label(awareness: object) -> str:
-    """Return a human-readable label for the dominant need, if any."""
-
-    dominant = getattr(awareness, "dominant_need", None)
-    if dominant is None:
-        return "维持稳定"
-    active_needs = getattr(awareness, "active_needs", []) or []
-    for need in active_needs:
-        if getattr(need, "type", None) == dominant:
-            label = getattr(need, "label", "") or getattr(dominant, "value", str(dominant))
-            return str(label)
-    return getattr(dominant, "value", str(dominant))
 
 
 def _message_roster(packet: PerceptionPacket) -> List[tuple[str, PerceivedIdentity]]:
@@ -1293,7 +1510,7 @@ def _message_roster(packet: PerceptionPacket) -> List[tuple[str, PerceivedIdenti
         # Skip senders without cognition: a runner's report is a Message too, but on this list it
         # only yields an undeliverable letter (``deliver_for_agents`` only has inboxes for agents).
         # ``sender_is_agent`` works even for a body never seen before.
-        if not msg.sender_is_agent:
+        if msg.anonymous or not msg.sender_is_agent:
             continue
         _add(msg.sender_id, msg.sender_name or "", rel_gender.get(msg.sender_id, ""))
     for rel in getattr(awareness, "relevant_relations", []) or []:
@@ -1307,6 +1524,276 @@ def _message_roster(packet: PerceptionPacket) -> List[tuple[str, PerceivedIdenti
             getattr(rel, "target_agent_gender", ""),
         )
     return out
+
+
+def _render_perceived_signals(packet: PerceptionPacket, lines: List[str], facts: GivenFacts) -> None:
+    """What reached the character this step, one block per perception channel (public goings-on
+    / broadcast / direct message), in the character's voice; an empty channel drops its block.
+    Shared by the decision prompt and the intent reading prompt."""
+    if packet.spatial.ambient_events:  # location-level public events / action outcomes
+        lines.append("我注意到（周围的动静）：")
+        lines.extend(f"- {ev.content}" for ev in packet.spatial.ambient_events[:SIGNAL_CAPS["ambient"]])
+        facts.add("周围的动静", [ev.content for ev in packet.spatial.ambient_events[:SIGNAL_CAPS["ambient"]]])
+    if packet.broadcasts:
+        # One block may mix world-wide and local broadcasts, so each line carries its own tag.
+        # broadcast_type stays out: a code-layer category (its only value, WORLD_EVENT,
+        # carries no information); rendering it into first-person text would leak across layers.
+        heard = [
+            f"{broadcast_tag(b.location_scope)}：{b.content}"
+            for b in packet.broadcasts[:SIGNAL_CAPS["broadcast"]]
+        ]
+        lines.append("我听到的广播：")
+        facts.add("广播", heard)
+        lines.extend(f"- {line}" for line in heard)
+    if packet.inbox:
+        lines.append("有人捎话给我：")
+        lines.extend(
+            f"- {msg.sender_name}：{msg.content}"
+            for msg in packet.inbox[:SIGNAL_CAPS["inbox"]]
+        )
+        facts.add("有人捎话", [
+            f"{msg.sender_name}：{msg.content}"
+            for msg in packet.inbox[:SIGNAL_CAPS["inbox"]]
+        ])
+
+
+def _render_candidate_lists(
+    personality: PersonalityLayer, packet: PerceptionPacket, lines: List[str], facts: GivenFacts,
+) -> None:
+    """The #N lists a decision binds its targets against (``candidate_lists`` order), in the
+    character's voice. Shared by the decision prompt and the intent reading prompt."""
+    spatial = packet.spatial
+    # One person roster (present + reachable absent), numbering shared by person_indices and
+    # physical_person_index. Marked "在场" / "不在场": TALK and PHYSICAL-on-a-person may only
+    # pick present people; only SEND_MESSAGE may target absent ones. (COVERT doesn't bind
+    # from this list — its object lives in action_description.)
+    roster = candidate_lists(packet).roster
+    if roster:
+        lines.append(f"我能触及的人（默认都是有生命值的人，除非明确标识{DECEASED_MARK}）：")
+        for idx, (aid, who) in enumerate(roster, 1):
+            here = "在场" if aid in spatial.visible_agent_ids else "不在场"
+            # Condition shares the parentheses with gender and presence (person_referent's
+            # marks). Only present people carry one: for the absent it could only be a belief
+            # in memory, not a live field (information asymmetry).
+            cond = (p.condition if (p := spatial.visible_agents.get(aid)) else "")
+            referent = person_referent(who.name, who.gender, here, cond)
+            lines.append(f"  #{idx} {referent}")
+            # The roster isn't just the hard frame to pick from; it is itself fact: who exists,
+            # who is here, who isn't. Undeclared, the judge can't catch an invented person or
+            # see that he's seeking someone absent.
+            facts.add("我能触及的人", referent)
+    else:
+        lines.append("我能触及的人：无")
+        facts.add("我能触及的人", "无")
+    if spatial.visible_npcs:
+        # One list for both "who else is here" and "whom I can send" (two would print the same
+        # people twice). Only people here can be sent. The header must say busy people can't
+        # be sent but can be stopped: errands exclude them, while stopping a runner only makes
+        # sense while he's busy.
+        lines.append(
+            "此处可接受任务指派的人（按指定内容执行任务，不自行变更任务，也不会拒绝任务："
+            "空闲且行动未受限制时，我可以向其指派任务；正在执行任务或行动受限时，不能接受新任务，"
+            "但仍可成为动手的对象。**他们不在上面「我能触及的人」名单里** —— "
+            "跟他们打交道只有指派任务(ERRAND)或动手(PHYSICAL)这两条路，SEND_MESSAGE, TALK等其他行动不能选这个名单的人）："
+        )
+        for idx, npc_id in enumerate(spatial.visible_npc_ids, 1):
+            rendered = render_npc(spatial.visible_npcs[npc_id], index=idx)
+            lines.append(f"  {rendered}")
+            facts.add("此处可接受任务指派的人", rendered.split(" ", 1)[-1])
+    if spatial.reachable_locations:
+        # Reachable = every location reachable by shortest path (not just adjacent), with travel
+        # time so distance can be weighed.
+        lines.append("我可前往（含需赶路的远处）：")
+        for idx, rl in enumerate(spatial.reachable_locations, 1):
+            name = rl.view.name or "某处"
+            desc_part = f"：{rl.view.description}" if rl.view.description else ""
+            dist = describe_seconds(rl.travel_seconds)
+            lines.append(f"  #{idx} {name}（脚程{dist}）{desc_part}")
+            facts.add("我可前往", f"{name}（脚程{dist}）")
+    else:
+        lines.append("我可前往：无处")
+        facts.add("我可前往", "无处")
+    if spatial.visible_entities:
+        # One list, one set of indices (``physical_entity_index`` binds to visible_entities order),
+        # shown in two groups: a single list marked only per entry gets misread, and something
+        # lying beside me is taken as already in hand and handed over. Each entry keeps its own
+        # index; perception orders my own things first, so the numbers still run in sequence.
+        self_id = personality.soul.agent_id
+        mine = [(i, e) for i, e in enumerate(spatial.visible_entities, 1) if e.holder_id == self_id]
+        others = [(i, e) for i, e in enumerate(spatial.visible_entities, 1) if e.holder_id != self_id]
+        lines.append("眼前的东西（两组的序号连着数）：")
+        # Said even when empty: "无" here is what corrects a memory that thinks something is in hand.
+        lines.append("  我手上的东西：" if mine else "  我手上的东西：无")
+        for idx, e in mine:
+            rendered = render_entity(e, owner_name="我", content=e.content, held_by_viewer=True)
+            lines.append(f"    #{idx} {rendered}")
+            facts.add("我手上的东西", rendered)
+        if others:
+            lines.append("  不在我手上的东西（放在此处，或在别人手上）：")
+        for idx, e in others:
+            rendered = render_entity(
+                e, owner_name=_entity_owner_name(e, self_id=self_id, spatial=spatial),
+                content=e.content)
+            lines.append(f"    #{idx} {rendered}")
+            facts.add("不在我手上的东西", rendered)
+    else:
+        # Say "nothing here" explicitly: omitted, the schema still asks for an entity index
+        # from an unprinted list, so models fill physical_entity_index=1 and get rejected as
+        # physical_without_target (assemble_scene_context treats "nobody here" the same way).
+        lines.append("眼前的东西：无（我手上没有，此处没有，别人手上也没有）")
+        facts.add("眼前的东西", "无（我手上没有，此处没有，别人手上也没有）")
+
+
+class ActorTargetSlot(NamedTuple):
+    """One target slot in both shapes: the actor's form names targets by id (``field``), the
+    decision output indexes a list (``slot``). ``kind`` says which list, so the form is bound by
+    the same binders and a review reads an actor's decision in the AI's slots."""
+
+    field: str
+    slot: str
+    kind: str   # "person" | "place" | "npc" | "entity"; see _KIND_IDS
+
+
+ACTOR_TARGET_SLOTS: tuple[ActorTargetSlot, ...] = (
+    ActorTargetSlot("person_ids", "person_indices", "person"),
+    ActorTargetSlot("move_carry_ids", "move_carry_indices", "person"),
+    ActorTargetSlot("destination_id", "destination_index", "place"),
+    ActorTargetSlot("physical_person_id", "physical_person_index", "person"),
+    ActorTargetSlot("physical_npc_id", "physical_npc_index", "npc"),
+    ActorTargetSlot("physical_entity_id", "physical_entity_index", "entity"),
+    ActorTargetSlot("physical_recipient_id", "physical_recipient_index", "person"),
+    ActorTargetSlot("errand_npc_id", "errand_npc_index", "npc"),
+    ActorTargetSlot("errand_destination_id", "errand_destination_index", "place"),
+    ActorTargetSlot("errand_item_id", "errand_item_index", "entity"),
+    ActorTargetSlot("errand_recipient_id", "errand_recipient_index", "person"),
+)
+_KIND_IDS: dict[str, Callable[[CandidateLists], List[str]]] = {
+    "person": lambda c: c.roster_ids,
+    "place": lambda c: c.reachable_ids,
+    "npc": lambda c: c.npc_ids,
+    "entity": lambda c: c.entity_ids,
+}
+# Slots with no list: same meaning in both shapes, and only ``item_name`` is named differently.
+_ACTOR_TEXT_SLOTS: tuple[tuple[str, str], ...] = (
+    ("action_description", "action_description"),
+    ("expected_outcome", "expected_outcome"),
+    ("message_content", "message_content"),
+    ("talk_topic", "talk_topic"),
+    ("item_name", "item_name"),
+    ("errand_message", "errand_message"),
+)
+_ACTOR_FLAG_SLOTS: tuple[str, ...] = ("message_announce", "errand_announce", "anonymous")
+
+
+def _actor_payload(action: ActorAction, lists: CandidateLists) -> dict:
+    """The form as the decision slots. An id off its list is refused here: the character can't
+    reach it, and an index can't name it."""
+    payload: dict = {
+        "estimated_steps": action.estimated_steps,
+        "urgency": action.urgency.value,
+    }
+    for field_name, key in _ACTOR_TEXT_SLOTS:
+        if text := getattr(action, field_name).strip():
+            payload[key] = text
+    for key in _ACTOR_FLAG_SLOTS:
+        if getattr(action, key):
+            payload[key] = True
+    for field_name, key, kind in ACTOR_TARGET_SLOTS:
+        value = getattr(action, field_name)
+        if not value:
+            continue
+        ids = _KIND_IDS[kind](lists)
+        wanted = list(value) if isinstance(value, tuple) else [value]
+        if any(v not in ids for v in wanted):
+            raise ActorAnswerRejected(f"{field_name}_not_perceived")
+        indices = [ids.index(v) + 1 for v in wanted]
+        payload[key] = indices if isinstance(value, tuple) else indices[0]
+    return payload
+
+
+# The decision fields a reading of an intent fills besides the action's own. No monologue: the
+# character's mind is not the reader's to write.
+_INTENT_DECISION_FIELDS: frozenset[str] = _DECISION_FIELDS - {"inner_monologue"}
+
+# Fields a reading fills even when the operation is fixed; never shown as fixed.
+_INTENT_FILLED_FIELDS: frozenset[str] = frozenset({"action_description", "estimated_steps", *_INTENT_DECISION_FIELDS})
+
+
+def _fixed_intent_payload(packet: PerceptionPacket, intent: ActorIntent, base: ActorAction) -> dict:
+    """The fixed part of an intent as the slots the reading must keep."""
+    payload = _actor_payload(base, candidate_lists(packet))
+    payload["selected_index"] = next(i for i, c in enumerate(_ACTION_SPACE) if c.action_type is base.action_type)
+    if base.action_type is ActionType.SEND_MESSAGE:
+        # The operation's placeholder names neither recipients nor words; a reading that writes
+        # no description gets one from what it bound (``send_description``).
+        payload.pop("action_description", None)
+    if intent.parameters.anonymous is not None:
+        payload["anonymous"] = base.anonymous
+    if intent.parameters.announce is not None:
+        payload["errand_announce"] = intent.parameters.announce
+    return payload
+
+
+def _actor_action_from_payload(payload: dict, lists: CandidateLists) -> ActorAction | None:
+    """A model's slots as the actor's form. Indices off their list are left empty for the actor
+    to fill, never guessed."""
+    raw_index = payload.get("selected_index")
+    if not isinstance(raw_index, int) or isinstance(raw_index, bool) or not 0 <= raw_index < len(_ACTION_SPACE):
+        return None
+    action_type = _ACTION_SPACE[raw_index].action_type
+    applicable = _action_fields(action_type) | _INTENT_DECISION_FIELDS
+    payload = {key: value for key, value in payload.items() if key in applicable}
+    fields: dict = {"action_type": action_type}
+    for field_name, key in _ACTOR_TEXT_SLOTS:
+        fields[field_name] = _text(payload, key)
+    for key in _ACTOR_FLAG_SLOTS:
+        fields[key] = payload.get(key) is True
+    for field_name, key, kind in ACTOR_TARGET_SLOTS:
+        list_of = _KIND_IDS[kind]
+        raw = payload.get(key)
+        if field_name.endswith("_ids"):
+            indices = raw if isinstance(raw, list) else [raw] if isinstance(raw, int) else []
+            fields[field_name] = tuple(IndexedRef(list_of(lists)).resolve(indices))
+        else:
+            resolved = IndexedRef(list_of(lists)).resolve([raw]) if raw is not None else []
+            fields[field_name] = resolved[0] if resolved else None
+    steps = payload.get("estimated_steps")
+    fields["estimated_steps"] = steps if isinstance(steps, int) and not isinstance(steps, bool) and steps >= 1 else 1
+    if action_type is ActionType.SEND_MESSAGE:
+        fields["urgency"] = parse_urgency(payload.get("urgency"), default=Urgency.NORMAL)
+    if action_type is ActionType.SEND_MESSAGE and not fields["action_description"] and fields["message_content"]:
+        names = {aid: who.name for aid, who in lists.roster}
+        fields["action_description"] = send_description(
+            [names.get(aid, "") for aid in fields["person_ids"]],
+            words=fields["message_content"], anonymous=fields["anonymous"],
+        )
+    try:
+        return ActorAction(**fields)
+    except ValueError:
+        return None
+
+
+def _constrained_actor_action_from_payload(
+    payload: dict, fixed_payload: dict, lists: CandidateLists,
+    intent: ActorIntent, base: ActorAction,
+) -> ActorAction | None:
+    from agent.actor_operations import check_actor_operation
+
+    if "selected_index" in payload:
+        selected = payload["selected_index"]
+        if isinstance(selected, bool) or not isinstance(selected, int) or not 0 <= selected < len(_ACTION_SPACE):
+            return None
+        if selected != fixed_payload["selected_index"]:
+            raise ActorAnswerRejected("operation_constraint_conflict")
+    for key in ("message_content", "errand_message", "anonymous"):
+        if key in fixed_payload and key in payload and payload[key] != fixed_payload[key]:
+            raise ActorAnswerRejected("operation_constraint_conflict")
+    payload = {**fixed_payload, **payload}
+    action = _actor_action_from_payload(payload, lists)
+    if action is None:
+        return None
+    check_actor_operation(action, base, intent)
+    return action
 
 
 def _own_item_ids(packet: PerceptionPacket) -> List[str]:
@@ -1324,5 +1811,4 @@ def _own_item_ids(packet: PerceptionPacket) -> List[str]:
 
 def _format_candidate_line(index: int, candidate: ActionCandidate) -> str:
     action_type = candidate.action_type
-    label = action_type.value.upper() if hasattr(action_type, "value") else str(action_type).upper()
-    return f"{index}. [{label}] {candidate.description}"
+    return f"{index}. [{action_type.value.upper()}] {action_type.label}：{candidate.description}"

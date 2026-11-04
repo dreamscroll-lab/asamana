@@ -5,13 +5,15 @@ import pytest
 from agent.decision import ActionType
 from core.container import Container
 from core.interfaces.action import EntityStateChange
-from engine.application import NarrativeApplication
+from interaction.application import NarrativeApplication
 from interaction.replayer import Replayer
+from tests.unit.step_view import agents, events
 from interaction.world_manager import WorldManager
 from world import WorldBuilder
 from world.initializer import WorldInitializer
-from world.models import WorldEntity, WorldEntityType
+from core.interfaces.entity import WorldEntity, WorldEntityType
 from worlds.tiled import TiledWorldConfig
+from tests.unit.confirmed_world import confirmed_world
 
 
 @pytest.fixture()
@@ -24,43 +26,38 @@ def container(mock_build_container: Container) -> Container:
 async def test_world_builder_persists_real_step_zero_snapshot(container) -> None:
     builder = WorldBuilder(container)
 
-    world = await builder.build(
+    await builder.build(
         theme="玄武门之变",
         world_id="world-init",
         world_configs=[TiledWorldConfig(template="changan_iso")],
     )
+    # A build writes the setup; step 0 waits for the world to be confirmed.
+    assert (await container.snapshot.load_world_setup("world-init"))["characters"]
+    assert await container.snapshot.list_steps("world-init") == []
+    world = await WorldInitializer(container).initialize("world-init")
     snapshot = await container.snapshot.load(world.world_id, 0)
 
     assert snapshot is not None
     assert snapshot == world.step_zero_snapshot
-    assert snapshot.metadata["phase"] == "initialization"
-    assert snapshot.metadata["schedule"] == {"step": 0, "batches": []}
-    assert snapshot.metadata["messages"]["step"] == 0
-    assert set(snapshot.metadata["messages"]["inboxes"]) == set(world.agents)
-    assert snapshot.metadata["environment"]["body_locations"]
-    assert set(snapshot.metadata["environment"]["body_locations"].values()) <= set(
+    # Step 0 is a state, not a happening: everyone stands where the world put them.
+    assert snapshot.events == []
+    assert set(snapshot.state.agents) == set(world.agents)
+    assert {a["location_id"] for a in snapshot.state.agents.values()} <= set(
         world.world_config.get_places()
     )
-    assert len(snapshot.agent_summaries) == len(world.agents)
-    assert snapshot.event_summaries == []
-    assert set(snapshot.agent_states) == set(world.agents)
-    first_state = next(iter(snapshot.agent_states.values()))
+    first_state = next(iter(snapshot.state.agents.values()))
     assert {
         "agent_id",
         "agent_name",
-        "current_location",
+        "location_id",
         "activity_status",
         "current_action",
         "action_remaining_steps",
     } <= set(first_state)
-    assert snapshot.agent_relations
+    assert snapshot.state.relations
 
-    stored_states = [
-        await container.agent_store.load_agent_state(world.world_id, agent_id)
-        for agent_id in await container.agent_store.list_agent_ids(world.world_id)
-    ]
-    assert len(stored_states) == len(world.agents)
-    assert any(state is not None and state.current_location for state in stored_states)
+    assert set(snapshot.state.agents) == set(world.agents)
+    assert any(record["current_location"] for record in snapshot.state.agents.values())
 
 
 @pytest.mark.asyncio
@@ -70,7 +67,7 @@ async def test_application_runtime_produces_replayable_history(container, test_c
         snapshot_provider=container.snapshot,
     )
 
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     background_agents = [agent for agent in world.agent_list() if not agent.is_main_character]
     assert background_agents
     assert application.get_session(world.world_id).runtime._executor_registry.get_executor(
@@ -104,12 +101,13 @@ async def test_application_runtime_produces_replayable_history(container, test_c
     assert step_one_snapshot.clock.startswith("step=0001 ")
     # Runtime step snapshots carry relations in the same shape as the step-0 snapshot.
     step_zero_snapshot = await container.snapshot.load(world.world_id, 0)
-    assert step_one_snapshot.agent_relations
-    assert set(next(iter(step_one_snapshot.agent_relations.values()))) == set(
-        next(iter(step_zero_snapshot.agent_relations.values()))
+    assert step_one_snapshot.state.relations
+    assert set(next(iter(step_one_snapshot.state.relations.values()))) == set(
+        next(iter(step_zero_snapshot.state.relations.values()))
     )
-    assert replay_steps[0].actions
-    assert replay_steps[0].agent_states
+    # Step 0 is the world as built: everyone in place, nothing happened yet.
+    assert agents(replay_steps[0]) and events(replay_steps[0]) == []
+    assert events(replay_steps[1], "action")
     assert await manager.latest_snapshot(world.world_id) == await container.snapshot.load(
         world.world_id,
         2,
@@ -117,23 +115,23 @@ async def test_application_runtime_produces_replayable_history(container, test_c
 
 
 @pytest.mark.asyncio
-async def test_runtime_snapshots_expose_all_agent_states_to_replay(container, test_config) -> None:
+async def test_runtime_snapshots_expose_every_agent_to_replay(container, test_config) -> None:
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=1)
 
     snapshot = await container.snapshot.load(world.world_id, 1)
     assert snapshot is not None
-    assert set(snapshot.agent_states) == set(world.agents)
+    assert set(snapshot.state.agents) == set(world.agents)
 
     event = await Replayer(
         world.world_id,
         container.snapshot,
     ).get_step(1)
-    assert set(event.agent_states) == set(world.agents)
-    for summary in event.agent_states.values():
-        assert summary.vitality is not None
-        assert 0.0 <= summary.vitality <= 1.0
+    assert set(agents(event)) == set(world.agents)
+    for _, summary in agents(event).values():
+        assert summary.private.vitality is not None
+        assert 0.0 <= summary.private.vitality <= 1.0
 
 
 @pytest.mark.asyncio
@@ -141,7 +139,7 @@ async def test_restore_recovers_live_environment_entity_state(container, test_co
     """A restored world recovers item state/ownership that drifted during the run,
     rather than reverting items to their step-0 seed positions."""
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     # An item enters the world mid-run and is picked up + altered by an agent.
     runtime = application.get_session(world.world_id).runtime
@@ -155,7 +153,6 @@ async def test_restore_recovers_live_environment_entity_state(container, test_co
             entity_type=WorldEntityType.ITEM,
             state="sealed",
             presence_ref=holder_location,
-            is_takeable=True,
         )
     )
     environment.change_entity_state(
@@ -179,17 +176,18 @@ async def test_restore_recovers_live_environment_entity_state(container, test_co
 
 @pytest.mark.asyncio
 async def test_restore_session_rehydrates_event_throttle(container, test_config) -> None:
-    """restore_session replays fired events into the EventSystem so a restored world
+    """restore_session replays fired events into the NarrativeEditor so a restored world
     keeps its window quota instead of resetting it."""
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=1)
 
-    # Inject a fired event into the latest snapshot's event log to stand in for a
-    # world event that the run would have produced.
+    # Put an injection into the latest snapshot's events to stand in for one the run would have
+    # produced.
     latest = await container.snapshot.load(world.world_id, 1)
-    latest.events_this_step.append(
+    latest.events.append(
         {
+            "kind": "injection", "seq": 999,
             "id": "evt-restore", "step": 1, "narrative_desc": "城门骤变",
             "is_positive": None, "dispatched_to": ["broadcast"],
             "authored_by": "system", "metadata": {},
@@ -201,8 +199,8 @@ async def test_restore_session_rehydrates_event_throttle(container, test_config)
     restored_app = NarrativeApplication(container, test_config)
     await restored_app.restore_session(world.world_id)
 
-    event_system = restored_app.get_session(world.world_id).runtime._event_system
-    assert any(ev.id == "evt-restore" for ev in event_system.list_events())
+    narrative_editor = restored_app.get_session(world.world_id).runtime._narrative_editor
+    assert any(ev.id == "evt-restore" for ev in narrative_editor.list_injections())
 
 
 @pytest.mark.asyncio
@@ -210,11 +208,11 @@ async def test_listing_worlds_does_not_read_the_whole_history(container, test_co
     """The world list reads two snapshots, so read volume doesn't grow with world age.
 
     The frontend polls this list for every world, and snapshot reads are synchronous JSON parsing
-    that would stall running worlds' LLM calls. Identity is fixed in step 0 at build time; progress
-    needs only the last step.
+    that would stall running worlds' LLM calls. Identity comes from the setup frozen in step 0;
+    progress needs only the last step.
     """
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=3)
 
     loaded: list[int] = []
@@ -253,7 +251,7 @@ async def test_restoring_again_never_displaces_a_live_session(container, test_co
     Reproduced here with sequential calls (restore's per-world lock covers the concurrent path).
     """
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     restored_app = NarrativeApplication(container, test_config)
     await restored_app.restore_session(world.world_id)
@@ -280,7 +278,7 @@ async def test_a_never_run_world_still_restores_its_in_flight_messages(
     from core.interfaces.message import Message
 
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     agent_id = next(iter(world.agents))
     await container.message_provider.enqueue(Message(
@@ -290,7 +288,7 @@ async def test_a_never_run_world_still_restores_its_in_flight_messages(
     ))
     # Rewrite the step-0 snapshot to carry this in-flight message (the queue was empty at build time).
     step0 = await container.snapshot.load(world.world_id, 0)
-    step0.pending_messages = await container.message_provider.peek_pending(world.world_id)
+    step0.engine.pending_messages = await container.message_provider.peek_pending(world.world_id)
     await container.snapshot.save(world.world_id, 0, step0)
     assert await container.snapshot.list_steps(world.world_id) == [0]
 
@@ -313,7 +311,7 @@ async def test_a_death_notice_survives_a_restore(container, test_config) -> None
     from core.interfaces.perception import Broadcast, BroadcastType
 
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=1)
 
     channel = application.get_session(world.world_id).runtime._broadcast_channel
@@ -326,7 +324,7 @@ async def test_a_death_notice_survives_a_restore(container, test_config) -> None
 
     await application.run_world(world.world_id, steps=1)
     latest = await container.snapshot.load(world.world_id, 2)
-    assert [b.content for b in latest.pending_broadcasts] == ["宫中传出消息：那人已死。"]
+    assert [b.content for b in latest.engine.pending_broadcasts] == ["宫中传出消息：那人已死。"]
 
     # New process: the channel belongs to the runtime, and a fresh BroadcastChannel is empty.
     restored = NarrativeApplication(container, test_config)
@@ -342,11 +340,11 @@ async def test_a_death_notice_survives_a_restore(container, test_config) -> None
 async def test_restore_session_rehydrates_in_flight_messages(container, test_config) -> None:
     """A message sent before the save but due for delivery after it survives a
     cross-process restore. Only InMemoryMessageProvider exists, so the queue is lost
-    on restart unless restore re-enqueues the snapshot's pending_messages."""
+    on restart unless restore re-enqueues the snapshot's pending messages."""
     from core.interfaces.message import Message
 
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     agent_id = next(iter(world.agents))
     in_flight = Message(
@@ -364,7 +362,7 @@ async def test_restore_session_rehydrates_in_flight_messages(container, test_con
     # Run a step so the pending message lands in the persisted snapshot.
     await application.run_world(world.world_id, steps=1)
     latest = await container.snapshot.load(world.world_id, 1)
-    assert any(m.id == "msg-in-flight" for m in latest.pending_messages)
+    assert any(m.id == "msg-in-flight" for m in latest.engine.pending_messages)
 
     # Simulate a process restart: the in-memory queue is gone.
     await container.message_provider.clear()
@@ -389,7 +387,7 @@ def test_goal_entity_from_dict_preserves_lifecycle_metadata() -> None:
     last_evaluated_step / progress_summary instead of resetting them."""
     from agent.goals import GoalStatus
     from agent.need import NeedType
-    from world.initializer import _goal_entity_from_dict
+    from agent.state_codec import goal_entity_from_dict
 
     ent = {
         "id": "stg-7",
@@ -400,8 +398,9 @@ def test_goal_entity_from_dict_preserves_lifecycle_metadata() -> None:
         "created_step": 12,
         "last_evaluated_step": 18,
         "progress_summary": "fail:2;仍未达成。",
+        "origin": "cognitive",
     }
-    goal = _goal_entity_from_dict(ent, fallback_id="restored-stg-0")
+    goal = goal_entity_from_dict(ent, fallback_id="restored-stg-0")
     assert goal.id == "stg-7"
     assert goal.status == GoalStatus.ACTIVE
     assert goal.related_need == NeedType.SAFETY
@@ -410,48 +409,35 @@ def test_goal_entity_from_dict_preserves_lifecycle_metadata() -> None:
     assert goal.progress_summary == "fail:2;仍未达成。"
 
     # An unknown related_need degrades to None rather than raising.
-    degraded = _goal_entity_from_dict(
-        {"id": "x", "text": "t", "related_need": "not_a_need"}, fallback_id="fb"
+    degraded = goal_entity_from_dict(
+        {"id": "x", "text": "t", "related_need": "not_a_need", "origin": "cognitive"}, fallback_id="fb"
     )
     assert degraded.related_need is None
 
 
-def test_goal_entity_from_dict_origin_round_trip_and_legacy_default() -> None:
-    """origin round-trips; existing saves (no such field) and unknown values fall back to COGNITIVE.
-
-    COGNITIVE rather than RESIDUE is the conservative choice: misreading a goal as unfinished business
-    would give an old plan unearned protection from eviction.
-    """
+def test_goal_entity_from_dict_origin_round_trip() -> None:
     from agent.goals import GoalOrigin
-    from world.initializer import _goal_entity_from_dict
+    from agent.state_codec import goal_entity_from_dict
 
-    restored = _goal_entity_from_dict(
+    restored = goal_entity_from_dict(
         {"id": "x", "text": "我答应了要去查此事", "origin": "residue"}, fallback_id="fb"
     )
     assert restored.origin == GoalOrigin.RESIDUE
-
-    legacy = _goal_entity_from_dict({"id": "x", "text": "t"}, fallback_id="fb")
-    assert legacy.origin == GoalOrigin.COGNITIVE
-
-    unknown = _goal_entity_from_dict(
-        {"id": "x", "text": "t", "origin": "not_an_origin"}, fallback_id="fb"
-    )
-    assert unknown.origin == GoalOrigin.COGNITIVE
 
 
 @pytest.mark.asyncio
 async def test_restore_preserves_persisted_goal_metadata(container, test_config) -> None:
     """Integration: goal lifecycle metadata written to the store survives a
-    full restore — _apply_stored_state must not silently drop it."""
+    full restore — Agent.apply_stored_state must not silently drop it."""
     from agent.need import NeedType
 
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=1)
 
     agent_id = next(iter(world.agents))
-    stored = await container.agent_store.load_agent_state(world.world_id, agent_id)
-    stored.short_term_goal_entities = [
+    committed = await container.snapshot.load_latest(world.world_id)
+    committed.state.agents[agent_id]["short_term_goal_entities"] = [
         {
             "id": "stg-meta",
             "text": "巩固兵权",
@@ -461,9 +447,10 @@ async def test_restore_preserves_persisted_goal_metadata(container, test_config)
             "created_step": 9,
             "last_evaluated_step": 14,
             "progress_summary": "fail:3;屡试未果。",
+            "origin": "cognitive",
         }
     ]
-    await container.agent_store.save_agent_state(world.world_id, agent_id, stored)
+    await container.snapshot.save(world.world_id, committed.step, committed)
 
     initializer = WorldInitializer(container)
     restored = await initializer.restore(world.world_id)
@@ -481,13 +468,11 @@ async def test_reset_session_rebuilds_in_memory_world_at_step_zero(container, te
     baseline, not just the persisted store. Otherwise the session runs step-N minds
     on a step-0 clock."""
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=2)
 
     agent_id = next(iter(world.agents))
-    # The run advanced persisted state past step 0.
-    advanced = await container.agent_store.load_agent_state(world.world_id, agent_id)
-    assert advanced.updated_step > 0
+    assert world.agents[agent_id].personality.state.step > 0
 
     reset_world = await application.reset_session(world.world_id)
 
@@ -498,9 +483,6 @@ async def test_reset_session_rebuilds_in_memory_world_at_step_zero(container, te
     # The session clock starts at step 0 too, and the world's current step with it.
     assert application.get_session(world.world_id).runtime._clock.current_step == 0
     assert reset_world.current_step == 0
-    # Persisted state was rolled back to the baseline.
-    rolled_back = await container.agent_store.load_agent_state(world.world_id, agent_id)
-    assert rolled_back.updated_step == 0
     # No post-step-0 snapshots remain.
     assert await container.snapshot.list_steps(world.world_id) == [0]
 
@@ -511,7 +493,7 @@ async def test_restore_sets_world_current_step_to_resume_step(container, test_co
     step), the single authoritative world step the clock and planning derive from —
     agents keep no counter of their own that could drift after restore."""
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     await application.run_world(world.world_id, steps=3)
     latest = max(await container.snapshot.list_steps(world.world_id))
     assert latest == 3
@@ -535,7 +517,7 @@ async def test_reset_session_purges_run_traces_but_keeps_build_traces(container,
     sink = InMemoryTraceSink()
     container.trace_sink = sink  # tests run with observability off (NullTraceSink)
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     def _trace(step: int | None) -> LLMCallTrace:
         return LLMCallTrace(
@@ -563,7 +545,7 @@ async def test_reset_session_purges_runtime_memories_but_keeps_seeds(container, 
     from agent.memory_types import MemoryStream
 
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     agent_id = next(iter(world.agents))
     mem = application.get_session(world.world_id).world.agents[agent_id].memory_system
@@ -587,18 +569,18 @@ async def test_reset_session_purges_runtime_memories_but_keeps_seeds(container, 
 async def test_reset_session_drops_runtime_created_relations(container, test_config) -> None:
     """A relation created during the run (a directed pair absent at step 0) is
     deleted on reset, leaving only the initial baseline relations."""
-    from core.interfaces.agent_store import AgentRelation
+    from core.interfaces.relation import AgentRelation
 
     application = NarrativeApplication(container, test_config)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     from_id = next(iter(world.agents))
-    initial = await container.agent_store.load_all_relations(world.world_id, from_id)
-    initial_targets = {r.to_id for r in initial}
+    relations = world.agents[from_id].relation_system
+    initial_targets = {r.to_id for r in await relations.all_relations()}
     assert "ghost-target" not in initial_targets
 
-    await container.agent_store.save_relation(
-        AgentRelation(
+    held = await relations.all_relations()
+    relations.restore([*held, AgentRelation(
             world_id=world.world_id,
             from_id=from_id,
             to_id="ghost-target",
@@ -606,15 +588,12 @@ async def test_reset_session_drops_runtime_created_relations(container, test_con
             affection_objective=0.0,
             updated_step=5,
             labels=["路人"],
-        )
-    )
-    assert "ghost-target" in {
-        r.to_id for r in await container.agent_store.load_all_relations(world.world_id, from_id)
-    }
+        )])
+    assert "ghost-target" in {r.to_id for r in await relations.all_relations()}
 
-    await application.reset_session(world.world_id)
+    reset = await application.reset_session(world.world_id)
 
-    after = await container.agent_store.load_all_relations(world.world_id, from_id)
+    after = await reset.agents[from_id].relation_system.all_relations()
     assert "ghost-target" not in {r.to_id for r in after}
     assert {r.to_id for r in after} == initial_targets
 
@@ -628,12 +607,12 @@ async def test_build_world_auto_registers_in_shared_catalog(container, test_conf
 
     catalog = WorldCatalog()  # in-memory: no disk write in tests
     application = NarrativeApplication(container, test_config, catalog=catalog)
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
 
     entry = catalog.get(world.world_id)
     assert entry is not None
     assert entry["theme"] == "玄武门之变"
-    assert entry["world_name"] == world.analysis.world_name
+    assert entry["world_name"] == world.setup.lore.world_name
 
     manager = WorldManager(
         snapshot_provider=container.snapshot,
@@ -642,7 +621,7 @@ async def test_build_world_auto_registers_in_shared_catalog(container, test_conf
     listed = await manager.list_worlds()
     meta = next((m for m in listed if m.world_id == world.world_id), None)
     assert meta is not None
-    assert meta.world_name == world.analysis.world_name
+    assert meta.world_name == world.setup.lore.world_name
 
 
 @pytest.mark.asyncio
@@ -650,6 +629,16 @@ async def test_build_world_without_catalog_does_not_register(container, test_con
     """With no catalog injected, build_world must not register anywhere (so tests and
     catalog-less embeddings never write ./data/worlds.json)."""
     application = NarrativeApplication(container, test_config)  # no catalog
-    world = await application.build_world("玄武门之变", template="changan_iso")
+    world = await confirmed_world(application, "玄武门之变", template="changan_iso")
     # Session is live and runnable even though nothing was cataloged.
     assert application.has_session(world.world_id)
+
+
+def test_goal_entity_from_dict_coerces_a_missing_or_unknown_origin() -> None:
+    """One bad stored field must not abort the world's restore: it degrades to COGNITIVE."""
+    from agent.goals import GoalOrigin
+    from agent.state_codec import goal_entity_from_dict
+
+    for raw in ({}, {"origin": "no-such-origin"}):
+        ent = {"id": "g1", "text": "守住宫门", **raw}
+        assert goal_entity_from_dict(ent, fallback_id="x").origin is GoalOrigin.COGNITIVE

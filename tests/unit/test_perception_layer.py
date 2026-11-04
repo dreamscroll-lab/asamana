@@ -48,7 +48,7 @@ def _make_layer(
         world_id="world-1",
         agent_id=agent_id,
     )
-    rel = RelationSystem(container.agent_store, world_id="world-1", agent_id=agent_id)
+    rel = RelationSystem(world_id="world-1", agent_id=agent_id)
     layer = PerceptionMemoryLayer(
         memory_system=mem,
         relation_system=rel,
@@ -62,10 +62,10 @@ def _make_spatial(
     *,
     ambient_events: list[str] | None = None,
     ambient_event_strengths: list[float | None] | None = None,
-    ambient_actor_ids: list[tuple[str, ...]] | None = None,
+    ambient_doer_ids: list[tuple[str, ...]] | None = None,
     visible_agent_ids: list[str] | None = None,
 ) -> SpatialPerception:
-    """Test helper: takes a list of strings plus optional parallel strength/actor lists and zips
+    """Test helper: takes a list of strings plus optional parallel strength/doer lists and zips
     them into AmbientEvent.
 
     Production code never builds SpatialPerception from list[str]; this only keeps test assertions
@@ -73,18 +73,18 @@ def _make_spatial(
     """
     events = ambient_events or []
     strengths = ambient_event_strengths or [None] * len(events)
-    actors = ambient_actor_ids or [()] * len(events)
+    doers = ambient_doer_ids or [()] * len(events)
     return SpatialPerception(
         location_id="palace",
         location_view=LocationView(name="Palace", description="A grand palace."),
         reachable_locations=[],
         visible_agents={aid: PerceivedPresence() for aid in visible_agent_ids or []},
         ambient_events=[
-            # Every actor in this helper counts as having cognition; the split between the two body
+            # Every acting body in this helper counts as having cognition; the split between the two body
             # tiers is derived by record_carry_observation and not tested here (see
             # test_npc_is_not_an_agent).
-            AmbientEvent(content=text, strength=s, actor_ids=a, agent_actor_ids=a)
-            for text, s, a in zip(events, strengths, actors)
+            AmbientEvent(content=text, strength=s, doer_ids=a, doer_agent_ids=a)
+            for text, s, a in zip(events, strengths, doers)
         ],
         world_time_label="morning",
         current_step=1,
@@ -128,16 +128,15 @@ async def test_message_memory_carries_sender_name(container) -> None:
 
 
 @pytest.mark.asyncio
-async def test_narrator_message_memory_has_no_sender_prefix(container) -> None:
-    """Pseudo-senders such as narrator/system (narrative) are narration and get no "来自X" sender
-    prefix."""
+async def test_anonymous_injection_memory_keeps_its_signature(container) -> None:
+    """An injected letter retains the same public signature as an anonymous character letter."""
     personality = _make_personality()
     layer, mem = _make_layer(container, is_main_character=True)
     msg = Message(
-        id="m-2", world_id="world-1", sender_id="narrator", sender_name="旁白",
+        id="m-2", world_id="world-1", sender_id="narrator", sender_name="匿名", anonymous=True, sender_is_agent=False,
         content="风云骤变", recipients=["agent-1"], location_scope=None,
         created_step=1, deliver_step=1, urgency=Urgency.HIGH,
-        metadata={"narrative": True},
+        metadata={"source": "system"},
     )
     before = set(mem._entries.keys())
     await layer.record(
@@ -149,7 +148,7 @@ async def test_narrator_message_memory_has_no_sender_prefix(container) -> None:
         if m.id not in before and m.raw_content.startswith("[消息]")
     ]
     assert len(written) == 1
-    assert "来自" not in written[0].raw_content
+    assert "来自匿名的消息：" in written[0].raw_content
     assert "风云骤变" in written[0].raw_content
 
 
@@ -171,7 +170,7 @@ async def test_scoring_ambient_low(container) -> None:
     )
     main_ambient = [
         m for m in main_mem._entries.values()
-        if m.id not in before_main and m.raw_content.startswith("[环境感知]")
+        if m.id not in before_main and m.raw_content.startswith("[环境观察]")
     ]
     assert len(main_ambient) == 1, "Main character should write ambient (0.2 >= 0.15)"
 
@@ -182,19 +181,14 @@ async def test_scoring_ambient_low(container) -> None:
     )
     bg_ambient = [
         m for m in bg_mem._entries.values()
-        if m.id not in before_bg and m.raw_content.startswith("[环境感知]")
+        if m.id not in before_bg and m.raw_content.startswith("[环境观察]")
     ]
     assert len(bg_ambient) == 0, "Background agent should NOT write ambient (0.2 < 0.35)"
 
 
 @pytest.mark.asyncio
 async def test_narrator_message_is_not_attributed_to_a_sender(container) -> None:
-    """A narrator-type message (metadata['narrative']=True) has no sender in the memory it writes.
-
-    Locked contract: PerceptionLayer doesn't recognize the string sender_id == 'narrator'; it
-    excludes the pseudo-sender at the related_agents stage via the message.metadata['narrative']
-    flag.
-    """
+    """Anonymous injections carry no identified person into memory or relations."""
     layer, mem = _make_layer(container, is_main_character=True)
 
     # A message from a real agent
@@ -206,9 +200,10 @@ async def test_narrator_message_is_not_attributed_to_a_sender(container) -> None
     # An emotional event triggered by the narrator
     narrator_msg = Message(
         id="nar-1", world_id="world-1", sender_id="narrator",
+        sender_name="匿名", anonymous=True, sender_is_agent=False,
         content="你心头突然涌起一阵不安。", recipients=["agent-1"], location_scope=None,
         deliver_step=1, created_step=1, urgency=Urgency.HIGH,
-        metadata={"narrative": True},
+        metadata={"source": "system"},
     )
 
     await layer.record(
@@ -227,7 +222,7 @@ async def test_narrator_message_is_not_attributed_to_a_sender(container) -> None
     assert related_of("心头突然涌起") == []
     # The real sender's letter counts as contact, scored by nothing; the narrator is nobody.
     relations = {
-        r.to_id: r for r in await container.agent_store.load_all_relations("world-1", "agent-1")
+        r.to_id: r for r in await layer._relation_system.all_relations()  # noqa: SLF001
     }
     assert set(relations) == {"friend"}
     assert relations["friend"].interaction_count == 1
@@ -258,7 +253,7 @@ async def test_ambient_explicit_strength_overrides_default(container) -> None:
         personality=bg_personality, step=1,
     )
     assert not [m for m in bg_mem._entries.values()
-                if m.id not in before and m.raw_content.startswith("[环境感知]")]
+                if m.id not in before and m.raw_content.startswith("[环境观察]")]
 
     # Explicit strength=0.7 (strong social signal): the background agent perceives and writes it
     strong = _make_spatial(
@@ -271,17 +266,17 @@ async def test_ambient_explicit_strength_overrides_default(container) -> None:
         personality=bg_personality, step=2,
     )
     written = [m for m in bg_mem._entries.values()
-               if m.id not in before and m.raw_content.startswith("[环境感知]")]
+               if m.id not in before and m.raw_content.startswith("[环境观察]")]
     assert len(written) == 1, "Explicit strength=0.7 should let background write the ambient"
 
 
 @pytest.mark.asyncio
-async def test_ambient_memory_records_actor_in_identity_index(container) -> None:
-    """Ambient memories from observation must carry actor ids (AmbientEvent.actor_ids →
+async def test_ambient_memory_records_doer_in_identity_index(container) -> None:
+    """Ambient memories from observation must carry the doers' ids (AmbientEvent.doer_agent_ids →
     Memory.related_agents).
 
     Ambient is "I watch someone doing something", the main channel for knowing others. Dropping
-    actor_ids leaves every observed memory ownerless and the identity index useless, so "what I know
+    doer_ids leaves every observed memory ownerless and the identity index useless, so "what I know
     about someone" falls back to semantic neighbors and reliably recalls the wrong person.
     """
     layer, memory = _make_layer(container, agent_id="agent-1", is_main_character=True)
@@ -290,11 +285,11 @@ async def test_ambient_memory_records_actor_in_identity_index(container) -> None
     spatial = _make_spatial(
         ambient_events=["李元吉快步穿过宫门"],
         ambient_event_strengths=[0.7],
-        ambient_actor_ids=[("agent-yuanji",)],
+        ambient_doer_ids=[("agent-yuanji",)],
     )
     await layer.record(spatial=spatial, inbox=[], broadcasts=[], personality=personality, step=1)
 
-    written = [m for m in memory._entries.values() if m.raw_content.startswith("[环境感知]")]
+    written = [m for m in memory._entries.values() if m.raw_content.startswith("[环境观察]")]
     assert len(written) == 1
     assert written[0].related_agents == ["agent-yuanji"]
 
@@ -318,7 +313,7 @@ async def test_scoring_broadcast_high(container) -> None:
     )
     main_bc = [
         m for m in main_mem._entries.values()
-        if m.id not in before_main and m.raw_content.startswith("[世界广播]")
+        if m.id not in before_main and m.raw_content.startswith("[全局广播]")
     ]
     assert len(main_bc) == 1
 
@@ -329,9 +324,22 @@ async def test_scoring_broadcast_high(container) -> None:
     )
     bg_bc = [
         m for m in bg_mem._entries.values()
-        if m.id not in before_bg and m.raw_content.startswith("[世界广播]")
+        if m.id not in before_bg and m.raw_content.startswith("[全局广播]")
     ]
     assert len(bg_bc) == 1, "Background should write high-severity broadcast (0.8 >= 0.35)"
+
+
+@pytest.mark.asyncio
+async def test_a_local_broadcast_is_remembered_as_local(container) -> None:
+    layer, mem = _make_layer(container, is_main_character=True)
+    before = set(mem._entries.keys())
+    await layer.record(
+        spatial=_make_spatial(), inbox=[],
+        broadcasts=[_make_broadcast("东宫落雨", severity="high", location_scope="donggong")],
+        personality=_make_personality(), step=1,
+    )
+    written = [m.raw_content for m in mem._entries.values() if m.id not in before]
+    assert "[本地广播] 东宫落雨" in written
 
 
 @pytest.mark.asyncio
@@ -350,7 +358,7 @@ async def test_dedup_same_broadcast(container) -> None:
     )
     world_writes = [
         m for m in mem._entries.values()
-        if m.id not in before and m.raw_content.startswith("[世界广播]")
+        if m.id not in before and m.raw_content.startswith("[全局广播]")
     ]
     assert len(world_writes) == 1, f"Dedup should collapse identical broadcasts, got {len(world_writes)}"
 
@@ -369,7 +377,7 @@ async def test_cap_ambient(container) -> None:
     )
     ambient_writes = [
         m for m in mem._entries.values()
-        if m.id not in before and m.raw_content.startswith("[环境感知]")
+        if m.id not in before and m.raw_content.startswith("[环境观察]")
     ]
     assert len(ambient_writes) <= 2, f"Main ambient cap is 2, got {len(ambient_writes)}"
 

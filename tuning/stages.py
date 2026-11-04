@@ -19,9 +19,6 @@ from typing import Any, Awaitable, Callable
 
 from tuning import scenario_store
 
-SCENARIO_DIR = Path(__file__).parent / "scenarios"
-
-
 @dataclass(frozen=True)
 class StageSpec:
     """One stage suite. Empty ``criteria`` = a purely deterministic suite (no LLM judge, e.g. perception)."""
@@ -33,7 +30,7 @@ class StageSpec:
 
     @property
     def scenarios_path(self) -> Path:
-        return SCENARIO_DIR / f"{self.key}.json"
+        return scenario_store.scenario_path(self.key)
 
     @property
     def judged(self) -> bool:
@@ -55,7 +52,7 @@ def _specs() -> tuple[StageSpec, ...]:
     from tuning.validation import validate_world_pressure
     from tuning.validation_action import validate_action
     from tuning.validation_decision import validate_decision
-    from tuning.validation_event import validate_event
+    from tuning.validation_narrative_editor import validate_narrative_editor
     from tuning.validation_feedback import validate_feedback
     from tuning.validation_interrupt import validate_interrupt
     from tuning.validation_long_term_goal import validate_long_term_goal
@@ -80,7 +77,7 @@ def _specs() -> tuple[StageSpec, ...]:
         StageSpec("memory_maintain", "Memory maintain", ("fidelity", "voice"), validate_memory_maintain),
         StageSpec("memory_retrieve", "Memory retrieve", ("relevance", "coverage"), validate_memory_retrieve),
         StageSpec("relation", "Relation", ("fidelity", "objectivity"), validate_relation),
-        StageSpec("event", "Event", ("pacing", "groundedness", "concreteness", "craft", "discipline"), validate_event),
+        StageSpec("narrative_editor", "Narrative editor", ("pacing", "groundedness", "concreteness", "craft", "discipline"), validate_narrative_editor),
         StageSpec("interrupt", "Interrupt", ("decision_fit", "voice"), validate_interrupt),
         StageSpec("long_term_goal", "Long-term goal", ("revision_fit", "goal_quality"), validate_long_term_goal),
     )

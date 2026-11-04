@@ -30,10 +30,12 @@ from pathlib import Path
 
 from config.loader import load_config
 from core.container import Container
+from providers.assembly import build_container
 from config.models import Config
 from core.logging import configure_logging, get_logger
 
 from tuning.build_harness import run_build
+from tuning.cli_terms import AUDIT_SCOPE_ALIAS, TUNING_TRACE_DIR
 from tuning.phase_harness.plan_step import run_plan_step
 from tuning.scenario_store import ScenarioError
 from tuning.stages import all_stages, stage, stage_keys, write_scenario_subset
@@ -43,7 +45,6 @@ from tuning.judge_dialogue_progress import run_dialogue_progress
 
 logger = get_logger(__name__)
 
-_TRACE_DIR = "./data/tuning_traces"
 # Post-hoc audit reads production runtime traces (not the tuning harness dir).
 _RUNTIME_TRACE_DIR = "data/traces"
 
@@ -55,7 +56,7 @@ def bootstrap_application(config_path: str | None = None) -> tuple[Config, Conta
     (`data/traces/<world>/`): audits and the observer read it, and debug calls mixed in would
     falsify its stats and trajectories with no way to tell them apart.
 
-    `config.observability.enabled=False` before building makes `Container.from_config` install a
+    `config.observability.enabled=False` before building makes `build_container` install a
     NullTraceSink for `llm_router`, so whichever router a call site uses, the production channel has
     nowhere to write: guaranteed by construction, not by nobody happening to flush.
 
@@ -65,23 +66,23 @@ def bootstrap_application(config_path: str | None = None) -> tuple[Config, Conta
     config = load_config(config_path)
     configure_logging(**config.logging.model_dump())
     config.observability.enabled = False
-    return config, Container.from_config(config)
+    return config, build_container(config)
 
 
 async def _cmd_build(theme: str) -> int:
     config, container = bootstrap_application()
-    world_id, world = await run_build(container, config, theme, trace_dir=_TRACE_DIR)
-    print(f"Build complete: {world.analysis.world_name!r}")
+    world_id, world = await run_build(container, config, theme, trace_dir=TUNING_TRACE_DIR)
+    print(f"Build complete: {world.setup.lore.world_name!r}")
     print(f"  world_id: {world_id}")
-    print(f"  trace:    {_TRACE_DIR}/{world_id}/build.jsonl")
+    print(f"  trace:    {TUNING_TRACE_DIR}/{world_id}/build.jsonl")
     return 0
 
 
 async def _cmd_plan(world_id: str) -> int:
     config, container = bootstrap_application()
-    step = await run_plan_step(container, config, world_id, trace_dir=_TRACE_DIR)
+    step = await run_plan_step(container, config, world_id, trace_dir=TUNING_TRACE_DIR)
     print(f"plan_step dry-run complete for world {world_id!r} (step {step})")
-    print(f"  trace: {_TRACE_DIR}/{world_id}/plan_step.jsonl")
+    print(f"  trace: {TUNING_TRACE_DIR}/{world_id}/plan_step.jsonl")
     return 0
 
 
@@ -118,7 +119,7 @@ async def _cmd_validate(
         kwargs = {"judge_model": judge_model} if judge_model and spec.judged else {}
         summary = await spec.runner(
             container, config, world_id,
-            scenarios_path=scenarios, trace_dir=_TRACE_DIR, **kwargs,
+            scenarios_path=scenarios, trace_dir=TUNING_TRACE_DIR, **kwargs,
         )
 
     avg = summary.get("criteria_avg", {})
@@ -128,7 +129,7 @@ async def _cmd_validate(
         print("  semantic avg  " + "  ".join(f"{c}={avg.get(c, '—')}" for c in spec.criteria))
     if "all_deterministic_passed" in summary:
         print(f"  deterministic: {'all passed ✅' if summary['all_deterministic_passed'] else 'FAILURES ❌'}")
-    print(f"  report: {_TRACE_DIR}/{world_id}/validation/{spec.key}/summary.md")
+    print(f"  report: {TUNING_TRACE_DIR}/{world_id}/validation/{spec.key}/summary.md")
     return 0
 
 
@@ -147,14 +148,6 @@ def _parse_steps(spec: str | None) -> list[int] | None:
     return sorted(set(out)) or None
 
 
-# Short scope aliases → full keys (CLI convenience; full keys are accepted too).
-_SCOPE_ALIAS = {
-    "sass": "single_agent_single_step",
-    "sams": "single_agent_multi_step",
-    "mass": "multi_agent_single_step",
-    "mams": "multi_agent_multi_step",
-    "init": "initialization",
-}
 
 
 def _or_dash(value: float | None, why: str) -> str:
@@ -171,9 +164,9 @@ def _parse_scopes(spec: str | None) -> list[str] | None:
         tok = tok.strip()
         if not tok:
             continue
-        key = _SCOPE_ALIAS.get(tok, tok)
+        key = AUDIT_SCOPE_ALIAS.get(tok, tok)
         if key not in SCOPES:
-            raise SystemExit(f"unknown scope {tok!r}; valid: {sorted(SCOPES)} or aliases {sorted(_SCOPE_ALIAS)}")
+            raise SystemExit(f"unknown scope {tok!r}; valid: {sorted(SCOPES)} or aliases {sorted(AUDIT_SCOPE_ALIAS)}")
         out.append(key)
     return out or None
 
@@ -195,7 +188,7 @@ async def _cmd_audit(world_id: str, judge_model: str | None, steps: str | None,
         steps=_parse_steps(steps), scopes=_parse_scopes(scope), agents=_parse_csv(agent),
         trace_dir=_RUNTIME_TRACE_DIR, **kwargs,
     )
-    short = {v: k for k, v in _SCOPE_ALIAS.items()}
+    short = {v: k for k, v in AUDIT_SCOPE_ALIAS.items()}
     cov = summary["coverage"]
     print(f"audit complete for world {world_id!r}: 世界总分 {_or_dash(summary['world_score'], '未取证')}"
           f"  取证覆盖 {cov:.0%}" if cov is not None else

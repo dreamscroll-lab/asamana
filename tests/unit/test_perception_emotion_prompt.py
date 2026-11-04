@@ -75,7 +75,7 @@ def _personality_stub(
     cur_emotion = emotion if emotion is not None else EmotionState()
 
     def to_prompt_context(*, include_goals: bool = True, include_emotion: bool = True) -> str:
-        base = f"你是{name}。你的核心性格：果断。"
+        base = f"你是{name}。你的性格特点：果断。"
         if include_goals and state_goals:
             return base + f"\n你眼下最想做的是：{'；'.join(state_goals)}。"
         return base
@@ -118,6 +118,7 @@ def _msg(
         content=content,
         urgency=urgency,
         sender_is_agent=is_agent,
+        anonymous=False,
     )
 
 
@@ -195,7 +196,7 @@ def _bc(content: str, severity: str = "low") -> Broadcast:
 def _goal(text: str, urgency: Urgency, drive: ExternalDriveType = ExternalDriveType.THREAT) -> ExternalGoal:
     return ExternalGoal(
         text=text,
-        source_id="world",
+        source_ids=(),
         urgency=urgency,
         drive_type=drive,
         related_need=None,
@@ -482,7 +483,7 @@ def test_goal_uses_urgency_label_not_raw_value() -> None:
     )
     assert prompt is not None
     assert urgency_label(Urgency.HIGH) in prompt
-    assert "紧迫度【high】" not in prompt
+    assert "紧急程度【high】" not in prompt
 
 
 def test_pressure_injects_urgency_scale_legend() -> None:
@@ -664,6 +665,9 @@ async def test_perceive_relevant_relations_includes_senders_filters_system() -> 
     async def fake_significant_relations(*, limit):
         return []  # no established relations → test only the in-view + sender paths
 
+    async def fake_load_existing(_agent_id):
+        return None
+
     fake_self = SimpleNamespace(
         agent_id="self-id",
         memory_system=SimpleNamespace(
@@ -672,11 +676,13 @@ async def test_perceive_relevant_relations_includes_senders_filters_system() -> 
         relation_system=SimpleNamespace(
             perceive_many=fake_perceive_many,
             significant_relations=fake_significant_relations,
+            load_existing=fake_load_existing,
         ),
         personality=SimpleNamespace(state=SimpleNamespace(emotion=EmotionState())),
         _dead_agent_ids=frozenset(),  # the dead set cached by perceive_step (none here)
         _known_agents={},             # sender gender only from meeting in person
     )
+    fake_self._known_identity = lambda aid, rel: Agent._known_identity(fake_self, aid, rel)
     spatial = _spatial(visible={"v1": "在场者"})
     inbox = [
         _msg("remote", "远方人", "你在何处"),    # absent sender → included
@@ -703,7 +709,7 @@ async def test_resolve_relation_context_marks_deceased() -> None:
     decision/emotion/goals. deceased reads self._dead_agent_ids cached by perceive_step (decided by
     the caller)."""
     from agent.agent import Agent
-    from core.interfaces.agent_store import AgentRelation
+    from core.interfaces.relation import AgentRelation
 
     names = {"live": "活人", "dead": "故人"}
 
@@ -719,6 +725,7 @@ async def test_resolve_relation_context_marks_deceased() -> None:
         _dead_agent_ids=frozenset({"dead"}),
         relation_system=SimpleNamespace(load_existing=fake_load_existing),
     )
+    fake_self._known_identity = lambda aid, rel: Agent._known_identity(fake_self, aid, rel)
     text = await Agent._resolve_relation_context(fake_self, ["live", "dead"])
     assert "故人（已死亡）" in text                       # the dead are marked
     assert "活人（已死亡）" not in text and "活人" in text  # the living aren't
@@ -729,7 +736,7 @@ async def test_resolve_relation_context_carries_gender_beside_deceased() -> None
     """Relation lines for memory writes match the decision side: gender and deceased share one
     bracket; with no gender in the perception cache, fall back to the relation's to_gender."""
     from agent.agent import Agent
-    from core.interfaces.agent_store import AgentRelation
+    from core.interfaces.relation import AgentRelation
 
     genders = {"live": "女", "dead": "男"}
 
@@ -746,6 +753,7 @@ async def test_resolve_relation_context_carries_gender_beside_deceased() -> None
         _dead_agent_ids=frozenset({"dead"}),
         relation_system=SimpleNamespace(load_existing=fake_load_existing),
     )
+    fake_self._known_identity = lambda aid, rel: Agent._known_identity(fake_self, aid, rel)
     text = await Agent._resolve_relation_context(fake_self, ["live", "dead"])
     assert "故人（男，已死亡）" in text
     assert "活人（女）" in text

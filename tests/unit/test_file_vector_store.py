@@ -1,5 +1,9 @@
 """FileVectorStore: the InMemory similarity logic plus JSON persistence on disk."""
 
+import asyncio
+import threading
+from pathlib import Path
+
 import pytest
 
 from providers.vector_store.file import FileVectorStore
@@ -307,3 +311,116 @@ async def test_writes_racing_the_first_compaction_all_survive_reload(tmp_path, m
 
     assert "vector_store_rewrite_failed" not in caplog.text
     assert len(await FileVectorStore(path=path).list_all("c")) == 61
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("last_write", ["upsert", "payload", "delete"])
+async def test_same_record_writes_preserve_disk_order(tmp_path, monkeypatch, last_write) -> None:
+    store = FileVectorStore(str(tmp_path))
+    await store.upsert("c", "m", [1.0], None, {"v": 0})
+    entered, release = threading.Event(), threading.Event()
+    append = store._append_with_meta
+
+    def blocked(collection, change):
+        if change.get("_payload", {}).get("v") == 1:
+            entered.set()
+            assert release.wait(5)
+        append(collection, change)
+
+    monkeypatch.setattr(store, "_append_with_meta", blocked)
+    first = asyncio.create_task(store.update_payload("c", "m", {"v": 1}))
+    assert await asyncio.to_thread(entered.wait, 5)
+    if last_write == "upsert":
+        second = asyncio.create_task(store.upsert("c", "m", [2.0], None, {"v": 2}))
+    elif last_write == "payload":
+        second = asyncio.create_task(store.update_payload("c", "m", {"v": 2}))
+    else:
+        second = asyncio.create_task(store.delete("c", "m"))
+    try:
+        await asyncio.sleep(0)
+        assert not second.done()
+    finally:
+        release.set()
+    await asyncio.gather(first, second)
+    assert await store.list_all("c") == await FileVectorStore(str(tmp_path)).list_all("c")
+    expected = [] if last_write == "delete" else [{"v": 2}]
+    assert [r.payload for r in await store.list_all("c")] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delete_world", [False, True])
+async def test_cancelled_write_finishes_before_following_write_or_purge(
+    tmp_path, monkeypatch, delete_world
+) -> None:
+    store = FileVectorStore(str(tmp_path))
+    collection = "w:a:factual"
+    await store.upsert(collection, "m", [1.0], None, {"v": 0})
+    entered, release = threading.Event(), threading.Event()
+    append = store._append_with_meta
+
+    def blocked(name, change):
+        if change.get("_payload", {}).get("v") == 1:
+            entered.set()
+            assert release.wait(5)
+        append(name, change)
+
+    monkeypatch.setattr(store, "_append_with_meta", blocked)
+    first = asyncio.create_task(store.update_payload(collection, "m", {"v": 1}))
+    assert await asyncio.to_thread(entered.wait, 5)
+    first.cancel()
+    following = asyncio.create_task(
+        store.delete_world("w") if delete_world
+        else store.update_payload(collection, "m", {"v": 2})
+    )
+    try:
+        await asyncio.sleep(0)
+        assert not first.done()
+        assert not following.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    await following
+    live = await store.list_all(collection)
+    assert live == await FileVectorStore(str(tmp_path)).list_all(collection)
+    assert [r.payload for r in live] == ([] if delete_world else [{"v": 2}])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["upsert", "payload", "delete", "initial"])
+async def test_write_failure_raises_without_committing_index(tmp_path, monkeypatch, operation) -> None:
+    store = FileVectorStore(str(tmp_path))
+    if operation != "initial":
+        await store.upsert("c", "m", [1.0], None, {"v": 0})
+    original = Path.open
+
+    def fail_writes(path, mode="r", *args, **kwargs):
+        if path.parent == tmp_path and mode in {"a", "w"}:
+            raise OSError("disk full")
+        return original(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_writes)
+    with pytest.raises(OSError, match="disk full"):
+        if operation in {"upsert", "initial"}:
+            await store.upsert("c", "m", [2.0], None, {"v": 2})
+        elif operation == "payload":
+            await store.update_payload("c", "m", {"v": 2})
+        else:
+            await store.delete("c", "m")
+    expected = [] if operation == "initial" else [{"v": 0}]
+    assert [r.payload for r in await store.list_all("c")] == expected
+    assert await store.list_all("c") == await FileVectorStore(str(tmp_path)).list_all("c")
+
+
+@pytest.mark.asyncio
+async def test_world_purge_includes_accepted_collection_before_first_write(tmp_path) -> None:
+    store = FileVectorStore(str(tmp_path))
+    collection = "w:a:factual"
+    writing = asyncio.create_task(store.upsert(collection, "m", [1.0], None, {}))
+    # The public call has accepted the write, but its locked worker hasn't started yet.
+    await asyncio.sleep(0)
+    assert collection not in store._records
+    await store.delete_world("w")
+    await writing
+    assert await store.list_all(collection) == []
+    assert await FileVectorStore(str(tmp_path)).list_all(collection) == []

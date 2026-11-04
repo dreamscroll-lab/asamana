@@ -3,7 +3,7 @@
 Unit tests cover each piece: parse rejection, channel dispatch, applying mutations, assembling the
 receipt. These tests check the properties that only hold once they run together in a real step:
 
-- Injection happens at ``poll_event``, so a broadcast is perceived in the same step, not the next.
+- Injection happens at ``poll_injection``, so a broadcast is perceived in the same step, not the next.
 - Both authors' registers merge into one event stream at step end, so snapshots, replay and the
   frontend see a single card type.
 - The receipt is assembled at step end, and its four signals (delivery / pressure / admission /
@@ -24,7 +24,7 @@ from engine.clock import GlobalClock, WorldTimeConfig
 from engine.director import NpcOnMenu
 from engine.directory import LiveWorldDirectory
 from engine.environment import EnvironmentSystem
-from engine.event import EventSettings
+from engine.narrative_editor import NarrativeEditorSettings
 from engine.executors import build_default_registry
 from engine.message_system import MessageSystem
 from engine.runtime import NarrativeRuntime
@@ -33,6 +33,8 @@ from core.interfaces.urgency import Urgency
 from engine.scheduler import AgentScheduler
 from tests.unit.test_runtime_smoke import _SignalPressure, _build_agent, _set_work_decision
 from worlds.tiled import TiledWorldConfig
+from interaction.models import StepView
+from tests.unit.step_view import beats, events
 
 WORLD_ID = "world-director"
 
@@ -65,6 +67,7 @@ async def _submit(runtime, environment, agents, text: str):
     return await runtime.director.submit(
         text,
         all_agents={a.agent_id: a for a in agents},
+        agent_locations={a.agent_id: environment.get_body_location(a.agent_id) for a in agents},
         npcs=_npc_menu(environment),
         locations=environment.space.all_places(),
         entities=environment.all_live_entities(),
@@ -72,18 +75,18 @@ async def _submit(runtime, environment, agents, text: str):
     )
 
 
-def _runtime(container):
+def _runtime(container, *, trace_sink=None):
     """A runtime with a human author and a cast the directory knows.
 
     Build the cast before the directory: a directory built from an empty map answers 「某人」 for
-    everyone, so the receipt assertions would pass without testing name resolution.
+    everyone, so nothing here would test name resolution.
     """
     environment = EnvironmentSystem(TiledWorldConfig(template="changan_iso"))
     agents = [
         _build_agent(container, world_id=WORLD_ID, agent_id="a1", name="李世民", is_main_character=True),
         _build_agent(container, world_id=WORLD_ID, agent_id="a2", name="李建成", is_main_character=False),
     ]
-    location = next(iter(environment.snapshot_state()["location_names"]))
+    location = next(iter(environment.space.all_places())).place_id
     for agent in agents:
         environment.place_agent(agent_id=agent.agent_id, location_id=location)
         agent.personality.update_location(step=0, location=location)
@@ -97,22 +100,22 @@ def _runtime(container):
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=EventSettings(check_interval=2, max_events_per_window=1),
+        narrative_editor_settings=NarrativeEditorSettings(check_interval=2, max_injections_per_window=1),
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=directory,
         executor_registry=build_default_registry(container.llm_router, directory),
         pressure_evaluator=_SignalPressure(),
         llm_router=container.llm_router,
+        trace_sink=trace_sink,
     )
     return runtime, environment, agents, location
 
 
 @pytest.mark.asyncio
 async def test_directive_lands_in_the_same_step_it_drains(container) -> None:
-    """Injection happens at ``poll_event``, before broadcasts are collected, so it is perceived in
+    """Injection happens at ``poll_injection``, before broadcasts are collected, so it is perceived in
     the same step, not the next. This ordering is why the director sees results after one step."""
     _set_work_decision(container)
     runtime, environment, agents, _loc = _runtime(container)
@@ -129,7 +132,7 @@ async def test_directive_lands_in_the_same_step_it_drains(container) -> None:
     await runtime.run_step(agents)
 
     snapshot = await container.snapshot.load(WORLD_ID, 1)
-    broadcasts = snapshot.metadata["broadcasts"]
+    broadcasts = snapshot.events_of("broadcast")
     assert [b["content"] for b in broadcasts] == ["东市火起,浓烟蔽日。"]
     assert broadcasts[0]["phenomenon"] == "fire"    # the renderer plays fire from this, and so does replay
     assert runtime.director.pending_count() == 0
@@ -149,9 +152,35 @@ async def test_both_authors_share_one_event_stream_distinguished_by_hand(contain
     await runtime.run_step(agents)
 
     snapshot = await container.snapshot.load(WORLD_ID, 1)
-    assert [e["authored_by"] for e in snapshot.events_this_step] == ["director"]
+    assert [e["authored_by"] for e in snapshot.events_of("injection")] == ["director"]
     # Events carry a seq and share one emission-ordered timeline with actions, messages and broadcasts.
-    assert isinstance(snapshot.events_this_step[0]["seq"], int)
+    assert isinstance(snapshot.events_of("injection")[0]["seq"], int)
+
+
+@pytest.mark.asyncio
+async def test_a_landed_injection_is_a_beat_of_the_step_it_lands_in(container) -> None:
+    """A directive lands at drain with no LLM call of its own; the trace still shows the step it
+    landed in, not the step it was composed against."""
+    from providers.trace.in_memory import InMemoryTraceSink
+
+    _set_work_decision(container)
+    sink = InMemoryTraceSink()
+    runtime, environment, agents, _loc = _runtime(container, trace_sink=sink)
+    container.llm_router.get(LLMScene.DIRECTIVE).fixed_response = _directive_json(
+        narrative_desc="钟声大作",
+        broadcast={"content": "钟声大作。", "severity": "medium", "location_scope": None},
+    )
+    await _submit(runtime, environment, agents, "敲钟")
+    assert sink.read_beats(WORLD_ID) == []
+
+    await runtime.run_step(agents)
+
+    [beat] = sink.read_beats(WORLD_ID)
+    assert (beat.step, beat.stage, beat.beat_kind, beat.agent_id, beat.actor) == (
+        1, "director", "injection", None, False,
+    )
+    assert beat.payload["narrative_desc"] == "钟声大作"
+    assert beat.payload["dispatched_to"] == ["broadcast"]
 
 
 @pytest.mark.asyncio
@@ -170,9 +199,9 @@ async def test_receipt_is_attached_at_step_end_with_real_signals(container) -> N
     await runtime.run_step(agents)
 
     snapshot = await container.snapshot.load(WORLD_ID, 1)
-    receipt = snapshot.events_this_step[0]["receipt"]
+    receipt = snapshot.events_of("injection")[0]["receipt"]
     assert receipt is not None
-    assert receipt["delivered_to"] == [{"agent_id": "a2", "name": "李建成"}]
+    assert receipt["delivered_to"] == ["a2"]
     # Delivered, and the pressure evaluator did put him under pressure. That is what separates an
     # effective intervention from one that went nowhere.
     assert [p["agent_id"] for p in receipt["pressure"]] == ["a2"]
@@ -225,7 +254,7 @@ async def test_someone_the_director_kills_mid_action_does_not_act_on_that_step(c
     await runtime.run_step(agents)
 
     snap = await container.snapshot.load("world-director", 2)
-    assert [a["phase"] for a in snap.actions_this_step
+    assert [a["phase"] for a in beats(snap)
             if a["agent_id"] == "a2" and str(a.get("phase", "")).startswith("ongoing")] == []
 
 
@@ -247,7 +276,7 @@ async def test_the_sentence_that_caused_an_intervention_is_kept_with_it(containe
     await runtime.run_step(agents)
 
     snapshot = await container.snapshot.load(WORLD_ID, 1)
-    assert snapshot.events_this_step[0]["directive_text"] == (
+    assert snapshot.events_of("injection")[0]["directive_text"] == (
         "让个不认识的人给李建成捎句话，叫他快走"
     )
 
@@ -269,7 +298,7 @@ async def test_a_message_from_the_director_makes_him_nobody_to_know(container) -
 
     await runtime.run_step(agents)
 
-    assert await container.agent_store.load_relation(WORLD_ID, "a2", "director") is None
+    assert await agents[1].relation_system.load_existing("director") is None
 
 
 @pytest.mark.asyncio
@@ -357,3 +386,37 @@ async def test_a_torn_down_action_and_a_fresh_decision_land_in_one_step(containe
     assert dec.extra["verdict"] == "executed"   # the verdict comes from arbitration, not inferred indirectly
 
 
+
+
+@pytest.mark.asyncio
+async def test_what_onlookers_saw_of_a_change_lands_in_each_place(container) -> None:
+    """An injection that changes the world is told in each place it was seen, under its own seq:
+    the arrival at the destination, the departure at the origin. Nobody in the world did it."""
+    _set_work_decision(container)
+    runtime, environment, agents, location = _runtime(container)
+    places = environment.space.all_places()
+    elsewhere = next(i for i, p in enumerate(places, 1) if p.place_id != location)
+    destination = places[elsewhere - 1].place_id
+    container.llm_router.get(LLMScene.DIRECTIVE).fixed_response = _directive_json(
+        mutations=[{"kind": "relocate", "person": 1, "location": elsewhere,
+                    "observation": "李世民忽然出现在此。"}],
+    )
+    assert (await _submit(runtime, environment, agents, "把李世民挪到别处")).accepted is True
+
+    await runtime.run_step(agents)
+
+    snapshot = await container.snapshot.load(WORLD_ID, 1)
+    [injection] = snapshot.events_of("injection")
+    assert [(o["location_id"], o["text"]) for o in injection["observations"]] == [
+        (destination, "李世民忽然出现在此。"),
+        (location, "李世民离开了此地。"),
+    ]
+    seen = [
+        (where, o.text) for where, o in events(StepView.from_snapshot(snapshot), "observation")
+        if o.seq == injection["seq"]
+    ]
+    assert sorted(seen) == sorted([(destination, "李世民忽然出现在此。"), (location, "李世民离开了此地。")])
+    assert all(
+        o.initiator_id == "" and o.participant_ids == []
+        for _, o in events(StepView.from_snapshot(snapshot), "observation") if o.seq == injection["seq"]
+    )

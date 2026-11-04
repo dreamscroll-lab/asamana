@@ -3,39 +3,42 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 from agent.agent import Agent, snapshot_agent_state
 from agent.decision import DecisionEngine
 from agent.memory import MemorySystem
 from agent.memory_types import importance_level
-from agent.goals import GoalEntity, GoalOrigin, GoalStatus, text_to_long_term_goal_entity
-from agent.need import NeedEngine, NeedType
-from agent.personality import ActionStatus, AgentActivityStatus, EmotionState, PersonalityLayer, StateLayer, parse_emotion_type
+from agent.goals import text_to_long_term_goal_entity
+from agent.need import NeedEngine
+from agent.personality import ActionStatus, AgentActivityStatus, PersonalityLayer, StateLayer
 from agent.relation import RelationSystem
+from agent.state_codec import agent_state_from_record
 from core.container import Container
-from core.interfaces.agent_store import AgentRelation, AgentState, relations_snapshot
-from core.interfaces.condition import condition_from_dict, condition_to_dict
-from core.interfaces.snapshot import WorldSnapshot
+from core.interfaces.relation import AgentRelation, relation_from_snapshot_dict, relation_to_snapshot_dict
+from core.interfaces.snapshot import AgentState, EngineState, WorldSnapshot, WorldState
 from core.logging import get_logger
 from engine.clock import (
+    SECONDS_PER_HOUR,
     WorldTime,
     WorldTimeConfig,
     parse_calendar_style,
     resolve_step_seconds,
 )
-from core.interfaces.directory import WorldDirectory
 from engine.directory import LiveWorldDirectory
 from engine.environment import DEFAULT_MAX_NPCS, IN_TRANSIT, EnvironmentSystem
+from engine.executors.base import ActionExecutionState
 from core.interfaces.world_config import WorldConfig
 from worlds.tiled import CAST_ART_FIELDS, CHARACTERS_FILENAME
 
 from core.coerce import coerce_int
-from world.models import AgentDefinition, AgentTier, HistoricalEventSeed, ThemeAnalysis, World, WorldEntity, WorldEntityType
+from world.catalog import ActorCasting
+from world.models import AgentDefinition, AgentTier, NpcSeed, World, WorldEntitySeed
+from core.interfaces.entity import Npc, WorldEntity, WorldEntityType
+from world.setup import MapPlaces, SetupHistoricalEvent, WorldLore, WorldSetup
 from world.stored_config import StoredWorldConfig, serialize_world_config
 
 logger = get_logger(__name__)
@@ -47,88 +50,26 @@ class WorldInitializer:
 
     def __init__(self, container: Container, *, max_npcs: int = DEFAULT_MAX_NPCS) -> None:
         self._container = container
-        # How many cognition-less actors a world can have. The default is a module constant; application
+        # How many cognition-less doers a world can have. The default is a module constant; application
         # injects the real value from config. How busy a world should be is tuned per world, not a universal law.
         self._max_npcs = max_npcs
 
-    async def initialize(
-        self,
-        *,
-        theme: str,
-        analysis: ThemeAnalysis,
-        agent_definitions: Sequence[AgentDefinition],
-        world_id: str,
-        world_config: WorldConfig,
-    ) -> World:
-        """Create runtime agents, persist initialization state, and write step 0.
+    async def prepare(self, world_id: str, setup: WorldSetup, world_config: WorldConfig) -> WorldSetup:
+        """Freeze what a built world stands on and persist its setup; nothing is materialized.
 
-        ``world_config`` is the map this particular world was built on — an argument,
-        not initializer state, because it is chosen per world: two worlds built by the
-        same process sit on different maps. ``restore`` takes none, and that asymmetry
-        is the contract: a restored world reads the copy persisted under its own id.
+        ``world_config`` is the map this world was built on, chosen per world. Its data, render
+        map and cast art are frozen under the world's id, so later template edits never touch
+        the world: ``initialize`` and ``restore`` read only those copies and the setup. Initial
+        Every location in the setup is already a location id (the build resolved them), and the setup
+        must pass ``WorldSetup.validate`` (else ``ValueError``: a build that can't start a world
+        fails, Rule 2). Returns the setup as persisted.
         """
-
-        # This world's private copy of the template: environment placement mutates
-        # entity state by reference, and that must never reach the shared template.
-        world_config = copy.deepcopy(world_config)
-        clock_config = self._clock_config_for(analysis, world_config)
-        environment = EnvironmentSystem(world_config, max_npcs=self._max_npcs)
-        await self._instantiate_entity_seeds(analysis, environment, world_config)
-        self._instantiate_npc_seeds(analysis, environment, world_config)
-        agents: dict[str, Agent] = {}
-
-        for definition in agent_definitions:
-            definition.initial_location = self._resolve_initial_location(definition, world_config)
-            agent = self._instantiate_agent(
-                world_id=world_id,
-                definition=definition,
-                clock_config=clock_config,
-            )
-            agents[agent.agent_id] = agent
-            # Vector collections are created per agent → run concurrently after the loop.
-            environment.place_agent(agent_id=agent.agent_id,
-                location_id=definition.initial_location,
-            )
-        # Concurrent but fail-fast: collection creation is build-time infrastructure, and any failure
-        # makes the world unusable, so raise and let the user retry instead of degrading silently (Rule
-        # 2/3). return_exceptions=True only keeps siblings from being cancelled (Rule 4); after
-        # collecting, handle per slot and raise on any exception.
-        for result in await asyncio.gather(
-            *(agent.memory_system.ensure_collections() for agent in agents.values()),
-            return_exceptions=True,
-        ):
-            if isinstance(result, BaseException):
-                raise result
-
-        directory = LiveWorldDirectory.from_agents(agents, environment)
-        await self._initialize_relations(world_id=world_id, agents=agents, analysis=analysis)
-        await self._write_historical_memories(agents=agents, historical_events=analysis.historical_events)
-        # Warming recent is a read/cache warm-up: failure isn't fatal (the memories are still on disk), so log a warning and continue (Rule 6 read).
-        for result in await asyncio.gather(
-            *(agent.memory_system.warm_recent_memories(current_step=0) for agent in agents.values()),
-            return_exceptions=True,
-        ):
-            if isinstance(result, BaseException):
-                logger.warning("warm_recent_memories_failed", extra={"error": str(result)})
-        # Short-term goals aren't generated at build time; NeedEngine.run is their sole owner. Each agent's
-        # first cognition step finds an empty queue (_should_update_goals) and generates them from real
-        # perception, warmed history and perceived relations. One generation path keeps quality uniform.
-        # A failed initial state write must raise (Rule 6 write): swallowing it would quietly corrupt restore/reset.
-        for result in await asyncio.gather(
-            *(self._persist_initial_agent_state(agent) for agent in agents.values()),
-            return_exceptions=True,
-        ):
-            if isinstance(result, BaseException):
-                raise result
-        # Persist the world's private config asset: restore rebuilds the map from
-        # this data alone, so later template-code edits never touch built worlds.
+        setup.validate(MapPlaces.of(world_config))
         await self._container.snapshot.save_world_config(
             world_id, serialize_world_config(world_config)
         )
-        # Freeze the render map (.tmj) per world too, so the 2D renderer keeps
-        # serving the map this world was built on even after the template file is
-        # edited — the same decoupling the config freeze gives the engine. Configs
-        # with no map art (render_map None) simply have nothing to freeze.
+        # The render map (.tmj) is frozen too, so the 2D renderer keeps serving the map this world
+        # was built on after the template file is edited. Configs with no map art have none.
         render_map = world_config.render_map()
         if render_map is not None:
             await self._container.snapshot.save_world_map(world_id, render_map)
@@ -137,14 +78,72 @@ class WorldInitializer:
         # dressed for the map's period, so restyling that art later would restyle
         # every past world's REPLAY along with it.
         await self._freeze_character_assets(world_id, world_config)
+        await self._container.snapshot.save_world_setup(world_id, setup.as_dict())
+        return setup
+
+    async def initialize(self, world_id: str, *, casting: ActorCasting | None = None) -> World:
+        """Materialize a world from its persisted setup and write step 0.
+
+        Creates the agents with what the setup derives (relations, backstory memories), then writes
+        step 0 with the setup frozen into it: the first commit point, the one a reset returns to. Runs once, when the world
+        is confirmed, from the setup file; the caller clears whatever an earlier, failed attempt
+        left behind and deletes the file afterwards. Raises on any failure, like the build (Rule 2/6).
+        ``casting`` as in ``restore``.
+        """
+        config_data = await self._container.snapshot.load_world_config(world_id)
+        stored = await self._container.snapshot.load_world_setup(world_id)
+        if config_data is None or stored is None:
+            raise ValueError(f"World {world_id!r} has no setup to confirm")
+        world_config = StoredWorldConfig(config_data)
+        setup = WorldSetup.from_dict(stored)
+        # It passed every revision's check; this is the last line before anything is written.
+        setup.validate(MapPlaces.of(world_config))
+        clock_config = self._clock_config_for(setup.lore, world_config)
+        environment = EnvironmentSystem(world_config, max_npcs=self._max_npcs)
+        await self._instantiate_entity_seeds(setup.entity_seeds, environment)
+        self._instantiate_npc_seeds(setup.npc_seeds, environment)
+        agents: dict[str, Agent] = {}
+        for definition in setup.characters:
+            agent = self._instantiate_agent(
+                world_id=world_id,
+                definition=definition,
+                clock_config=clock_config,
+                casting=casting,
+            )
+            agents[agent.agent_id] = agent
+            environment.place_agent(agent_id=agent.agent_id, location_id=definition.initial_location)
+        # Concurrent but fail-fast: any failure makes the world unusable, so raise and let the
+        # user retry instead of degrading silently (Rule 2/3). return_exceptions=True only keeps
+        # siblings from being cancelled (Rule 4).
+        for result in await asyncio.gather(
+            *(agent.memory_system.ensure_collections() for agent in agents.values()),
+            return_exceptions=True,
+        ):
+            if isinstance(result, BaseException):
+                raise result
+
+        directory = LiveWorldDirectory.from_agents(agents, environment)
+        self._initialize_relations(world_id=world_id, agents=agents, setup=setup)
+        await self._write_historical_memories(
+            agents=agents,
+            historical_events=setup.historical_events,
+            seconds_per_step=clock_config.seconds_per_step,
+        )
+        # Warming recent is a read/cache warm-up: failure isn't fatal (the memories are still on disk), so log a warning and continue (Rule 6 read).
+        for result in await asyncio.gather(
+            *(agent.memory_system.warm_recent_memories(current_step=0) for agent in agents.values()),
+            return_exceptions=True,
+        ):
+            if isinstance(result, BaseException):
+                logger.warning("warm_recent_memories_failed", extra={"error": str(result)})
+        # Short-term goals aren't generated here; NeedEngine.run is their sole owner. Each agent's
+        # first cognition step finds an empty queue (_should_update_goals) and generates them from real
+        # perception, warmed history and perceived relations. One generation path keeps quality uniform.
         step_zero_snapshot = await self._save_initial_snapshot(
             world_id=world_id,
-            theme=theme,
-            analysis=analysis,
-            agent_definitions=list(agent_definitions),
+            setup=setup,
             agents=agents,
             environment=environment,
-            directory=directory,
             clock_config=clock_config,
         )
 
@@ -152,16 +151,14 @@ class WorldInitializer:
             "world_initialized",
             extra={
                 "world_id": world_id,
-                "world_name": analysis.world_name,
+                "world_name": setup.lore.world_name,
                 "agent_count": len(agents),
             },
         )
 
         return World(
             world_id=world_id,
-            theme=theme,
-            analysis=analysis,
-            agent_definitions=list(agent_definitions),
+            setup=setup,
             agents=agents,
             world_config=world_config,
             clock_config=clock_config,
@@ -171,7 +168,12 @@ class WorldInitializer:
         )
 
     def _instantiate_agent(
-        self, *, world_id: str, definition: AgentDefinition, clock_config: WorldTimeConfig = WorldTimeConfig()
+        self,
+        *,
+        world_id: str,
+        definition: AgentDefinition,
+        clock_config: WorldTimeConfig = WorldTimeConfig(),
+        casting: ActorCasting | None = None,
     ) -> Agent:
         seconds_per_step = clock_config.seconds_per_step
         # Closure from step → the world calendar's time label, injected into MemorySystem to render time
@@ -215,7 +217,10 @@ class WorldInitializer:
                 need_intensities={n.type.value: n.intensity for n in active_innate},
             ),
         )
-        is_main = definition.tier == AgentTier.MAIN
+        cast = casting is not None and casting.character_id == definition.agent_id
+        # The character an actor plays is main tier from then on, exit or not: the user lives the
+        # story through it, so it gets full perception fidelity, memory and retries.
+        is_main = definition.tier == AgentTier.MAIN or cast
         memory_system = MemorySystem(
             self._container.llm_router,
             self._container.embedding,
@@ -238,11 +243,7 @@ class WorldInitializer:
             time_label_for=_time_label_for,
             world_start_second_of_day=world_start_second_of_day,
         )
-        relation_system = RelationSystem(
-            self._container.agent_store,
-            world_id=world_id,
-            agent_id=definition.agent_id,
-        )
+        relation_system = RelationSystem(world_id=world_id, agent_id=definition.agent_id)
         from agent.relation_evolution import RelationEvolution
 
         relation_evolution = RelationEvolution(
@@ -265,7 +266,6 @@ class WorldInitializer:
             need_engine=NeedEngine(llm_router=self._container.llm_router, seconds_per_step=seconds_per_step,
                                    world_start_second_of_day=world_start_second_of_day),
             relation_system=relation_system,
-            agent_store=self._container.agent_store,
             llm_router=self._container.llm_router,
             is_main_character=is_main,
             seconds_per_step=seconds_per_step,
@@ -274,81 +274,19 @@ class WorldInitializer:
             relation_evolution=relation_evolution,
         )
 
-    async def _persist_initial_agent_state(self, agent: Agent) -> None:
-        state = agent.personality.state
-        initial_state = AgentState(
-            world_id=agent.world_id,
-            agent_id=agent.agent_id,
-            updated_step=0,
-            current_emotion=state.emotion.primary,
-            emotion_intensity=state.emotion.intensity,
-            emotion_valence=state.emotion.valence,
-            emotion_triggered_by=state.emotion.triggered_by,
-            active_needs=list(state.active_needs),
-            dominant_need=state.dominant_need,
-            long_term_goals=list(state.long_term_goals),
-            short_term_goals=list(state.short_term_goals),
-            current_location=state.current_location,
-            activity_status=state.activity_status.value,
-            activity_target=state.activity_target,
-            action_status=state.action_status.value,
-            current_action=state.current_action,
-            action_remaining_steps=state.action_remaining_steps,
-            last_action=state.last_action,
-            last_action_result=state.last_action_result,
-            last_action_succeeded=state.last_action_succeeded,
-            need_intensities=dict(state.need_intensities),
-            vitality=state.vitality,
-            condition=condition_to_dict(state.condition),
-            # 0 at world init = "never decided" → the scheduler's cadence gate treats every agent
-            # as starved on step 1, so a fresh world does not open on a step where nobody thought.
-            last_decision_step=state.last_decision_step,
-        )
-        await agent.agent_store.save_agent_state(agent.world_id, agent.agent_id, initial_state)
-        await agent.agent_store.save_initial_agent_state(agent.world_id, agent.agent_id, initial_state)
-
-    async def _initialize_relations(
-        self,
-        *,
-        world_id: str,
-        agents: dict[str, Agent],
-        analysis: ThemeAnalysis,
-    ) -> None:
-        name_to_id = {
-            agent.personality.soul.name: agent_id
-            for agent_id, agent in agents.items()
-        }
-        # Each RelationSeed is bilateral by design — emit both directions.
-        # Forward uses (trust/affection/labels); reverse uses (reverse_trust/
-        # reverse_affection/reverse_labels), each defaulting to the forward
-        # value when not explicitly set (handled by RelationSeed accessors).
-        tasks = []
-        emitted: set[tuple[str, str]] = set()
-        for relation in analysis.initial_relations:
-            source_agent_id = name_to_id.get(relation.source_name)
-            target_agent_id = name_to_id.get(relation.target_name)
-            if not source_agent_id or not target_agent_id:
-                logger.warning(
-                    "relation_seed_name_unresolved",
-                    extra={
-                        "world_id": world_id,
-                        "source_name": relation.source_name,
-                        "target_name": relation.target_name,
-                    },
-                )
-                continue
-            for from_id, to_id, trust, affection, labels, to_name in (
-                (source_agent_id, target_agent_id,
-                 relation.trust, relation.affection, list(relation.labels), relation.target_name),
-                (target_agent_id, source_agent_id,
-                 relation.effective_reverse_trust(),
-                 relation.effective_reverse_affection(),
-                 relation.effective_reverse_labels(), relation.source_name),
+    def _initialize_relations(self, *, world_id: str, agents: dict[str, Agent], setup: WorldSetup) -> None:
+        # Each setup relation holds both directions of one pair (``WorldSetup.validate`` admits one
+        # per pair), so each becomes two records.
+        held: dict[str, list[AgentRelation]] = {agent_id: [] for agent_id in agents}
+        for relation in setup.relations:
+            for from_id, to_id, trust, affection, labels in (
+                (relation.source_id, relation.target_id,
+                 relation.trust, relation.affection, list(relation.labels)),
+                (relation.target_id, relation.source_id,
+                 relation.reverse_trust, relation.reverse_affection, list(relation.reverse_labels)),
             ):
-                if (from_id, to_id) in emitted:
-                    continue
-                emitted.add((from_id, to_id))
-                initial_relation = AgentRelation(
+                target_soul = agents[to_id].personality.soul
+                held[from_id].append(AgentRelation(
                     world_id=world_id,
                     from_id=from_id,
                     to_id=to_id,
@@ -356,58 +294,28 @@ class WorldInitializer:
                     affection_objective=affection,
                     updated_step=0,
                     labels=labels,
-                    to_name=to_name,
+                    to_name=target_soul.name,
                     # to_gender shares to_name's source and lifetime: people in seed relations are usually not
                     # present, so this record is their only reference in the prompt, and a name alone still leaves the
-                    # LLM guessing gender. to_id always comes from name_to_id.values(), i.e. the agents' keys, so it's read directly without a fallback.
-                    to_gender=agents[to_id].personality.soul.gender,
-                )
-                tasks.append(self._container.agent_store.save_relation(initial_relation))
-                tasks.append(self._container.agent_store.save_initial_relation(initial_relation))
-        if tasks:
-            # A build-time write failure must raise (Rule 2/6), same rule as _persist_initial_agent_state.
-            # Initial relation labels are never rewritten (rule 3), so dropping a father-son label here loses it for
-            # good: the world still reports ready, the user still confirms, and the two treat each other as
-            # strangers from step one with no way to recover it.
-            # return_exceptions=True only keeps siblings from being cancelled (Rule 4); raise on any exception after collecting.
-            for result in await asyncio.gather(*tasks, return_exceptions=True):
-                if isinstance(result, BaseException):
-                    logger.error(
-                        "relation_save_failed",
-                        extra={"world_id": world_id, "error": str(result)},
-                    )
-                    raise result
+                    # LLM guessing gender.
+                    to_gender=target_soul.gender,
+                ))
+        for agent_id, relations in held.items():
+            agents[agent_id].relation_system.restore(relations)
 
     async def _write_historical_memories(
         self,
         *,
         agents: dict[str, Agent],
-        historical_events: Sequence[HistoricalEventSeed],
+        historical_events: Sequence[SetupHistoricalEvent],
+        seconds_per_step: int,
     ) -> None:
-        name_to_id = {
-            agent.personality.soul.name: agent_id
-            for agent_id, agent in agents.items()
-        }
         tasks = []
         for event in historical_events:
-            resolved: dict[str, str] = {}
-            for name in event.related_figures:
-                agent_id = name_to_id.get(name)
-                if agent_id is None:
-                    logger.warning(
-                        "historical_event_figure_unresolved",
-                        extra={"event": event.event[:100], "figure_name": name},
-                    )
-                else:
-                    resolved[name] = agent_id
-            related_ids = list(resolved.values())
-            if not related_ids:
-                logger.warning(
-                    "historical_event_dropped",
-                    extra={"event": event.event[:100], "related_figures": event.related_figures},
-                )
-                continue
-            created_step = -abs(event.step_offset) if event.step_offset != 0 else -1
+            related_ids = list(event.figure_ids)
+            # Quantized to the world's step length here, where the step is first needed; an event
+            # within one step of the start still lands before it.
+            created_step = -max(1, round(event.hours_before_start * SECONDS_PER_HOUR / seconds_per_step))
             importance = importance_level(event.importance)
             decay_score = max(0.3, 1.0 - min(abs(created_step), 70) * 0.01)
             for agent_id in related_ids:
@@ -443,45 +351,38 @@ class WorldInitializer:
                     )
                     raise result
 
-    async def restore(self, world_id: str) -> World:
+    async def restore(self, world_id: str, *, casting: ActorCasting | None = None) -> World:
         """Restore a previously built world from persisted storage.
 
-        Loads the world's persisted config asset and the step-0 manifest,
-        reconstructs agents from their definitions, applies the latest
-        AgentState from agent_store, and returns a runtime-ready World.
-        The code template in the container is never consulted here.
+        Loads the world's persisted setup and config asset, reconstructs agents
+        from their definitions, applies complete agent states from the latest committed snapshot,
+        and returns a runtime-ready World.
+
+        ``casting`` is kept outside the world's stores (in the catalog), so the caller passes it;
+        the cast character is built main tier. Who performs it is the runtime's to wire
+        (``NarrativeRuntime.cast_actor``).
         """
         config_data = await self._container.snapshot.load_world_config(world_id)
         if config_data is None:
-            raise ValueError(
-                f"No persisted world config found for world {world_id!r}; "
-                "it must be rebuilt with the current build pipeline."
-            )
+            raise ValueError(f"No persisted world config found for world {world_id!r}")
         active_world_config = StoredWorldConfig(config_data)
         step_zero = await self._container.snapshot.load(world_id, 0)
-        if step_zero is None:
-            raise ValueError(f"No step-0 snapshot found for world {world_id!r}")
-
-        manifest = step_zero.metadata.get("manifest")
-        if manifest is None:
+        if step_zero is None or not step_zero.setup:
+            raise ValueError(f"No step-0 snapshot with a setup found for world {world_id!r}")
+        setup = WorldSetup.from_dict(step_zero.setup)
+        agent_definitions = list(setup.characters)
+        if casting is not None and casting.character_id not in {d.agent_id for d in agent_definitions}:
             raise ValueError(
-                f"Step-0 snapshot for world {world_id!r} has no manifest; "
-                "it was built before build/run separation was supported."
+                f"World {world_id!r} has no character {casting.character_id!r} to cast the actor as"
             )
 
-        theme = str(manifest.get("theme", ""))
-        analysis = ThemeAnalysis.from_dict(manifest["analysis"])
-        agent_definitions = [
-            AgentDefinition.from_dict(d) for d in manifest["agent_definitions"]
-        ]
-
         environment = EnvironmentSystem(active_world_config, max_npcs=self._max_npcs)
-        await self._instantiate_entity_seeds(analysis, environment, active_world_config)
+        await self._instantiate_entity_seeds(setup.entity_seeds, environment)
         # Npcs aren't rebuilt here, deliberately unlike entity seeds: the npc_states payload is
         # self-contained (identity + position + condition + current errand) and _restore_environment_state
         # loads it in one go. Building them on both paths would collide on ids, and since ids are slugs of
         # names, a collision splits one person into two in the world.
-        clock_config = self._clock_config_for(analysis, active_world_config)
+        clock_config = self._clock_config_for(setup.lore, active_world_config)
         agents: dict[str, Agent] = {}
 
         # The step the world resumes at = the latest persisted snapshot. This is the
@@ -492,47 +393,63 @@ class WorldInitializer:
             (s for s in await self._container.snapshot.list_steps(world_id) if s > 0),
             default=0,
         )
+        # Everything below comes from this one snapshot, the last commit point: never pair it
+        # with state another step wrote.
+        latest = await self._container.snapshot.load(world_id, resume_step)
+        if latest is None or set(latest.state.agents) != {d.agent_id for d in agent_definitions}:
+            raise ValueError(f"World {world_id!r} snapshot {resume_step} doesn't hold every character")
+        stored_states = {
+            definition.agent_id: agent_state_from_record(latest.state.agents[definition.agent_id])
+            for definition in agent_definitions
+        }
+        held_relations: dict[str, list[AgentRelation]] = {}
+        for payload in latest.state.relations.values():
+            relation = relation_from_snapshot_dict(payload)
+            held_relations.setdefault(relation.from_id, []).append(relation)
+        active_executions = _resumable_executions(world_id, latest, stored_states)
+        resumed_participants = {pid for execution in active_executions for pid in execution.participant_ids}
 
         for definition in agent_definitions:
             agent = self._instantiate_agent(
                 world_id=world_id,
                 definition=definition,
                 clock_config=clock_config,
+                casting=casting,
             )
             agents[agent.agent_id] = agent
             await agent.memory_system.ensure_collections()
+            # Before warming: an uncommitted step's memories must not come back with the rest.
+            await agent.memory_system.purge_memories_after(resume_step)
 
-            stored = await self._container.agent_store.load_agent_state(world_id, agent.agent_id)
-            if stored is not None:
-                _apply_stored_state(agent, stored)
-                # Don't place the dead: death handling already removed them from the environment (current_location
-                # isn't cleared, it only records where they fell). Placing them unconditionally would stand the
-                # corpse back up in the room, visible to everyone there forever.
-                # Check liveness with is_active (just derived by _apply_stored_state from vitality, the single source of truth), not a raw vitality comparison.
-                if agent.is_active:
-                    environment.place_agent(agent_id=agent.agent_id, location_id=stored.current_location)
-                await agent.memory_system.warm_recent_memories(current_step=stored.updated_step)
-            else:
-                environment.place_agent(agent_id=agent.agent_id, location_id=definition.initial_location)
-                await agent.memory_system.warm_recent_memories(current_step=0)
+            stored = stored_states[agent.agent_id]
+            agent.apply_stored_state(stored, in_resumed_execution=agent.agent_id in resumed_participants)
+            agent.relation_system.restore(held_relations.get(agent.agent_id, []))
+            # Don't place the dead: death handling already removed them from the environment (current_location
+            # isn't cleared, it only records where they fell). Placing them unconditionally would stand the
+            # corpse back up in the room, visible to everyone there forever.
+            # Check liveness with is_active (just derived by apply_stored_state from vitality, the single source of truth), not a raw vitality comparison.
+            if agent.is_active:
+                environment.place_agent(
+                    agent_id=agent.agent_id,
+                    location_id=_body_location(latest, agent.agent_id, stored, resumed_participants),
+                )
+            await agent.memory_system.warm_recent_memories(current_step=stored.step)
 
-        await self._restore_environment_state(world_id, environment, resume_step)
-        self._repatriate_transit_agents(agents, agent_definitions, environment)
+        self._restore_environment_state(latest, environment)
+        self._repatriate_transit_agents(agents, agent_definitions, environment, resumed_participants=resumed_participants)
         directory = LiveWorldDirectory.from_agents(agents, environment)
 
         logger.info(
             "world_restored",
             extra={
                 "world_id": world_id,
-                "world_name": analysis.world_name,
+                "world_name": setup.lore.world_name,
                 "agent_count": len(agents),
             },
         )
         return World(
             world_id=world_id,
-            theme=theme,
-            analysis=analysis,
-            agent_definitions=agent_definitions,
+            setup=setup,
             agents=agents,
             world_config=active_world_config,
             clock_config=clock_config,
@@ -540,6 +457,7 @@ class WorldInitializer:
             step_zero_snapshot=step_zero,
             directory=directory,
             current_step=resume_step,
+            active_executions=active_executions,
         )
 
     def _repatriate_transit_agents(
@@ -547,18 +465,21 @@ class WorldInitializer:
         agents: dict[str, Agent],
         agent_definitions: Sequence[AgentDefinition],
         environment: EnvironmentSystem,
+        *,
+        resumed_participants: set[str],
     ) -> None:
-        """Fix the location of agents caught mid-move in a snapshot.
+        """Land a body left in transit with no trip to carry it.
 
-        Execution state isn't persisted with snapshots (IN_PROGRESS is reset to IDLE on restore). If the
-        snapshot lands mid multi-step MOVE, the agent's stored location is the IN_TRANSIT pseudo-location,
-        which has no connections and no entities, so every move feasibility check fails and the agent is
-        stuck forever. Matches movement's interrupt turn-back (<50%): return to the origin registered in
-        the environment; if none is registered (older snapshots), fall back to the initial location.
+        A body on a resumed MOVE (in ``resumed_participants``) stays where the snapshot left it and
+        walks on. One with no trip (its snapshot saved no MOVE for it, or the MOVE wasn't resumed)
+        stands on the IN_TRANSIT pseudo-location, which has no connections and no entities, so
+        every move feasibility check fails and it is stuck forever. Matches movement's interrupt
+        turn-back (<50%): return to the origin registered in the environment, else the initial
+        location.
         """
         initial_by_id = {d.agent_id: d.initial_location for d in agent_definitions}
         for agent_id, agent in agents.items():
-            if environment.get_body_location(agent_id) != IN_TRANSIT:
+            if agent_id in resumed_participants or environment.get_body_location(agent_id) != IN_TRANSIT:
                 continue
             origin = environment.transit_origin(agent_id)
             landed = origin or initial_by_id.get(agent_id, "")
@@ -575,14 +496,13 @@ class WorldInitializer:
                 },
             )
 
-    async def _restore_environment_state(
-        self, world_id: str, environment: EnvironmentSystem, resume_step: int
-    ) -> None:
+    @staticmethod
+    def _restore_environment_state(snapshot: WorldSnapshot, environment: EnvironmentSystem) -> None:
         """Re-apply the persisted environment state onto a freshly seeded world.
 
         ``restore`` rebuilds the environment from the step-0 entity seeds, which leaves item
         state/location/ownership at their initial values. The resume step's snapshot records
-        the live environment under ``metadata["environment"]``; without this the world's items
+        the live environment in its ``state`` and ``engine``; without this the world's items
         silently revert to step 0 while agents carry their latest state.
 
         **STEP 0 IS A RESUME STEP LIKE ANY OTHER — do not skip it.** For entities the re-apply
@@ -591,12 +511,11 @@ class WorldInitializer:
         puts them back. Skipping step 0 (every fresh world's first run, every reset) leaves the
         world with none: ERRAND silently out of reach.
         """
-        snapshot = await self._container.snapshot.load(world_id, resume_step)
-        if snapshot is None:
-            return
-        env_state = snapshot.metadata.get("environment")
-        if isinstance(env_state, dict):
-            environment.restore_state(env_state)
+        environment.restore_state(
+            npcs=snapshot.state.npcs,
+            entities=snapshot.state.entities,
+            engine=snapshot.engine.environment,
+        )
 
     async def _freeze_map_assets(
         self, world_id: str, world_config: WorldConfig, render_map: dict[str, object]
@@ -671,8 +590,8 @@ class WorldInitializer:
         """Copy each named file into the world's own storage, by relative path.
 
         Best-effort per file, and never fatal: a world that builds is worth more
-        than a perfectly frozen one, and a missing frozen asset falls back to the
-        live template (exactly what every pre-freeze world already does).
+        than a perfectly frozen one. A file that fails to freeze is served as missing,
+        so only that image is absent from the map.
         """
         for relative in relative_paths:
             path = source_dir / relative
@@ -689,151 +608,57 @@ class WorldInitializer:
         self,
         *,
         world_id: str,
-        theme: str,
-        analysis: ThemeAnalysis,
-        agent_definitions: list[AgentDefinition],
+        setup: WorldSetup,
         agents: dict[str, Agent],
         environment: EnvironmentSystem,
-        directory: WorldDirectory,
         clock_config: WorldTimeConfig,
     ) -> WorldSnapshot:
         world_time = WorldTime.from_step(0, clock_config)
-        # Mirror the runtime's observation enrichment: snapshot_agent_state is id-only
-        # (agent/ can't touch the directory); the god-view resolves location_id → the
-        # narrative name here so step 0 shows real homes, not the "某地" fallback.
-        # (No transit at init — nobody is mid-move — so only location_name is added.)
-        agent_states = {
-            agent_id: snapshot_agent_state(agent) for agent_id, agent in agents.items()
-        }
-        for state in agent_states.values():
-            state["location_name"] = directory.location_name(state["location_id"])
+        environment_state = environment.world_state()
+        # Step 0 has no events: everyone simply stands where the world put them, which the state
+        # says. Nobody is mid-move yet, so the body location is the agent's own.
         snapshot = WorldSnapshot(
             world_id=world_id,
             step=0,
             timestamp=datetime.now(),
             world_time=world_time.clock_payload(),
-            agent_states=agent_states,
-            agent_relations=await relations_snapshot(self._container.agent_store, world_id, agents),
-            pending_messages=await self._container.message_provider.peek_pending(world_id),
-            events_this_step=[],
-            actions_this_step=self._build_agent_summaries(agents, directory),
-            metadata={
-                "phase": "initialization",
-                "theme": theme,
-                "manifest": {
-                    "theme": theme,
-                    "analysis": analysis.as_dict(),
-                    "agent_definitions": [defn.as_dict() for defn in agent_definitions],
+            state=WorldState(
+                agents={agent_id: snapshot_agent_state(agent) for agent_id, agent in agents.items()},
+                npcs=environment_state["npcs"],
+                entities=environment_state["entities"],
+                relations={
+                    f"{relation.from_id}->{relation.to_id}": relation_to_snapshot_dict(relation)
+                    for agent in agents.values()
+                    for relation in await agent.relation_system.all_relations()
                 },
-                "world_time": world_time.iso_label(),
-                "time_label": world_time.time_label,
-                "world": {
-                    "world_name": analysis.world_name,
-                    # Step duration: the review card shows it to the user before confirmation locks it in (once
-                    # locked it holds for the whole story). It's in this narrative block rather than the manifest
-                    # because the presentation layer reads it; the authoritative value stays in analysis. It's sent in
-                    # seconds and the presentation layer renders it as words, so changing precision doesn't touch this chain.
-                    "seconds_per_step": clock_config.seconds_per_step,
-                    "era_description": analysis.era_description,
-                    "core_tension": analysis.core_tension,
-                    "narrative_theme": analysis.narrative_theme,
-                    "narrative_pitch": analysis.narrative_pitch,
-                    "figure_names": [figure.name for figure in analysis.key_figures],
-                    "location_names": [location.name for location in analysis.key_locations],
-                },
-                "schedule": {
-                    "step": 0,
-                    "batches": [],
-                },
-                "messages": {
-                    "step": 0,
-                    "delivered": [],
-                    "received": [],
-                    "inboxes": {agent_id: [] for agent_id in agents},
-                    "undelivered": [],
-                },
-                "broadcasts": [],
-                "environment": environment.snapshot_state(),
-                "character_profiles": {
-                    agent_id: {
-                        "name": agent.personality.soul.name,
-                        "role": agent.personality.soul.role,
-                        "age": agent.personality.soul.age,
-                        "gender": agent.personality.soul.gender,
-                        "background": agent.personality.soul.background,
-                        "appearance": agent.personality.soul.appearance,
-                        "color": agent.personality.soul.color,
-                        "core_traits": list(agent.personality.soul.core_traits),
-                        "core_values": list(agent.personality.soul.core_values),
-                        "self_image": agent.personality.soul.self_image,
-                        "life_goal": agent.personality.soul.life_goal,
-                        "secret": agent.personality.soul.secret,
-                        "is_main_character": agent.is_main_character,
-                    }
-                    for agent_id, agent in agents.items()
-                },
-            },
+            ),
+            engine=EngineState(
+                pending_messages=await self._container.message_provider.peek_pending(world_id),
+                environment=environment.engine_state(),
+            ),
+            setup=setup.as_dict(),
         )
         await self._container.snapshot.save(world_id, 0, snapshot)
         return snapshot
 
-    def _resolve_initial_location(
-        self, definition: AgentDefinition, world_config: WorldConfig
-    ) -> str:
-        resolved = world_config.resolve_location_id(definition.initial_location)
-        if resolved is None:
-            available = sorted(world_config.get_places())
-            raise ValueError(
-                "Unknown initial location "
-                f"{definition.initial_location!r} for agent "
-                f"{definition.agent_id!r} ({definition.name!r}). "
-                f"Available locations: {available}"
+    def _instantiate_npc_seeds(self, seeds: Sequence[NpcSeed], environment: EnvironmentSystem) -> None:
+        """Put the theme's mindless bodies into the world, each where the setup places it. Sibling
+        of the entity seeds. Slots and quotas belong to ``spawn_npc`` (the single point where they
+        come into being)."""
+        for seed in seeds:
+            environment.spawn_npc(
+                Npc(
+                    npc_id=seed.npc_id, name=seed.name, gender=seed.gender, age=seed.age,
+                    description=seed.description,
+                ),
+                location_id=seed.location,
             )
-        return resolved
-
-    def _instantiate_npc_seeds(
-        self, analysis: ThemeAnalysis, environment: EnvironmentSystem, world_config: WorldConfig
-    ) -> None:
-        """Put the theme's mindless bodies into the world. Sibling of the entity seeds.
-
-        If placement can't be resolved, fall back to the first location with a warning, the same fallback
-        as entity seeds: someone standing in the wrong place is still usable, someone absent from the
-        world isn't. Slots and quotas belong to ``spawn_npc`` (the single point where they come into being).
-        """
-        location_ids = sorted(world_config.get_places())
-        default_location = location_ids[0] if location_ids else None
-
-        for seed in analysis.npc_seeds:
-            location_id = world_config.resolve_location_id(seed.location_name) or default_location
-            if location_id is None:
-                logger.warning("npc_seed_no_location", extra={"npc_name": seed.name})
-                continue
-            environment.spawn_npc(seed, location_id=location_id)
 
     async def _instantiate_entity_seeds(
-        self, analysis: ThemeAnalysis, environment: EnvironmentSystem, world_config: WorldConfig
+        self, seeds: Sequence[WorldEntitySeed], environment: EnvironmentSystem,
     ) -> None:
-        location_ids = sorted(world_config.get_places())
-        default_location = location_ids[0] if location_ids else None
-
-        for seed in analysis.world_entity_seeds:
-            location_id = world_config.resolve_location_id(seed.location_name)
-            if location_id is None:
-                location_id = default_location
-                logger.warning(
-                    "entity_seed_location_unresolvable",
-                    extra={
-                        "seed_name": seed.name,
-                        "requested": seed.location_name,
-                        "fallback": location_id,
-                    },
-                )
-            if location_id is None:
-                logger.warning(
-                    "entity_seed_skipped_no_location",
-                    extra={"seed_name": seed.name},
-                )
-                continue
+        for seed in seeds:
+            location_id = seed.location
             entity_id = seed.entity_id
             entity = WorldEntity(
                 entity_id=entity_id,
@@ -842,7 +667,6 @@ class WorldInitializer:
                 state=seed.initial_state,
                 description=seed.description,
                 presence_ref=location_id,   # presence defaults to AT_LOCATION
-                is_takeable=seed.is_takeable,
                 is_public=True,
                 content=seed.content,
             )
@@ -857,46 +681,13 @@ class WorldInitializer:
                 },
             )
 
-    def _build_agent_summaries(
-        self, agents: dict[str, Agent], directory: WorldDirectory
-    ) -> list[dict[str, object]]:
-        summaries: list[dict[str, object]] = []
-        for agent in agents.values():
-            state = agent.personality.state
-            # Narrative text carries the location NAME, never the raw id (id doesn't
-            # cross into the narrative layer). action_description is name-free — the
-            # observer already shows who, so it isn't doubled.
-            loc_name = directory.location_name(state.current_location)
-            summaries.append(
-                {
-                    "agent_id": agent.agent_id,
-                    "agent_name": agent.personality.soul.name,
-                    "is_main_character": agent.is_main_character,
-                    "location_id": state.current_location,
-                    "emotion": {
-                        "primary": state.emotion.primary,
-                        "intensity": state.emotion.intensity,
-                        "valence": state.emotion.valence,
-                    },
-                    "dominant_need": state.dominant_need,
-                    "long_term_goals": list(state.long_term_goals),
-                    "short_term_goals": list(state.short_term_goals),
-                    "summary": f"{agent.personality.soul.name} 在 {loc_name} 就位。",
-                    "action_description": f"在 {loc_name} 就位",
-                    "outcome": "初始化完成",
-                    "succeeded": True,
-                    "phase": "initialization",
-                }
-            )
-        return summaries
-
     def _clock_config_for(
         self,
-        analysis: ThemeAnalysis,
+        lore: WorldLore,
         world_config: WorldConfig,
     ) -> WorldTimeConfig:
         runtime_context = world_config.to_runtime_context()
-        time_config = dict(analysis.world_time_config)
+        time_config = dict(lore.world_time_config)
         return WorldTimeConfig(
             # The era name falls back to the map's era label (e.g. a dynasty name) and never to the world name: the
             # world name is the story's title, not an era, and using it as one would render dates like
@@ -931,146 +722,61 @@ class WorldInitializer:
             # Step duration and the calendar anchor share a source: both are fixed by the world-building theme
             # analysis and both are read from this world_time_config (already quantized from hours to seconds
             # at the LLM boundary in _analysis_from_payload; this only reads it back). So it's naturally
-            # frozen: analysis is persisted with the step-0 manifest and restore reads the same copy back, so
+            # frozen: the lore is persisted with the world's setup and restore reads the same copy back, so
             # a world's time pricing never drifts with deployment config, and no second frozen copy is needed.
             seconds_per_step=resolve_step_seconds(time_config.get("seconds_per_step")),
         )
 
 
-def _goal_entity_from_dict(ent: dict, *, fallback_id: str) -> GoalEntity:
-    """Deserialize a persisted short-term goal dict into a full GoalEntity.
+def _resumable_executions(
+    world_id: str, snapshot: WorldSnapshot, stored_states: Mapping[str, AgentState],
+) -> list[ActionExecutionState]:
+    """The multi-step acts the resume step's snapshot left under way, each kept only if every
+    participant's committed state is still in it.
 
-    Mirrors the fields written by ``Agent.persist_state`` so lifecycle metadata
-    survives a restore. ``related_need`` is coerced silently: an unknown/empty
-    value degrades to None rather than raising (field-level coercion).
+    Both share the snapshot's commit point. An act that can't be read, or that someone in it has no record of, is
+    dropped whole: half an act would tick a character who isn't in it. Its participants are then
+    left idle by ``Agent.apply_stored_state``, as is anyone whose snapshot saved no act at all.
     """
-    raw_need = ent.get("related_need")
-    try:
-        related_need = NeedType(raw_need) if raw_need else None
-    except ValueError:
-        related_need = None
-    last_evaluated = ent.get("last_evaluated_step")
-    # origin is coerced silently too: missing (older saves without the field) or an unknown value → COGNITIVE.
-    # COGNITIVE rather than RESIDUE is the conservative choice: misreading an old plan as unfinished business would give it eviction resistance it shouldn't have.
-    try:
-        origin = GoalOrigin(ent["origin"]) if ent.get("origin") else GoalOrigin.COGNITIVE
-    except ValueError:
-        origin = GoalOrigin.COGNITIVE
-    return GoalEntity(
-        id=ent.get("id", fallback_id),
-        text=ent.get("text", ""),
-        goal_type=ent.get("goal_type", "short_term"),
-        status=GoalStatus(ent["status"]) if ent.get("status") else GoalStatus.ACTIVE,
-        related_need=related_need,
-        created_step=int(ent.get("created_step", 0) or 0),
-        due_step=_coerce_due_step(ent.get("due_step")),
-        last_evaluated_step=int(last_evaluated) if last_evaluated is not None else None,
-        progress_summary=str(ent.get("progress_summary", "")),
-        origin=origin,
-    )
-
-
-def _coerce_due_step(raw: object) -> int | None:
-    """The agreed time: missing / null / unrecognized values all become None. No deadline is the normal case, not a parse failure."""
-    try:
-        return int(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-
-
-def _apply_stored_state(agent: Agent, stored: AgentState) -> None:
-    """Sync a loaded AgentState into an Agent's in-memory StateLayer.
-
-    Calls personality.restore_state() to write directly into _state, bypassing
-    the defensive copy returned by personality.state.
-    """
-    # Build goal entities: prefer rich entity dicts (carry lifecycle metadata),
-    # fall back to strings. The dict branch must pass through every persisted field
-    # (related_need / created_step / last_evaluated_step / progress_summary) — dropping
-    # them silently resets fail-retry counts, goal age, and need linkage on every restore.
-    if stored.short_term_goal_entities:
-        goal_entities = [
-            _goal_entity_from_dict(ent, fallback_id=f"restored-stg-{i}")
-            for i, ent in enumerate(stored.short_term_goal_entities)
-        ]
-    elif stored.short_term_goals:
-        goal_entities = [
-            GoalEntity(
-                id=f"restored-stg-{i}",
-                text=g,
-                goal_type="short_term",
-                status=GoalStatus.ACTIVE,
-                related_need=None,
+    resumed: list[ActionExecutionState] = []
+    for payload in snapshot.engine.active_executions:
+        try:
+            execution = ActionExecutionState.from_payload(payload)
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning(
+                "active_execution_unreadable",
+                extra={"world_id": world_id, "execution_id": payload.get("execution_id"), "error": str(exc)},
             )
-            for i, g in enumerate(stored.short_term_goals)
-        ]
-    else:
-        goal_entities = []
+            continue
+        states = [stored_states.get(pid) for pid in execution.participant_ids]
+        if not all(
+            state is not None
+            and state.action_status == ActionStatus.IN_PROGRESS.value
+            and state.vitality > 0.0
+            for state in states
+        ):
+            logger.warning(
+                "active_execution_dropped",
+                extra={
+                    "world_id": world_id, "execution_id": execution.execution_id,
+                    "participant_ids": execution.participant_ids,
+                },
+            )
+            continue
+        resumed.append(execution)
+    return resumed
 
-    restored = StateLayer(
-        agent_id=agent.agent_id,
-        step=stored.updated_step,
-        emotion=EmotionState(
-            primary=parse_emotion_type(stored.current_emotion),
-            intensity=stored.emotion_intensity,
-            valence=stored.emotion_valence,
-            triggered_by=stored.emotion_triggered_by,
-        ),
-        active_needs=list(stored.active_needs),
-        dominant_need=stored.dominant_need,
-        long_term_goals=list(stored.long_term_goals),
-        short_term_goals=list(stored.short_term_goals),
-        current_location=stored.current_location,
-        activity_status=(
-            AgentActivityStatus.IDLE
-            if stored.action_status == ActionStatus.IN_PROGRESS.value
-            else AgentActivityStatus(stored.activity_status)
-        ),
-        activity_target=(
-            None
-            if stored.action_status == ActionStatus.IN_PROGRESS.value
-            else stored.activity_target
-        ),
-        action_status=(
-            ActionStatus.IDLE
-            if stored.action_status == ActionStatus.IN_PROGRESS.value
-            else ActionStatus(stored.action_status)
-        ),
-        current_action=(
-            None
-            if stored.action_status == ActionStatus.IN_PROGRESS.value
-            else stored.current_action
-        ),
-        action_remaining_steps=(
-            0
-            if stored.action_status == ActionStatus.IN_PROGRESS.value
-            else stored.action_remaining_steps
-        ),
-        last_action=stored.last_action,
-        last_action_result=stored.last_action_result,
-        last_action_succeeded=stored.last_action_succeeded,
-        short_term_goal_entities=goal_entities,
-        # Long-term goals persist as text; restore rebuilds the entities from text (related_need left None, as at build).
-        long_term_goal_entities=[
-            text_to_long_term_goal_entity(t) for t in stored.long_term_goals
-        ],
-        need_intensities=dict(stored.need_intensities),
-        vitality=stored.vitality,
-        # Stored as a dict (see the AgentState.condition comment) and rebuilt into a BodyCondition here.
-        # This is the only rehydrate point, like _goal_entity_from_dict.
-        condition=condition_from_dict(stored.condition),
-        # Without restoring it, everyone's starvation resets to zero after restore and they all flood the decision loop next step (the cadence gate is bypassed for a beat).
-        last_decision_step=stored.last_decision_step,
-    )
-    agent.personality.restore_state(restored)
-    # vitality is the single source of truth for alive/dead: restore is_active from it, or the dead come
-    # back to life on restart (default True) → decay kills them again next step → duplicate death notices. is_active isn't persisted separately.
-    agent.set_active(stored.vitality > 0.0)
-    if stored.action_status == ActionStatus.IN_PROGRESS.value:
-        logger.info(
-            "in_progress_action_cleared",
-            extra={
-                "agent_id": agent.agent_id,
-                "cleared_action": stored.current_action,
-            },
-        )
+
+def _body_location(
+    snapshot: WorldSnapshot, agent_id: str, stored: AgentState, resumed_participants: set[str],
+) -> str:
+    """Where to stand a living body on restore.
+
+    A body in a resumed act stands where the snapshot saw it: a MOVE in progress is on a
+    waypoint or IN_TRANSIT, while the character's own ``current_location`` changes only on
+    arrival, so that would put him back at his origin for the step before his trip ticks on.
+    Everyone else stands where they last knew themselves to be.
+    """
+    if agent_id in resumed_participants:
+        return str(snapshot.state.agents[agent_id]["location_id"])
+    return stored.current_location

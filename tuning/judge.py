@@ -53,13 +53,17 @@ def _agent_block(per_agent: list[dict[str, Any]]) -> str:
         amb = inp.get("injected_ambient") or []
         if amb:
             lines.append("  环境观察：" + "；".join(str(e.get("content")) for e in amb))
+        recent_past = [f.split("：", 1)[1] for f in inp.get("given_facts") or [] if f.startswith("近来的经历：")]
+        if recent_past:
+            lines.append("  近来经历（该角色自己的记忆，仅供读懂信号）：" + "；".join(str(m) for m in recent_past))
         co = inp.get("co_located") or []
         if co:
-            lines.append("  同处一地（含本角色与各人的关系）：" + "；".join(
+            lines.append("  同处一地（仅供读懂信号，在场本身不是压力来源；含本角色与各人的关系）：" + "；".join(
                 f"{c.get('name')}"
-                + (f"({c.get('role')})" if c.get("role") else "")
+                + (f"({c.get('condition')})" if c.get("condition") else "")
                 + f"[{'、'.join(c.get('labels') or []) or '关系未明'}"
-                + (f",信任{c.get('trust')},好感{c.get('affection')}]" if c.get("trust") is not None else "]")
+                + (f",信任度{c.get('trust')},好感度{c.get('affection')}]" if c.get("trust") is not None else "]")
+                + (f"(过往:{c.get('history')})" if c.get("history") else "")
                 for c in co
             ))
         elif inp.get("visible_agents"):
@@ -91,7 +95,7 @@ def _build_prompt(scenario_meta: dict, per_agent: list[dict], det_findings: dict
         "地点收不到的广播内容」，即为**严重越界，boundary 直接给 1-2 分**。\n"
         "   典型泄漏例：A 收到一条只发给 A 的私信，而未收到此信的 B 却在目标里引用了该私信的内容——"
         "B 凭空知道了只有 A 可知的信息，这是边界被突破。\n"
-        "   仅依据自身可感知信号（自己的消息、可感知广播、同处一地者）行动 = 5 分。\n"
+        "   仅依据自身可感知信号（自己的消息、可感知广播、同处一地者）行动 = 5 分；借自己的近来经历读懂信号不算越界。\n"
         "2. reasonableness（响应合理性）：压力反应是否贴合情境。要点：\n"
         "   - **逐角色、只按它自己列出的可感知信号评判**：每个角色只感知到它名下列出的内容。**绝不能**因为某角色"
         "没有对「它并未感知到的信号」（如只投递给他人的消息 / 只属于他人的观察）做出反应、或没有对「它自己"
@@ -99,9 +103,12 @@ def _build_prompt(scenario_meta: dict, per_agent: list[dict], det_findings: dict
         "   - 生命威胁→高 urgency 的 threat/自保；权威命令→应响应（authority/obligation），除非情境本身即将"
         "颠覆该权威；单纯告知→低 urgency 或无；无信号的角色不应凭空生成压力。\n"
         "   - **urgency 必须锚定信号本身的烈度**：把模糊、遥远、未指向该角色的迹象判成 critical = 不合理，扣分。\n"
-        "   - **关系一致性**：不得把**与该角色关系亲近、信任度高的人**当作需要控制、威慑、防范的对象"
-        "（参考每个角色列出的「同处一地 + 关系」）；把关系亲近者当威胁 = 不合理，扣分。\n"
+        "   - **关系一致性**：仅因某人在场或双方关系亲近就推断威胁，应扣分；亲近和信任度高并不排除威胁。"
+        "若该角色实际感知到对方背叛、胁迫或伤害等具体信号，据此作出相称的防范反应不扣分；不得虚构敌意或事件。\n"
         "   - 不得凭空虚构信号中不存在的对象、关系或事件。\n"
+        "   - 每个目标都必须出自一条或几条可感知信号；仅凭近来经历生成的压力，应扣分。\n"
+        "   - 把某人一直在场本身当作压力来源（而不是其到来、离开或举动），应扣分；早先的安排或该角色自身的打算，"
+        "不因相关之人在场就成为压力，据此生成的压力应扣分。\n"
         "3. fields（字段符合度）：drive_type∈{authority,threat,obligation,event}、urgency∈{low,normal,"
         "high,critical} 与情境匹配、text 是**当下可执行的祈使**而非预测未来或事后命名。\n\n"
         "## 严格输出以下 JSON，不要任何多余内容（每项 rationale 在前、score 在后——先分析再给分）：\n"

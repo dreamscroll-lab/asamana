@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import pytest
+from agent.state_codec import encode_agent_state
 from types import SimpleNamespace
 
 from agent.agent import Agent
@@ -35,13 +36,12 @@ from engine.broadcast import BroadcastChannel
 from engine.clock import GlobalClock, WorldTimeConfig
 from engine.directory import LiveWorldDirectory
 from engine.environment import IN_TRANSIT, EnvironmentSystem
-from engine.event import EventSettings
+from engine.narrative_editor import NarrativeEditorSettings
 from engine.message_system import MessageSystem
 from engine.runtime import NarrativeRuntime
 from engine.scheduler import AgentScheduler
 from providers.llm.mock import MockLLMProvider
-from world.initializer import _apply_stored_state
-from world.models import EntityPresence, WorldEntity, WorldEntityType
+from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 from worlds.tiled import TiledWorldConfig
 
 WORLD_ID = "world-1"
@@ -66,9 +66,8 @@ def _make_agent(container, *, agent_id: str = "agent-target", name: str = "李�
             router, container.embedding, container.vector_store,
             world_id=WORLD_ID, agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
-        relation_system=RelationSystem(container.agent_store, world_id=WORLD_ID, agent_id=agent_id),
-        agent_store=container.agent_store,
+        need_engine=NeedEngine(router),
+        relation_system=RelationSystem(world_id=WORLD_ID, agent_id=agent_id),
         is_main_character=False,
     )
 
@@ -79,7 +78,7 @@ def _build_runtime(
     message_system = MessageSystem(container.message_provider, world_id=WORLD_ID)
     broadcast_channel = BroadcastChannel()
     directory = LiveWorldDirectory.from_agents({}, environment)
-    event_settings = EventSettings(check_interval=2, max_events_per_window=1)
+    narrative_editor_settings = NarrativeEditorSettings(check_interval=2, max_injections_per_window=1)
     # executor_registry must be passed at construction — the runtime's subsystems
     # (DeathHandler / ExecutionProcessor / …) capture it there. Swapping
     # runtime._executor_registry post-hoc would leave them pointing at the old one.
@@ -89,9 +88,8 @@ def _build_runtime(
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=event_settings,
+        narrative_editor_settings=narrative_editor_settings,
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=directory,
@@ -109,6 +107,7 @@ def test_trigger_death_sets_inactive_and_cause_without_self_memory(container) ->
     agent = _make_agent(container, vitality=0.0)
     agent._trigger_death(5, cause="饥馁力竭而亡。")
     assert agent.is_active is False
+    assert agent.personality.state.death_step == 5
     assert agent.death_cause == "饥馁力竭而亡。"
     # After death there's no experiencing subject: never write a death memory for the dead.
     assert agent.memory_system._entries == {}
@@ -174,8 +173,7 @@ async def test_process_new_deaths_full_convergence(container) -> None:
     environment.register_entity(WorldEntity(
         entity_id="seal", name="太子印", entity_type=WorldEntityType.ITEM,
         state="intact",
-        presence=EntityPresence.HELD, presence_ref=agent.agent_id,
-        is_takeable=True, is_public=True,
+        presence=EntityPresence.HELD, presence_ref=agent.agent_id, is_public=True,
     ))
 
     # Alive at step start; then some lethal source kills him (simulated directly as the final
@@ -220,7 +218,7 @@ async def test_death_broadcast_says_en_route_while_items_fall_at_the_origin(cont
     environment.move_body(body_id=agent.agent_id, location_id=IN_TRANSIT)  # departed, origin=donggong
     environment.register_entity(WorldEntity(
         entity_id="seal", name="太子印", entity_type=WorldEntityType.ITEM, state="intact",
-        presence=EntityPresence.HELD, presence_ref=agent.agent_id, is_takeable=True,
+        presence=EntityPresence.HELD, presence_ref=agent.agent_id,
     ))
     agent.personality.apply_vitality_damage(1.0)
     agent._trigger_death(7, cause="油尽灯枯。")
@@ -327,14 +325,25 @@ async def test_restore_derives_inactive_from_zero_vitality(container) -> None:
     dead = _make_agent(container, agent_id="agent-dead", vitality=1.0)
     dead.personality.apply_vitality_damage(1.0)  # vitality → 0
     dead.set_active(False)
-    await dead.persist_state(dead.personality.state)
-    stored = await container.agent_store.load_agent_state(WORLD_ID, "agent-dead")
-    assert stored is not None and stored.vitality == 0.0
+    stored = encode_agent_state(WORLD_ID, "agent-dead", dead.personality.state)
+    assert stored.vitality == 0.0
 
     fresh = _make_agent(container, agent_id="agent-dead", vitality=1.0)
     assert fresh.is_active is True  # active by default
-    _apply_stored_state(fresh, stored)
+    fresh.apply_stored_state(stored, in_resumed_execution=False)
     assert fresh.is_active is False  # derived from vitality=0: no resurrection
+
+
+@pytest.mark.asyncio
+async def test_restore_keeps_the_step_of_death(container) -> None:
+    dead = _make_agent(container, agent_id="agent-dead", vitality=1.0)
+    dead.apply_vitality_damage(1.0, step=4, death_cause="死于刀兵。")
+    stored = encode_agent_state(WORLD_ID, "agent-dead", dead.personality.state)
+    assert stored.death_step == 4
+
+    fresh = _make_agent(container, agent_id="agent-dead", vitality=1.0)
+    fresh.apply_stored_state(stored, in_resumed_execution=False)
+    assert fresh.personality.state.death_step == 4
 
 
 # ---------------------------------------------------------------------------
@@ -362,8 +371,7 @@ async def test_death_tears_down_move_and_never_resurrects_corpse(container) -> N
     environment.register_entity(WorldEntity(
         entity_id="seal", name="太子印", entity_type=WorldEntityType.ITEM,
         state="intact",
-        presence=EntityPresence.HELD, presence_ref=agent.agent_id,
-        is_takeable=True, is_public=True,
+        presence=EntityPresence.HELD, presence_ref=agent.agent_id, is_public=True,
     ))
     agents_dict = {agent.agent_id: agent}
     registry = build_default_registry(
@@ -512,7 +520,7 @@ async def test_death_teardown_narrates_the_death_as_the_cause(container) -> None
     dead._trigger_death(7, cause="毒发身亡")
     await runtime._deaths.process_new_deaths([dead, survivor], {dead.agent_id}, step=7)
 
-    assert seen["cause"] == "李建成已经失去生命力"
+    assert seen["cause"] == "李建成的生命值已经耗尽"
     # The executor is never handed raw trigger signals — the decision consumes them (and a
     # dead man perceived nothing regardless: he IS the cause).
     assert "reason" not in seen["kwargs"]
@@ -520,7 +528,7 @@ async def test_death_teardown_narrates_the_death_as_the_cause(container) -> None
         r for r in seen["results"] if r.action.agent_id == survivor.agent_id
     )
     # It reaches the narrative: the survivor's record says WHY the conversation stopped.
-    assert "李建成已经失去生命力" in survivor_result.outcome
+    assert "李建成的生命值已经耗尽" in survivor_result.outcome
     assert "中断" in survivor_result.outcome
     assert survivor.personality.state.action_status != ActionStatus.IN_PROGRESS
     # The survivor's ending reaches the step's display stream, or the feed shows a conversation
@@ -553,3 +561,49 @@ def test_someone_who_dies_this_step_is_known_dead_before_anyone_plans() -> None:
     # distinguish alive from dead).
     assert alive._dead_agent_ids == frozenset({"dead"})
     assert dead._dead_agent_ids == frozenset({"dead"})
+
+
+@pytest.mark.asyncio
+async def test_a_corpse_stays_where_he_fell_in_the_step_record(container) -> None:
+    """Death takes a body off the map (no environment location), but the step record keeps him
+    in the room he died in, so replay and the map still show the corpse there."""
+    from interaction.models import StepView
+    from tests.unit.step_view import agents
+
+    environment = EnvironmentSystem(TiledWorldConfig(template="changan_iso"))
+    runtime = _build_runtime(container, environment)
+    survivor = _make_agent(container, agent_id="survivor", name="魏徵")
+    corpse = _make_agent(container, agent_id="corpse", name="李建成", vitality=0.0)
+    corpse.is_active = False
+    environment.place_agent(agent_id="survivor", location_id="palace")
+
+    await runtime.run_step([survivor, corpse])
+    snapshot = await container.snapshot.load(WORLD_ID, 1)
+
+    assert snapshot.state.agents["corpse"]["location_id"] == "palace"
+    assert agents(StepView.from_snapshot(snapshot))["corpse"][0] == "palace"
+
+
+@pytest.mark.asyncio
+async def test_the_step_record_says_which_step_a_body_died_in(container) -> None:
+    """The map draws a body falling only on its death step, so the record carries that step on
+    every later step, to the performed character as well: someone first seen on the step he dies
+    must still be seen falling."""
+    from interaction.actor_view import step_view_for
+    from interaction.models import StepView
+    from tests.unit.step_view import agent
+
+    environment = EnvironmentSystem(TiledWorldConfig(template="changan_iso"))
+    runtime = _build_runtime(container, environment)
+    survivor = _make_agent(container, agent_id="survivor", name="魏徵")
+    dying = _make_agent(container, agent_id="dying", vitality=0.0005)  # one step of decay kills
+    environment.place_agent(agent_id="survivor", location_id="palace")
+    environment.place_agent(agent_id="dying", location_id="palace")
+
+    await runtime.run_step([survivor, dying])
+    await runtime.run_step([survivor, dying])
+    for step in (1, 2):
+        view = StepView.from_snapshot(await container.snapshot.load(WORLD_ID, step))
+        assert agent(view, "dying").death_step == 1
+        assert agent(step_view_for(view, "survivor"), "dying").death_step == 1
+        assert agent(view, "survivor").death_step is None

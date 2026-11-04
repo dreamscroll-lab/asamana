@@ -25,6 +25,7 @@ from core.container import Container
 from core.interfaces.llm import LLMProvider, LLMScene
 from core.logging import get_logger
 from world.initializer import WorldInitializer
+from tuning.dry_run import isolate_container
 
 from tuning.judge_action import judge_action
 from tuning.judge_llm import create_judge
@@ -92,13 +93,13 @@ def _deterministic_checks(phase: dict, agent_ids: set[str]) -> dict[str, Any]:
 
     if outputs.get("kind") == "arbitration":
         verdicts = outputs.get("verdicts", [])
-        actors = [vd.get("actor") for vd in verdicts]
-        if len(actors) != len(set(actors)):
-            v.append("仲裁: 同一 actor 出现多条裁决(疑似双占)")
+        doers = [vd.get("doer") for vd in verdicts]
+        if len(doers) != len(set(doers)):
+            v.append("仲裁: 同一 doer 出现多条裁决(疑似双占)")
         for vd in verdicts:
-            _scan_text(f"仲裁/{vd.get('actor')}", str(vd.get("outcome") or ""))
+            _scan_text(f"仲裁/{vd.get('doer')}", str(vd.get("outcome") or ""))
             if vd.get("kind") == "被拒" and vd.get("succeeded"):
-                v.append(f"仲裁/{vd.get('actor')}: 被拒却 succeeded=True")
+                v.append(f"仲裁/{vd.get('doer')}: 被拒却 succeeded=True")
         return {"passed": not v, "field_violations": v}
 
     # lifecycle
@@ -146,7 +147,7 @@ def _deterministic_checks(phase: dict, agent_ids: set[str]) -> dict[str, Any]:
         orders = r.get("errand_orders") or []
         if str(r.get("action_type") or "") == "errand" and not r.get("adjudication_failed"):
             if r.get("succeeded") and not orders:
-                v.append("判为接下却没有 errand_order(世界里不会有这趟差事)")
+                v.append("判为接下却没有 errand_order(世界里不会有这项任务)")
             if not r.get("succeeded") and orders:
                 v.append("判为不接却下了 errand_order(没人托的人上了路)")
         # What was entrusted is privileged: onlookers can see he went over and said a few words, not what
@@ -233,7 +234,7 @@ async def validate_action(
     # Don't pass enable_thinking here: thinking is an endpoint property set in ``llm.judge.params`` (see create_judge).
     judge_llm = judge_provider or create_judge(config, judge_model)
 
-    world = await WorldInitializer(container).restore(world_id)
+    world = await WorldInitializer(await isolate_container(container, world_id)).restore(world_id)
     agent_ids = set(world.agents.keys())
 
     out_dir = Path(trace_dir) / world_id / "validation" / "action"

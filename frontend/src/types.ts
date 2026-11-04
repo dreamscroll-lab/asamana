@@ -1,4 +1,4 @@
-// Wire types mirroring interaction/models.py (StepEvent family) and the API layer.
+// Wire types mirroring interaction/models.py (StepView family) and the API layer.
 // Render-neutral: these are semantic world state only — no coordinates.
 
 export type RunState =
@@ -24,15 +24,23 @@ export interface WorldMeta {
   current_step: number;
   main_agent_names: string[];
   /**
-   * World time per step, in seconds; authored by the theme analysis and frozen at build.
-   * Shown on the creation-review card since it decides whether the story runs in hours or
-   * days. 0 when unknown.
+   * World time per step, in seconds; authored by the theme analysis, revisable in the setup and
+   * frozen by confirming. Shown on the creation-review card since it decides whether the
+   * story runs in hours or days. 0 when unknown.
    */
   seconds_per_step: number;
   run_state: RunState;
   // Whether the user has reviewed and locked initialization. Unconfirmed worlds
   // sit in the creation-review stage and cannot start their narrative run.
   confirmed: boolean;
+  // The character an actor performs, chosen at confirmation; null if nobody was cast. Once the
+  // actor exits, `actor_exited` is set and the world is the director's again.
+  actor_character_id: string | null;
+  actor_exited: boolean;
+  // When the actor is asked to decide while the character is idle.
+  actor_pace: ActorPace;
+  // The whole cast has been shown to the user as the director; the world takes no actor after.
+  director_reviewed: boolean;
 }
 
 /** What this backend deployment offers, independent of any world. */
@@ -81,75 +89,13 @@ export interface TargetRef {
  * An action's three relations to the world — the same three the backend files.
  *
  * `acts_on` is what the act is done to (one kind per action, guaranteed by the backend);
- * `claims` is whose turn it spends (e.g. a carried companion); `reaches` is who receives it
- * passively. All three carry kinded refs. Read them through lib/contract's accessors.
+ * `claims` is whose turn it spends (e.g. a carried companion); `reaches` is who it lands on
+ * passively (a hand-over's receiver, the holder of a thing taken). All three carry kinded refs. Read them through lib/contract's accessors.
  */
 export interface ActionTarget {
   acts_on: TargetRef[];
   claims: TargetRef[];
   reaches: TargetRef[];
-}
-
-export interface ActionSummary {
-  agent_id: string;
-  agent_name: string;
-  action_description: string;
-  outcome: string;
-  // What happened in one sentence: `outcome` without the detail it may append (a TALK
-  // transcript, an interrupter's thought).
-  gist: string;
-  succeeded: boolean;
-  // Why it did not succeed, as one short third-person phrase; non-empty only on a genuine
-  // failure. Read this rather than parsing `outcome` prose: render decisions come off
-  // structured fields, as with `deed`.
-  failure_reason: string;
-  // Whether a COVERT act was noticed. Independent of `succeeded`: a theft can land and still
-  // be seen, or fail unnoticed.
-  detected: boolean;
-  // True when the action never engaged the world (target absent or busy, no path): a
-  // non-event, not a failure. The renderer mutes it (gray chip / "未成事" badge, no ✗).
-  not_executed: boolean;
-  action_type: string; // talk/move/physical/covert/work/rest/send_message/errand
-  // WHICH BEAT of an execution this is — the only thing that says whether `outcome` is an
-  // opening or a result. See lib/contract's Phase for the six values.
-  phase: string;
-  // What the body was seen doing (see lib/contract Deed). Same as `action_type` except for
-  // physical, which packs six verbs into one type. Empty = nothing was done → draw nothing.
-  deed: string;
-  // A joint action emits one record per participant. To fold them into one deed, group by
-  // execution_id and speak from the record whose agent_id === initiator_id (a conscripted
-  // participant's outcome only restates the intent). Code-layer ids, never rendered.
-  execution_id: string;
-  initiator_id: string;
-  // How long he expects it to take, as a natural duration ("约2小时") rendered by the producer
-  // (a step count never reaches a narrative surface). "" unless phase is `begin`.
-  duration_label: string;
-  // How far along, for a progress bar. Code-layer integers a renderer may consume; never
-  // render 「第N步」 as text.
-  elapsed_steps: number;
-  total_steps: number;
-  // Who cut short an in-progress action (phase "interrupt"); "" otherwise. The why rides in
-  // `outcome`, not in inner_monologue.
-  interrupted_by: string;
-  // The act's three relations, as the cognition layer filed them. Read them through
-  // lib/contract's accessors (actedOnAgents / actedOnEntities / claimedAgents).
-  target: ActionTarget;
-  // AIMED at (intent) vs. CHANGED (result). Aim survives failure, so `target.acts_on` is what
-  // a figure turns toward and walks to; `affected` is empty precisely when he tried and
-  // nothing gave.
-  affected_entity_ids: string[];
-  // Present for it, party to none of it: who overheard this exchange. Not in
-  // participant_ids — they spent no turn on it and the feed must not fold them in as
-  // speakers.
-  overheard_by: string[];
-  // The first-person deliberation that produced this action, present only on the beat the
-  // decision was made. The feed's "心声"; the map never shows it (it renders the world, not minds).
-  inner_monologue: string;
-  is_main_character: boolean;
-  dialogue: DialogueTurn[];
-  // Monotonic emission ordinal from the runtime — sort intra-step events by this,
-  // never render it as user-visible text. 0 for initialization records.
-  seq: number;
 }
 
 // One line of a conversation. `speaker_id` is the join key (never rendered); `speaker` is
@@ -160,28 +106,186 @@ export interface DialogueTurn {
   line: string;
 }
 
-// A non-location world object (item / landmark) as the per-step environment
-// snapshot carries it — drives entity markers + state-change effects on the map.
-// Placement is a single discriminated axis: presence + presence_ref (a location
-// id when at_location, a holder agent id when held, null when destroyed).
-export type EntityPresence = "at_location" | "held" | "destroyed";
+// ----- one step, by scope -------------------------------------------------------------
+//
+// A StepView is what happened in the world this step and the state it ended in, grouped by
+// where it happened (mirrors interaction/models.py):
+//
+//   locations  one per place with anything in it: the bodies and things there at the end of
+//              the step, and what happened there.
+//   transit    bodies between two waypoints, and what happened to them on the way. A body
+//              standing on a waypoint is in that location, not here.
+//   world      what reached every place at once.
+//
+// `observer` sits outside them: what only the one watching from outside reads. Every event
+// carries `seq`, its place on the world's emission timeline: unique across steps, so one event
+// that several scopes saw keeps one id. Sort by it; never render it.
+//
+// What is known comes in up to three tiers (mirrors interaction/models.py):
+//   public  — what anyone present perceives.
+//   shared  — what everyone inside an event knows, with its `audience`.
+//   private — what only one character knows: their own mind, their own part of an action.
+// A viewer's payload already holds only what it knows (interaction/actor_view.py).
+
+// What onlookers at one place saw of an action.
+export interface ObservedView {
+  text: string;
+  strength: number | null;
+}
+
+// What everyone inside an action knows of it: its participants, whoever it landed on and the
+// listeners it named (`audience`). `outcome` is the complete account (a TALK's transcript, an
+// interrupter's thought); `gist` the same in one sentence.
+export interface ActionSharedView {
+  audience: string[];
+  outcome: string;
+  gist: string;
+  // The verdict, measured against the doer's purpose, which onlookers don't know.
+  succeeded: boolean;
+  // Why it did not succeed, as one short third-person phrase; non-empty only on a genuine
+  // failure. Read this rather than parsing prose.
+  failure_reason: string;
+  dialogue: DialogueTurn[];
+  // A talk's topic as its initiator stated it up front; "" when he didn't. Everyone in the talk
+  // knows it, unlike his action_description.
+  talk_topic: string;
+  // How long he expects it to take, as a natural duration ("约2小时"). "" unless phase is `begin`.
+  duration_label: string;
+  // How far along, for a progress bar. Code-layer integers; never render 「第N步」 as text.
+  elapsed_steps: number;
+  total_steps: number;
+  // The way walked on the beat a MOVE ended (elapsed_steps == total_steps): the renderer walks
+  // him in along the waypoints the engine reported, which a trip crossed within one step has
+  // no transit to carry. null otherwise.
+  route: Transit | null;
+}
+
+// One participant's own part of a beat, which only they know: what they set out to do in their
+// own words, and the deliberation behind it (the feed's inner monologue; the map never shows it).
+export interface ActionPrivateView {
+  agent_id: string;
+  action_description: string;
+  inner_monologue: string;
+}
+
+// One beat of one execution, every participant's part folded into one event, in the scope where
+// its doer stood when the beat was recorded. Places that only saw it get an ObservationSummary.
+export interface ActionSummary {
+  kind: "action";
+  seq: number;
+  execution_id: string;
+  initiator_id: string;
+  // Everyone who spent their turn on it, initiator included.
+  participant_ids: string[];
+  action_type: string; // talk/move/physical/covert/work/rest/send_message/errand
+  // WHICH BEAT of an execution this is — the only thing that says whether the outcome is an
+  // opening or a result. See lib/contract's Phase for the six values.
+  phase: string;
+  anonymous: boolean;
+  // What the body was seen doing (see lib/contract Deed). Same as `action_type` except for
+  // physical, which packs several verbs into one type. Empty = nothing was done → draw nothing.
+  deed: string;
+  // The act's three relations, as the cognition layer filed them. Read them through
+  // lib/contract's accessors (actedOnAgents / actedOnEntities / claimedAgents).
+  target: ActionTarget;
+  // AIMED at (intent) vs. CHANGED (result). Aim survives failure, so `target.acts_on` is what
+  // a figure turns toward and walks to; `affected` is empty precisely when he tried and
+  // nothing gave.
+  affected_entity_ids: string[];
+  // Accepted creations by this beat; a subset of affected_entity_ids.
+  created_entity_ids: string[];
+  // Listeners the initiator named, standing there. Not in participant_ids: they spent no turn on it.
+  overheard_by: string[];
+  // Who cut short an in-progress action (phase "interrupt"); "" otherwise.
+  interrupted_by: string;
+  // Whether a COVERT act was noticed. Independent of `shared.succeeded`.
+  detected: boolean;
+  // The action never engaged the world (target absent or busy, no path): a non-event, not a
+  // failure. The renderer mutes it (gray chip / unexecuted badge, no ✗).
+  not_executed: boolean;
+  // What onlookers here saw; null when the act showed nothing here.
+  public: ObservedView | null;
+  // null for a viewer outside it.
+  shared: ActionSharedView | null;
+  // One per participant, initiator first; a viewer's own only.
+  private: ActionPrivateView[];
+}
+
+// Something seen at a place. Either an action seen from a place other than where it is
+// recorded (the origin watching a man leave, a waypoint watching him pass; `seq` is the
+// action's own), or a change an injection made, seen where it landed (`seq` is the injection's
+// own; nobody in the world did it, so `initiator_id` is "" and `participant_ids` is empty).
+export interface ObservationSummary {
+  kind: "observation";
+  seq: number;
+  initiator_id: string;
+  participant_ids: string[];
+  text: string;
+  strength: number | null;
+}
+
+// A message reaching the people in one scope. `scope` says how it was addressed:
+//   direct — named recipients, one delivery per receiver (`audience`: that receiver), in the
+//            scope they stood in, all under one seq: a receiver doesn't learn who else got it.
+//   place  — an announcement to the room whose scope holds it; `audience`: whoever heard it there.
+//   world  — a proclamation, in the world scope; public.
+// For place/world the sender is the subject; listing recipients would make one proclamation
+// read as N private letters.
+export type MessageScope = "direct" | "place" | "world";
+export interface MessageSummary {
+  kind: "message";
+  seq: number;
+  message_id: string;
+  sender_id: string | null;
+  sender_name: string;
+  anonymous: boolean;
+  // Who received it in this scope: one for a direct message, everyone there for a place's.
+  receiver_ids: string[];
+  scope: MessageScope;
+  content: string;
+  // What the sender actually said; the rest of `content` came attached (a runner's report of
+  // the scene). The backend draws the line; a surface picks what fits it. Equal for an
+  // ordinary letter. Never re-derive it here by cutting the full text.
+  spoken: string;
+  // null when public to its scope.
+  audience: string[] | null;
+}
+
+// A senderless change everyone in its scope perceives (a death, an injected event).
+export interface BroadcastSummary {
+  kind: "broadcast";
+  seq: number;
+  content: string;
+  broadcast_type: string;
+  severity: string;
+  // The visible phenomenon this change comes with (fire/rain/…), or "none"; independent of
+  // severity. A closed vocabulary (core/interfaces/phenomenon.py); the renderer draws nothing
+  // for a value it doesn't know.
+  phenomenon: string;
+  // Who heard a place's broadcast as the step began; null for a world broadcast (everyone).
+  audience: string[] | null;
+}
+
+export type ScopeEvent = ActionSummary | ObservationSummary | MessageSummary | BroadcastSummary;
+
+// A non-agent world object (item / landmark) at the end of the step. Where it is follows from
+// where it is listed: a location or a holder's belongings. A destroyed thing is no longer in the
+// world and is listed nowhere; the act that destroyed it names it in `affected_entity_ids`.
 export interface EntityView {
   name: string;
   entity_type: string;
   state: string;
-  presence: EntityPresence;
-  presence_ref: string | null;
   description: string;
-  // Whether anyone STANDING THERE can perceive it. False for a thing its owner has not
+  // Whether anyone in its presence can perceive it. False for a thing its owner has not
   // shown — a document just written and pocketed. The map is a god view and draws it
   // regardless; the flag is what lets it say "only he knows he has this".
   is_public: boolean;
-  // What it carries — the words in a letter, the figures in a ledger. The map is a god view,
-  // so it arrives whole; who can read it IN the world is the backend's question.
-  content: string;
   // The step it came into the world on, so new things are read off the step's own table
   // rather than by diffing (impossible for the feed's earliest step).
   created_step: number;
+  // What only its holder can read — the words in a letter, the figures in a ledger. Seeing a
+  // thing is not reading it.
+  private: { content: string };
 }
 
 // Movement transit: present while an agent is mid-move. The renderer walks it
@@ -203,127 +307,110 @@ export interface Transit {
 // `origin` is the interesting half: "cognitive" is something they decided to pursue,
 // "residue" is an item an action left unsettled — taken on in an exchange, a job half
 // done, what they came here to do. The two carry different weight, so the card shows
-// them apart. Older snapshots predate the field — treat a missing value as "cognitive".
-export interface ShortTermGoalEntity {
+// them apart.
+export interface GoalView {
   text: string;
   status: string;
-  origin?: "cognitive" | "residue";
+  origin: "cognitive" | "residue";
 }
 
-export interface AgentStateSummary {
-  agent_id: string;
-  agent_name: string;
-  location: string; // narrative name — for text only
-  // The same place as its id — for looking the location up (map rooms, grouping). While
-  // moving: the waypoint room on the step he stands on one, "" between two rooms
-  // (`location` is then 「途中」).
-  // Mirrors MessageSummary's place/place_id pair.
-  location_id: string;
-  emotion: string;
+// What anyone in an agent's presence can see of them.
+export interface AgentPublicView {
+  // What he is visibly doing; "" when it doesn't show (someone acting covertly). His actual
+  // activity is `private.activity_status`.
   activity_status: string;
-  // The backend's narrative-layer names for the two values above; "" when unknown.
-  emotion_label: string;
-  activity_label: string;
-  dominant_need: string | null;
-  dominant_need_label: string; // the same, for dominant_need
-  is_main_character: boolean;
-  color: string;
-  long_term_goals: string[];
-  short_term_goals: string[];
-  short_term_goal_entities?: ShortTermGoalEntity[];
-  emotion_intensity: number | null;
-  emotion_valence: number | null;
-  vitality: number | null;
-  is_active: boolean;
+  activity_label: string; // the backend's narrative-layer name; "" when unknown
   // An imposed, lasting condition on this body as one narrative phrase ("双手被反绑"), "" when
   // free. A standing fact until undone or worn off, so drawn as a quiet marker, not a beat.
-  // Absent on older snapshots.
-  condition?: string;
-  transit: Transit | null;
-  // The trip that ended this step (elapsed_steps == total_steps): the route he walked to get
-  // here, which a trip crossed within one step has no transit to carry.
-  arrival: Transit | null;
-  // Transit's opposite: this step the director put him here and he did not walk. The renderer
-  // must cut to the new position rather than draw a walk. Absent on older snapshots.
-  displaced?: boolean;
-}
-
-// A body that acts but does not think: it walks, carries, delivers and reports back.
-//
-// `color` comes from the backend, which reserves gray for mindless bodies where the palette
-// lives (world/identity_color.py); don't substitute a local constant. The body sheet is a
-// plain local lookup from (gender, age) — see skins.bodyFor.
-export interface NpcStateSummary {
-  npc_id: string;
-  name: string;
-  location: string;
-  location_id: string; // see AgentStateSummary.location_id
-  color: string;
-  gender: string;
-  age: number | null;
-  description: string;
-  // Two sentences composed by the backend; this side only orders and prints them (no
-  // category to reword locally).
-  //
-  //   condition  his situation right now   e.g. "pinned to the ground"
-  //   outcome    what happened this beat   e.g. "delivered the letter to X"
-  //
-  // `outcome` names no place: it happened at `location` (the backend's same-place invariant),
-  // so "name（location）" + `outcome` never names two places. An errand's message appears
-  // verbatim only on the beat he says it; travel beats name only the kind of errand.
-  // Entities are reported by name only.
   condition: string;
-  outcome: string;
-  // The outcome describes something still under way, like `phase="begin"` on `ActionSummary`.
-  // A world fact, not a render instruction (the map uses it in TiledWorldScene.noteNpcOutcomes).
-  ongoing: boolean;
-  // He was moved to `location` this beat, not walked there; same as `AgentStateSummary.displaced`.
-  displaced?: boolean;
+  // Transit's opposite: this step the director put him here and he did not walk. The renderer
+  // must cut to the new position rather than draw a walk.
+  displaced: boolean;
+  // Belongings others can see.
+  carrying: Record<string, EntityView>;
 }
 
-// A message the recipients received this step (the sending was an action a step earlier).
-// `scope` says how it was addressed:
-//   direct — named recipients; the news is that it reached them.
-//   place  — an announcement heard in `place`; the audience is a room.
-//   world  — a proclamation to everyone.
-// For place/world the sender is the subject; listing recipients would make one proclamation
-// read as N private letters.
-export type MessageScope = "direct" | "place" | "world";
-export interface MessageSummary {
-  message_id: string;
-  sender_id: string;
-  sender_name: string;
-  receiver_ids: string[];
-  perceived_summary: string;
-  // What the sender actually said; the rest of `perceived_summary` came attached (a runner's
-  // report of the scene). The backend draws the line; a surface picks what fits it. Equal for
-  // an ordinary letter. Never re-derive it here by cutting the full text.
-  spoken: string;
-  scope: MessageScope;
-  place: string; // location NAME (never an id); "" unless scope === "place"
-  // The same place as its ID — the code layer's copy, for looking the location up rather
-  // than printing it (the map hangs a place-scoped announcement on the room it names).
-  // Never render it. Mirrors BroadcastSummary's location_name/location_scope pair.
-  place_id: string;
-  // See ActionSummary.seq — same monotonic ordinal, same channel semantics.
-  seq: number;
+// What only the agent knows: their mind, where they are headed, and hidden belongings.
+export interface AgentPrivateView {
+  emotion: string;
+  emotion_label: string; // the backend's narrative-layer name; "" when unknown
+  emotion_intensity: number | null;
+  emotion_valence: number | null;
+  dominant_need: string | null;
+  dominant_need_label: string;
+  vitality: number | null;
+  activity_status: string;
+  activity_label: string;
+  // Private: a passer-by is seen, his route is not.
+  transit: Transit | null;
+  long_term_goals: string[];
+  // The whole queue, finished goals included; `status` says which are still live.
+  short_term_goals: GoalView[];
+  // Their relations to others at the end of the step — the same edges GET /graph serves.
+  relations: GraphEdge[];
+  // Belongings nobody else can perceive.
+  carrying: Record<string, EntityView>;
 }
 
-// A senderless world announcement (a death, an injected event) — the same delivery queue
-// shape as a message but with nobody behind it. `location_name` is resolved by the producer
-// (which holds the WorldDirectory), exactly as `sender_name` is on a message; "" = world-wide.
-// `location_scope` is the raw id, for the map's geometry only — never render it.
-export interface BroadcastSummary {
-  content: string;
-  broadcast_type: string;
-  severity: string;
-  location_name: string;
-  location_scope: string | null;
-  // The visible phenomenon this change comes with (fire/rain/…), or "none"; independent of
-  // severity. A closed vocabulary (core/interfaces/phenomenon.py); the renderer draws nothing
-  // for a value it doesn't know.
-  phenomenon: string;
-  seq: number;
+// Who the agent is (name, gender, age) is in the world's cast table (lib/cast).
+export interface AgentView {
+  agent_id: string;
+  // null: not known to this viewer (the actor's view).
+  is_main_character: boolean | null;
+  is_active: boolean;
+  // The step he died in; null while alive.
+  death_step: number | null;
+  public: AgentPublicView;
+  private: AgentPrivateView;
+}
+
+// A body that acts but does not think: it walks, carries, delivers and reports back. Kept apart
+// from agents, so the relation graph and character cards exclude it without any filtering.
+// Its fixed identity is the world's NpcIdentity table.
+export interface NpcView {
+  npc_id: string;
+  public: {
+    // His situation right now as one sentence composed by the backend ("pinned to the ground").
+    condition: string;
+    // He was moved here this beat, not walked here.
+    displaced: boolean;
+    carrying: Record<string, EntityView>;
+  };
+  // What nobody in the world reads: it has no mind and no actor performs it, so this is the
+  // observer's alone.
+  private: {
+    // What happened to him this beat, as one sentence composed by the backend ("delivered the
+    // letter to X"); "" when nothing did. It names no place: it happened where he ends the step.
+    // The engine keeps an Npc's doings out of every onlooker's perception, hence private.
+    outcome: string;
+    // Something still under way, like `phase="begin"` on an action.
+    ongoing: boolean;
+    // Hidden belongings (a sealed letter it carries).
+    carrying: Record<string, EntityView>;
+  };
+}
+
+export interface LocationScope {
+  location_id: string; // its name is in the world's place table (lib/places)
+  agents: AgentView[];
+  npcs: NpcView[];
+  entities: Record<string, EntityView>;
+  events: ScopeEvent[]; // in seq order
+}
+
+export interface TransitScope {
+  agents: AgentView[];
+  npcs: NpcView[];
+  events: ScopeEvent[];
+}
+
+export interface WorldScope {
+  events: ScopeEvent[];
+}
+
+// What only the one watching from outside the world reads; no character perceives it.
+export interface ObserverView {
+  injections: InjectionSummary[];
 }
 
 // The answer to a submitted directive. `accepted: false` is a normal answer, not an
@@ -353,25 +440,26 @@ export interface Intervention {
 // Who reached into the world. "system" = the LLM narrative editor inventing a twist;
 // "director" = a human. Same card, different hand — and the reader has to be able to
 // tell, or they cannot reason about their own experiment.
-export type EventAuthor = "system" | "director";
+export type InjectionAuthor = "system" | "director";
 
 // What a director's intervention actually did, once the step it landed on finished.
 // Absent on system-authored events. Without it, an intervention that was delivered
 // correctly but judged unimportant looks exactly like one that silently failed.
-export interface EventReceipt {
+// People are agent ids, resolved through the cast table; urgency is an Urgency value (lib/urgency).
+export interface InjectionReceipt {
   // It reached these people's senses.
-  delivered_to: { agent_id: string; name: string }[];
+  delivered_to: string[];
   // …and the pressure evaluator judged it actually bore on these, this hard.
-  pressure: { agent_id: string; name: string; urgency: string }[];
+  pressure: { agent_id: string; urgency: string }[];
   // …so these were admitted to a decision loop because of it,
-  decided: { agent_id: string; name: string }[];
+  decided: string[];
   // …and these dropped what they were doing.
-  interrupted: { agent_id: string; name: string }[];
+  interrupted: string[];
 }
 
-export interface WorldEventSummary {
+export interface InjectionSummary {
   id: string;
-  authored_by: EventAuthor;
+  authored_by: InjectionAuthor;
   narrative: string;
   // Narrative-layer references (names and place names, never ids) — resolved through
   // the WorldDirectory at injection time.
@@ -381,8 +469,8 @@ export interface WorldEventSummary {
   // The sentence a human typed to cause this (director events only), so the card shows the
   // loop: what I said → what the engine made of it → what the world did.
   directive_text: string;
-  receipt: EventReceipt | null;
-  // See ActionSummary.seq — same monotonic ordinal, same channel semantics.
+  receipt: InjectionReceipt | null;
+  // The same emission ordinal as every scope event's `seq`.
   seq: number;
 }
 
@@ -395,32 +483,23 @@ export interface WorldTimeView {
   minute: number | null;
 }
 
-export interface StepEvent {
+export interface StepView {
   world_id: string;
   step: number;
   world_time: WorldTimeView;
-  actions: ActionSummary[];
-  messages: MessageSummary[];
-  world_events: WorldEventSummary[];
-  agent_states: Record<string, AgentStateSummary>;
-  // Kept out of agent_states on purpose: they are not agents, so the relation graph and
-  // character cards exclude them without any filtering.
-  npcs: NpcStateSummary[];
-  broadcasts: BroadcastSummary[];
-  // Items/landmarks and where each one is, by entity id.
-  entities: Record<string, EntityView>;
-  // Directed relations as they stand at the end of this step — the same edges GET /graph serves.
-  relations: GraphEdge[];
+  locations: Record<string, LocationScope>;
+  transit: TransitScope;
+  world: WorldScope;
+  observer: ObserverView;
 }
 
 // Relationship graph (GET /api/worlds/{id}/graph). Nodes are agents; edges are
 // directed relations (A→B and B→A are separate). Render-neutral: no geometry.
+// Who the node is is in the world's cast table (lib/cast).
 export interface GraphNode {
   id: string;
-  name: string;
-  role: string;
-  is_main_character: boolean;
-  color: string;
+  // null: not known to this viewer (the actor's view).
+  is_main_character: boolean | null;
 }
 
 export interface GraphEdge {
@@ -438,8 +517,184 @@ export interface WorldGraph {
   edges: GraphEdge[];
 }
 
+/** Public character identity, identical for every viewer (GET /worlds/{id}/agents). */
+export interface CharacterIdentity {
+  agent_id: string;
+  name: string;
+  gender: string;
+  age: number | null;
+  role: string;
+  background: string;
+  appearance: string;
+  color: string;
+}
+
+/**
+ * Public NPC identity, identical for every viewer (GET /worlds/{id}/npcs).
+ *
+ * `color` comes from the backend, which reserves gray for mindless bodies where the palette
+ * lives (world/identity_color.py); don't substitute a local constant.
+ */
+export interface NpcIdentity {
+  npc_id: string;
+  name: string;
+  color: string;
+  gender: string;
+  age: number | null;
+  description: string;
+}
+
+/** Public place identity, fixed at build and identical for every viewer (GET /worlds/{id}/places). */
+export interface PlaceIdentity {
+  location_id: string;
+  name: string;
+  description: string;
+}
+
+/**
+ * One historical event of a world's setup (GET /worlds/{id}/setup).
+ * `hours_before_start`: how long before the story starts it happened. `figure_ids` are the
+ * characters who took part, and so the ones who remember it.
+ */
+export interface SetupHistoricalEventView {
+  event: string;
+  hours_before_start: number;
+  figure_ids: string[];
+  importance: number;
+}
+
+/**
+ * One relation of a world's setup: both directions of one pair. `trust`/`affection`/`labels` are
+ * `source_id`'s view of `target_id`, the `reverse_*` fields the other way round. A label says who
+ * the other is to the holder ("父子:父亲": the other is the holder's father).
+ */
+export interface SetupRelationView {
+  source_id: string;
+  target_id: string;
+  trust: number;
+  affection: number;
+  labels: string[];
+  reverse_trust: number;
+  reverse_affection: number;
+  reverse_labels: string[];
+}
+
+/** The emotion a character starts the story in; `emotion` is an emotion value from the vocabulary. */
+export interface InitialEmotionView {
+  emotion: string;
+  intensity: number;
+  valence: number;
+}
+
+/**
+ * One innate need: `type` is a need value from the vocabulary, `label` what it means to the
+ * character, `weight` how much it matters (0.1–2), `intensity` how urgent it is at the start (0–1),
+ * `is_hidden` a drive the character isn't aware of.
+ */
+export interface InnateNeedView {
+  type: string;
+  label: string;
+  intensity: number;
+  weight: number;
+  is_hidden: boolean;
+}
+
+/** A complete character draft: public identity, private profile and initial state. */
+export interface CharacterSetupView extends AgentProfile {
+  is_main_character: boolean;
+  initial_location: string;
+  initial_emotion: InitialEmotionView;
+  long_term_goals: string[];
+  hard_constraints: string[];
+  needs: InnateNeedView[];
+}
+
+export interface EntitySetupView {
+  entity_id: string;
+  name: string;
+  entity_type: "item" | "landmark";
+  description: string;
+  initial_state: string;
+  location: string;
+  content: string;
+}
+
+export interface NpcSetupView {
+  npc_id: string;
+  name: string;
+  gender: string;
+  age: number;
+  description: string;
+  location: string;
+}
+
+export type NewEntity = Omit<EntitySetupView, "entity_id">;
+export type NewNpc = Omit<NpcSetupView, "npc_id">;
+
+export type EntityRevision = Partial<Omit<EntitySetupView, "entity_id" | "name">>;
+export type NpcRevision = Partial<Omit<NpcSetupView, "npc_id" | "name">>;
+
+export interface OpeningTime {
+  era_name: string;
+  start_year: number;
+  start_month: number;
+  start_day: number;
+  start_hour: number;
+}
+
+export interface SetupView {
+  narrative_theme: string;
+  opening_time: OpeningTime;
+  seconds_per_step: number;
+  characters: CharacterSetupView[];
+  entities: EntitySetupView[];
+  npcs: NpcSetupView[];
+  historical_events: SetupHistoricalEventView[];
+  relations: SetupRelationView[];
+}
+
+/** A value of one of the backend's closed vocabularies and its label. */
+export interface VocabularyEntry {
+  value: string;
+  label: string;
+}
+
+/** Every emotion and need a client may name (GET /api/vocabulary), the same for every world. */
+export interface Vocabulary {
+  emotions: VocabularyEntry[];
+  needs: VocabularyEntry[];
+}
+
+/**
+ * The fields of a character the setup lets be revised before confirming; the name is not among
+ * them. `needs` replaces them whole: a need type left out gets a generic one.
+ */
+export interface CharacterRevision {
+  role?: string;
+  age?: number;
+  gender?: string;
+  appearance?: string;
+  background?: string;
+  self_image?: string;
+  life_goal?: string;
+  secret?: string;
+  core_traits?: string[];
+  core_values?: string[];
+  hard_constraints?: string[];
+  needs?: InnateNeedView[];
+  is_main_character?: boolean;
+  initial_location?: string;
+  initial_emotion?: InitialEmotionView;
+  long_term_goals?: string[];
+}
+
+/** A character added to the setup: name, role, age, gender, tier and initial location are required. */
+export interface NewCharacter extends CharacterRevision {
+  name: string;
+}
+
 // Static agent identity (GET /api/worlds/{id}/agents/{agent_id}/profile).
-// Distinct from AgentStateSummary, which is the mutable per-step state.
+// Distinct from AgentView, which is the mutable per-step state.
 export interface AgentProfile {
   agent_id: string;
   name: string;
@@ -454,7 +709,8 @@ export interface AgentProfile {
   self_image: string;
   life_goal: string;
   secret: string;
-  is_main_character: boolean;
+  // null: not known to this viewer (the actor's view).
+  is_main_character: boolean | null;
 }
 
 // Map focus/selection: the user can follow one or more agents and/or spotlight a
@@ -476,5 +732,297 @@ export type MapSelect =
 // WebSocket envelope: the backend tags each frame with a type.
 export type WsFrame =
   | { type: "status"; data: { world_id: string; status: RunState } }
-  | { type: "snapshot"; data: StepEvent }
-  | { type: "step"; data: StepEvent };
+  // The latest persisted step, sent once on connect; then `step` frames as they complete.
+  | { type: "latest_step"; data: StepView }
+  | { type: "step"; data: StepView }
+  // The turn waiting for the actor: the whole turn when one opens, null when it closes.
+  | { type: "actor_turn"; data: ActorTurn | null }
+  // One new entry of the actor's thread; its history comes from `/actor/thread`.
+  | { type: "actor_entry"; data: ActorEntry };
+
+// --- Actor mode (core/interfaces/actor.py; interaction/api/actor.py) ---------------------------
+// Field for field with the contracts. An answer is sent back in this same shape: the backend
+// refuses unknown keys, so build answers from these types, never by adding fields.
+
+// `decide`: the character's turn, whether or not the world changed. `interrupt`: something reached
+// it mid-action (what, is in the step's perception). `invite`: someone invites the free character
+// into their act (compulsion is never asked). `speak`: the character's dialogue turn in a live conversation.
+export type TurnKind = "decide" | "interrupt" | "invite" | "speak";
+
+/** Someone the character can reach: present, or known and alive elsewhere. */
+export interface BriefPerson {
+  agent_id: string;
+  name: string;
+  gender: string;
+  present: boolean;
+}
+
+export interface BriefNpc {
+  npc_id: string;
+  name: string;
+}
+
+export interface BriefPlace {
+  location_id: string;
+  name: string;
+  travel_seconds: number;
+}
+
+export interface BriefEntity {
+  entity_id: string;
+  name: string;
+  entity_type: string;
+  holder_id: string | null;
+  is_takeable: boolean;
+}
+
+export interface BriefMessage {
+  sender_name: string; // Public signature, including anonymous messages.
+  content: string;
+  urgency: string;
+}
+
+export interface BriefRelation {
+  agent_id: string;
+  name: string;
+  gender: string;
+  trust: number;
+  affection: number;
+  labels: string[];
+  summary: string;
+  deceased: boolean;
+}
+
+/** What a decision can name: the lists an action picks its targets from. */
+export interface ActorBriefing {
+  location: BriefPlace | null;
+  people: BriefPerson[]; // everyone it can reach, present or not
+  npcs: BriefNpc[];
+  places: BriefPlace[];
+  entities: BriefEntity[];
+}
+
+export interface ActorTarget {
+  kind: "location" | "agent" | "npc" | "item" | "landmark";
+  id: string;
+}
+
+export interface MapOperationTarget { target: ActorTarget; x: number; y: number }
+export type ActorOperation = "move" | "broadcast" | "talk" | "errand" | "take" | "use" | "destroy" | "physical" | "work" | "rest" | "covert" | "send_message";
+export interface ActorOperationParameters {
+  message?: string;
+  destination_id?: string;
+  item_id?: string;
+  recipient_id?: string;
+  announce?: boolean;
+  anonymous?: boolean;
+}
+export type ActorIntent = { turn_id: string; text: string } | {
+  turn_id: string; operation: ActorOperation; target: ActorTarget;
+  parameters: ActorOperationParameters; description?: string;
+};
+export interface ActorRecordedIntent {
+  turn_id: string;
+  text: string | null;
+  operation: ActorOperation | null;
+  target: ActorTarget | null;
+  parameters: {
+    destination_id: string | null; item_id: string | null; recipient_id: string | null;
+    message: string | null; announce: boolean | null; anonymous: boolean | null;
+  };
+  description: string;
+}
+export interface ActorDecisionSummary {
+  decision_summary_id: string;
+  description: string;
+  operation: string;
+  target: ActorTarget | null;
+  estimated_duration_seconds: number;
+  parameters: Record<string, string | boolean | string[]>;
+}
+export interface ActorOperationCapability {
+  operation: ActorOperation;
+  available: boolean;
+  reason: string | null;
+  required_parameters: string[];
+}
+export interface ActorOperations {
+  turn_id: string;
+  target: ActorTarget;
+  operations: ActorOperationCapability[];
+}
+export interface ActorIntentResult {
+  status: "submitted" | "needs_confirmation" | "rejected";
+  reason: string | null;
+  decision_summary: ActorDecisionSummary | null;
+}
+
+export interface EmotionAmendment {
+  emotion: string;
+  intensity: number;
+  valence: number;
+}
+
+/** How the character now regards someone it has a relation with; null keeps that value. */
+export interface RelationAmendment {
+  agent_id: string;
+  trust: number | null;
+  affection: number | null;
+}
+
+/** The actor's changes to the character's mind; whatever is left out keeps its value.
+ *  `insights` are added. */
+export interface ActorAmendments {
+  emotion: EmotionAmendment | null;
+  relations: RelationAmendment[];
+  long_term_goals: string[] | null; // the list in full; null keeps it
+  short_term_goals: GoalAmendment[] | null;
+  removed_short_term_goal_ids: string[];
+  insights: string[];
+}
+
+/** Text is the only editable field; null id adds a goal. */
+export interface GoalAmendment {
+  id: string | null;
+  text: string;
+}
+
+export interface BriefGoal {
+  id: string;
+  text: string;
+  status: "active" | "interrupted" | "completed" | "failed";
+  origin: "cognitive" | "residue";
+  created_step: number;
+  due_step: number | null;
+  progress_summary: string;
+  time_hint: string;
+  attention: boolean;
+}
+
+/** The character's mind as the actor sees it at any time. `pending`: saved, not landed yet. */
+export interface ActorMind {
+  emotion: string; // an EmotionType value
+  emotion_intensity: number;
+  emotion_valence: number;
+  long_term_goals: string[];
+  short_term_goals: BriefGoal[];
+  relations: BriefRelation[]; // everyone the character has a relation with, latest change first
+  pending: ActorAmendments | null;
+}
+
+/** `/actor/amend`: `landed` false means it waits for the start of the next step. */
+export interface ActorAmendResult {
+  accepted: boolean;
+  reason: string | null;
+  landed: boolean;
+}
+
+/**
+ * A DECIDE answer confirms a server-held decision summary, or leaves the character idle this step.
+ * Goals are amended in the mind.
+ */
+export interface ActorConfirmation { decision_summary_id: string }
+export interface ActorIdleAnswer { idle: true }
+
+/** The answer to an INTERRUPT turn. What to do instead is said at the DECIDE turn it leads into. */
+export interface ActorInterruptAnswer {
+  interrupt: boolean;
+  thought?: string;
+}
+
+/** The answer to an INVITE turn: join the inviter's act or not. */
+export interface ActorInvitationAnswer {
+  accept: boolean;
+}
+
+/** The answer to a SPEAK turn: the character's dialogue turn, what it says (`line`) and whether
+ *  the conversation ends with it. Ending may leave `line` empty. */
+export interface ActorDialogueTurn {
+  line: string;
+  end: boolean;
+}
+
+// Client submissions and public records reference server-held decisions by decision summary id.
+export type ActorPublicAnswer = ActorConfirmation | ActorIdleAnswer | ActorInterruptAnswer | ActorInvitationAnswer | ActorDialogueTurn;
+
+/**
+ * When an idle character's actor is asked to decide: every step, or only when something
+ * reached it or an act of its own has just ended.
+ */
+export type ActorPace = "every_step" | "when_reached";
+
+/** Someone inviting the character to join their act, named as the character perceives them. */
+export interface Invitation {
+  inviter: BriefPerson;
+  action_type: string; // the kind of act it is invited into
+  talk_topic: string; // a talk's stated topic; "" when the inviter didn't say
+}
+
+/**
+ * A live conversation (spoken turn by turn) the character is in, at the character's dialogue turn:
+ * whom with, and what has been said so far. `turns_left` counts the dialogue turns left, this one
+ * included; `last`: the conversation ends with this one whatever is said. `max_turn_chars` caps
+ * what the actor says in it.
+ */
+export interface Conversation {
+  other: BriefPerson;
+  dialogue: DialogueTurn[];
+  turns_left: number;
+  last: boolean;
+  max_turn_chars: number;
+  listener_ids: string[];
+}
+
+export interface ActorTurn {
+  agent_id: string;
+  step: number; // the step being decided: one past the last step on the map
+  kind: TurnKind;
+  briefing: ActorBriefing | null; // DECIDE only
+  doing: string; // INTERRUPT only: the action in progress
+  // INVITE only: the invitation, and the act the character decided on this step, which
+  // accepting sets aside ("" when none).
+  invitation: Invitation | null;
+  decided: string;
+  conversation: Conversation | null; // SPEAK only
+  // Why the character is asked, as a sentence for the actor; empty when nothing brought it on.
+  reason: string;
+  turn_id: string;
+}
+
+/**
+ * One entry of the actor's thread: what passed between actor and world, in order. `step` is a
+ * code-layer coordinate; never render it as text. `time_label` is the world's own name for that
+ * step's moment.
+ */
+export type ActorEntry =
+  // What reached the character: letters and broadcasts as a step began, or someone else's act
+  // landing on it (`acted_upon`, as its own memory keeps it).
+  | { kind: "perceived"; entry_id: string; step: number; time_label: string; messages: BriefMessage[]; broadcasts: string[]; acted_upon: string[] }
+  // The world asks: a turn opened.
+  | { kind: "asked"; entry_id: string; step: number; time_label: string; turn: ActorTurn }
+  // The actor's words at a DECIDE turn and their decision summary; `reason` (a refusal slug) when none.
+  // `reading`: where the reading got stuck when it found the words unclear, else empty.
+  | { kind: "said"; entry_id: string; step: number; time_label: string; turn_id: string; words: string; decision_summary: ActorDecisionSummary | null; reason: string | null; reading: string; intent: ActorRecordedIntent | null }
+  | { kind: "answered"; entry_id: string; step: number; time_label: string; turn_id: string; answer: ActorPublicAnswer }
+  // The actor asked to break off the act in progress, outside any turn.
+  | { kind: "break_off"; entry_id: string; step: number; time_label: string }
+  // The character set out on an act, expected to take `total_steps` steps, this one the first.
+  | { kind: "began"; entry_id: string; step: number; time_label: string; description: string; total_steps: number }
+  // The act in progress went on another step: `elapsed_steps` of `total_steps` are done.
+  | { kind: "progressed"; entry_id: string; step: number; time_label: string; elapsed_steps: number; total_steps: number }
+  // How it ended, as the character remembers it; `fact` empty when it was never adjudicated,
+  // `happened` false when it never engaged the world.
+  | { kind: "ended"; entry_id: string; step: number; time_label: string; fact: string; succeeded: boolean; happened: boolean }
+  // A dialogue turn of a live conversation, either side's. `end`: the conversation ends with it
+  // (by the speaker's choice, or the turns ran out); an ending turn's line may be empty. SPEAK
+  // turns leave no `asked` or `answered` entries: these are their record.
+  | { kind: "dialogue_turn"; entry_id: string; step: number; time_label: string; dialogue_turn: DialogueTurn; end: boolean };
+
+/**
+ * `/actor/answer`, `/actor/break-off`: a refusal is a normal answer, with a reason
+ * slug. What was taken comes as entries of the thread.
+ */
+export interface ActorResult {
+  accepted: boolean;
+  reason: string | null;
+}

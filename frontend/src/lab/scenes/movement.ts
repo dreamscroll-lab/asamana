@@ -1,6 +1,6 @@
 import { ActionType, Deed, Phase } from "../../lib/contract";
 import type { LabPlaces } from "../places";
-import { MO, Need, SHI, aimPlace, did, execId, step, type LabScene, type Room, walking, who } from "./fixtures";
+import { MO, Need, SHI, aimPlace, did, execId, seenBy, step, type LabScene, type Room, walking, who } from "./fixtures";
 
 function headingScene(id: string, dir: string, from: Room, to: Room, watch: string): LabScene {
   return {
@@ -48,6 +48,21 @@ function headingScene(id: string, dir: string, from: Room, to: Room, watch: stri
  */
 export function buildMovementScenes({ pivot: HUB, ne: NE, se: SE, far: FAR, tight: TIGHT, next: NEXT }: LabPlaces): LabScene[] {
   return [
+    {
+      id: "actor-presence",
+      group: "移动",
+      title: "演员视角 · 人物进出",
+      viewer: MO.id,
+      watch: "留在原地的人先站定；来者从可通行的地点边缘淡入走近，离者走向边缘再淡出。" +
+        "进出途中不能点选人物。重新进入不留残影；切换到最后一拍时，新地点的人直接站定。",
+      steps: seenBy(MO.id, [
+        step({ states: [who(MO, HUB)] }),
+        step({ states: [who(MO, HUB), who(SHI, HUB)] }),
+        step({ states: [who(MO, HUB)] }),
+        step({ states: [who(MO, HUB), who(SHI, HUB)] }),
+        step({ states: [who(MO, NEXT), who(SHI, NEXT)] }),
+      ]),
+    },
     // ---- headings ------------------------------------------------------------
     headingScene(
       "walk-ne",

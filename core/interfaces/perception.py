@@ -4,11 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List
+from typing import TYPE_CHECKING, List
 
 from core.interfaces.phenomenon import Phenomenon, parse_phenomenon
 from core.interfaces.severity import Severity, parse_severity
 
+if TYPE_CHECKING:
+    from core.interfaces.message import Message
+
+# A thing's state when nothing has happened to it. Prompts and the observer skip it, so an
+# untouched thing isn't described as "intact" in every line that mentions it.
+DEFAULT_ENTITY_STATE = "intact"
 
 class BroadcastType(str, Enum):
     """World-state broadcast categories.
@@ -36,7 +42,7 @@ class VisibleEntity:
     entity_id:   str
     name:        str
     entity_type: str      # WorldEntityType string value; str to avoid core→world dep
-    state:       str = "intact"
+    state:       str = DEFAULT_ENTITY_STATE
     description: str = ""
     is_takeable: bool = False
     holder_id:   str | None = None   # the agent carrying it; None = lying here
@@ -94,11 +100,11 @@ class Situation:
 class AmbientEvent:
     """A public, location-level ambient event; the element type of SpatialPerception.ambient_events.
 
-    content: the text onlookers see (already includes any readable prefix, e.g. "[秘密行动暴露] ...")
+    content: the text onlookers see (already includes any readable prefix, e.g. "[暗中探查暴露] ...")
     strength:
         None          → PerceptionLayer uses the default ambient strength (0.2, a weak background signal)
         float ∈ [0,1] → strength set by the producer, e.g. a strong social signal like covert exposure
-    actor_ids:
+    doer_ids:
         ()            → a generic trace in the environment (every agent at the location sees it)
         non-empty     → produced by the acting body these agents belong to (one id for a solo
                         action; all participants for a group action like TALK), plus anyone the
@@ -107,18 +113,24 @@ class AmbientEvent:
                         action as a third-party observation. A set, because a group action can
                         be recorded under another participant's id (a TALK passive-join).
 
-    agent_actor_ids:
-        The subset of ``actor_ids`` with cognition, derived in ``record_carry_observation``
+    doer_agent_ids:
+        The subset of ``doer_ids`` with cognition, derived in ``record_carry_observation``
         (``agent/`` can't reach ``EnvironmentSystem._npcs``). A memory's ``related_agents`` may
         only come from this: an Npc there would get relation labels, though it has no relations.
+
+    acted_upon_ids:
+        The part of ``doer_ids`` the act landed on rather than who did it. Whoever asks "who did
+        this" (world pressure binding a threat to its source) leaves them out, or the victim
+        is named as the source.
 
     PerceptionLayer is driven entirely by strength, never by content type.
     """
 
     content: str
     strength: float | None = None
-    actor_ids: tuple[str, ...] = ()
-    agent_actor_ids: tuple[str, ...] = ()
+    doer_ids: tuple[str, ...] = ()
+    doer_agent_ids: tuple[str, ...] = ()
+    acted_upon_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -199,6 +211,10 @@ class SpatialPerception:
     # Empty while IN_TRANSIT.
     reachable_locations: List["ReachableLocation"] = field(default_factory=list)
 
+    def held_by(self, agent_id: str) -> List[VisibleEntity]:
+        """What ``agent_id`` has in hand, as perceived here."""
+        return [e for e in self.visible_entities if e.holder_id == agent_id]
+
     @property
     def visible_agent_ids(self) -> List[str]:
         """Ids of those present, in presence order. Read-only: who is here is only replaced
@@ -239,3 +255,31 @@ class Broadcast:
             self.severity = parse_severity(self.severity)
         if not isinstance(self.phenomenon, Phenomenon):
             self.phenomenon = parse_phenomenon(self.phenomenon)
+
+
+@dataclass(frozen=True)
+class PerceivedSignals:
+    """What reached one character this step: messages to it, broadcasts reaching where it
+    stands, others' acts it saw, and others' acts that landed on it (``engine.signals`` builds
+    it, one definition for every consumer).
+
+    ``acted_upon`` holds each act that landed on the character since it last perceived, as its
+    own memory keeps it (first person); being named only to listen is not being acted upon. They
+    are not in ``ambient``: whoever an act lands on is left out of its onlookers. Their effect on
+    the character (memory, emotion, relation) already landed with them; here they only count as
+    having reached it.
+
+    Standing beside someone who did nothing is not a signal: pure co-location stays out.
+    """
+
+    messages: tuple["Message", ...] = ()
+    broadcasts: tuple[Broadcast, ...] = ()
+    ambient: tuple[AmbientEvent, ...] = ()
+    acted_upon: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.messages or self.broadcasts or self.ambient or self.acted_upon)
+
+    def __len__(self) -> int:
+        """How many things reached the character."""
+        return len(self.messages) + len(self.broadcasts) + len(self.ambient) + len(self.acted_upon)

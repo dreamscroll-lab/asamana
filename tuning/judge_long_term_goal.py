@@ -36,7 +36,7 @@ _CRITERIA = ("revision_fit", "goal_quality")
 _SYSTEM = (
     "你是叙事仿真的质量评审。被评估的是「长期目标重审(long_term_goal)」阶段:角色以**第一人称**回看"
     "这段日子的经历,重新衡量自己的几条长期目标。规矩:只有当经历确实改变了方向(某条目标已实现、或再无"
-    "可能、或心态变了看清了新方向)才调整;方向没真变就守住、不动它们(为变而变是失真)。毕生追求(life_goal)"
+    "可能、或心态变了看清了新方向)才调整;方向没真变就守住、不动它们(为变而变是失真)。人生目标(life_goal)"
     "是不可动摇的北极星——只用来校准长期目标,绝不能被推翻或抄进长期目标列表。小事或一时情绪不能被抄成"
     "长期目标。\n"
     "长期目标的定位:它是要走很长一段路才能推进或守住的**方向**——比手头小事远得多、又不像北极星那样遥不可及,"
@@ -52,7 +52,7 @@ def _scene_block(inputs: dict[str, Any], outputs: dict[str, Any]) -> str:
     traits = "、".join(inputs.get("core_traits") or []) or "—"
     values = "、".join(inputs.get("core_values") or []) or "—"
     emo = inputs.get("emotion") or {}
-    emo_str = (f"{emo.get('primary')}（强度{emo.get('intensity')}，效价{emo.get('valence')}）"
+    emo_str = (f"{emo.get('primary')}（强度{emo.get('intensity')}，情绪正负值{emo.get('valence')}）"
                if emo else "—")
     before = inputs.get("before_long_term") or []
     short = inputs.get("short_term") or []
@@ -61,12 +61,12 @@ def _scene_block(inputs: dict[str, Any], outputs: dict[str, Any]) -> str:
     after = outputs.get("after_long_term") or []
     lines = [
         f"### 角色：{inputs.get('agent_name')}（{inputs.get('role') or '—'}）",
-        f"  性格：{traits}",
+        f"  性格特点：{traits}",
         f"  价值观：{values}",
     ]
     if inputs.get("self_image"):
         lines.append(f"  自我认知：{inputs.get('self_image')}")
-    lines.append(f"  毕生追求（北极星，不可动）：{inputs.get('life_goal') or '—'}")
+    lines.append(f"  人生目标（北极星，不可动）：{inputs.get('life_goal') or '—'}")
     lines.append(f"  此刻情绪：{emo_str}")
     lines.append("  重审前的长期目标：" + ("；".join(before) or "（无）"))
     if short:
@@ -101,7 +101,7 @@ def _build_prompt(scenario_meta: dict, inputs: dict, outputs: dict, det_findings
         "**只要『改/不改』在该角色这段经历下站得住,就不扣。**\n"
         "2. goal_quality(目标成色,仅当有改动时评)——出现以下即扣:**锁成一桩具体的事/一次具体行动**(那是"
         "计划,不是能长出多种走法的方向);**跨度太短**——几步就能了结、其实是手头小事或一时情绪;**跨度太大太空/"
-        "像句口号**、唾手可得无需奋斗(缺张力,或本属北极星层);与毕生追求(北极星)冲突、或干脆把北极星抄成一条"
+        "像句口号**、唾手可得无需奋斗(缺张力,或本属北极星层);与人生目标(北极星)冲突、或干脆把北极星抄成一条"
         "长期目标;跳出第一人称、用旁人或事后口吻;**不精准**——把方向并未改变的目标也一并重写了(应只动该动的、"
         "保留未变的);单条目标过长啰嗦。\n\n"
         "## 严格输出以下 JSON,不要任何多余内容(每项 rationale 在前、score 在后):\n"

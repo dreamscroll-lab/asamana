@@ -1,4 +1,4 @@
-import type { StepEvent } from "../types";
+import type { StepView } from "../types";
 
 /**
  * The world's clock and, separately, the engine's counter. Never run them together in one
@@ -32,7 +32,7 @@ export default function WorldClock({
   size = "lg",
   className = "",
 }: {
-  step: StepEvent;
+  step: StepView;
   size?: keyof typeof SIZES;
   className?: string;
 }) {

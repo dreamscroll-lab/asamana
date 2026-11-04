@@ -1,6 +1,7 @@
 """World lifecycle + run-control routes.
 
-Create/build (async job), delete, and run control (run/pause/resume/stop/reset).
+Create/build (async job), the director's review, delete, and run control
+(run/pause/resume/stop/reset).
 Build is a one-shot LLM operation that can take minutes, so it runs as a
 background job the client polls — the request never blocks on it. Run control
 maps 1:1 onto ``NarrativeApplication``'s background-run surface.
@@ -10,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from config.content import theme_presets
@@ -18,10 +19,11 @@ from core.logging import get_logger
 from engine.run_control import RunState
 from world.catalog import MAX_WORLD_NAME_LEN
 
+from world.stored_config import StoredWorldConfig
 from worlds.tiled import TiledWorldConfig, list_templates
 
 from interaction.api.app import ApiServices
-from interaction.api.serialization import to_jsonable
+from interaction.api.serialization import to_wire_json
 
 logger = get_logger(__name__)
 
@@ -105,17 +107,21 @@ def build_lifecycle_router(services: ApiServices) -> Any:
             # No template named → the build reads the theme and picks one from
             # what is installed. WHICH maps exist is this layer's answer to give
             # (same list GET /api/templates serves), not the engine's to discover.
-            world = await application.build_world(
+            world_id = await application.build_world(
                 job.theme, template=job.template, available_templates=list_templates()
             )
-            job.world_id = world.world_id
-            job.world_name = world.analysis.world_name
+            setup = await manager.world_setup(world_id)
+            if setup is None:
+                raise ValueError(f"World {world_id!r} has no setup after its build")
+            config = await manager.snapshot_provider.load_world_config(world_id) or {}
+            job.world_id = world_id
+            job.world_name = setup.lore.world_name
             # Report the map actually built on, whether it was named or chosen.
             job.template = str(
-                world.world_config.to_runtime_context().get("template") or job.template or ""
+                StoredWorldConfig(config).to_runtime_context().get("template") or job.template or ""
             ) or None
             job.status = "ready"
-            logger.info("build_job_ready", extra={"job_id": job.job_id, "world_id": world.world_id})
+            logger.info("build_job_ready", extra={"job_id": job.job_id, "world_id": world_id})
         except Exception as exc:  # noqa: BLE001 — build failures are reported, not fatal to the server
             job.status = "failed"
             job.error = str(exc)
@@ -129,7 +135,7 @@ def build_lifecycle_router(services: ApiServices) -> Any:
         theme = str(payload.get("theme", "")).strip()
         if not theme:
             raise HTTPException(status_code=400, detail="theme is required")
-        # Which map to build on; omitted → the configured default. Validated here so an
+        # Which map to build on; omitted → the build picks one for the theme. Validated here so an
         # unknown template is a request error, not a background job dying minutes later.
         template = payload.get("template")
         template = str(template).strip() if template else None
@@ -164,7 +170,7 @@ def build_lifecycle_router(services: ApiServices) -> Any:
 
     @router.patch("/{world_id}")
     async def rename_world(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
-        """Rename a world's display name in the catalog. The step-0 snapshot and anything the
+        """Rename a world's display name in the catalog. The setup and anything the
         simulation reads are untouched, and a confirmed world stays confirmed, so a rename
         never reopens the run gate."""
         name = str(payload.get("world_name", "")).strip()
@@ -180,12 +186,40 @@ def build_lifecycle_router(services: ApiServices) -> Any:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return _with_run_state(meta)
 
-    @router.post("/{world_id}/confirm")
-    async def confirm_world(world_id: str) -> dict[str, Any]:
+    @router.post("/{world_id}/review")
+    async def open_review(world_id: str) -> dict[str, Any]:
+        """Open the director's review: the whole cast, secrets and relations included. One way:
+        the world takes no actor afterwards."""
+        if await manager.get_world(world_id) is None:
+            raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
         try:
-            meta = await manager.confirm_world(world_id)
+            await application.open_director_review(world_id)
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="The director review could not be recorded.") from exc
         except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        meta = await manager.get_world(world_id)
+        return _with_run_state(meta)
+
+    @router.post("/{world_id}/confirm")
+    async def confirm_world(world_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
+        """Lock the world's setup and materialize the world from it. ``character_id`` casts the
+        actor in the same act: the cast is part of the setup, so this is the only place it is
+        chosen. Without it the world is confirmed for the director."""
+        character_id = payload.get("character_id")
+        if character_id is not None and (not isinstance(character_id, str) or not character_id.strip()):
+            raise HTTPException(status_code=400, detail="character_id must be a character's id")
+        if await manager.get_world(world_id) is None:
+            raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
+        if character_id is not None and character_id not in await manager.character_profiles(world_id):
+            raise HTTPException(status_code=400, detail=f"No character {character_id!r} in this world")
+        # Materializing embeds the backstory and the session runs on the models.
+        services.require_model_keys()
+        try:
+            await application.confirm_world(world_id, character_id=character_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        meta = await manager.get_world(world_id)
         return _with_run_state(meta)
 
     @router.delete("/{world_id}")
@@ -193,7 +227,10 @@ def build_lifecycle_router(services: ApiServices) -> Any:
         meta = await manager.get_world(world_id)
         if meta is None:
             raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
-        await application.delete_world(world_id)
+        try:
+            await application.delete_world(world_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"world_id": world_id, "deleted": True}
 
     # ----- run control -----------------------------------------------------
@@ -257,8 +294,13 @@ def build_lifecycle_router(services: ApiServices) -> Any:
         return _status_payload(world_id)
 
     def _with_run_state(meta: Any) -> dict[str, Any]:
-        """A world's catalog entry plus its run state — what every per-world route answers with."""
-        return {**to_jsonable(meta), "run_state": services.run_state(meta.world_id)}
+        """A world's catalog entry plus its run state — what every per-world route answers with.
+
+        While an actor performs, who the main characters are is not theirs to know (see
+        ``interaction.actor_view``)."""
+        if application.performing_character(meta.world_id) is not None:
+            meta = replace(meta, main_agent_names=[])
+        return {**to_wire_json(meta), "run_state": services.run_state(meta.world_id)}
 
     def _status_payload(world_id: str) -> dict[str, Any]:
         return {"world_id": world_id, "run_state": services.run_state(world_id)}

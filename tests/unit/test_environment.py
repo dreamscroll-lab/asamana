@@ -11,9 +11,11 @@ from core.prompts import SituationVoice, render_location
 from core.interfaces.perception import SpatialPerception, VisibleEntity
 from engine.clock import WorldTime, WorldTimeConfig
 from engine.environment import IN_TRANSIT, EnvironmentSystem
-from world.models import EntityPresence, WorldEntity, WorldEntitySeed, WorldEntityType
+from world.models import WorldEntitySeed
+from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
 from worlds.tiled import TiledWorldConfig
+from tests.unit.env_state import restore, saved
 
 
 def _world_time(step: int = 1) -> WorldTime:
@@ -31,7 +33,7 @@ def _make_location(entity_id: str, name: str, connections: dict | None = None, c
 
 
 def _make_item(entity_id: str, name: str, location_id: str | None = None, owner_id: str | None = None,
-               is_takeable: bool = True, state: str = "intact") -> WorldEntity:
+               state: str = "intact") -> WorldEntity:
     if owner_id is not None:
         presence = EntityPresence.HELD
         presence_ref: str | None = owner_id
@@ -45,7 +47,6 @@ def _make_item(entity_id: str, name: str, location_id: str | None = None, owner_
         state=state,
         presence=presence,
         presence_ref=presence_ref,
-        is_takeable=is_takeable,
         is_public=True,
     )
 
@@ -180,9 +181,9 @@ def test_visible_entities_filter_by_co_presence() -> None:
     env = EnvironmentSystem()
     env.place_agent(agent_id="a1", location_id="hall")
 
-    on_floor = _make_item("lantern", "lantern", location_id="hall", is_takeable=True, state="ready")
-    held = _make_item("ring", "ring", owner_id="a2", is_takeable=True, state="ready")
-    elsewhere = _make_item("scroll", "scroll", location_id="garden", is_takeable=True, state="ready")
+    on_floor = _make_item("lantern", "lantern", location_id="hall", state="ready")
+    held = _make_item("ring", "ring", owner_id="a2", state="ready")
+    elsewhere = _make_item("scroll", "scroll", location_id="garden", state="ready")
     env.register_entity(on_floor)
     env.register_entity(held)
     env.register_entity(elsewhere)
@@ -202,7 +203,7 @@ def test_visible_entities_in_spatial_perception() -> None:
     env = EnvironmentSystem()
     env.place_agent(agent_id="a1", location_id="hall")
 
-    sword = _make_item("sword", "铁剑", location_id="hall", is_takeable=True, state="intact")
+    sword = _make_item("sword", "铁剑", location_id="hall", state="intact")
     flag = WorldEntity(
         entity_id="flag", name="旌旗", entity_type=WorldEntityType.LANDMARK,
         state="intact", presence_ref="hall", is_public=True,
@@ -227,7 +228,7 @@ def test_visible_entities_includes_items_held_by_a_co_present_agent() -> None:
     env = EnvironmentSystem()
     env.place_agent(agent_id="a1", location_id="hall")
     env.place_agent(agent_id="a2", location_id="hall")
-    env.register_entity(_make_item("pouch", "钱袋", owner_id="a2", is_takeable=True))
+    env.register_entity(_make_item("pouch", "钱袋", owner_id="a2"))
 
     seen = {e.name: e for e in env.spatial_for(agent_id="a1").visible_entities}
     assert "钱袋" in seen
@@ -343,7 +344,7 @@ def test_feasibility_lets_the_judge_decide_a_contested_grab() -> None:
 def test_change_entity_state_updates_state_and_triggers_observation() -> None:
     """Entity state change observations carry to next step's ambient (not current step).
 
-    The acting agent must not read his own change again through ambient (he already knows it via
+    The doer must not read his own change again through ambient (he already knows it via
     ActionResult/_apply_feedback); only onlookers (other agents in the same place) should.
     """
     env = EnvironmentSystem()
@@ -354,17 +355,17 @@ def test_change_entity_state_updates_state_and_triggers_observation() -> None:
 
     env.change_entity_state(
         EntityStateChange(entity_id="sword", new_state="damaged", perception="铁剑被损坏了。"),
-        acting_agent_id="a1",
+        doer_id="a1",
     )
     assert env._entities["sword"].state == "damaged"
 
     env.begin_step(step=1, world_time=_world_time(1))
     spatial_a2 = env.spatial_for(agent_id="a2")
     assert any("损坏" in ev.content for ev in spatial_a2.ambient_events)
-    # the actor doesn't read his own change again through ambient
+    # the doer doesn't read his own change again through ambient
     spatial_a1 = env.spatial_for(agent_id="a1")
     assert not any("损坏" in ev.content for ev in spatial_a1.ambient_events), (
-        "F-fixture-1:acting agent 不应通过 ambient 读到自己的实体变更观察。"
+        "F-fixture-1:doer 不应通过 ambient 读到自己的实体变更观察。"
     )
 
 
@@ -446,18 +447,17 @@ def test_change_entity_state_returns_false_for_unknown_entity() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_snapshot_state_includes_entity_states() -> None:
+def test_world_state_includes_entities() -> None:
     env = EnvironmentSystem()
     env.place_agent(agent_id="a1", location_id="hall")
     item = _make_item("torch", "火炬", location_id="hall", state="lit")
     env.register_entity(item)
 
-    state = env.snapshot_state()
+    state = env.world_state()
 
-    assert "entity_states" in state
-    assert "torch" in state["entity_states"]
-    assert state["entity_states"]["torch"]["name"] == "火炬"
-    assert state["entity_states"]["torch"]["state"] == "lit"
+    assert "torch" in state["entities"]
+    assert state["entities"]["torch"]["name"] == "火炬"
+    assert state["entities"]["torch"]["state"] == "lit"
 
 
 def test_carried_observations_survive_a_snapshot_round_trip() -> None:
@@ -468,25 +468,25 @@ def test_carried_observations_survive_a_snapshot_round_trip() -> None:
 
     env = EnvironmentSystem()
     env.record_carry_observation(
-        location_id="hall", observation="有人在殿上拔刀相向。", strength=0.6, actor_ids=("a1",),
+        location_id="hall", observation="有人在殿上拔刀相向。", strength=0.6, doer_ids=("a1",),
     )
 
     restored = EnvironmentSystem()
-    restored.restore_state(json.loads(dump_json(env.snapshot_state())))
+    restore(restored, json.loads(dump_json(saved(env))))
     restored.begin_step(step=2, world_time=_world_time(2))
     env.begin_step(step=2, world_time=_world_time(2))
 
     assert restored._step_annotations == env._step_annotations
 
 
-def test_snapshot_state_entity_states_excludes_locations() -> None:
+def test_world_state_entities_exclude_locations() -> None:
     env = EnvironmentSystem()
     env.space.register_place(_make_location("hall", "大殿"))
     env.place_agent(agent_id="a1", location_id="hall")
 
-    state = env.snapshot_state()
+    state = env.world_state()
 
-    assert "hall" not in state.get("entity_states", {})
+    assert "hall" not in state["entities"]
 
 
 # ---------------------------------------------------------------------------
@@ -511,19 +511,6 @@ def test_move_agent_updates_location_in_spatial() -> None:
     spatial = env.spatial_for(agent_id="agent-1")
 
     assert spatial.location_id == "palace"
-
-
-def test_snapshot_state_carries_where_each_body_stands() -> None:
-    """Occupancy is stored once. There is no inverted index (who is where): nothing reads it, and it
-    would drift from the primary copy."""
-    env = EnvironmentSystem()
-    env.place_agent(agent_id="agent-1", location_id="hall")
-    env.place_agent(agent_id="agent-2", location_id="garden")
-
-    state = env.snapshot_state()
-
-    assert state["body_locations"] == {"agent-1": "hall", "agent-2": "garden"}
-    assert "location_occupancy" not in state
 
 
 def test_environment_loads_world_config_locations() -> None:
@@ -741,7 +728,7 @@ def test_check_talk_feasibility_different_locations() -> None:
     result = env.check_talk_feasibility("agent-1", ["agent-2"], target_label="李二")
 
     assert result.ok is False
-    # The reason names the target and the actor's own location; it doesn't reveal where the target
+    # The reason names the target and the doer's own location; it doesn't reveal where the target
     # actually is and contains no ids.
     assert "李二" in result.reason and "大殿" in result.reason
     assert "后花园" not in result.reason
@@ -843,14 +830,13 @@ def test_change_entity_state_ignores_owner_id_for_non_takeable_entity() -> None:
         name="城门告示",
         entity_type=WorldEntityType.LANDMARK,
         presence_ref="hall",
-        is_takeable=False,
         state="intact",
     )
     env.register_entity(landmark)
 
     env.change_entity_state(
         EntityStateChange(entity_id="gate_sign", new_state="defaced", owner_id="a1"),
-        acting_agent_id="a1",
+        doer_id="a1",
     )
 
     entity = env.find_item("gate_sign")
@@ -869,7 +855,6 @@ def test_check_physical_feasibility_landmark_returns_infeasible_when_not_at_loca
         name="告示牌",
         entity_type=WorldEntityType.LANDMARK,
         presence_ref="hall",
-        is_takeable=False,
         state="active",
     )
     env.register_entity(landmark)
@@ -877,7 +862,7 @@ def test_check_physical_feasibility_landmark_returns_infeasible_when_not_at_loca
     result = env.check_physical_feasibility("a1", "notice_board", "landmark")
 
     assert not result.ok
-    # The message names the actor's location; the landmark's actual location isn't revealed.
+    # The message names the doer's location; the landmark's actual location isn't revealed.
     assert "告示牌不在后花园" in result.reason
     assert "hall" not in result.reason
 
@@ -892,7 +877,7 @@ def test_check_physical_feasibility_agent_reason_names_own_location() -> None:
     result = env.check_physical_feasibility("a1", "b1", "agent")
 
     assert not result.ok
-    assert "大殿" in result.reason        # the actor's own location appears
+    assert "大殿" in result.reason        # the doer's own location appears
     assert "后花园" not in result.reason  # the target's actual location doesn't
     assert "b1" not in result.reason      # no ids
 
@@ -905,7 +890,6 @@ def test_check_physical_feasibility_landmark_succeeds_when_at_location() -> None
         name="告示牌",
         entity_type=WorldEntityType.LANDMARK,
         presence_ref="hall",
-        is_takeable=False,
         state="active",
     )
     env.register_entity(landmark)
@@ -917,7 +901,7 @@ def test_check_physical_feasibility_landmark_succeeds_when_at_location() -> None
 
 
 # ---------------------------------------------------------------------------
-# restore_state() — inverse of snapshot_state() for mutable entity state
+# restore_state() — inverse of world_state()/engine_state() for mutable entity state
 # ---------------------------------------------------------------------------
 
 def test_restore_state_reapplies_item_state_location_and_owner() -> None:
@@ -930,14 +914,14 @@ def test_restore_state_reapplies_item_state_location_and_owner() -> None:
     live.change_entity_state(
         EntityStateChange(entity_id="sword", new_state="bloodied", owner_id="a1"),
     )
-    captured = live.snapshot_state()
+    captured = saved(live)
 
     # Fresh environment rebuilt from step-0 seeds: sword is intact, on the floor.
     fresh = EnvironmentSystem()
     fresh.space.register_place(_make_location("hall", "hall"))
     fresh.register_entity(_make_item("sword", "sword", location_id="hall"))
 
-    fresh.restore_state(captured)
+    restore(fresh, captured)
 
     restored = fresh.find_item("sword")
     assert restored is not None
@@ -951,20 +935,20 @@ def test_restore_state_reapplies_item_state_location_and_owner() -> None:
 
 def test_restore_state_reapplies_a_seeded_items_privacy() -> None:
     """A runtime change to a seed item's is_public must be restored too. Otherwise a hidden private
-    item becomes visible to everyone after restore (the same reason snapshot_state writes this
+    item becomes visible to everyone after restore (the same reason world_state writes this
     field)."""
     live = EnvironmentSystem()
     live.space.register_place(_make_location("hall", "hall"))
     live.register_entity(_make_item("letter", "letter", location_id="hall"))
     live.find_item("letter").is_public = False
-    captured = live.snapshot_state()
+    captured = saved(live)
 
     fresh = EnvironmentSystem()
     fresh.space.register_place(_make_location("hall", "hall"))
     fresh.register_entity(_make_item("letter", "letter", location_id="hall"))
     assert fresh.find_item("letter").is_public is True   # seeds start public
 
-    fresh.restore_state(captured)
+    restore(fresh, captured)
 
     assert fresh.find_item("letter").is_public is False
 
@@ -975,17 +959,17 @@ def test_restore_state_reregisters_entity_created_mid_run() -> None:
     fresh.space.register_place(_make_location("hall", "hall"))
 
     fresh.restore_state(
-        {
-            "entity_states": {
-                "letter": {
-                    "name": "letter",
-                    "entity_type": "item",
-                    "state": "sealed",
-                    "presence": "at_location",
-                    "presence_ref": "hall",
-                }
+        npcs={},
+        entities={
+            "letter": {
+                "name": "letter",
+                "entity_type": "item",
+                "state": "sealed",
+                "presence": "at_location",
+                "presence_ref": "hall",
             }
-        }
+        },
+        engine={},
     )
 
     letter = fresh.find_item("letter")
@@ -998,9 +982,9 @@ def test_restore_state_reregisters_entity_created_mid_run() -> None:
 def test_restore_state_ignores_missing_or_malformed_payload() -> None:
     env = EnvironmentSystem()
     env.space.register_place(_make_location("hall", "hall"))
-    # Must not raise on absent or wrongly-typed entity_states.
-    env.restore_state({})
-    env.restore_state({"entity_states": "not-a-mapping"})
+    # Must not raise on empty or wrongly-typed parts.
+    env.restore_state(npcs={}, entities={}, engine={})
+    env.restore_state(npcs="not-a-mapping", entities="not-a-mapping", engine={})  # type: ignore[arg-type]
 
 
 # --------------------------------------------------------------------------- #
@@ -1123,7 +1107,7 @@ def test_a_thing_just_made_outranks_the_ones_that_were_always_there() -> None:
     env.place_agent(agent_id="me", location_id="hall")
     env.register_entity(_make_item("seed", "开局就有的", location_id="hall"))   # created_step=0
     env.begin_step(step=9, world_time=_world_time(9))
-    env.spawn_entity(EntitySpawn(name="刚做出来的"), ground=env.get_body_location("me"), actor_id="me")
+    env.spawn_entity(EntitySpawn(name="刚做出来的"), ground=env.get_body_location("me"), doer_id="me")
 
     assert [e.name for e in env.spatial_for(agent_id="me").visible_entities] == [
         "刚做出来的", "开局就有的",
@@ -1139,7 +1123,7 @@ def test_someone_elses_new_thing_still_ranks_below_my_old_one() -> None:
     env.place_agent(agent_id="other", location_id="hall")
     env.register_entity(_make_item("mine", "我的旧物", owner_id="me"))         # created_step=0
     env.begin_step(step=9, world_time=_world_time(9))
-    env.spawn_entity(EntitySpawn(name="他刚拿到的", holder_id="other"), ground=env.get_body_location("other"), actor_id="other")
+    env.spawn_entity(EntitySpawn(name="他刚拿到的", holder_id="other"), ground=env.get_body_location("other"), doer_id="other")
 
     assert [e.name for e in env.spatial_for(agent_id="me").visible_entities] == [
         "我的旧物", "他刚拿到的",
@@ -1153,17 +1137,17 @@ def test_when_it_appeared_survives_a_restore() -> None:
     env.space.register_place(_make_location("hall", "大殿"))
     env.place_agent(agent_id="me", location_id="hall")
     env.begin_step(step=9, world_time=_world_time(9))
-    env.spawn_entity(EntitySpawn(name="刚做出来的"), ground=env.get_body_location("me"), actor_id="me")
+    env.spawn_entity(EntitySpawn(name="刚做出来的"), ground=env.get_body_location("me"), doer_id="me")
 
     fresh = EnvironmentSystem()
     fresh.space.register_place(_make_location("hall", "大殿"))
-    fresh.restore_state(env.snapshot_state())
+    restore(fresh, saved(env))
 
     assert fresh.all_live_entities()[0].created_step == 9
 
 
-def test_the_judge_reads_the_same_scene_the_actor_saw() -> None:
-    """If two places ordered the list separately, the judge could rule on something the actor
+def test_the_judge_reads_the_same_scene_the_doer_saw() -> None:
+    """If two places ordered the list separately, the judge could rule on something the doer
     never saw. The order is defined in one place only."""
     from engine.directory import LiveWorldDirectory
     from engine.scene import SceneVisibility, assemble_scene_context
@@ -1173,7 +1157,7 @@ def test_the_judge_reads_the_same_scene_the_actor_saw() -> None:
     env.place_agent(agent_id="me", location_id="hall")
     env.register_entity(_make_item("seed", "开局就有的", location_id="hall"))
     env.begin_step(step=9, world_time=_world_time(9))
-    env.spawn_entity(EntitySpawn(name="刚做出来的", holder_id="me"), ground=env.get_body_location("me"), actor_id="me")
+    env.spawn_entity(EntitySpawn(name="刚做出来的", holder_id="me"), ground=env.get_body_location("me"), doer_id="me")
 
     seen = [e.name for e in env.spatial_for(agent_id="me").visible_entities]
     scene = assemble_scene_context(
@@ -1236,7 +1220,7 @@ def test_first_person_scene_marks_his_own_things_as_his_to_hand_over() -> None:
 
 
 def test_the_judge_may_read_more_than_the_menu_offers() -> None:
-    """Truncation costs are asymmetric: an actor missing an item just loses an option, but a judge
+    """Truncation costs are asymmetric: a doer missing an item just loses an option, but a judge
     missing one rules on an incomplete scene."""
     from engine.environment import MAX_SCENE_ENTITIES, MAX_VISIBLE_ENTITIES
 
@@ -1301,7 +1285,7 @@ def test_making_a_thing_cannot_make_a_place() -> None:
     env.place_agent(agent_id="a1", location_id="hall")
 
     assert env.spawn_entity(
-        EntitySpawn(name="密室", entity_type="location"), ground=env.get_body_location("a1"), actor_id="a1"
+        EntitySpawn(name="密室", entity_type="location"), ground=env.get_body_location("a1"), doer_id="a1"
     ) is False
     assert env.space.all_place_ids() == ["hall"]
     assert env.all_live_entities() == []
@@ -1446,3 +1430,18 @@ def test_whether_a_kind_can_be_carried_has_exactly_one_answer() -> None:
     assert WorldEntityType.ITEM.is_takeable is True
     assert WorldEntityType.LANDMARK.is_takeable is False
     assert WorldEntitySeed(name="车", entity_type="a-kind-that-does-not-exist-yet").is_takeable is False
+
+
+def test_a_restore_keeps_what_a_lurker_may_still_catch() -> None:
+    """Covert adjudication reads the recent happenings of a place; lost on restore, a lurker
+    right after it would be told nothing happened there."""
+    from tests.unit.env_state import restore, saved
+
+    live = EnvironmentSystem()
+    live.record_happening(location_id="hall", outcome="甲把一封密信塞进了柜底", step=4, doer_ids=("a1",))
+    fresh = EnvironmentSystem()
+    restore(fresh, saved(live))
+
+    assert fresh.recent_happenings("hall", since_step=0) == [(4, "甲把一封密信塞进了柜底")]
+    assert fresh.recent_happenings("hall", since_step=0, exclude_ids=("a1",)) == []
+    assert "happenings" not in str(live.world_state())

@@ -18,14 +18,21 @@ drifts. Hence:
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any, Iterable
 
 from core.duration import describe_duration
+from core.interfaces.action import Deed
+from core.interfaces.memory import MemoryKind
 from core.interfaces.phenomenon import Phenomenon
+from core.interfaces.perception import DEFAULT_ENTITY_STATE
 from core.interfaces.urgency import Urgency
 
 # ============================================================================
 # Emotion (scales for emotion fields)
 # ============================================================================
+
+EMOTION_INTENSITY_RANGE: tuple[float, float] = (0.0, 1.0)
+EMOTION_VALENCE_RANGE: tuple[float, float] = (-1.0, 1.0)
 
 EMOTION_INTENSITY_DEFINITION: str = (
     "intensity（情绪强度）: 浮点数 [0.0, 1.0]，情绪被激活的程度，与情绪种类无关。"
@@ -33,7 +40,7 @@ EMOTION_INTENSITY_DEFINITION: str = (
 )
 
 EMOTION_VALENCE_DEFINITION: str = (
-    "valence（情绪基调）: 浮点数 [-1.0, 1.0]，情绪的正负质感。"
+    "valence（情绪正负值）: 浮点数 [-1.0, 1.0]，情绪的正负质感。"
     ">0 愉快/积极，<0 痛苦/消极，≈0 中性"
 )
 
@@ -44,7 +51,7 @@ EMOTION_VALENCE_DEFINITION: str = (
 
 #: Cause-agnostic, like VITALITY_RELIEF_DEFINITION: otherwise exhaustion would have nowhere to land.
 VITALITY_DAMAGE_DEFINITION: str = (
-    "damage（生命力损耗）: 浮点数 [0.0, 1.0]，一次行动耗去对方多少生命力"
+    "damage（生命值损耗）: 浮点数 [0.0, 1.0]，一次行动耗去对方多少生命值"
     "——不论损在哪里（负伤、力竭、精神耗尽等等皆可）。"
     "0.0=分毫未损 | 0.3=损耗明显 | 0.7=危及生命 | 1.0=致命"
 )
@@ -57,30 +64,31 @@ VITALITY_RELIEF_CAP: float = 0.2
 
 #: Cause-agnostic: degree, not cause. Tied to healing wounds, feeding someone starving would score 0.
 VITALITY_RELIEF_DEFINITION: str = (
-    f"relief（生命力挽回）: 浮点数 [0.0, {VITALITY_RELIEF_CAP}]，一次行动为对方挽回多少生命力"
+    f"relief（生命值恢复）: 浮点数 [0.0, {VITALITY_RELIEF_CAP}]，一次行动为对方恢复多少生命值"
     f"——不论他亏在哪里（负伤、力竭、饥渴、寒冷等等皆可）。"
     f"0.0=没帮上什么 | 0.05=稍微缓解一点点 | {VITALITY_RELIEF_CAP}=从濒死边上被拉了回来。"
-    f"它只管当场挽回，不管整个生命力是否真的完全挽回。"
+    f"它只管当场恢复的量，不代表生命值已完全恢复。"
 )
 
 
-#: The ``deed`` of a PHYSICAL adjudication — the act, not what it achieved. The judge prompt offers
-#: a subset by target kind; the audit reads values back into Chinese from the same table.
-PHYSICAL_DEEDS: dict[str, str] = {
-    "strike": "施加暴力伤害",
-    "restrain": "动手但不为伤人：制止/擒抱/推搡/搀扶/救治",
-    "seize": "把它拿到手上带走",
-    "relinquish": "把它交出手：放到此地，或交到某人手上",
+#: What each ``deed`` of a PHYSICAL adjudication means — the act, not what it achieved. The judge
+#: prompt offers a subset by target kind; the audit reads values back into Chinese from the same
+#: table. EXERT has no entry: it is never offered, only the fallback when there is no target.
+PHYSICAL_DEED_DESCRIPTIONS: dict[Deed, str] = {
+    Deed.STRIKE: "施加暴力伤害",
+    Deed.RESTRAIN: "动手但不为伤人：制止/擒抱/推搡/搀扶/救治",
+    Deed.SEIZE: "把它拿到手上带走",
+    Deed.RELINQUISH: "把它交出手：放到此地，或交到某人手上",
     # operate vs destroy turns on whether the thing still exists afterward, not how violent the act
     # looks. Don't put destruction verbs in operate's description, or destroying never reaches destroy.
-    "operate": "就地操作它：开启/使用/改变其状态——事后它仍在",
-    "destroy": "把它毁掉：烧毁/砸碎/撕毁——事后它不复存在",
+    Deed.OPERATE: "就地操作它：开启/使用/改变其状态——事后它仍在",
+    Deed.DESTROY: "把它毁掉：烧毁/砸碎/撕毁——事后它不复存在",
 }
 
 
-def deed_options(*names: str) -> str:
+def deed_options(*deeds: Deed) -> str:
     """Selected deeds → "strike（施加暴力伤害）、restrain（…）"."""
-    return "、".join(f"{n}（{PHYSICAL_DEEDS[n]}）" for n in names)
+    return "、".join(f"{d.value}（{PHYSICAL_DEED_DESCRIPTIONS[d]}）" for d in deeds)
 
 
 #: Lower bound of "充沛", shared by vitality_label and vitality_line; don't write the number elsewhere.
@@ -94,12 +102,15 @@ def vitality_label(vitality: float) -> str:
     0 = spent), thresholds 0.7/0.3. Neutral wording; ``vitality_line`` adds the per-person prefix.
     """
     if vitality <= 0:
-        return "无生命力"
+        return "生命值耗尽"
     if vitality > VITALITY_FULL:
         return "充沛"
     if vitality > 0.3:
         return "不济"
     return "将竭"
+
+
+CONDITION_CONFINED_MARK = "行动自由受限制"
 
 
 def render_condition(
@@ -109,9 +120,11 @@ def render_condition(
     seconds_per_step: int = 3600,
     with_duration: bool = False,
 ) -> str:
-    """The only renderer for conditions in prompts (duck-typed: needs .description/.since_step).
+    """The only renderer for conditions in prompts (duck-typed: needs .description/.since_step,
+    optionally .confined).
 
     No condition → ``""``, and the caller drops the whole line rather than render "condition: none".
+    A confined condition carries ``CONDITION_CONFINED_MARK`` after its description everywhere.
 
     - ``with_duration=False`` → just the description, for roster marks.
     - ``with_duration=True`` → ``"<description>（已持续<duration>）"``, for profiles and adjudication,
@@ -122,6 +135,8 @@ def render_condition(
     description = (getattr(condition, "description", "") or "").strip()
     if not description:
         return ""
+    if getattr(condition, "confined", False):
+        description = f"{description}，{CONDITION_CONFINED_MARK}"
     if not with_duration:
         return description
     elapsed = max(now_step - int(getattr(condition, "since_step", 0) or 0), 0)
@@ -162,13 +177,13 @@ NEED_TYPE_DEFINITION: str = (
 )
 
 NEED_INTENSITY_DEFINITION: str = (
-    "intensity（需求紧迫度）: 浮点数 [0.0, 1.0]，该需求当前的内在驱力强度，"
+    "intensity（需求强度）: 浮点数 [0.0, 1.0]，该需求当前的内在驱力强度，"
     "与该 agent 是否能立即行动无关。"
     "0.0=已满足/无感 | 0.3=可感知但不紧迫 | 0.6=明显在意 | 0.8=主导思维 | 1.0=压倒一切"
 )
 
 NEED_WEIGHT_DEFINITION: str = (
-    "weight（需求固有权重）: 浮点数 [0.1, 2.0]，该需求在该 agent 一生中的固有重要程度，"
+    "weight（在意程度）: 浮点数 [0.1, 2.0]，该需求在该 agent 一生中固有的在意程度，"
     "塑造了 agent 是什么样的人。"
     "1.0=典型重要 | <1.0=该 agent 不太在意此类 | >1.0=该 agent 特别看重此类。"
     "intensity 反映此刻状态，weight 反映长期倾向。"
@@ -187,7 +202,7 @@ TRUST_SCALE_DESCRIPTION: str = (
 )
 
 AFFECTION_SCALE_DESCRIPTION: str = (
-    "-1.0=憎恶 | -0.3=反感 | 0.0=平淡 | 0.3=亲近 | 1.0=深爱"
+    "-1.0=憎恶 | -0.3=反感 | 0.0=平淡 | 0.3=亲近 | 1.0=强烈好感"
 )
 
 RELATION_SCALE_LEGEND: str = (
@@ -199,12 +214,37 @@ RELATION_SCALE_LEGEND: str = (
 # Producer-only constraints (age consistency / immutability / consistent wording / reverse flip)
 # are appended by each schema after referencing this constant, not put here.
 RELATION_LABEL_FORMAT: str = (
-    "「关系类型:角色」格式——关系类型是结构性绑定（血缘 / 配偶 / 师徒 / 同事 / 邻居 / 同乡 等），"
-    "角色是 A（发起方 from）在该关系中的位置；如「父子:儿子」表示 A 是 B（接收方 to）的儿子。"
+    "「关系类型:角色」格式，是关系的持有者对对方的认定——关系类型是结构性绑定（血缘 / 配偶 / 师徒 / 同事 / 邻居 / 同乡 等），"
+    "角色是**对方**在该关系中的位置，不是持有者自己的位置；如「父子:父亲」表示对方是持有者的父亲。"
     "无具体角色时只写关系类型（如「相识」「同事」「曾共事」），表示双方仅相识、在该关系中无具体角色。"
 )
 
 RELATION_LABEL_DESCRIPTION: str = f"labels（关系标签）: {RELATION_LABEL_FORMAT}"
+
+
+def canonical_relation_label(text: str) -> str:
+    """``text`` in the form RELATION_LABEL_FORMAT names, 「关系类型」 or 「关系类型:角色」: a
+    half-width colon, each part stripped. ``ValueError`` when it has no such form.
+
+    Only the structure is checked. Whether the role names the other party rather than the
+    holder takes knowing who they are, so it rests with the producer's prompt.
+    """
+    parts = [part.strip() for part in text.replace("：", ":").split(":")]
+    if len(parts) > 2 or not all(parts):
+        raise ValueError(f"Relation label {text!r} is neither 「关系类型」 nor 「关系类型:角色」")
+    return ":".join(parts)
+
+
+def relation_labels(labels: Iterable[Any]) -> list[str]:
+    """The relation labels among ``labels`` in canonical form, in order and each once. The
+    lenient read for LLM output: an item with no label form is dropped."""
+    canonical: list[str] = []
+    for item in labels:
+        try:
+            canonical.append(canonical_relation_label(str(item)))
+        except ValueError:
+            continue
+    return list(dict.fromkeys(canonical))
 
 
 def relation_legend() -> str:
@@ -224,9 +264,9 @@ EXTERNAL_DRIVE_TYPE_DEFINITION: str = (
 )
 
 URGENCY_SCALE_DESCRIPTION: str = (
-    "urgency（紧迫度）: 4 档枚举（字符串）。"
-    "low=可留意（背景信号） | normal=值得响应（需排入计划） | "
-    "high=应当优先（其它事都先放） | critical=必须立即响应（生死攸关 / 不可错过）"
+    "urgency（紧急程度）: 4 档枚举（字符串）。"
+    "low=不紧急（可留意的背景信号） | normal=一般（值得响应，需排入计划） | "
+    "high=紧急（应当优先，其它事都先放） | critical=非常紧急（必须立即响应，生死攸关 / 不可错过）"
 )
 
 # urgency → signal_strength: used when PerceptionLayer folds heterogeneous inputs into [0,1] salience
@@ -244,10 +284,10 @@ def urgency_label(urgency: Urgency) -> str:
 
 
 _URGENCY_LABELS: dict[Urgency, str] = {
-    Urgency.LOW:      "【留意】",
+    Urgency.LOW:      "【不紧急】",
     Urgency.NORMAL:   "【一般】",
     Urgency.HIGH:     "【紧急】",
-    Urgency.CRITICAL: "【危急】",
+    Urgency.CRITICAL: "【非常紧急】",
 }
 
 
@@ -265,7 +305,7 @@ SEVERITY_SCALE_DESCRIPTION: str = (
 # Visible phenomena (phenomenon)
 # ============================================================================
 
-#: Shared by the world's two authors (EventSystem and DirectorChannel), whose broadcasts pass the
+#: Shared by the world's two authors (NarrativeEditor and DirectorChannel), whose broadcasts pass the
 #: same ``parse_broadcast_spec`` filter: diverging wording would show flames for one author and
 #: silently none for the other. Names come from the ``Phenomenon`` enum, never hand-written.
 PHENOMENON_DEFINITION: str = (
@@ -316,7 +356,7 @@ CLOSED_WORLD_FACT_RULE_FIRST_PERSON: str = (
 #: This variant is for sites without a current time (compression summaries): it only keeps
 #: existing dates. Don't add anything needing a "now" to it: a processor with no clock makes one up.
 KEEP_ABSOLUTE_TIME_RULE: str = (
-    "- 所给材料里已经写明日期的，照抄那个日期，不要改写成「次日 / 明晨 / 今夜」这类相对说法。"
+    "- 所给材料里已经写明日期的，照抄那个日期，不要改写成「次日 / 明晨 / 今夜 / 今天中午」这类相对说法。"
 )
 
 #: Functional version. Inject it only where the user section gives the current world time, or the
@@ -328,7 +368,7 @@ KEEP_ABSOLUTE_TIME_RULE: str = (
 #: the model can't know DAYS_PER_MONTH and would guess from the real calendar at month end.
 ABSOLUTE_TIME_RULE: str = """\
 - 说到**一件约好的事在什么时候**（约见、期限、打算何时做某事），把那个**具体时间点**写出来，
-  不要写「明晨 / 今夜 / 三日后」等等这类相对日期的说法，要说具体时间点。
+  不要写「明晨 / 今夜 / 三日后 / 今天中午」等等这类相对日期的说法，要说具体时间点。
 - **具体时间点** = 所给的此刻时间里那套年月日的说法，加上一天里的时候。照着这样换：
       此刻那句写作「…六月初三，晚上八点」 → ✗ 明晨去见他 ✓ 六月初四清早去见他
       此刻那句写作「…3月4日，晚上八点」   → ✗ 三日后动手 ✓ 3月7日动手
@@ -343,7 +383,7 @@ ABSOLUTE_TIME_RULE: str = """\
 #: The in-character version of ABSOLUTE_TIME_RULE, phrased as a note-keeping habit.
 ABSOLUTE_TIME_RULE_FIRST_PERSON: str = """\
 - 说到**一件约好的事在什么时候**（约见、期限、打算何时做某事），我把那个**具体时间点**写出来，
-  不要写「明晨 / 今夜 / 三日后」等等这类相对日期的说法，要说具体时间点。
+  不要写「明晨 / 今夜 / 三日后 / 今天中午」等等这类相对日期的说法，要说具体时间点。
 - **具体时间点** = 所给的此刻时间里那套年月日的说法，加上一天里的时候。照着这样换：
       此刻那句写作「…六月初三，晚上八点」 → ✗ 明晨去见他 ✓ 六月初四清早去见他
       此刻那句写作「…3月4日，晚上八点」   → ✗ 三日后动手 ✓ 3月7日动手
@@ -404,6 +444,18 @@ def strip_end_punct(text: str) -> str:
 SIGNAL_CAPS = {"visible": 10, "ambient": 10, "inbox": 20, "broadcast": 5}
 
 
+# Each perception channel's label, shared by the prompt lines and the memories perception
+# writes, so a recalled memory names its channel as the prompt did.
+AMBIENT_TAG = "环境观察"
+MESSAGE_TAG = "消息"
+
+
+def broadcast_tag(location_scope: str | None) -> str:
+    """A broadcast's label: world-wide or local to where it is heard. The place itself is never
+    named: a local broadcast is heard only where it happens."""
+    return "全局广播" if location_scope is None else "本地广播"
+
+
 # The decision prompt quotes it literally, so change it only here.
 DECEASED_MARK = "已死亡"
 
@@ -431,7 +483,7 @@ def render_npc(npc, *, index: int | None = None) -> str:
     age = getattr(who, "age", None)
     marks = [f"{age}岁"] if age else []
     if getattr(npc, "busy", False):
-        marks.append("正在忙")
+        marks.append("正在执行任务")
     if condition := (getattr(npc, "condition", "") or "").strip():
         marks.append(condition)
     head = person_referent(getattr(who, "name", "") or "", getattr(who, "gender", "") or "", *marks)
@@ -465,14 +517,14 @@ def render_entity(
 
     Takeable reads by relation: own hands "可交出", unowned "可取", someone else's only "由X持有"
     ("可取" would let the judge treat taking it as picking up an unowned item). ``held_by_viewer``
-    is the reader in first person, the actor in adjudication.
+    is the reader in first person, the doer in adjudication.
     """
     name = ((getattr(entity, "name", "") or "").strip()) if entity is not None else ""
     if not name:
         return "某物"
     attrs: list[str] = []
     state = (getattr(entity, "state", "") or "").strip()
-    if state and state != "intact":
+    if state and state != DEFAULT_ENTITY_STATE:
         attrs.append(f"状态：{state}")
     if owner_name:
         attrs.append(f"由{owner_name}持有")
@@ -525,9 +577,9 @@ def _recency_label(elapsed_seconds: int, day_delta: int) -> str:
 
 
 def render_memory(memory, *, now_step: int, seconds_per_step: int, world_start_second_of_day: int = 0) -> str:
-    """Render one memory for a prompt; event memories get a coarse recency prefix.
+    """Render one memory for a prompt; event and insight memories get a coarse recency prefix.
 
-    - Only event memories get the prefix: insights span time and summaries cover a period.
+    - An insight is dated by when it was drawn. A summary gets no prefix: it covers a period.
     - Render time only, never written back to stored_content (timestamps are embedding noise).
       No leading "- " or index; the caller adds those.
 
@@ -535,7 +587,7 @@ def render_memory(memory, *, now_step: int, seconds_per_step: int, world_start_s
     midnight falls on; default 0. The start date cancels out, so the calendar stays out of here.
     """
     content = getattr(memory, "stored_content", "") or ""
-    if getattr(memory, "kind", "event") != "event":
+    if getattr(memory, "kind", MemoryKind.EVENT) not in (MemoryKind.EVENT, MemoryKind.INSIGHT):
         return content
     created = getattr(memory, "created_step", now_step)
     return recency_prefix(
@@ -625,9 +677,9 @@ def condition_line(
 
 
 _VITALITY_PREFIX: dict[SituationVoice, str] = {
-    SituationVoice.FIRST:  "我此刻的体力",
-    SituationVoice.SECOND: "你此刻的体力",
-    SituationVoice.THIRD:  "体力状况",
+    SituationVoice.FIRST:  "我此刻的生命值",
+    SituationVoice.SECOND: "你此刻的生命值",
+    SituationVoice.THIRD:  "生命值状态",
 }
 
 
@@ -638,10 +690,10 @@ def vitality_line(
     lead: str = "\n",
     omit_when_full: bool = False,
 ) -> str:
-    """The full "<person>此刻的体力：X" line; the only place vitality enters a prompt.
+    """Render vitality in the prompt's voice through the shared vitality labels.
 
     Only cognition should set ``omit_when_full`` (a constant "full" is noise); the judge must
-    always see the actor's vitality.
+    always see the doer's vitality.
     """
     if omit_when_full and vitality > VITALITY_FULL:
         return ""
@@ -691,11 +743,10 @@ def render_perceived_signals(*, spatial, inbox, broadcasts) -> list[str]:
             ))
         lines.append(f"同处一地的人：{', '.join(people)}")
     for ev in getattr(spatial, "ambient_events", [])[:SIGNAL_CAPS["ambient"]]:
-        lines.append(f"环境观察：{ev.content}")
+        lines.append(f"{AMBIENT_TAG}：{ev.content}")
     for msg in (inbox or [])[:SIGNAL_CAPS["inbox"]]:
-        # The narrator's sender_name is already a narrative "unknown source"; no special case.
-        sender = getattr(msg, "sender_name", None) or "某人"
-        lines.append(f"收到来自{sender}的消息：{msg.content}")
+        sender = msg.sender_name
+        lines.append(f"收到来自{sender}的{MESSAGE_TAG}：{msg.content}")
     for bc in (broadcasts or [])[:SIGNAL_CAPS["broadcast"]]:
-        lines.append(f"世界广播：{bc.content}")
+        lines.append(f"{broadcast_tag(bc.location_scope)}：{bc.content}")
     return lines

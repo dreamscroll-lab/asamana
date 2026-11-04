@@ -4,6 +4,7 @@ two can't drift apart.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from math import sqrt
 from typing import Any
 
@@ -101,7 +102,7 @@ def rank_records(
             continue
         fused, dense, sparse = hybrid_score(record, dense_vector, sparse_vector, dense_weight, sparse_weight)
         results.append(SearchResult(
-            id=record_id, score=fused, payload=record["payload"], dense_score=dense, sparse_score=sparse,
+            id=record_id, score=fused, payload=deepcopy(record["payload"]), dense_score=dense, sparse_score=sparse,
         ))
     results.sort(key=lambda item: item.score, reverse=True)
     return results[:top_k]

@@ -1,7 +1,8 @@
 """Locks the separation between the three sources of action duration, which never overlap:
-- Semantic contract (PHYSICAL/SEND_MESSAGE/ERRAND): the executor hard-codes 1 step
+- Semantic contract (PHYSICAL/SEND_MESSAGE/ERRAND): execution takes 1 step
 - World physics (MOVE): Place.connections (the route's walking time over the step length); the LLM estimate is ignored
-- Agent's own estimate (TALK/REST/WORK/COVERT): action.estimated_steps as-is; WorldConfig can't take over
+- Agent's own estimate (REST/WORK/COVERT and autonomous TALK): action.estimated_steps as-is
+- Live TALK takes 1 step, independent of the estimate
 
 Built on an environment directly, independent of the WorldConfig interface.
 """
@@ -21,6 +22,7 @@ from engine.executors.simple import SimpleExecutor
 from engine.executors.social import SocialExecutor
 from engine.executors.work import WorkExecutor
 from core.interfaces.place import Place
+from tests.unit.world_setups import make_npc
 
 
 def _directory() -> LiveWorldDirectory:
@@ -159,10 +161,12 @@ async def test_covert_passthrough_action_estimated_steps_3(container) -> None:
 
 
 @pytest.mark.asyncio
-async def test_talk_passthrough_action_estimated_steps_5(container) -> None:
+@pytest.mark.parametrize("performed,expected_steps", [(False, 5), (True, 1)])
+async def test_talk_duration_respects_actor_participation(container, performed: bool, expected_steps: int) -> None:
     env = _make_environment()
     agent_1 = _stub_agent("agent-1")
     agent_2 = _stub_agent("agent-2")
+    agent_1.is_performed = performed
     action = _make_action(ActionType.TALK, estimated_steps=5, target_agent_id="agent-2")
     executor = SocialExecutor(container.llm_router, _directory())
     result = await executor.start(
@@ -170,33 +174,36 @@ async def test_talk_passthrough_action_estimated_steps_5(container) -> None:
         environment=env, message_system=None,  # type: ignore
     )
     assert isinstance(result, ActionExecutionState)
-    assert result.estimated_steps == 5
+    assert result.estimated_steps == expected_steps
 
 
 # ---------------------------------------------------------------------------
-# PHYSICAL / SEND_MESSAGE / ERRAND always take 1 step (hard-coded in the executor)
+# PHYSICAL / SEND_MESSAGE / ERRAND always take 1 step
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_send_message_always_one_step_regardless_of_estimated_steps(container) -> None:
-    """SEND_MESSAGE takes 1 step and returns an ActionResult even if the LLM says
-    estimated_steps=10."""
-    # Actually sending needs a MessageSystem, so this checks the code path instead:
-    # SimpleExecutor.start sends SEND_MESSAGE to _handle_send_message regardless of estimated_steps.
-    import inspect
-    src = inspect.getsource(SimpleExecutor.start)
-    assert "SEND_MESSAGE" in src or "send_message" in src, (
-        "SimpleExecutor.start 必须显式处理 SEND_MESSAGE 分支(硬编码 1 step)"
+    env = _make_environment()
+    action = _make_action(ActionType.SEND_MESSAGE, estimated_steps=10)
+    state = await SimpleExecutor(_directory()).start(
+        action, step=1, agents={}, environment=env, message_system=None,  # type: ignore
     )
+    assert state.estimated_steps == 1
+    assert state.extra["completed_result"].succeeded is True
 
 
-def test_physical_executor_hardcodes_one_step() -> None:
-    """PhysicalExecutor hard-codes estimated_steps=1 and doesn't read action.estimated_steps."""
+@pytest.mark.asyncio
+async def test_physical_executor_uses_one_step_regardless_of_estimate(container) -> None:
     from engine.executors.physical import PhysicalExecutor
-    import inspect
-    src = inspect.getsource(PhysicalExecutor)
-    assert "estimated_steps=1" in src
+
+    env = _make_environment()
+    action = _make_action(ActionType.PHYSICAL, estimated_steps=10, target_agent_id="agent-2")
+    state = await PhysicalExecutor(container.llm_router, _directory()).start(
+        action, step=1, agents={}, environment=env, message_system=None,  # type: ignore
+    )
+    assert "completed_result" not in state.extra
+    assert state.estimated_steps == 1
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +221,7 @@ def _stub_agent(agent_id: str):
             state=SimpleNamespace(current_location="loc_a"),
         ),
         is_main_character=False,
+        is_performed=False,
     )
 
 
@@ -225,10 +233,9 @@ async def test_errand_always_one_step_regardless_of_estimated_steps(container) -
     have to wait yourself. Charging the requester for the whole trip just makes it a slower MOVE.
     """
     from engine.executors.errand import ErrandExecutor
-    from world.models import NpcSeed
 
     env = _make_environment()
-    env.spawn_npc(NpcSeed(name="王二", description="走得快"), location_id="loc_a")
+    env.spawn_npc(make_npc("王二", description="走得快"), location_id="loc_a")
     npc_id = env.all_npcs()[0].npc_id
     action = _make_action(ActionType.ERRAND, estimated_steps=9)
     action.target = ActionTarget(acts_on=[Ref.npc(npc_id)])

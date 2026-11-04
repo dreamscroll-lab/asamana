@@ -8,6 +8,7 @@ import pytest
 
 from config import load_config
 from core.container import Container
+from providers.assembly import build_container
 from core.context import clear_log_context
 from core.interfaces.llm import LLMRouter, LLMScene
 from providers.llm.mock import MockLLMProvider
@@ -83,7 +84,7 @@ def test_config() -> object:
 # `adjudication_failed=True` null step and tests would never reach the executors' normal path.
 #
 # One combined payload serves all four; each parser reads only its own keys:
-#   physical: reason / success / outcome / fact / relation / actor_damage / target_damage
+#   physical: reason / success / outcome / fact / relation / doer_damage / target_damage
 #             / new_entity_state / deed / condition / condition_steps / frees_target
 #             (the three condition keys are left out on purpose: absent means no ongoing
 #             condition, which is what most physical actions leave. Condition tests supply their own.)
@@ -107,7 +108,7 @@ MOCK_ADJUDICATION_RESPONSE = json.dumps({
     "why": "",
     "observation": "两人说了几句便各自散了。",
     "relation": "neutral",
-    "actor_damage": 0.0,
+    "doer_damage": 0.0,
     "target_damage": 0.0,
     "new_entity_state": "被动过",
     "deed": "operate",
@@ -120,7 +121,7 @@ MOCK_ADJUDICATION_RESPONSE = json.dumps({
 
 @pytest.fixture()
 def container(test_config: object) -> Container:
-    container = Container.from_config(test_config)
+    container = build_container(test_config)
     # The adjudication scene must return valid JSON (see above), or every executor action
     # becomes an adjudication_failed null step.
     container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
@@ -138,7 +139,7 @@ def mock_build_container(test_config: object) -> Container:
     action is an `adjudication_failed` null step that never reaches the observer stream.
     """
 
-    c = Container.from_config(test_config)
+    c = build_container(test_config)
     providers = {scene: c.llm_router.get(scene) for scene in LLMScene}
     providers[LLMScene.WORLD_BUILDING] = MockLLMProvider(fixed_response=MOCK_WORLD_BUILDING_RESPONSE)
     providers[LLMScene.CAST_DESIGN] = MockLLMProvider(fixed_response=MOCK_CAST_DESIGN_RESPONSE)

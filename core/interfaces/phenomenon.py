@@ -24,7 +24,7 @@ Sited vs ambient
 
 Two sides hold this line, in opposite directions:
 
-- The prompt makes it well-formed: both authors (``EventSystem`` / ``DirectorChannel``) share
+- The prompt makes it well-formed: both authors (``NarrativeEditor`` / ``DirectorChannel``) share
   ``core.prompts.PHENOMENON_DEFINITION``, which says fire needs a location.
 - The code drops malformed ones: ``parse_broadcast_spec`` (``engine/injection.py``) turns sited +
   no location into ``NONE`` and logs a warning.

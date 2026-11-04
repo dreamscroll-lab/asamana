@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.container import Container
+from providers.assembly import build_container
 from core.interfaces.llm import LLMMessage, LLMScene
 from core.interfaces.message import Message
 from tests.unit.bus_tap import tap
@@ -16,7 +16,6 @@ def test_container_builds_from_test_config(container) -> None:
     assert not hasattr(container, "world_config")
     assert type(container.embedding).__name__ == "InMemoryEmbeddingProvider"
     assert type(container.vector_store).__name__ == "InMemoryVectorStore"
-    assert type(container.agent_store).__name__ == "InMemoryAgentStore"
     assert type(container.message_provider).__name__ == "InMemoryMessageProvider"
     assert type(container.snapshot).__name__ == "InMemorySnapshotProvider"
     assert description["message_provider"] == "InMemoryMessageProvider"
@@ -42,8 +41,8 @@ async def test_container_llm_router_routes_all_scenes_to_mock_provider(container
 
 @pytest.mark.asyncio
 async def test_containers_do_not_share_provider_state(test_config) -> None:
-    first = Container.from_config(test_config)
-    second = Container.from_config(test_config)
+    first = build_container(test_config)
+    second = build_container(test_config)
 
     await first.message_provider.enqueue(
         Message(

@@ -23,6 +23,7 @@ errands would be a second source of truth, and missing a sync leaves someone who
 from __future__ import annotations
 
 import uuid
+from textwrap import indent
 from typing import TYPE_CHECKING
 
 from core.interfaces.action import EntityStateChange, ErrandOrder
@@ -30,17 +31,17 @@ from core.interfaces.directory import WorldDirectory
 from core.interfaces.message import Message
 from core.interfaces.urgency import Urgency
 from core.logging import get_logger
-from core.prompts import SituationVoice
+from core.prompts import SituationVoice, render_location
 from engine.environment import IN_TRANSIT, UNPLACED
 from engine.narration import scene_line
-from engine.scene import SceneVisibility, assemble_scene_context
-from world.models import ActiveErrand
+from engine.scene import SceneVisibility, assemble_scene_context, situation_for
+from core.interfaces.entity import ActiveErrand
 
 if TYPE_CHECKING:
     from agent.agent import Agent
     from engine.environment import EnvironmentSystem
     from engine.message_system import MessageSystem
-    from world.models import Npc
+    from core.interfaces.entity import Npc
 
 logger = get_logger(__name__)
 
@@ -250,7 +251,7 @@ class NpcRunner:
         """
         scene = assemble_scene_context(
             npc.npc_id, environment=self._environment, directory=self._directory,
-            agents=agents, include_header=True, voice=SituationVoice.THIRD,
+            agents=agents, include_header=False, voice=SituationVoice.THIRD,
             visibility=SceneVisibility.OWN_EYES, with_ordinary_fixtures=False,
         ).text
         happenings = [
@@ -258,12 +259,16 @@ class NpcRunner:
             for ev in self._environment.spatial_for(agent_id=npc.npc_id).ambient_events
             if ev.content
         ]
-        if not happenings:
-            # State the absence: a blank reads as "he didn't look".
-            return f"   {scene}\n- 刚发生的事：无"
-        # One per line: each ambient ends with its own full stop.
-        lines = "\n".join(f"  · {text}" for text in happenings)
-        return f"   {scene}\n   - 刚发生的事：\n{lines}"
+        situation = situation_for(self._environment, npc.npc_id)
+        when = f"（{situation.time_label}）" if situation.time_label else ""
+        lines = [
+            f"- 地点：{render_location(situation.location_view)}",
+            scene,
+        ]
+        if happenings:
+            lines.append("- 当时发生的事：")
+            lines.extend(f"  · {text}" for text in happenings)
+        return f"到达时所见{when}：\n" + indent("\n".join(lines), "  ")
 
     async def _do_errand(
         self, npc: "Npc", order: "ErrandOrder", step: int, *, requester_id: str,
@@ -332,7 +337,7 @@ class NpcRunner:
                     owner_id=order.recipient_id if addressed else None,
                     location_id=None if addressed else here,
                     perception=scene_line(place, handed if addressed else dropped),
-                ), acting_agent_id=npc.npc_id)
+                ), doer_id=npc.npc_id)
                 reports.append(
                     f"{item_name}已交到{to_name}手上。" if addressed
                     else f"{item_name}已放在{place}。"
@@ -379,7 +384,7 @@ class NpcRunner:
                     sender_is_agent=False,
                     # Include the dictating sender, or standing there he'd receive his own order
                     # as someone forging his words.
-                    actor_ids=(npc.npc_id, requester_id),
+                    doer_ids=(npc.npc_id, requester_id),
                     metadata={"source": "errand"},
                 ))
                 if addressed:
@@ -407,7 +412,7 @@ class NpcRunner:
         """
         errands_done = "\n".join(f" - {line}" for line in errand.done if line)
         where = self._environment.narrative_location_name(errand.order.destination_id)
-        parts = [f"我去了{where}一趟，回来了。"]
+        parts = [f"任务报告：我去了{where}执行任务，回来了。"]
         if errands_done:
             parts.append(errands_done)
         # What he says stays true; the scene is a long snapshot, stale by next tick, that would
@@ -415,7 +420,7 @@ class NpcRunner:
         # downstream doesn't guess.
         spoken = "\n".join(parts)
         if errand.seen:
-            parts.append(f" 那里的情形是这样：\n    {errand.seen}")
+            parts.append(f" {errand.seen}")
         await self._messages.publish(Message(
             id=str(uuid.uuid4()),
             world_id=self._world_id,

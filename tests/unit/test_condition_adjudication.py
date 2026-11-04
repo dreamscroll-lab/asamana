@@ -65,7 +65,7 @@ def _verdict_payload(**over) -> str:
     base = {
         "reason": "他已被缚，无从抵抗", "deed": "restrain", "success": True,
         "outcome": "甲把乙的双腿也捆上。", "fact": "我把乙的双腿也捆上。", "why": "",
-        "relation": "negative", "target_damage": 0.0, "actor_damage": 0.0,
+        "relation": "negative", "target_damage": 0.0, "doer_damage": 0.0,
     }
     base.update(over)
     return json.dumps(base, ensure_ascii=False)
@@ -75,8 +75,8 @@ async def _judge(payload: str, *, is_person: bool = True, step: int = 34):
     ex, llm = _executor(payload)
     verdict = await ex._judge(
         _Agent("a1", "甲"), description="再捆他的腿", expected_outcome="", scene="",
-        target_block="乙（人）", is_person=is_person, has_entity=False,
-        seize_available=False, actor_holds=False,
+        target_block="乙（人）", shows_relations=False, is_person=is_person, has_entity=False,
+        seize_available=False, doer_holds=False,
         needs_relation=is_person, recipient_line="", step=step,
     )
     return verdict, llm
@@ -99,14 +99,14 @@ async def test_the_target_block_states_the_target_condition_with_duration() -> N
 
 
 @pytest.mark.asyncio
-async def test_the_actor_block_states_the_actor_condition() -> None:
+async def test_the_doer_block_states_the_doer_condition() -> None:
     """Basis for the escape valve: a bound person choosing PHYSICAL is struggling — the judge must
     know what he's struggling against and for how long to rule whether he breaks free."""
     ex, llm = _executor(_verdict_payload())
     await ex._judge(
         _Agent("a2", "乙", BOUND), description="奋力挣脱绳索", expected_outcome="", scene="",
-        target_block="绳索", is_person=False, has_entity=False, seize_available=False,
-        actor_holds=False, needs_relation=False, recipient_line="", step=34,
+        target_block="绳索", shows_relations=False, is_person=False, has_entity=False, seize_available=False,
+        doer_holds=False, needs_relation=False, recipient_line="", step=34,
     )
     user = llm.messages[0][1].content
     assert "处境：双手被反绑（已持续约1天）" in user
@@ -119,8 +119,8 @@ async def test_an_unconditioned_party_adds_no_line_at_all() -> None:
     ex, llm = _executor(_verdict_payload())
     await ex._judge(
         _Agent("a1", "甲"), description="推他一把", expected_outcome="", scene="",
-        target_block="乙（人）", is_person=True, has_entity=False, seize_available=False,
-        actor_holds=False, needs_relation=True, recipient_line="", step=3,
+        target_block="乙（人）", shows_relations=False, is_person=True, has_entity=False, seize_available=False,
+        doer_holds=False, needs_relation=True, recipient_line="", step=3,
     )
     assert "处境：" not in llm.messages[0][1].content
 
@@ -136,7 +136,7 @@ async def test_the_step_unit_is_taught_inside_the_field_that_needs_it() -> None:
     """
     _, llm = await _judge(_verdict_payload())
     system = llm.messages[0][0].content
-    for field in ("target_condition_steps", "actor_condition_steps"):
+    for field in ("target_condition_steps", "doer_condition_steps"):
         bullet = [ln for ln in system.splitlines() if ln.startswith(f"- {field}：")]
         assert len(bullet) == 1
         assert "一步约1小时" in bullet[0]
@@ -154,8 +154,9 @@ async def test_each_condition_field_gets_its_own_line() -> None:
     _, llm = await _judge(_verdict_payload())
     section = llm.messages[0][0].content.split("【输出】")[1].split('{"reason"')[0]
     lines = [ln for ln in section.splitlines() if ln.strip()]
-    for field in ("target_condition", "target_condition_steps", "frees_target",
-                  "actor_condition", "actor_condition_steps", "frees_actor"):
+    for field in ("target_condition", "target_condition_confined", "target_condition_steps",
+                  "frees_target", "doer_condition", "doer_condition_confined",
+                  "doer_condition_steps", "frees_doer"):
         assert sum(ln.startswith(f"- {field}：") for ln in lines) == 1
     assert not any(ln.startswith(("  ", "\t", "·")) or ln.lstrip().startswith("·") for ln in lines), \
         "输出段里出现了续行/子项——这一段每条都该是独立单行"
@@ -177,28 +178,58 @@ async def test_a_declared_condition_reaches_the_verdict() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_actor_condition_is_a_slot_of_its_own() -> None:
-    """A ruling's consequence can land on the actor (a bystander pins him down on the spot) — that
+async def test_the_doer_condition_is_a_slot_of_its_own() -> None:
+    """A ruling's consequence can land on the doer (a bystander pins him down on the spot) — that
     isn't the target's condition. With only one subject-less slot, the judge can only put it in the
     target column, so A's condition gets permanently stuck on B."""
     verdict, _ = await _judge(
-        _verdict_payload(actor_condition="被反剪双臂压在地上", actor_condition_steps=0)
+        _verdict_payload(doer_condition="被反剪双臂压在地上", doer_condition_steps=0)
     )
-    assert verdict.actor_condition_desc == "被反剪双臂压在地上"
+    assert verdict.doer_condition_desc == "被反剪双臂压在地上"
     assert verdict.target_condition_desc == ""
 
 
 @pytest.mark.asyncio
-async def test_the_actor_axis_survives_an_entity_verdict() -> None:
-    """What lands on the actor himself doesn't depend on whether he acted on a person or a thing
+async def test_the_doer_axis_survives_an_entity_verdict() -> None:
+    """What lands on the doer himself doesn't depend on whether he acted on a person or a thing
     (caught in a door while prying it, slipping out of ropes — neither goes through a target) — so
     this group is always present. It's also the escape valve's only landing point."""
     verdict, llm = await _judge(
-        _verdict_payload(actor_condition="右手被门夹伤", frees_actor=True), is_person=False,
+        _verdict_payload(doer_condition="右手被门夹伤", frees_doer=True), is_person=False,
     )
-    assert verdict.actor_condition_desc == "右手被门夹伤"
-    assert verdict.frees_actor is True
-    assert '"actor_condition"' in llm.messages[0][0].content
+    assert verdict.doer_condition_desc == "右手被门夹伤"
+    assert verdict.frees_doer is True
+    assert '"doer_condition"' in llm.messages[0][0].content
+
+
+@pytest.mark.asyncio
+async def test_each_side_declares_its_own_confinement() -> None:
+    verdict, _ = await _judge(_verdict_payload(
+        target_condition="被捆在柱上", target_condition_confined=True,
+        doer_condition="右手被门夹伤", doer_condition_confined=False,
+    ))
+    assert verdict.target_condition_confined is True
+    assert verdict.doer_condition_confined is False
+
+
+@pytest.mark.asyncio
+async def test_no_condition_means_no_confinement() -> None:
+    """A stray true beside an empty slot is dropped: confinement only exists on a condition."""
+    verdict, _ = await _judge(_verdict_payload(
+        target_condition="", target_condition_confined=True,
+        doer_condition="", doer_condition_confined=True,
+    ))
+    assert verdict.target_condition_confined is False
+    assert verdict.doer_condition_confined is False
+
+
+@pytest.mark.asyncio
+async def test_an_entity_verdict_never_confines_a_target() -> None:
+    verdict, _ = await _judge(
+        _verdict_payload(target_condition="门被锁死", target_condition_confined=True),
+        is_person=False,
+    )
+    assert verdict.target_condition_confined is False
 
 
 @pytest.mark.asyncio
@@ -207,9 +238,11 @@ async def test_a_silent_verdict_declares_nothing() -> None:
     "clear"."""
     verdict, _ = await _judge(_verdict_payload())
     assert verdict.target_condition_desc == ""
-    assert verdict.actor_condition_desc == ""
+    assert verdict.doer_condition_desc == ""
     assert verdict.frees_target is False
-    assert verdict.frees_actor is False
+    assert verdict.frees_doer is False
+    assert verdict.target_condition_confined is False
+    assert verdict.doer_condition_confined is False
 
 
 @pytest.mark.asyncio

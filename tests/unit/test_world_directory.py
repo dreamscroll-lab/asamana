@@ -6,8 +6,9 @@ from agent.personality import SoulLayer
 from core.interfaces.perception import PerceivedIdentity
 from engine.directory import LiveWorldDirectory
 from engine.environment import EnvironmentSystem
-from world.models import WorldEntity, WorldEntityType
+from core.interfaces.entity import WorldEntity, WorldEntityType
 from core.interfaces.place import Place
+from tests.unit.env_state import restore, saved
 
 
 def _make_location(entity_id: str, name: str, description: str = "") -> Place:
@@ -19,13 +20,12 @@ def _make_location(entity_id: str, name: str, description: str = "") -> Place:
     )
 
 
-def _make_item(entity_id: str, name: str, description: str = "", is_takeable: bool = True) -> WorldEntity:
+def _make_item(entity_id: str, name: str, description: str = "") -> WorldEntity:
     return WorldEntity(
         entity_id=entity_id,
         name=name,
         entity_type=WorldEntityType.ITEM,
         description=description,
-        is_takeable=is_takeable,
         is_public=True,
     )
 
@@ -121,8 +121,8 @@ def test_location_name_delegates_to_environment() -> None:
     directory, _ = _make_directory(environment=env)
     assert directory.location_name("taiji_hall") == "太极殿"
     # On miss, fall back to a descriptive reference, never the raw id (display text
-    # must not leak code-layer ids). Single resolver (narrative_location_name) → "此处".
-    assert directory.location_name("nowhere") == "此处"
+    # must not leak code-layer ids). Single resolver (narrative_location_name) → "某地".
+    assert directory.location_name("nowhere") == "某地"
 
 
 def test_entity_name_resolves_item_and_falls_back() -> None:
@@ -158,7 +158,7 @@ def test_describe_location_entry() -> None:
 
 def test_describe_item_entry() -> None:
     env = EnvironmentSystem()
-    env.register_entity(_make_item("seed_sword", "佩剑", description="一柄旧剑", is_takeable=True))
+    env.register_entity(_make_item("seed_sword", "佩剑", description="一柄旧剑"))
     directory, _ = _make_directory(environment=env)
     entry = directory.describe("seed_sword")
     assert entry is not None
@@ -199,9 +199,9 @@ def test_entity_registered_after_construction_is_visible() -> None:
 def test_entity_restored_after_construction_is_visible() -> None:
     source_env = EnvironmentSystem()
     source_env.register_entity(_make_item("seed_sword", "佩剑"))
-    state = source_env.snapshot_state()
+    state = saved(source_env)
 
     directory, fresh_env = _make_directory()
     assert directory.describe("seed_sword") is None
-    fresh_env.restore_state(state)
+    restore(fresh_env, state)
     assert directory.entity_name("seed_sword") == "佩剑"

@@ -25,10 +25,12 @@ from core.interfaces.urgency import Urgency
 from core.numeric import clamp
 from typing import NamedTuple
 
-from core.context import GivenFacts
+from core.context import GivenFacts, note_active_call_adoption
 from core.prompts import (
     EMOTION_INTENSITY_DEFINITION,
+    EMOTION_INTENSITY_RANGE,
     EMOTION_VALENCE_DEFINITION,
+    EMOTION_VALENCE_RANGE,
     URGENCY_SCALE_DESCRIPTION,
     SituationVoice,
     condition_line,
@@ -90,7 +92,7 @@ def build_perception_emotion_prompt(
         if goal.urgency >= Urgency.NORMAL:
             has_pressure = True
             signals.append(
-                f"外部压力（{goal.drive_type.value}，紧迫度{urgency_label(goal.urgency)}）：{goal.text}"
+                f"外部压力（{goal.drive_type.value}，紧急程度{urgency_label(goal.urgency)}）：{goal.text}"
             )
     if not signals:
         return None
@@ -101,7 +103,6 @@ def build_perception_emotion_prompt(
     relation_lines = render_relation_lines(perceived_relations or [])
     relation_block = (
         "\n我对其他人的关系认知（也属于我此刻的感知）：\n"
-        + f"关系刻度：{relation_legend()}\n"
         + "\n".join(f"- {l}" for l in relation_lines)
         if relation_lines
         else ""
@@ -153,6 +154,9 @@ def build_perception_emotion_prompt(
 以我这个人的第一视角，仅就我此刻感知到的信息，给出此刻未经权衡的即时情绪反应——这是我决策之前的本能第一反应，不是计划或决定；强度与信号本身的烈度相称。
 再结合**这一刻感知到的信息**和我是谁，判断这一刻触动了我哪些需求（对照字段定义里各需求的描述）：只给这一刻真正触动的打分，其余省略。
 
+【说明】
+我对其他人的关系认知各栏的含义：{relation_legend()}
+
 【我要守的】
  1.不为填满输出而臆造。reason 只能落在我所感知到的信息上，绝不脑补我没感知到的人和事；情绪与需求的烈度由信号本身决定，而非由"此刻该有反应"这种预期决定。**仅仅是某人在场**（没有指向我的动作或事件）是**弱信号**，至多引起与关系相称的**温和**反应（轻度警觉或轻度暖意）；**强烈情绪要有指向我的动作、事件或消息来支撑**——绝不把"某人在场"脑补成他正在做什么（逼近、窥视、密谈等信号里并不存在的举动）。
  2.既有心境只是底色，不是答案。我当前的心境（若有给出）只是这股本能反应的起点——新信息可能强化它、扭转它、或不触动它；我不照搬既有情绪当输出，只给这些新信息真正激起的那一下。
@@ -190,14 +194,20 @@ def parse_perception_emotion_response(content: str) -> PerceptionAppraisal:
     try:
         data = extract_json(content)
     except Exception:
+        note_active_call_adoption(False, "invalid_json")
         return empty
     if not isinstance(data, dict):
+        note_active_call_adoption(False, "response_not_an_object")
         return empty
     need_activation = _parse_need_activation(data)
     try:
         emotion = emotion_from_payload(data, triggered_by=str(data.get("reason", "")))
     except (TypeError, ValueError):
         emotion = None
+    # An absent emotion is a valid no-reaction answer; malformed fields must remain visible.
+    adopted = emotion is not None or bool(need_activation) or not data.get("emotion")
+    if not adopted:
+        note_active_call_adoption(False, "unusable_appraisal")
     return PerceptionAppraisal(emotion=emotion, need_activation=need_activation)
 
 
@@ -210,8 +220,8 @@ def emotion_from_payload(data: dict, *, triggered_by: str) -> EmotionState | Non
         return None
     return EmotionState(
         primary=parse_emotion_type(str(raw_emotion)),
-        intensity=clamp(float(data.get("intensity", 0.3)), 0.0, 1.0),
-        valence=clamp(float(data.get("valence", 0.0)), -1.0, 1.0),
+        intensity=clamp(float(data.get("intensity", 0.3)), *EMOTION_INTENSITY_RANGE),
+        valence=clamp(float(data.get("valence", 0.0)), *EMOTION_VALENCE_RANGE),
         triggered_by=triggered_by,
     )
 

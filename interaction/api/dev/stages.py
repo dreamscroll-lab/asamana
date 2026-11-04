@@ -12,13 +12,13 @@ from typing import Any
 
 from core.logging import get_logger
 
+from tuning import scenario_store
+from tuning.cli_terms import TUNING_TRACE_DIR
+
 from interaction.api.app import ApiServices
 from interaction.api.dev.jobs import PROJECT_ROOT, JobRegistry
 
 logger = get_logger(__name__)
-
-# Where `python -m tuning validate` writes its per-stage reports (tuning/cli.py:_TRACE_DIR).
-_TUNING_TRACE_DIR = Path("./data/tuning_traces")
 
 
 @contextmanager
@@ -26,11 +26,9 @@ def _scenario_errors() -> Any:
     """Scenario-library data errors are always 400: the request is invalid, the server is fine."""
     from fastapi import HTTPException
 
-    from tuning.scenario_store import ScenarioError
-
     try:
         yield
-    except ScenarioError as exc:
+    except scenario_store.ScenarioError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -48,7 +46,7 @@ def build_stages_router(services: ApiServices, jobs: JobRegistry) -> Any:
     _STAGE_META_CACHE: dict[str, Any] = {}
 
     async def _stage_meta() -> list[dict[str, Any]]:
-        """The stage registry, read from `python -m tuning stages` rather than importing tuning."""
+        """The stage registry, read from `python -m tuning stages` rather than importing `tuning.stages`."""
         if "stages" not in _STAGE_META_CACHE:
             proc = await asyncio.create_subprocess_exec(
                 sys.executable, "-m", "tuning", "stages",
@@ -63,7 +61,7 @@ def build_stages_router(services: ApiServices, jobs: JobRegistry) -> Any:
         return _STAGE_META_CACHE["stages"]
 
     def _stage_dir(stage_key: str, world_id: str) -> Path:
-        return _TUNING_TRACE_DIR / world_id / "validation" / stage_key
+        return Path(TUNING_TRACE_DIR) / world_id / "validation" / stage_key
 
     @router.get("/api/dev/stages")
     async def list_stages() -> dict[str, Any]:
@@ -71,7 +69,7 @@ def build_stages_router(services: ApiServices, jobs: JobRegistry) -> Any:
         # Which worlds each stage has run on; the directories themselves are the index.
         runs: dict[str, list[str]] = {}
         for s in stages:
-            base = _TUNING_TRACE_DIR
+            base = Path(TUNING_TRACE_DIR)
             found = [
                 d.name for d in sorted(base.iterdir())
                 if d.is_dir() and (d / "validation" / s["key"] / "summary.json").exists()
@@ -87,37 +85,33 @@ def build_stages_router(services: ApiServices, jobs: JobRegistry) -> Any:
     async def _scenario_ctx(stage_key: str) -> tuple[Path, list[str]]:
         """(scenario file path, the stage's scoring criteria).
 
-        Import only `tuning.scenario_store` (stdlib only), never `tuning.stages`: its registry
-        pulls hundreds of agent / engine / world / providers modules into the web process.
-        Criteria come from the cached `_stage_meta()`, the registry the subprocess reported.
+        Never import `tuning.stages`: its registry pulls hundreds of agent / engine / world /
+        providers modules into the web process. Criteria come from the cached `_stage_meta()`,
+        the registry the subprocess reported.
         """
         stages = await _stage_meta()
         spec = next((st for st in stages if st["key"] == stage_key), None)
         if spec is None:
             raise HTTPException(status_code=400, detail=f"Unknown stage {stage_key}")
-        return PROJECT_ROOT / "tuning" / "scenarios" / f"{stage_key}.json", spec["criteria"]
+        return scenario_store.scenario_path(stage_key), spec["criteria"]
 
     @router.get("/api/dev/stages/{stage_key}/scenarios")
     async def stage_scenarios(stage_key: str) -> dict[str, Any]:
         """The stage's scenario file as-is, including non-scenario keys such as `_comment` /
         `knob_sets`: the payload shape differs per stage, and the page only displays and edits it.
         """
-        from tuning import scenario_store
-
         path, _ = await _scenario_ctx(stage_key)
         with _scenario_errors():
             data = scenario_store.load(path)
         return {
             "stage": stage_key,
-            "path": f"tuning/scenarios/{stage_key}.json",
+            "path": str(path.relative_to(PROJECT_ROOT)),
             "file": data,
         }
 
     @router.post("/api/dev/stages/{stage_key}/scenarios")
     async def create_scenario(stage_key: str, payload: dict = Body(...)) -> dict[str, Any]:
         """Add a scenario (duplicate name -> 400), appended at the end; existing order is kept."""
-        from tuning import scenario_store
-
         path, criteria = await _scenario_ctx(stage_key)
         with _scenario_errors():
             name = scenario_store.add(path, payload, criteria=criteria, stage=stage_key)
@@ -127,8 +121,6 @@ def build_stages_router(services: ApiServices, jobs: JobRegistry) -> Any:
     @router.put("/api/dev/stages/{stage_key}/scenarios/{name}")
     async def update_scenario(stage_key: str, name: str, payload: dict = Body(...)) -> dict[str, Any]:
         """Replace the *name* entry. A different name in the payload renames it, in place."""
-        from tuning import scenario_store
-
         path, criteria = await _scenario_ctx(stage_key)
         with _scenario_errors():
             saved = scenario_store.replace(path, name, payload, criteria=criteria, stage=stage_key)
@@ -141,8 +133,6 @@ def build_stages_router(services: ApiServices, jobs: JobRegistry) -> Any:
     @router.delete("/api/dev/stages/{stage_key}/scenarios/{name}")
     async def remove_scenario(stage_key: str, name: str) -> dict[str, Any]:
         """Delete one entry. The file is tracked by git, so `git checkout` undoes a mistake."""
-        from tuning import scenario_store
-
         path, _ = await _scenario_ctx(stage_key)
         with _scenario_errors():
             scenario_store.delete(path, name, stage=stage_key)
@@ -198,8 +188,6 @@ def build_stages_router(services: ApiServices, jobs: JobRegistry) -> Any:
         if not isinstance(picked, list) or not all(isinstance(n, str) for n in picked):
             raise HTTPException(status_code=400, detail="scenario_names must be a list of strings")
         if picked:
-            from tuning import scenario_store
-
             path, _ = await _scenario_ctx(stage_key)
             with _scenario_errors():
                 known = set(scenario_store.names(path))

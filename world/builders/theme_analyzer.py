@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-from typing import AbstractSet, Any, Mapping, Sequence
+from typing import Any, Mapping, Sequence, TypeVar
 
+from agent.memory_types import IMPORTANCE_RANGE
 from agent.personality import SECRET_LABEL
 from agent.relation import NEUTRAL_AFFECTION, NEUTRAL_TRUST
-from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json_object, output_budget
+from core.interfaces.llm import (
+    LLMMessage, LLMResponse, LLMRouter, LLMScene, extract_json_object, output_budget,
+)
+from core.interfaces.perception import DEFAULT_ENTITY_STATE
 from core.logging import get_logger
-from core.prompts import MEMORY_IMPORTANCE_SCORE_DEFINITION, RELATION_LABEL_FORMAT
+from core.prompts import (
+    AFFECTION_RANGE, MEMORY_IMPORTANCE_SCORE_DEFINITION, RELATION_LABEL_FORMAT, TRUST_RANGE,
+)
 from core.coerce import (
     coerce_float, coerce_int, coerce_mapping_list, coerce_optional_float, coerce_str,
     coerce_str_list,
@@ -18,12 +23,26 @@ from core.coerce import (
 from engine.clock import SECONDS_PER_HOUR, resolve_step_seconds
 
 from world.models import (
-    AgentTier, HistoricalEventSeed, LocationSeed, NpcSeed, RelationSeed, ThemeAnalysis,
-    ThemeFigure, WorldEntitySeed,
+    AgentTier,
+    HistoricalEventSeed,
+    LocationSeed,
+    NpcSeed,
+    RelationSeed,
+    ThemeAnalysis,
+    ThemeFigure,
+    WorldEntitySeed,
+    name_key,
 )
-from world.builders import BUILD_ATTEMPTS
+from core.interfaces.entity import WorldEntityType
+from world.builders import BuildReplyRejected, complete_with_build_retry
 
 logger = get_logger(__name__)
+
+# What an NPC the build left undescribed reads as. Adjudication reads the description to judge what
+# the NPC can do, so this says plainly that nothing is known rather than inventing a trait.
+NPC_NO_DESCRIPTION = "无描述"
+
+_Named = TypeVar("_Named", ThemeFigure, NpcSeed, WorldEntitySeed)
 
 
 _THEME_PROMPT_SCHEMA = {
@@ -72,7 +91,7 @@ _THEME_PROMPT_SCHEMA = {
         ),
         "start_month": "<整数 1-12：开局月份，与主题季节相称>",
         "start_day": "<整数 1-30：开局日期>",
-        "start_hour": "<整数 0-23：开局时辰，与开局情境相称（如紧张夜戏取深夜、晨间集会取早时）>",
+        "start_hour": "<整数 0-23：开局小时，与开局情境相称（如紧张夜戏取深夜、晨间集会取早时）>",
         "hours_per_step": (
             "<整数 1-24：这个故事每推进一步跨过多少小时。判据见上方约束；由你据 core_tension 的"
             "时间尺度定，不要照抄默认值>"
@@ -98,16 +117,17 @@ _THEME_PROMPT_SCHEMA = {
             "from": "关系发起方人物姓名（A）",
             "to": "关系接收方人物姓名（B）",
             "labels": [
-                f"<A 对 B 的关系标签，{RELATION_LABEL_FORMAT}"
-                "角色一定要与 key_figures 中的 age 在逻辑上一致，比如兄弟关系A的年龄小于B的年龄，则A是B的弟弟，B是A的哥哥。这个很重要，一定要遵守！"
+                f"<B 是 A 的谁：A 是持有者，B 是对方，角色写的是 B 的位置，不是 A 的位置。{RELATION_LABEL_FORMAT}"
+                "方向示意（仅示意方向，不是内容）：A 是父、B 是子 → labels 写「父子:儿子」；"
+                "A 比 B 年幼的兄弟 → B 是 A 的哥哥，labels 写「兄弟:哥哥」。写完按「B 是 A 的<角色>」读一遍，读不通就是写反了。角色一定要与 key_figures 中的 age 在逻辑上一致，这个很重要，一定要遵守！"
                 "可多个标签并存。血缘、配偶、师徒等结构性绑定一旦设定不可删改。"
                 "同一世界内同一类型请使用一致措辞，不要用近义词。至多 3 个。>"
             ],
             "trust": "<浮点数 0.0-1.0：A 对 B 的信任度，0=完全不信任，0.5=中立，1=完全信任。先看上面写定的 labels，这个数值要与那层关系相称>",
-            "affection": "<浮点数 -1.0-1.0：A 对 B 的好感度，-1=憎恶，0=平淡，1=深爱。同样要与上面写定的 labels 相称>",
+            "affection": "<浮点数 -1.0-1.0：A 对 B 的好感度，-1=憎恶，0=平淡，1=强烈好感。同样要与上面写定的 labels 相称>",
             "reverse_labels": [
-                "<B 对 A 的关系标签数组，必填不可省略。结构同 labels，role 是 B 在该关系中的位置。"
-                "非对称关系务必反转角色：labels=[\"父子:儿子\"]（A 是儿子）则 reverse_labels=[\"父子:父亲\"]（B 是父亲）；"
+                "<A 是 B 的谁：持有者换成 B，角色写的是 A 的位置。必填不可省略，结构同 labels。"
+                "非对称关系务必反转角色：labels=[\"父子:儿子\"]（B 是 A 的儿子）则 reverse_labels=[\"父子:父亲\"]（A 是 B 的父亲）；"
                 "对称关系（如「相识」「同事」）则原样重复同一标签。至多 3 个。>"
             ],
             "reverse_trust": "<浮点数 0.0-1.0：B 对 A 的信任度。必填，即使与 trust 相同也要写出；与上面写定的 reverse_labels 相称>",
@@ -116,7 +136,7 @@ _THEME_PROMPT_SCHEMA = {
     ],
     "historical_events": [
         {
-            "event": "历史事件描述（一句话，≤50字，需要注意时间顺序，这是已经发生过的事情，如果内容中提到时间，那时间必须是在开局时间（world_time_config）之前。）",
+            "event": "过往事件描述（一句话，≤50字，需要注意时间顺序，这是已经发生过的事情，如果内容中提到时间，那时间必须是在开局时间（world_time_config）之前。）",
             "hours_before_start": "<正整数，事件发生于故事开始前多少小时，如48表示两天前>",
             "related_figures": ["涉及的人物姓名，至多 4 人"],
             "importance": MEMORY_IMPORTANCE_SCORE_DEFINITION,
@@ -140,7 +160,7 @@ _THEME_PROMPT_SCHEMA = {
             "location_name": "所在地点名称（必须是可用地点列表中的 name 字段值）",
             "content": (
                 "≤80字：它**上面写着、记着的东西本身**——纸上写的内容、账上的数、碑上的字；"
-                "拿到它的人读到的就是这一栏，写实写全，不写「一封密信」这种概括。"
+                "拿到它的人读到的就是这一栏，要有具体、实质内容、写实写全，不写「一封密信」这种概括或者介绍。"
                 "不能直接点出任何人的 secret。"
                 "它长什么样归 description；没有写字记事的东西内容给空字符串"
             ),
@@ -265,7 +285,7 @@ def _cast_size_constraint(min_agents: int | None, max_agents: int | None) -> str
         size = f"总数不超过 {max_agents} 个"
     else:
         size = f"总数不少于 {min_agents} 个"
-    line = f"- 数量：key_figures {size}，优先保留主要角色。"
+    line = f"- 数量：key_figures {size}，优先保留主角。"
     if min_agents is not None:
         line += (
             "凑不满下限说明这个主题里真正牵涉其中的人你还没找齐——回到 core_tension "
@@ -290,67 +310,36 @@ def _npc_count_constraint(max_npcs: int) -> str:
     )
 
 
-def _distinct_entity_seeds(seeds: Sequence[WorldEntitySeed]) -> list[WorldEntitySeed]:
-    """Keep one thing per id: of two seeds with the same id, only the later one stays in the world.
+def _distinct_names(
+    figures: Sequence[ThemeFigure],
+    npc_seeds: Sequence[NpcSeed],
+    entity_seeds: Sequence[WorldEntitySeed],
+) -> tuple[list[ThemeFigure], list[NpcSeed], list[WorldEntitySeed]]:
+    """One name names one referent across the cast, NPCs and things: of names that collide
+    (``name_key``), the first stands, the cast keeping theirs before NPCs, NPCs before things.
 
-    Decide on the derived entity_id, not name: ``Letter`` and ``letter`` differ as names but share
-    a slug. The prompt doesn't forbid duplicate names, and a silently missing catalyst is impossible
-    to spot: both entity_seed_instantiated logs are there.
+    Decided here, on the names the LLM wrote, because a name is the LLM's and an id is code's:
+    ids come later and only from names already distinct, and the analysis says what the world
+    builds. People and prompts tell everyone apart by name, so two of one name could never be told
+    apart downstream. If dropping a figure leaves too few, the caller's cast-size check retries.
     """
-    kept: list[WorldEntitySeed] = []
-    seen: set[str] = set()
-    for seed in seeds:
-        if seed.entity_id in seen:
-            logger.warning(
-                "entity_seed_duplicate_id",
-                extra={"seed_name": seed.name, "entity_id": seed.entity_id},
-            )
-            continue
-        seen.add(seed.entity_id)
-        kept.append(seed)
-    return kept
+    taken: set[str] = set()
 
+    def kept(items: Sequence[_Named], event: str) -> list[_Named]:
+        out = []
+        for item in items:
+            if name_key(item.name) in taken:
+                logger.warning(event, extra={"taken_name": item.name})
+                continue
+            taken.add(name_key(item.name))
+            out.append(item)
+        return out
 
-def _distinct_npc_seeds(
-    seeds: Sequence[NpcSeed], figure_names: AbstractSet[str]
-) -> list[NpcSeed]:
-    """Keep one body per appellation, and none that answers to a key figure's name.
-
-    This tier's name is an appellation, so both rules are the same thing: one form of address can
-    only refer to one group in the world. Colliding with a key_figure is worse: one name would cover
-    two bodies that don't even think the same way (one weighs things, one only runs errands), and
-    since agents refer to each other by name, downstream can never tell them apart. Dropping the
-    mindless one is the only fix.
-
-    The prompt already forbids both, but when that fails, the world pays for it every step.
-    """
-    kept: list[NpcSeed] = []
-    seen: set[str] = set()
-    for seed in seeds:
-        if seed.name in figure_names:
-            logger.warning("npc_seed_shadows_key_figure", extra={"npc_name": seed.name})
-            continue
-        if seed.name in seen:
-            logger.warning("npc_seed_duplicate_name", extra={"npc_name": seed.name})
-            continue
-        seen.add(seed.name)
-        kept.append(seed)
-    return kept
-
-
-def _distinct_figures(figures: Sequence[ThemeFigure]) -> list[ThemeFigure]:
-    """Keep only the first of duplicate names. Agents refer to each other by name, so two agents with
-    the same name can never be told apart downstream; if that leaves too few, the caller's cast-size
-    check triggers a retry."""
-    kept: list[ThemeFigure] = []
-    seen: set[str] = set()
-    for figure in figures:
-        if figure.name in seen:
-            logger.warning("key_figure_duplicate_name", extra={"figure_name": figure.name})
-            continue
-        seen.add(figure.name)
-        kept.append(figure)
-    return kept
+    return (
+        kept(figures, "key_figure_name_taken"),
+        kept(npc_seeds, "npc_seed_name_taken"),
+        kept(entity_seeds, "entity_seed_name_taken"),
+    )
 
 
 def _theme_max_tokens(max_agents: int | None, max_npcs: int = 0) -> int:
@@ -413,72 +402,60 @@ class ThemeAnalyzer:
             LLMMessage(role="system", content=system_prompt),
             LLMMessage(role="user", content=user_prompt),
         ]
-        last_exc: BaseException | None = None
-        for attempt in range(BUILD_ATTEMPTS):
-            try:
-                response = await self._llm_router.complete(
-                    # Everything comes out in one call. The budget varies with cast size, so _theme_max_tokens computes it (see its derivation).
-                    # (Truncation → invalid JSON → futile retry → Rule 2 raise, so give it enough. max_tokens is a cap, not billed.)
-                    LLMScene.WORLD_BUILDING, messages,
-                    max_tokens=_theme_max_tokens(max_agents, max_npcs),
-                    json_mode=True,
+        async def call() -> LLMResponse:
+            return await self._llm_router.complete(
+                # Everything comes out in one call. The budget varies with cast size, so _theme_max_tokens computes it (see its derivation).
+                # (Truncation → invalid JSON → futile retry → Rule 2 raise, so give it enough. max_tokens is a cap, not billed.)
+                LLMScene.WORLD_BUILDING, messages,
+                max_tokens=_theme_max_tokens(max_agents, max_npcs),
+                json_mode=True,
+            )
+
+        def parse(content: str) -> ThemeAnalysis:
+            payload = extract_json_object(content)
+            if payload is None:
+                raise BuildReplyRejected(
+                    f"LLM returned no parseable JSON for theme '{theme}': {content[:200]}",
+                    "no_json_object",
                 )
-                payload = extract_json_object(response.content)
-                if payload is not None:
-                    analysis = self._analysis_from_payload(
-                        theme, payload, runtime_context, response.content
-                    )
-                    figure_count = len(analysis.key_figures)
-                    if required <= figure_count and (ceiling is None or figure_count <= ceiling):
-                        logger.info(
-                            "world_theme_analyzed",
-                            extra={
-                                "theme": theme,
-                                "world_name": analysis.world_name,
-                                "figure_count": len(analysis.key_figures),
-                                "location_count": len(analysis.key_locations),
-                            },
-                        )
-                        return analysis
-                    # A dedicated event name + structured counts so cast-size mismatches can be aggregated (the
-                    # attempt_failed below is shared by every failure mode and only has the numbers in free text).
-                    # world_id is set into the log context by build(), so it needn't be passed here.
-                    logger.warning(
-                        "cast_size_rejected",
-                        extra={
-                            "theme": theme,
-                            "attempt": attempt + 1,
-                            "figure_count": figure_count,
-                            "min_agents": required,
-                            "max_agents": ceiling,
-                        },
-                    )
-                    last_exc = ValueError(
-                        f"LLM returned {figure_count} key_figures for theme '{theme}', "
-                        f"outside the required {required}-{ceiling if ceiling else '∞'}"
-                    )
-                else:
-                    last_exc = ValueError(
-                        f"LLM returned no parseable JSON for theme '{theme}' "
-                        f"(attempt {attempt + 1}): {response.content[:200]}"
-                    )
+            analysis = self._analysis_from_payload(theme, payload, runtime_context, content)
+            figure_count = len(analysis.key_figures)
+            if not (required <= figure_count and (ceiling is None or figure_count <= ceiling)):
+                # A dedicated event name + structured counts so cast-size mismatches can be aggregated (the
+                # attempt_failed event is shared by every failure mode and only has the numbers in free text).
+                # world_id is set into the log context by build(), so it needn't be passed here.
                 logger.warning(
-                    "theme_analysis_attempt_failed",
-                    extra={"theme": theme, "attempt": attempt + 1, "reason": str(last_exc)},
+                    "cast_size_rejected",
+                    extra={
+                        "theme": theme,
+                        "figure_count": figure_count,
+                        "min_agents": required,
+                        "max_agents": ceiling,
+                    },
                 )
-                if attempt < BUILD_ATTEMPTS - 1:
-                    await asyncio.sleep(1.0)
-            except Exception as exc:
-                last_exc = exc
-                logger.warning(
-                    "theme_analysis_attempt_failed",
-                    extra={"theme": theme, "attempt": attempt + 1, "error": str(exc)},
+                raise BuildReplyRejected(
+                    f"LLM returned {figure_count} key_figures for theme '{theme}', "
+                    f"outside the required {required}-{ceiling if ceiling else '∞'}",
+                    "cast_size_out_of_range",
                 )
-                if attempt < BUILD_ATTEMPTS - 1:
-                    await asyncio.sleep(1.0)
-        raise ValueError(
-            f"ThemeAnalyzer failed for theme '{theme}' after {BUILD_ATTEMPTS} attempts"
-        ) from last_exc
+            logger.info(
+                "world_theme_analyzed",
+                extra={
+                    "theme": theme,
+                    "world_name": analysis.world_name,
+                    "figure_count": figure_count,
+                    "location_count": len(analysis.key_locations),
+                },
+            )
+            return analysis
+
+        return await complete_with_build_retry(
+            call,
+            parse,
+            attempt_failed_event="theme_analysis_attempt_failed",
+            log_extra={"theme": theme},
+            failure=f"ThemeAnalyzer failed for theme '{theme}'",
+        )
 
     def _build_prompt(
         self,
@@ -531,10 +508,10 @@ class ThemeAnalyzer:
         # constraints unrelated to max_agents live here; the count constraint carries the per-call max_agents value and stays in user.
         constraint_lines = ["【约束】"]
         constraint_lines.append(
-            "- 角色重要度（importance）：main = 在 core_tension 中具备独立判断与抉择能力、"
+            "- 角色叙事层级（importance）：main = 在 core_tension 中具备独立判断与抉择能力、"
             "其决定能改变张力走向的角色（包括握有裁决权、否决权或最终决断权的角色，即使其"
-            "当前态度消极或被动）；background = 主要服从他人意志、认知自主性低、只需构成可信"
-            "世界背景的角色。判定依据是叙事中心性与认知自主性，而非角色是否激进活跃。"
+            "当前态度消极或被动）；background = 在叙事中处于次要位置、构成可信世界背景的角色，"
+            "同样具有独立意志与判断能力。判定依据是叙事中心性，而非认知能力或角色是否激进活跃。"
             "角色不必都有「对立面」——根据 core_tension 的形态，角色可以是寻找者、等待者、"
             "改变中的人、目击者、抉择者等任一形态。"
         )
@@ -546,6 +523,8 @@ class ThemeAnalyzer:
             "- 性别一致性：key_figures 的 gender 必须与人物之间分性别的称谓一致："
             "关系标签里指明性别的那些（父子/父女、兄弟/兄妹、夫/妻之类）所指的性别，"
             "与该人物的 gender 不得矛盾；role 本身隐含性别时亦然。"
+            "labels 表示的是 B(to) 对于 A(from) 来说的关系描述，即表示 B 是 A 的谁，比如 B 是 A 的老板；"
+            "reverse_labels 表示的是 A(from) 对于 B(to) 来说的关系描述，即表示 A 是 B 的谁，比如 A 是 B 的员工。这个非常重要，必须遵守这个规则。 "
         )
         constraint_lines.append(
             "- 前史：生成至多 6 条 historical_events。它们都是**已经发生过**的事，"
@@ -656,6 +635,23 @@ class ThemeAnalyzer:
             **world_time_defaults,
             **world_time_config,
         }
+        # Repair the model's loose values here: WorldSetup.validate is strict, so a "20" or a 31st
+        # day passed through would fail the build after every LLM call has been paid for.
+        merged_time_config.update(
+            era_name=coerce_str(merged_time_config.get("era_name")),
+            start_month=coerce_int(
+                merged_time_config.get("start_month"),
+                default=world_time_defaults["start_month"], minimum=1, maximum=12,
+            ),
+            start_day=coerce_int(
+                merged_time_config.get("start_day"),
+                default=world_time_defaults["start_day"], minimum=1, maximum=30,
+            ),
+            start_hour=coerce_int(
+                merged_time_config.get("start_hour"),
+                default=world_time_defaults["start_hour"], minimum=0, maximum=23,
+            ),
+        )
         # The starting year has no fallback: maps carry no year (WorldConfig contract), and an arbitrary
         # one would put the wrong year on every timestamp ("1年9月1日"). Per Rule 2, fail and retry
         # instead; analyze() has one retry.
@@ -690,68 +686,49 @@ class ThemeAnalyzer:
             for item in coerce_mapping_list(payload.get("key_figures"))
             if coerce_str(item.get("name"))
         ]
-        figures = _distinct_figures(figures)
         relations = [
             RelationSeed(
                 source_name=coerce_str(item.get("from")),
                 target_name=coerce_str(item.get("to")),
-                trust=coerce_float(item.get("trust"), default=NEUTRAL_TRUST, minimum=0.0, maximum=1.0),
-                affection=coerce_float(item.get("affection"), default=NEUTRAL_AFFECTION, minimum=-1.0, maximum=1.0),
+                trust=coerce_float(
+                    item.get("trust"), default=NEUTRAL_TRUST,
+                    minimum=TRUST_RANGE[0], maximum=TRUST_RANGE[1],
+                ),
+                affection=coerce_float(
+                    item.get("affection"), default=NEUTRAL_AFFECTION,
+                    minimum=AFFECTION_RANGE[0], maximum=AFFECTION_RANGE[1],
+                ),
                 labels=coerce_str_list(item.get("labels")),
-                reverse_trust=coerce_optional_float(item.get("reverse_trust"), minimum=0.0, maximum=1.0),
-                reverse_affection=coerce_optional_float(item.get("reverse_affection"), minimum=-1.0, maximum=1.0),
+                reverse_trust=coerce_optional_float(
+                    item.get("reverse_trust"), minimum=TRUST_RANGE[0], maximum=TRUST_RANGE[1],
+                ),
+                reverse_affection=coerce_optional_float(
+                    item.get("reverse_affection"),
+                    minimum=AFFECTION_RANGE[0], maximum=AFFECTION_RANGE[1],
+                ),
                 reverse_labels=coerce_str_list(item.get("reverse_labels")),
             )
             for item in coerce_mapping_list(payload.get("initial_relations"))
             if coerce_str(item.get("from")) and coerce_str(item.get("to"))
         ]
-        # Backstory "hours ago" → steps uses the step duration just set here: both ends are narrative
-        # durations and the conversion is pure code-layer quantization, with no outside seconds value borrowed from world_context.
-        seconds_per_step = int(merged_time_config["seconds_per_step"])
         historical_events = [
             HistoricalEventSeed(
                 event=coerce_str(item.get("event")),
-                step_offset=-max(1, round(
-                    coerce_int(item.get("hours_before_start"), default=6, minimum=1)
-                    * SECONDS_PER_HOUR
-                    / seconds_per_step
-                )),
+                hours_before_start=coerce_int(item.get("hours_before_start"), default=6, minimum=1),
                 related_figures=coerce_str_list(item.get("related_figures")),
                 importance=coerce_float(
-                    item.get("importance"), default=0.5, minimum=0.0, maximum=1.0
+                    item.get("importance"), default=0.5,
+                    minimum=IMPORTANCE_RANGE[0], maximum=IMPORTANCE_RANGE[1],
                 ),
             )
             for item in coerce_mapping_list(payload.get("historical_events"))
             if coerce_str(item.get("event"))
         ]
 
-        entity_seeds = _distinct_entity_seeds([
-            WorldEntitySeed(
-                name=coerce_str(item.get("name")),
-                entity_type=coerce_str(item.get("entity_type"), fallback="item"),
-                description=coerce_str(item.get("description")),
-                initial_state=coerce_str(item.get("initial_state"), fallback="intact"),
-                location_name=coerce_str(item.get("location_name")),
-                content=coerce_str(item.get("content")),
-            )
-            for item in coerce_mapping_list(payload.get("world_entity_seeds"))
-            if coerce_str(item.get("name"))
-        ])
+        entity_seeds = _entity_seeds(payload)
+        npc_seeds = _npc_seeds(payload)
 
-        npc_seeds = _distinct_npc_seeds(
-            [
-                NpcSeed(
-                    name=coerce_str(item.get("name")),
-                    gender=_normalize_gender(item.get("gender")),
-                    age=coerce_int(item.get("age"), default=30, minimum=1, maximum=120),
-                    description=coerce_str(item.get("description")),
-                    location_name=coerce_str(item.get("location_name")),
-                )
-                for item in coerce_mapping_list(payload.get("npcs"))
-                if coerce_str(item.get("name"))
-            ],
-            {figure.name for figure in figures},
-        )
+        figures, npc_seeds, entity_seeds = _distinct_names(figures, npc_seeds, entity_seeds)
 
         if not figures:
             return ThemeAnalysis(
@@ -833,10 +810,56 @@ _GENDER_SYNONYMS: dict[str, str] = {
 }
 
 
+def _entity_seeds(payload: Mapping[str, Any]) -> list[WorldEntitySeed]:
+    """The payload's things. One whose type isn't a ``WorldEntityType`` is dropped: whether it can
+    be taken follows from the type, and guessing it would decide that for the world."""
+    kinds = {kind.value for kind in WorldEntityType}
+    seeds: list[WorldEntitySeed] = []
+    for item in coerce_mapping_list(payload.get("world_entity_seeds")):
+        name = coerce_str(item.get("name"))
+        if not name:
+            continue
+        entity_type = coerce_str(item.get("entity_type"), fallback=WorldEntityType.ITEM.value)
+        if entity_type not in kinds:
+            logger.warning("entity_seed_type_unknown", extra={"seed_name": name, "entity_type": entity_type})
+            continue
+        seeds.append(WorldEntitySeed(
+            name=name,
+            entity_type=entity_type,
+            description=coerce_str(item.get("description")),
+            initial_state=coerce_str(item.get("initial_state"), fallback=DEFAULT_ENTITY_STATE),
+            location=coerce_str(item.get("location_name")),
+            content=coerce_str(item.get("content")),
+        ))
+    return seeds
+
+
+def _npc_seeds(payload: Mapping[str, Any]) -> list[NpcSeed]:
+    """The payload's NPCs. A missing description becomes ``NPC_NO_DESCRIPTION``, which
+    ``WorldSetup.validate`` accepts, so one omission doesn't fail the whole build."""
+    seeds: list[NpcSeed] = []
+    for item in coerce_mapping_list(payload.get("npcs")):
+        name = coerce_str(item.get("name"))
+        if not name:
+            continue
+        description = coerce_str(item.get("description"))
+        if not description:
+            logger.warning("npc_seed_description_missing", extra={"npc_name": name})
+            description = NPC_NO_DESCRIPTION
+        seeds.append(NpcSeed(
+            name=name,
+            gender=_normalize_gender(item.get("gender")),
+            age=coerce_int(item.get("age"), default=30, minimum=1, maximum=120),
+            description=description,
+            location=coerce_str(item.get("location_name")),
+        ))
+    return seeds
+
+
 def _normalize_gender(value: Any) -> str:
-    """The prompt's 「男 / 女」, canonical: these two values are what every consumer may compare
-    against (the frontend picks a body sheet by it). Anything else becomes "" — unknown, left out
-    of prompts, never guessed."""
+    """The prompt's 「男 / 女」, canonical (``GENDERS``): these two values are what every consumer
+    may compare against (the frontend picks a body sheet by it). Anything else becomes "" —
+    unknown, left out of prompts, never guessed."""
     return _GENDER_SYNONYMS.get(coerce_str(value).lower(), "")
 
 

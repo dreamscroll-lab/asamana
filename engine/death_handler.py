@@ -77,7 +77,7 @@ class DeathHandler:
             # teardown, not interrupt: the dead don't "decide to stop".
             await self._processor.force_teardown(
                 agent, agents_dict, step,
-                cause=f"{agent.personality.soul.name}已经失去生命力",
+                cause=f"{agent.personality.soul.name}的生命值已经耗尽",
                 trigger="death",
             )
             death_location = self._environment.get_body_location(agent.agent_id)
@@ -113,7 +113,7 @@ class DeathHandler:
             # perception has already run.
             soul = agent.personality.soul
             identity = f"{soul.name}（{soul.role}）" if soul.role else soul.name
-            content = f"{identity}{agent.death_cause}" if agent.death_cause else f"{identity}生命力耗尽。"
+            content = f"{identity}{agent.death_cause}" if agent.death_cause else f"{identity}生命值耗尽。"
             if death_place:
                 content = f"在{death_place}，{content}"
             self._broadcast_channel.publish(Broadcast(

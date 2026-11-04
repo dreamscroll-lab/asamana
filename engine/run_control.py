@@ -17,6 +17,14 @@ import asyncio
 from enum import Enum
 
 
+class StepWithdrawn(Exception):
+    """Raised through a step suspended mid-way (on an actor's answer) when the run stops.
+
+    The step is left half-applied in memory and is never committed; the owner must discard the
+    session and restore from the last persisted step.
+    """
+
+
 class RunState(str, Enum):
     IDLE = "idle"          # session exists, no run loop active
     RUNNING = "running"    # run loop advancing steps
@@ -40,10 +48,6 @@ class RunController:
         self._stop_requested = False
         # One-shot: let exactly one more step through, then park again. See step_once.
         self._single_step = False
-
-    @property
-    def is_paused(self) -> bool:
-        return not self._resume.is_set() and not self._stop_requested
 
     @property
     def stop_requested(self) -> bool:

@@ -6,7 +6,7 @@ then drives the **real production maintenance mechanism** by kind:
   - compress → memory_system.compress      (deterministic mechanism + LLM summary semantic judge)
   - reflect  → reflection_engine.reflect    (deterministic mechanism + LLM insight semantic judge)
 
-Persistence isolation: InMemoryVectorStore + _DryRunAgentStore; baseline ./data stays clean.
+Persistence isolation: restore runs on isolate_container's shadow stores; baseline ./data stays clean.
 
 Deterministic checks (always run) are hard tripwires:
   decay    — anchors (CRITICAL / insight / high-|valence| experiential) keep their decay_score;
@@ -33,6 +33,7 @@ from core.container import Container
 from core.interfaces.llm import LLMProvider, LLMScene
 from core.logging import get_logger
 from world.initializer import WorldInitializer
+from tuning.dry_run import isolate_container
 
 from tuning.judge_llm import create_judge
 from tuning.judge_memory_maintain import judge_memory_maintain
@@ -240,7 +241,7 @@ async def validate_memory_maintain(
     scenarios = load_scenarios(scenarios_path, _DEFAULT_SCENARIOS)
     judge_llm = judge_provider or create_judge(config, judge_model)
 
-    world = await WorldInitializer(container).restore(world_id)
+    world = await WorldInitializer(await isolate_container(container, world_id)).restore(world_id)
     agent_ids = set(world.agents.keys())
     out_dir = Path(trace_dir) / world_id / "validation" / "memory_maintain"
 

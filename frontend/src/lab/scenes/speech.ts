@@ -1,6 +1,6 @@
 import { ActionType, Deed, Phase } from "../../lib/contract";
 import type { LabPlaces } from "../places";
-import { CHE, Emotion, LAN, LIN, MO, Need, SHI, YAN, aimNothing, aimTalk, did, execId, nextSeq, step, type LabActor, type LabScene, type Room, who } from "./fixtures";
+import { CHE, Emotion, LAN, LIN, MO, Need, SHI, YAN, aimNothing, aimTalk, did, execId, nextSeq, step, type LabCharacter, type LabScene, type Room, who } from "./fixtures";
 
 /**
  * A conversation as the engine emits one: two records per beat sharing one `execution_id` (each
@@ -10,11 +10,11 @@ import { CHE, Emotion, LAN, LIN, MO, Need, SHI, YAN, aimNothing, aimTalk, did, e
  * newline; the renderer's `seenDialogue` guard keeps the exchange from playing twice.
  */
 function talkBeats(
-  a: LabActor,
-  b: LabActor,
+  a: LabCharacter,
+  b: LabCharacter,
   room: Room,
-  lines: [LabActor, string][],
-  overheard: LabActor[] = [],
+  lines: [LabCharacter, string][],
+  overheard: LabCharacter[] = [],
   // The judge's verdict and, on failure, its reason; both ride on the closing beat only.
   succeeded = true,
   failure = "",
@@ -199,7 +199,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
     {
       id: "send-message",
       group: "言语",
-      title: "send_message · 传信（定向）",
+      title: "send_message · 发送消息（定向）",
       watch:
         "一封信两拍，隔一步，各说各的事：第 2 拍是 show（递出）姿势 + 信封飞向阿霖，**不带字**（他此刻还不知道）；" +
         "第 3 拍才是「读到」——信在阿霖头上打开，标题 ✉ 阿墨、穿阿墨的身份色（和信封火漆同色），正文是信的内容。" +
@@ -224,13 +224,11 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
             {
               message_id: "9f2c41e0-5a7b-4d16-8c33-2b1f7a0e94dd",
               sender_id: MO.id,
-              sender_name: MO.name,
+              anonymous: false, sender_name: MO.name,
               receiver_ids: [LIN.id],
-              perceived_summary: "阿墨约你明日辰时在坊门相见。",
+              content: "阿墨约你明日辰时在坊门相见。",
               spoken: "阿墨约你明日辰时在坊门相见。",
               scope: "direct",
-              place: "",
-              place_id: "",
               seq: nextSeq(),
             },
           ],
@@ -243,7 +241,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
     {
       id: "mail-many-readers",
       group: "言语",
-      title: "传信 · 一封信两个收件人",
+      title: "发送消息 · 一封信两个收件人",
       watch:
         "一封信同时指名阿石和阿霖。**两个人都要持有**——两颗头顶各挂一个 ✉ 徽标，各自点开都是同一封信的全文。" +
         "指名私信的每一个收件人都是真的私下收到了，地图不得替其中一个判定「你没真收到」（「别把一封公告变成 N 封私信」" +
@@ -257,13 +255,11 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
             {
               message_id: "6f5a7182-93a4-b5c6-d7e8-f9a0b1c2d3e4",
               sender_id: MO.id,
-              sender_name: MO.name,
+              anonymous: false, sender_name: MO.name,
               receiver_ids: [SHI.id, LIN.id],
-              perceived_summary: "今夜三更，坊门东侧见，两位都来。",
+              content: "今夜三更，坊门东侧见，两位都来。",
               spoken: "今夜三更，坊门东侧见，两位都来。",
               scope: "direct",
-              place: "",
-              place_id: "",
               seq: nextSeq(),
             },
           ],
@@ -274,7 +270,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
     {
       id: "mail-to-the-dead",
       group: "言语",
-      title: "传信 · 收信人已倒下",
+      title: "发送消息 · 收信人已倒下",
       watch:
         "信寄到时阿石已经倒下。**他不该挂 ✉ 徽标，也不该展开气泡**——读信是活人才做的事，" +
         "一具尸体顶着徽标、在自己遗体上摊开一封信，是地图在断言一次没发生过的认知。" +
@@ -291,13 +287,11 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
             {
               message_id: "7a6b8293-a4b5-c6d7-e8f9-a0b1c2d3e4f5",
               sender_id: MO.id,
-              sender_name: MO.name,
+              anonymous: false, sender_name: MO.name,
               receiver_ids: [SHI.id, LIN.id],
-              perceived_summary: "事情有变，你们两个都先别动。",
+              content: "事情有变，你们两个都先别动。",
               spoken: "事情有变，你们两个都先别动。",
               scope: "direct",
-              place: "",
-              place_id: "",
               seq: nextSeq(),
             },
           ],
@@ -310,7 +304,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
     {
       id: "mail-overflow",
       group: "言语",
-      title: "传信 · 五封一起到",
+      title: "发送消息 · 五封一起到",
       watch:
         "五个人同一步写到阿霖手上。气泡**只列前三封**，剩下的收成一行「…另 2 封」——" +
         "过了三行，要紧的已经不是「哪几封」而是「有多少封」，而数目用报的比用列的说得清（全文在叙事流里）。" +
@@ -322,13 +316,11 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
           messages: [MO, SHI, LAN, YAN, CHE].map((who_, i) => ({
             message_id: `8b7c93a4-b5c6-d7e8-f9a0-b1c2d3e4f5${String(i).padStart(2, "0")}`,
             sender_id: who_.id,
-            sender_name: who_.name,
+            anonymous: false, sender_name: who_.name,
             receiver_ids: [LIN.id],
-            perceived_summary: `${who_.name}让你尽快回话。`,
+            content: `${who_.name}让你尽快回话。`,
             spoken: `${who_.name}让你尽快回话。`,
             scope: "direct" as const,
-            place: "",
-            place_id: "",
             seq: nextSeq(),
           })),
         }),
@@ -338,7 +330,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
     {
       id: "mail-off-map",
       group: "言语",
-      title: "传信 · 收信人不在图上",
+      title: "发送消息 · 收信人不在图上",
       watch:
         "阿墨写给一个不在这张图上的人。信**离开**：沿弧线飞出世界的边缘、消失在视野外（`departingMessage`），" +
         "而不是原地什么都不画。信寄出去了，就要看见它走——去了哪里则正确地看不见。" +
@@ -363,7 +355,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
     {
       id: "mail-pile",
       group: "言语",
-      title: "传信 · 同一步收到三封",
+      title: "发送消息 · 同一步收到三封",
       watch:
         "三个人在同一步写到阿霖手上。①头顶挂一个「✉ 3」徽标——**不是红点**（红色在这张图上只归死亡标记，且红点意味「未读」这个本图不保存的状态）；" +
         "②三封都落在阿霖一个人手里，所以**只开一个气泡**、不是弹三次：标题条是**阿霖自己的名字和身份色**" +
@@ -380,37 +372,31 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
             {
               message_id: "1a0b2c3d-4e5f-6071-8293-a4b5c6d7e8f9",
               sender_id: MO.id,
-              sender_name: MO.name,
+              anonymous: false, sender_name: MO.name,
               receiver_ids: [LIN.id],
-              perceived_summary: "阿墨要你今夜之前给个准话。",
+              content: "阿墨要你今夜之前给个准话。",
               spoken: "阿墨要你今夜之前给个准话。",
               scope: "direct",
-              place: "",
-              place_id: "",
               seq: nextSeq(),
             },
             {
               message_id: "2b1c3d4e-5f60-7182-93a4-b5c6d7e8f9a0",
               sender_id: SHI.id,
-              sender_name: SHI.name,
+              anonymous: false, sender_name: SHI.name,
               receiver_ids: [LIN.id],
-              perceived_summary: "阿石劝你别答应，那件事有诈。",
+              content: "阿石劝你别答应，那件事有诈。",
               spoken: "阿石劝你别答应，那件事有诈。",
               scope: "direct",
-              place: "",
-              place_id: "",
               seq: nextSeq(),
             },
             {
               message_id: "3c2d4e5f-6071-8293-a4b5-c6d7e8f9a0b1",
               sender_id: LAN.id,
-              sender_name: LAN.name,
+              anonymous: false, sender_name: LAN.name,
               receiver_ids: [LIN.id],
-              perceived_summary: "阿岚说坊门已经有人守着了。",
+              content: "阿岚说坊门已经有人守着了。",
               spoken: "阿岚说坊门已经有人守着了。",
               scope: "direct",
-              place: "",
-              place_id: "",
               seq: nextSeq(),
             },
           ],
@@ -421,7 +407,7 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
     {
       id: "announce",
       group: "言语",
-      title: "send_message · 传信（当众）",
+      title: "send_message · 发送消息（当众）",
       watch:
         "一条规则贯穿三种 scope：**送出画空间、不带字；送达画内容、带字**。" +
         "第 2 拍（送出）没有具名收信人，所以是向四周扩散的告示动效——涟漪说的是「他的声音传出去多远」，不出字；" +
@@ -447,13 +433,12 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
             {
               message_id: "4d3e5f60-7182-93a4-b5c6-d7e8f9a0b1c2",
               sender_id: MO.id,
-              sender_name: MO.name,
+              anonymous: false, sender_name: MO.name,
               receiver_ids: [SHI.id, LIN.id],
-              perceived_summary: "西市的绢价今日起按新章程走，各家自便。",
+              content: "西市的绢价今日起按新章程走，各家自便。",
               spoken: "西市的绢价今日起按新章程走，各家自便。",
               scope: "place",
-              place: OPEN.name,
-              place_id: OPEN.id,
+              location_id: OPEN.id,
               seq: nextSeq(),
             },
           ],
@@ -464,13 +449,11 @@ export function buildSpeechScenes({ se: SE, open: OPEN }: LabPlaces): LabScene[]
             {
               message_id: "5e4f6071-8293-a4b5-c6d7-e8f9a0b1c2d3",
               sender_id: MO.id,
-              sender_name: MO.name,
+              anonymous: false, sender_name: MO.name,
               receiver_ids: [SHI.id, LIN.id],
-              perceived_summary: "自今日起，坊门宵禁提前一个时辰。",
+              content: "自今日起，坊门宵禁提前一个时辰。",
               spoken: "自今日起，坊门宵禁提前一个时辰。",
               scope: "world",
-              place: "",
-              place_id: "",
               seq: nextSeq(),
             },
           ],

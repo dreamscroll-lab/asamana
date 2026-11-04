@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -176,48 +175,36 @@ def test_an_absent_person_carries_no_condition_mark() -> None:
 def test_read_model_carries_only_the_description() -> None:
     """The frontend only needs one line, "what he's like right now"; since_step / until_step /
     source are code-layer coordinates."""
-    from interaction.models import _agent_states_from_snapshot
-    from core.interfaces.snapshot import WorldSnapshot
+    from interaction.models import StepView
+    from tests.unit.step_view import agent, snapshot_of
 
     record = {
         "agent_id": "a2", "agent_name": "李元吉", "location_name": "玄武门",
         "condition": {"description": "双手被反绑", "source_agent_id": "a1",
                       "since_step": 10, "until_step": None},
     }
-    snapshot = WorldSnapshot(
-        world_id="w", step=34, timestamp=datetime(2026, 1, 1), agent_states={"a2": record},
-    )
-    states = _agent_states_from_snapshot(snapshot, actions=[])
-    assert states["a2"].condition == "双手被反绑"
+    snapshot = snapshot_of(agents={"a2": record})
+    assert agent(StepView.from_snapshot(snapshot), "a2").public.condition == "双手被反绑"
 
 
 @pytest.mark.parametrize("record_condition", [None, {}, "双手被反绑", 42])
 def test_read_model_degrades_to_empty_not_crash(record_condition: object) -> None:
     """Records on the replay path have been through a json.dumps(default=str) round-trip, so any
     shape can arrive."""
-    from interaction.models import _agent_states_from_snapshot
-    from core.interfaces.snapshot import WorldSnapshot
+    from interaction.models import StepView
+    from tests.unit.step_view import agent, snapshot_of
 
-    snapshot = WorldSnapshot(
-        world_id="w", step=1, timestamp=datetime(2026, 1, 1),
-        agent_states={"a2": {"agent_name": "李元吉", "condition": record_condition}},
-    )
-    states = _agent_states_from_snapshot(snapshot, actions=[])
-    assert states["a2"].condition == ""
+    snapshot = snapshot_of(agents={"a2": {"agent_name": "李元吉", "condition": record_condition}})
+    assert agent(StepView.from_snapshot(snapshot), "a2").public.condition == ""
 
 
-def test_snapshot_payload_stays_json_native() -> None:
+def test_snapshot_payload_stays_json_native(container) -> None:
     """A BodyCondition instance must never appear in the snapshot payload — it feeds both
     persistence and the read model."""
     from agent.agent import snapshot_agent_state
+    from tests.unit.test_runtime_smoke import _build_agent
 
-    class _A:
-        agent_id = "a2"
-        is_active = True
-        is_main_character = False
-        personality = PersonalityLayer(soul=SoulLayer(name="李元吉", agent_id="a2"))
-
-    a = _A()
+    a = _build_agent(container, world_id="w", agent_id="a2", name="李元吉", is_main_character=False)
     a.personality.set_condition(BOUND)
     payload = snapshot_agent_state(a)
     assert isinstance(payload["condition"], dict)
@@ -275,10 +262,10 @@ def test_every_prompt_that_narrates_a_body_is_told_its_condition() -> None:
         "agent/memory.py":                 "体验记忆散文（被 embedding）",
         "engine/executors/social.py":      "对白转录 + 两处会话记忆",
         "engine/executors/work.py":        "劳作自评 + 被打断的记忆",
-        "engine/event.py":                 "事件编辑的人物简报（与体力并列）",
+        "engine/narrative_editor.py":                 "事件编辑的人物简报（与生命值并列）",
         "engine/executors/physical.py":    "物理裁决双方 + 承受方第一人称反应",
         # ② Rules on whether this body can do it
-        "engine/executors/covert.py":      "潜行/窥探的可行性",
+        "engine/executors/covert.py":      "暗中探查的可行性",
         "engine/scene.py":                 "裁决现场的在场者（四个 executor 共用）",
         "engine/world_pressure.py":        "外部压力评估的目标与同处者",
         "engine/presence.py":              "感知包的身份+处境唯一装配点",

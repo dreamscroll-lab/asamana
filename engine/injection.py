@@ -2,8 +2,8 @@
 
 The world has two authors with completely asymmetric permissions:
 
-- ``EventSystem`` (``engine/event.py``): the automated LLM event editor, bound by its design charter.
-  It has a pacing gate and a quota, can only grow events out of the narrative brief, only adds
+- ``NarrativeEditor`` (``engine/narrative_editor.py``): the automated LLM narrative editor, bound by its design
+  charter. It has a pacing gate and a quota, can only grow injections out of the narrative brief, only adds
   pressure and never resolves anything, and through ``WorldMutationChannel`` can only touch
   unheld things lying on the ground.
 - ``DirectorChannel`` (``engine/director.py``): the human director, bound by none of those, who
@@ -14,7 +14,7 @@ layers stay separate: plan shape, prompt, pacing gate and quota each belong to o
 
 This module holds what the two genuinely share:
 
-1. ``WorldEvent`` + ``serialize_world_event``: the injection record, one schema for observers,
+1. ``InjectionRecord`` + ``serialize_injection``: the injection record, one schema for observers,
    snapshots, replay and the frontend. ``authored_by`` keeps the two authors apart in the data.
 2. ``BroadcastSpec`` / ``MessageSpec`` and their parsers: the payloads both authors send to the
    same two existing channels.
@@ -33,15 +33,17 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
+from core.interfaces.action import Observed
 from core.interfaces.directory import WorldDirectory
 from core.interfaces.llm import IndexedRef
-from core.interfaces.message import Message
+from core.interfaces.message import ANONYMOUS_SENDER_NAME, Message
 from core.interfaces.perception import Broadcast, BroadcastType
 from core.interfaces.phenomenon import Phenomenon, parse_phenomenon
 from core.interfaces.severity import Severity, parse_severity
 from core.interfaces.urgency import Urgency, parse_urgency
 from core.logging import get_logger
 from engine.broadcast import BroadcastChannel
+from engine.environment import EnvironmentSystem
 from engine.message_system import MessageSystem
 
 if TYPE_CHECKING:
@@ -53,14 +55,14 @@ logger = get_logger(__name__)
 
 
 class Author(str, Enum):
-    """Who injected this event; how observers tell "the world did this" from "you did this"."""
+    """Who made this injection; how observers tell "the world did this" from "you did this"."""
 
-    SYSTEM   = "system"      # the automated LLM event editor
+    SYSTEM   = "system"      # the automated LLM narrative editor
     DIRECTOR = "director"    # the human director
 
 
 @dataclass
-class WorldEvent:
+class InjectionRecord:
     """The record of one injection: who injected what this tick and through which channels."""
 
     id: str
@@ -81,26 +83,27 @@ class WorldEvent:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-def serialize_world_event(event: WorldEvent) -> dict[str, Any]:
-    """WorldEvent → serialized dict (display form shared by snapshots, event bus and replay).
+def serialize_injection(record: InjectionRecord) -> dict[str, Any]:
+    """InjectionRecord → serialized dict (display form shared by snapshots, event bus and replay).
 
     One field, one meaning, no aliases: before adding a field, check it isn't an alias of an
     existing one.
 
-    Record the injection itself, not its consequences. ``seq`` and ``receipt`` don't exist yet
-    when the injection lands, so the Runtime stamps them in place when assembling the step.
+    Record the injection itself, not its consequences. ``seq``, ``receipt`` and
+    ``observations`` belong to the step it landed in, so the Runtime stamps them in place when
+    assembling the step.
     """
     return {
-        "id": event.id,
-        "step": event.triggered_step,
-        "narrative_desc": event.narrative_desc,
-        "is_positive": event.is_positive,
-        "dispatched_to": list(event.dispatched_to),
-        "affected_names": list(event.affected_names),   # names, for replay / rebuilding briefs
-        "location_label": event.location_label,         # narrative place name
-        "authored_by": event.authored_by.value,
-        "directive_text": event.directive_text,          # author-layer text; never in a prompt
-        "metadata": dict(event.metadata),
+        "id": record.id,
+        "step": record.triggered_step,
+        "narrative_desc": record.narrative_desc,
+        "is_positive": record.is_positive,
+        "dispatched_to": list(record.dispatched_to),
+        "affected_names": list(record.affected_names),   # names, for replay / rebuilding briefs
+        "location_label": record.location_label,         # narrative place name
+        "authored_by": record.authored_by.value,
+        "directive_text": record.directive_text,          # author-layer text; never in a prompt
+        "metadata": dict(record.metadata),
     }
 
 
@@ -116,42 +119,42 @@ class InjectionLedger:
 
     def __init__(self, author: Author) -> None:
         self._author = author
-        self._events: list[WorldEvent] = []
+        self._records: list[InjectionRecord] = []
 
     def __len__(self) -> int:
-        return len(self._events)
+        return len(self._records)
 
-    def record(self, event: WorldEvent) -> None:
-        self._events.append(event)
+    def record(self, record: InjectionRecord) -> None:
+        self._records.append(record)
 
-    def all(self) -> list[WorldEvent]:
-        return list(self._events)
+    def all(self) -> list[InjectionRecord]:
+        return list(self._records)
 
     def count_since(self, step: int) -> int:
         """Number of injections after ``step`` (exclusive), for the sliding-window quota count."""
-        return sum(1 for ev in self._events if ev.triggered_step > step)
+        return sum(1 for r in self._records if r.triggered_step > step)
 
-    def recent(self, limit: int) -> list[WorldEvent]:
+    def recent(self, limit: int) -> list[InjectionRecord]:
         """The latest ``limit`` injections, in ascending step order."""
-        return sorted(self._events, key=lambda e: e.triggered_step)[-limit:]
+        return sorted(self._records, key=lambda e: e.triggered_step)[-limit:]
 
-    def restore(self, fired_events: Iterable[Mapping[str, Any]]) -> None:
-        """Recover only this author's events from the mixed history in the snapshot; otherwise
+    def restore(self, landed_injections: Iterable[Mapping[str, Any]]) -> None:
+        """Recover only this author's injections from the mixed history in the snapshot; otherwise
         the LLM editor would count the human's injections against its own quota."""
-        self._events = [
-            ev for ev in restore_world_events(fired_events) if ev.authored_by is self._author
+        self._records = [
+            r for r in restore_injection_records(landed_injections) if r.authored_by is self._author
         ]
 
 
-def restore_world_events(fired_events: Iterable[Mapping[str, Any]]) -> list[WorldEvent]:
-    """Serialized events → WorldEvent list (inverse of ``serialize_world_event``), by step.
+def restore_injection_records(landed_injections: Iterable[Mapping[str, Any]]) -> list[InjectionRecord]:
+    """Serialized injections → InjectionRecord list (inverse of ``serialize_injection``), by step.
 
     Unparseable entries are silently skipped: they're only replay material. An unrecognized
     author falls back to ``SYSTEM``, the conservative side (it can only cost the LLM editor quota,
     never grant extra).
     """
-    restored: list[WorldEvent] = []
-    for payload in fired_events:
+    restored: list[InjectionRecord] = []
+    for payload in landed_injections:
         if not isinstance(payload, Mapping):
             continue
         step = payload.get("step")
@@ -162,7 +165,7 @@ def restore_world_events(fired_events: Iterable[Mapping[str, Any]]) -> list[Worl
         except ValueError:
             authored_by = Author.SYSTEM
         restored.append(
-            WorldEvent(
+            InjectionRecord(
                 id=str(payload.get("id") or uuid.uuid4().hex),
                 triggered_step=step,
                 narrative_desc=str(payload.get("narrative_desc") or ""),
@@ -175,7 +178,7 @@ def restore_world_events(fired_events: Iterable[Mapping[str, Any]]) -> list[Worl
                 metadata=dict(payload.get("metadata") or {}),
             )
         )
-    restored.sort(key=lambda ev: ev.triggered_step)
+    restored.sort(key=lambda r: r.triggered_step)
     return restored
 
 
@@ -206,7 +209,7 @@ class MessageSpec:
 
 
 def normalize_is_positive(raw: Any) -> bool | None:
-    """The event's own positive/negative tone; unrelated to relation direction, so
+    """The injection's own positive/negative tone; unrelated to relation direction, so
     parse_relation_direction isn't reused."""
     if isinstance(raw, bool):
         return raw
@@ -285,7 +288,6 @@ _NEGATIVE_ALIASES = {"负面", "negative", "坏", "bad"}
 # The author is a code-layer fact, recorded in ``metadata["source"]`` and not in sender;
 # otherwise the out-of-story "director" identity would appear in the narrative layer.
 _UNSIGNED_SENDER_ID = "narrator"
-_UNSIGNED_SENDER_NAME = "不知来源"
 
 
 @dataclass(frozen=True)
@@ -294,12 +296,15 @@ class CommittedInjection:
 
     ``target_ids`` / ``displaced_ids`` are code-layer coordinates and never go on the wire:
     the first feeds the end-of-step receipt, the second lets the observation read model mark
-    moves the person didn't make themselves.
+    moves the person didn't make themselves. ``observations`` is what onlookers at each place
+    were given to perceive of its world changes; the Runtime stamps it on the step's injection
+    event, so each place's record shows what happened there.
     """
 
-    event: WorldEvent
+    record: InjectionRecord
     target_ids: tuple[str, ...]
     displaced_ids: tuple[str, ...] = ()
+    observations: tuple[Observed, ...] = ()
 
 
 class InjectionDispatcher:
@@ -314,11 +319,14 @@ class InjectionDispatcher:
         broadcast_channel: BroadcastChannel,
         message_system: MessageSystem,
         mutation_channel: "WorldMutationChannel",
+        environment: EnvironmentSystem,
         directory: WorldDirectory,
     ) -> None:
         self._broadcast_channel = broadcast_channel
         self._message_system = message_system
         self._mutations = mutation_channel
+        # Read-only: where bodies stand, for the broadcast audience.
+        self._environment = environment
         self._directory = directory
 
     async def dispatch(
@@ -343,6 +351,7 @@ class InjectionDispatcher:
         dispatched: set[str] = set()
         touched: list[str] = []
         displaced: list[str] = []
+        observations: list[Observed] = []
         live = dict(agents)
 
         for mutation in mutations:
@@ -354,6 +363,7 @@ class InjectionDispatcher:
             dispatched.add("mutation")
             touched.extend(outcome.reached)
             displaced.extend(outcome.displaced)
+            observations.extend(outcome.observed)
 
         if broadcast is not None:
             published = Broadcast(
@@ -369,9 +379,10 @@ class InjectionDispatcher:
             self._broadcast_channel.publish(published)
             dispatched.add("broadcast")
             # Count the audience, or a pure broadcast reports "affected nobody". Reachability is
-            # the channel's call; the dead don't count.
+            # the channel's call; the dead don't count. Locations come from the environment, the
+            # table perception delivers by: the agent's own record lags while he travels.
             touched.extend(BroadcastChannel.audience(published, {
-                aid: agent.personality.state.current_location
+                aid: self._environment.get_body_location(aid)
                 for aid, agent in live.items() if agent.is_active
             }))
 
@@ -381,7 +392,8 @@ class InjectionDispatcher:
                     id=str(uuid.uuid4()),
                     world_id=self._message_system.world_id,
                     sender_id=_UNSIGNED_SENDER_ID,
-                    sender_name=_UNSIGNED_SENDER_NAME,
+                    sender_name=ANONYMOUS_SENDER_NAME,
+                    anonymous=True,
                     content=message.content,
                     recipients=list(message.recipients),
                     location_scope=None,
@@ -390,7 +402,7 @@ class InjectionDispatcher:
                     urgency=message.urgency,
                     # Otherwise the recipient would try to form a relation with it and reply.
                     sender_is_agent=False,
-                    metadata={"source": author.value, "narrative": True},
+                    metadata={"source": author.value},
                 ))
                 dispatched.add("message")
                 touched.extend(message.recipients)
@@ -405,7 +417,7 @@ class InjectionDispatcher:
             return None
 
         target_ids = tuple(dict.fromkeys(touched))
-        event = WorldEvent(
+        record = InjectionRecord(
             id=str(uuid.uuid4()),
             triggered_step=step,
             narrative_desc=narrative_desc,
@@ -421,14 +433,15 @@ class InjectionDispatcher:
             extra={
                 "author": author.value,
                 "step": step,
-                "event_id": event.id,
-                "channels": event.dispatched_to,
+                "injection_id": record.id,
+                "channels": record.dispatched_to,
             },
         )
         return CommittedInjection(
-            event=event,
+            record=record,
             target_ids=target_ids,
             displaced_ids=tuple(dict.fromkeys(displaced)),
+            observations=tuple(observations),
         )
 
     def _location_label(

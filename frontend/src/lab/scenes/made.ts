@@ -1,5 +1,5 @@
 import { ActionType } from "../../lib/contract";
-import type { EntityView } from "../../types";
+import type { PlacedEntity } from "../../lib/step";
 import type { LabPlaces } from "../places";
 import { MO, SHI, did, step, type LabScene, who } from "./fixtures";
 
@@ -9,12 +9,12 @@ import { MO, SHI, did, step, type LabScene, who } from "./fixtures";
  * past the making to check it then behaves as an ordinary thing.
  */
 
-// Engine-shaped ids: runtime-made things wear a `made_` prefix, seeded ones `seed_`.
-const KEPT = "made_item-6b1f90c4aa";
-const SET_DOWN = "made_item-2d47ae1130";
+// Engine-shaped ids: runtime-made things wear a `made_entity_` prefix, seeded ones `seed_`.
+const KEPT = "made_entity_6b1f90c4aa";
+const SET_DOWN = "made_entity_2d47ae1130";
 
 /** A thing just written and pocketed — nobody standing there can perceive it. */
-const kept = (holder: string): Record<string, EntityView> => ({
+const kept = (holder: string): Record<string, PlacedEntity> => ({
   [KEPT]: {
     name: "换防部署令",
     entity_type: "item",
@@ -23,14 +23,14 @@ const kept = (holder: string): Record<string, EntityView> => ({
     presence_ref: holder,
     description: "圈定亲信的名单",
     is_public: false,
-    content: "",
+    private: { content: "" },
     // step({ bornIds: [...] }) sets the real birth step, since only it knows the step number.
     created_step: 0,
   },
 });
 
 /** A thing built where it stands — it hides from nobody. */
-const setDown = (where: string): Record<string, EntityView> => ({
+const setDown = (where: string): Record<string, PlacedEntity> => ({
   [SET_DOWN]: {
     name: "一道栅栏",
     entity_type: "item",
@@ -38,7 +38,7 @@ const setDown = (where: string): Record<string, EntityView> => ({
     presence: "at_location",
     presence_ref: where,
     description: "拦住了侧门",
-    content: "",
+    private: { content: "" },
     is_public: true,
     created_step: 0,
   },
@@ -69,6 +69,7 @@ export function buildMadeScenes({ open: OPEN }: LabPlaces): LabScene[] {
               action_description: "我摊开花名册，拟定换防部署。",
               outcome: `在${OPEN.name}，阿墨写完了换防部署令。`,
               affected_entity_ids: [KEPT],
+              created_entity_ids: [KEPT],
             }),
           ],
         }),
@@ -81,7 +82,7 @@ export function buildMadeScenes({ open: OPEN }: LabPlaces): LabScene[] {
       title: "造物 · 做完了留在原地",
       watch:
         "第二拍地上**长出**一件东西:marker 从无到有弹起来（不是淡入——淡入与每次重画没有区别），" +
-        "同时在房间上方飘一句「一道栅栏 已出现」。这是「已损毁」的镜像:一个只报损失、" +
+        "同时在物件上方飘一句「一道栅栏 已出现」。这是「已损毁」的镜像:一个只报损失、" +
         "多出东西时一声不响的世界，读起来像只会衰败。" +
         "第三拍它就是一件寻常物件了，安静待在原地，不再弹、不再飘字。",
       steps: [
@@ -97,6 +98,7 @@ export function buildMadeScenes({ open: OPEN }: LabPlaces): LabScene[] {
               action_description: "我把栅栏一根根立起来。",
               outcome: `在${OPEN.name}，阿墨筑起了一道栅栏。`,
               affected_entity_ids: [SET_DOWN],
+              created_entity_ids: [SET_DOWN],
             }),
           ],
         }),

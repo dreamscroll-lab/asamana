@@ -23,7 +23,7 @@ from engine.broadcast import BroadcastChannel
 from engine.clock import GlobalClock, WorldTimeConfig
 from engine.directory import LiveWorldDirectory
 from engine.environment import EnvironmentSystem
-from engine.event import EventSettings
+from engine.narrative_editor import NarrativeEditorSettings
 from engine.executors import build_default_registry
 from engine.message_system import MessageSystem
 from engine.runtime import NarrativeRuntime
@@ -53,9 +53,8 @@ def _agent(container, router, *, world_id, agent_id, name, main) -> Agent:
             router, container.embedding, container.vector_store,
             world_id=world_id, agent_id=agent_id,
         ),
-        need_engine=NeedEngine(),
-        relation_system=RelationSystem(container.agent_store, world_id=world_id, agent_id=agent_id),
-        agent_store=container.agent_store,
+        need_engine=NeedEngine(router),
+        relation_system=RelationSystem(world_id=world_id, agent_id=agent_id),
         is_main_character=main,
     )
 
@@ -69,16 +68,15 @@ async def test_run_step_records_stage_tagged_traces(container) -> None:
     environment = EnvironmentSystem(TiledWorldConfig(template="changan_iso"))
     message_system = MessageSystem(container.message_provider, world_id=world_id)
     broadcast_channel = BroadcastChannel()
-    event_settings = EventSettings(check_interval=2, max_events_per_window=1)
+    narrative_editor_settings = NarrativeEditorSettings(check_interval=2, max_injections_per_window=1)
     runtime = NarrativeRuntime(
         world_id=world_id,
         clock=GlobalClock(WorldTimeConfig(start_hour=6, seconds_per_step=60)),
         scheduler=AgentScheduler(),
         environment=environment,
         message_system=message_system,
-        event_settings=event_settings,
+        narrative_editor_settings=narrative_editor_settings,
         snapshot_provider=container.snapshot,
-        agent_store=container.agent_store,
         event_bus=container.event_bus,
         broadcast_channel=broadcast_channel,
         directory=LiveWorldDirectory.from_agents({}, environment),
@@ -104,6 +102,7 @@ async def test_run_step_records_stage_tagged_traces(container) -> None:
     assert Stage.DECISION.value in stages
     assert Stage.UNKNOWN.value not in stages
     assert all(c.world_id == world_id and c.step == 1 for c in sink.llm_calls)
+    assert all(c.adopted is not None for c in sink.llm_calls if c.ok)
     assert {c.agent_id for c in sink.llm_calls if c.stage == Stage.DECISION.value} <= {"a1", "a2"}
 
     # The per-step wall-clock total is recorded.
@@ -115,7 +114,7 @@ async def test_run_step_records_stage_tagged_traces(container) -> None:
     # Every step-loop phase is timed and captured in the per-phase breakdown.
     phase_ms = summaries[0].phase_ms
     assert set(phase_ms) == {
-        "event_check", "message", "pressure", "perceive", "interrupt",
+        "injection", "message", "pressure", "perceive", "interrupt",
         "executor", "plan", "exec", "cognition", "snapshot",
     }
     assert all(v >= 0 for v in phase_ms.values())

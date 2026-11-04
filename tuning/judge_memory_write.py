@@ -56,19 +56,19 @@ _SYSTEM = (
 
 
 def _persona_lines(p: dict[str, Any], prefix: str = "  ") -> list[str]:
-    tier = "主角" if p.get("is_main_character") else "背景"
+    tier = "主角" if p.get("is_main_character") else "背景角色"
     traits = "、".join(p.get("core_traits") or []) or "—"
-    out = [f"{prefix}{p.get('actor_name')}（{tier}；性格：{traits}）"]
+    out = [f"{prefix}{p.get('doer_name')}（{tier}；性格特点：{traits}）"]
     if p.get("core_values"):
         out.append(f"{prefix}  价值观：" + "、".join(p["core_values"]))
     if p.get("self_image"):
         out.append(f"{prefix}  自我认知：{p['self_image']}")
     if p.get("life_goal"):
-        out.append(f"{prefix}  毕生追求：{p['life_goal']}")
+        out.append(f"{prefix}  人生目标：{p['life_goal']}")
     emo = p.get("current_emotion") or {}
     if emo:
         out.append(f"{prefix}  写入此刻心境：{emo.get('primary')}"
-                   f"（强度{emo.get('intensity')}，效价{emo.get('valence')}）")
+                   f"（强度{emo.get('intensity')}，情绪正负值{emo.get('valence')}）")
     if p.get("dominant_need_label"):
         out.append(f"{prefix}  当前主导需求：{p['dominant_need_label']}")
     return out
@@ -80,7 +80,7 @@ def _write_lines(w: dict[str, Any], prefix: str = "  ") -> list[str]:
     out.append(f"{prefix}[FACTUAL]（{fac.get('emotion_label')}）「{fac.get('content', '')}」")
     exp = w.get("experiential")
     if exp:
-        out.append(f"{prefix}[EXPERIENTIAL]（情绪{exp.get('emotion_label')}，效价{exp.get('emotion_valence')}）"
+        out.append(f"{prefix}[EXPERIENTIAL]（情绪{exp.get('emotion_label')}，情绪正负值{exp.get('emotion_valence')}）"
                    f"「{exp.get('content', '')}」")
     else:
         out.append(f"{prefix}[EXPERIENTIAL] 未写入（非对称写入：此事未触发足够主观反应）")
@@ -132,7 +132,7 @@ def _prompt_self(scenario_meta: dict, inputs: dict, outputs: dict, det_findings:
         "人称『我』、写成旁人对我的评点;臆造原文里没有的人物或情节;几乎照抄 factual、毫无主观加工。"
         "**情绪克制、平淡、复杂、苦乐参半不扣。** 仅当 experiential 已写入时评估;未写入则置 5 并在 rationale "
         "注明『未写入,不适用』。\n"
-        "3. importance(重要性·人格校准)——出现以下即扣:分数与该事件对**这个**写入者的利害明显失称(琐碎"
+        "3. importance(重要程度·人格校准)——出现以下即扣:分数与该事件对**这个**写入者的利害明显失称(琐碎"
         "日常给了高分、或牵动其需求/目标/关系/性命/自我认知的大事却给了低分);分数对人格无感(像不看写入者"
         "是谁的通用打分);与其当下处境/关系明显矛盾。**只罚明显失准——合理区间内的高低偏好不扣。** 先在 "
         "rationale 里点出该事触及了哪些利害、再判分是否相称。\n\n"
@@ -206,7 +206,7 @@ def _block_emotion_contrast(inputs: dict[str, Any], outputs: dict[str, Any]) -> 
     lines.append("")
     for i, w in enumerate(writes, start=1):
         emo = (w.get("persona") or {}).get("current_emotion") or {}
-        lines.append(f"### 心境 {i}：{emo.get('primary')}（强度{emo.get('intensity')}，效价{emo.get('valence')}）")
+        lines.append(f"### 心境 {i}：{emo.get('primary')}（强度{emo.get('intensity')}，情绪正负值{emo.get('valence')}）")
         lines += _write_lines(w, prefix="    ")
         lines.append("")
     return "\n".join(lines)

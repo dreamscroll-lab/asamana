@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.factory import ComponentKind, ProviderFactory
-from core.interfaces.trace import LLMCallTrace, StepTrace, TraceSink
+from core.interfaces.trace import BeatTrace, LLMCallTrace, StepTrace, TraceSink
 
 
 @ProviderFactory.register("null", kind=ComponentKind.TRACE)
@@ -16,6 +16,9 @@ class NullTraceSink(TraceSink):
         return None
 
     def record_step(self, trace: StepTrace) -> None:
+        return None
+
+    def record_beat(self, trace: BeatTrace) -> None:
         return None
 
     def mark_call_unadopted(
@@ -45,6 +48,11 @@ class NullTraceSink(TraceSink):
         stage: str | None = None,
         agent_id: str | None = None,
     ) -> list[LLMCallTrace]:
+        return []
+
+    def read_beats(
+        self, world_id: str, *, step: int | None = None, agent_id: str | None = None,
+    ) -> list[BeatTrace]:
         return []
 
     def read_step_summaries(self, world_id: str) -> list[StepTrace]:

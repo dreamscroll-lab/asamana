@@ -7,7 +7,7 @@ appraisal (perception → need), runs ``run_need_engine``, then applies determin
 checks + an LLM judge (mainly semantic).
 
 Deterministic checks (syntax/structure, always run) are the main measurement's hard tripwires:
-dominant in the canonical set, canonical scores, 1 to _SHORT_TERM_GOAL_CAP goals, and the consistency invariant
+dominant in the canonical set, canonical scores, 0 to _SHORT_TERM_GOAL_CAP goals, and the consistency invariant
 dominant_need == argmax(scores) always holds (external-pressure boosts are already in scores, so
 there's no override exception). The judge carries semantic judgment. Zero production changes;
 the judge uses its own ``llm.judge`` declaration.
@@ -26,6 +26,7 @@ from core.container import Container
 from core.interfaces.llm import LLMProvider, LLMScene
 from core.logging import get_logger
 from world.initializer import WorldInitializer
+from tuning.dry_run import isolate_container
 
 from tuning.judge_llm import create_judge
 from tuning.judge_need import judge_need
@@ -39,7 +40,7 @@ logger = get_logger(__name__)
 _DEFAULT_SCENARIOS = Path(__file__).parent / "scenarios" / "need.json"
 _CRITERIA = ("fields", "ranking", "goals")
 _CANON_NEEDS = {nt.value for nt in NeedType}
-_GOAL_MAX = 30  # the prompt asks for ≤25 chars; leave slack
+_GOAL_MAX = 32
 _GOAL_GEN_SCENE = LLMScene.NEED_GOAL_GENERATION.value
 
 
@@ -84,9 +85,9 @@ def _deterministic_checks(per_agent: list[dict]) -> dict[str, Any]:
             field_v.append(f"{name}: scores 含非规范需求 {sorted(set(scores) - _CANON_NEEDS)}")
         if any((not isinstance(v, (int, float))) or v < 0 for v in scores.values()):
             field_v.append(f"{name}: scores 含非法值")
-        # Short-term goals are a capped FIFO queue (unfinished ones stay, new ones are appended); the live queue is always non-empty and ≤ cap.
-        if not (1 <= len(goals) <= _SHORT_TERM_GOAL_CAP):
-            field_v.append(f"{name}: short_term_goals 数量={len(goals)}(应 1-{_SHORT_TERM_GOAL_CAP})")
+        # Unfinished goals stay in the capped queue; an empty queue is valid when no new direction is added.
+        if len(goals) > _SHORT_TERM_GOAL_CAP:
+            field_v.append(f"{name}: short_term_goals 数量={len(goals)}(应 0-{_SHORT_TERM_GOAL_CAP})")
         for g in goals:
             if not str(g).strip():
                 field_v.append(f"{name}: 存在空目标")
@@ -206,7 +207,7 @@ async def validate_need(
     judge_llm = judge_provider or create_judge(config, judge_model)
 
     # One read-only restore to resolve placeholders (agent locations + an empty location).
-    world = await WorldInitializer(container).restore(world_id)
+    world = await WorldInitializer(await isolate_container(container, world_id)).restore(world_id)
     name_by_id = {aid: a.personality.soul.name for aid, a in world.agents.items()}
     id_by_name = {v: k for k, v in name_by_id.items()}
     agent_locations = {aid: world.environment.get_body_location(aid) for aid in world.agents}

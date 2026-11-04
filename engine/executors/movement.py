@@ -8,6 +8,7 @@ from core.interfaces.action import ActionResult, ActionTarget, ActionType, Agent
 from core.interfaces.directory import WorldDirectory
 from core.logging import get_logger
 from core.duration import describe_duration, describe_seconds
+from core.action_duration import travel_duration_steps
 from engine.environment import IN_TRANSIT
 from core.interfaces.execution import TickResult
 from engine.executors.base import ActionExecutionState, ActionExecutor, Conscription
@@ -44,7 +45,7 @@ def _arrival_steps(path: list[str], environment: "EnvironmentSystem", seconds_pe
     elapsed_seconds = 0
     for a, b in zip(path, path[1:]):
         elapsed_seconds += environment.space.edge_seconds(a, b)
-        arrivals.append(max(1, round(elapsed_seconds / seconds_per_step)))
+        arrivals.append(travel_duration_steps(elapsed_seconds, seconds_per_step))
     return arrivals
 
 
@@ -90,10 +91,10 @@ def _reached_node_at(path: list[str], arrivals: list[int], elapsed: int) -> str:
 
 
 def carried_bodies(
-    actor_id: str, candidate_ids: list[str], agents: dict[str, "Agent"],
+    doer_id: str, candidate_ids: list[str], agents: dict[str, "Agent"],
     environment: "EnvironmentSystem",
 ) -> list[str]:
-    """The people in ``candidate_ids`` that ``actor_id`` can take along: alive (moving a
+    """The people in ``candidate_ids`` that ``doer_id`` can take along: alive (moving a
     corpse would put it back into the world) and co-located.
 
     No "can he resist" gate: a carry-off buys a displacement, not obedience; he can fight or
@@ -101,7 +102,7 @@ def carried_bodies(
     Asked once at start; mid-trip death or relocation tears the whole trip down via
     ``participant_ids``.
     """
-    here = environment.get_body_location(actor_id)
+    here = environment.get_body_location(doer_id)
     kept: list[str] = []
     for aid in candidate_ids:
         agent = agents.get(aid)
@@ -123,7 +124,7 @@ def _landing_target(landed_id: str, carried_ids: list[str]) -> ActionTarget:
 
 
 def _carried_of(state: ActionExecutionState) -> list[str]:
-    """The people this trip carries: every participant except the actor (``participant_ids``
+    """The people this trip carries: every participant except the doer (``participant_ids``
     is the only record)."""
     return [pid for pid in state.participant_ids if pid != state.initiator_id]
 
@@ -188,21 +189,22 @@ class MovementExecutor(ActionExecutor):
         return "带着" + "、".join(self._directory.agent_name(aid) for aid in carried_ids)
 
     def _carried_result(
-        self, agent_id: str, *, step: int, actor_name: str, origin_name: str,
+        self, agent_id: str, *, step: int, doer_name: str, origin_name: str,
         land_name: str, landed_id: str, arrived: bool, estimated_steps: int,
         outcome: str, observations: list[Observed], thought: str = "", gist: str = "",
     ) -> ActionResult:
         """The carried person's own participant result (not a ``TargetAgentEffect``): his
         location is landed by the MOVE branch of ``Agent._apply_feedback``, the same path as
-        the actor's.
+        the doer's.
 
-        ``outcome`` / ``observations`` are the actor's (delivery dedupes them); only
+        ``outcome`` / ``observations`` are the doer's (delivery dedupes them); only
         ``factual_memory`` differs. Used for both arrival and a mid-way stop.
         """
         tail = f"到了{land_name}。" if arrived else f"到{land_name}便停下了。"
         stub = AgentAction(
             agent_id=agent_id, step=step, action_type=ActionType.MOVE,
-            action_description=f"被{actor_name}带着前往{land_name}",
+            # Where he landed, which he knows by now: not where the mover was headed.
+            action_description=f"被{doer_name}带到了{land_name}",
             target=_landing_target(landed_id, [agent_id]),
             estimated_steps=estimated_steps,
         )
@@ -214,7 +216,7 @@ class MovementExecutor(ActionExecutor):
             observations=observations,
             succeeded=arrived,
             factual_memory=(
-                f"我被{actor_name}带着，身不由己地从{origin_name}{tail}"
+                f"我被{doer_name}带着，身不由己地从{origin_name}{tail}"
                 + format_interrupt_thought(thought)
             ),
         )
@@ -222,7 +224,7 @@ class MovementExecutor(ActionExecutor):
     def _carry_along(
         self, carried_ids: list[str], location_id: str, environment: "EnvironmentSystem",
     ) -> None:
-        """Move the carried bodies to the actor's location, world side only. The agent side
+        """Move the carried bodies to the doer's location, world side only. The agent side
         (``current_location``) is landed by feedback from ``_carried_result``; missing either
         side splits where others see him from where he thinks he is."""
         for aid in carried_ids:
@@ -292,7 +294,7 @@ class MovementExecutor(ActionExecutor):
         message_system: "MessageSystem",
     ) -> ActionExecutionState:
         feasibility = environment.check_move_feasibility(action.agent_id, action.target.acted_on_place)
-        actor_name = self._directory.agent_name(action.agent_id)
+        doer_name = self._directory.agent_name(action.agent_id)
         origin_id = environment.get_body_location(action.agent_id)
         origin_name = environment.narrative_location_name(origin_id)
 
@@ -305,7 +307,7 @@ class MovementExecutor(ActionExecutor):
                 target=action.target,
             )
             # No scene_line prefix: the sentence carries its own places.
-            outcome = f"{actor_name}本想动身离开{origin_name}，却因{feasibility.reason}未能成行。"
+            outcome = f"{doer_name}本想动身离开{origin_name}，却因{feasibility.reason}未能成行。"
             failure = ActionResult(
                 action=stub,
                 expected_outcome=action.expected_outcome,
@@ -331,13 +333,13 @@ class MovementExecutor(ActionExecutor):
         # Start is elapsed=1.
         here = _transit_location_at(path, arrivals, elapsed=1)
         # Companions and the departure line must be computed before move_body: both depend on
-        # the actor still being at the origin. The departure is declared in
+        # the doer still being at the origin. The departure is declared in
         # opening_observations (runtime._carry_step_observations delivers it), never recorded
         # directly, and is independent of duration: a same-step arrival was still seen leaving.
         carried = carried_bodies(
             action.agent_id, action.target.claimed_agents, agents, environment,
         )
-        party = f"{actor_name}{self._company_clause(carried)}"
+        party = f"{doer_name}{self._company_clause(carried)}"
         departure = self._departure_line(subject=party, path=path, environment=environment)
         # A duration-1 move's opening is replaced by complete's outcome.
         opening = "" if duration <= 1 else (
@@ -355,7 +357,8 @@ class MovementExecutor(ActionExecutor):
             # The carried are participants, so one-body-one-action, teardown and self-filtering
             # come from the existing machinery.
             participant_ids=[action.agent_id, *carried],
-            purpose=f"从{origin_name}前往{dest_name}",
+            # The mover's own words, as for every other act; the route lives in ``extra``.
+            purpose=action.action_description,
             started_step=step,
             estimated_steps=duration,
             opening_outcome=opening,
@@ -406,12 +409,12 @@ class MovementExecutor(ActionExecutor):
         elapsed = state.estimated_steps - state.remaining_steps
         destination_id = state.extra.get(_DESTINATION_KEY, "")
         dest_name = environment.narrative_location_name(destination_id)
-        actor_name = self._directory.agent_name(state.initiator_id)
+        doer_name = self._directory.agent_name(state.initiator_id)
         path = list(state.extra.get(_PATH_KEY, []))
         arrivals = list(state.extra.get(_ARRIVALS_KEY, []))
 
         still = _carried_of(state)
-        party = f"{actor_name}{self._company_clause(still)}"
+        party = f"{doer_name}{self._company_clause(still)}"
 
         here = _transit_location_at(path, arrivals, elapsed) if path else IN_TRANSIT
         environment.move_body(body_id=state.initiator_id, location_id=here)
@@ -462,8 +465,8 @@ class MovementExecutor(ActionExecutor):
         origin_name = environment.narrative_location_name(origin_id)
         carried = _carried_of(state)
         company = self._company_clause(carried)
-        actor = agents.get(state.initiator_id)
-        if actor is None or actor.is_active:
+        doer = agents.get(state.initiator_id)
+        if doer is None or doer.is_active:
             # Moving a dead body would put it back into the world.
             environment.move_body(body_id=state.initiator_id, location_id=destination_id)
         self._carry_along(carried, destination_id, environment)
@@ -476,9 +479,9 @@ class MovementExecutor(ActionExecutor):
             estimated_steps=state.estimated_steps,
         )
         duration_label = describe_seconds(state.extra[_SECONDS_KEY])
-        actor_name = self._directory.agent_name(state.initiator_id)
+        doer_name = self._directory.agent_name(state.initiator_id)
         outcome = (
-            f"{actor_name}{company}从{origin_name}出发，赶了{duration_label}的路，抵达{dest_name}。"
+            f"{doer_name}{company}从{origin_name}出发，赶了{duration_label}的路，抵达{dest_name}。"
         )
         # Intent goes only into his own memory; others see that he arrived, not why.
         intent = format_intent_clause(state.expected_outcome)
@@ -487,7 +490,7 @@ class MovementExecutor(ActionExecutor):
         observations = [
             # Waypoints crossed on the final step.
             *self._passthrough_observations(
-                subject=f"{actor_name}{company}", path=path,
+                subject=f"{doer_name}{company}", path=path,
                 passed=_passed_at(path, arrivals, state.estimated_steps) if path else [],
                 environment=environment,
             ),
@@ -507,7 +510,7 @@ class MovementExecutor(ActionExecutor):
             ),
             *(
                 self._carried_result(
-                    aid, step=step, actor_name=actor_name, origin_name=origin_name,
+                    aid, step=step, doer_name=doer_name, origin_name=origin_name,
                     land_name=dest_name, landed_id=destination_id, arrived=True,
                     estimated_steps=state.estimated_steps,
                     outcome=outcome, observations=observations,
@@ -522,19 +525,19 @@ class MovementExecutor(ActionExecutor):
         step: int,
         *,
         agents: dict[str, "Agent"],
-        environment: "EnvironmentSystem | None" = None,
+        environment: "EnvironmentSystem",
         interrupted_agent_id: str | None = None,
         thought: str = "",
         cause: str = "",
     ) -> List[ActionResult]:
         dest_id = state.extra.get(_DESTINATION_KEY, "")
         origin_id = state.extra.get(_ORIGIN_KEY, "")
-        dest_name = environment.narrative_location_name(dest_id) if environment is not None else "此处"
-        origin_name = environment.narrative_location_name(origin_id) if environment is not None else "此处"
+        dest_name = environment.narrative_location_name(dest_id)
+        origin_name = environment.narrative_location_name(origin_id)
         path = list(state.extra.get(_PATH_KEY, []))
         arrivals = list(state.extra.get(_ARRIVALS_KEY, []))
         elapsed = state.estimated_steps - state.remaining_steps
-        actor_name = self._directory.agent_name(state.initiator_id)
+        doer_name = self._directory.agent_name(state.initiator_id)
         cut = f"因{cause}而停下" if cause else "停下"
         # The thought belongs to whoever broke off, which may be a carried person, never
         # automatically the captor.
@@ -545,10 +548,10 @@ class MovementExecutor(ActionExecutor):
 
         # Land at a real place: the nearer end of the current leg (see _reached_node_at).
         land_at = _reached_node_at(path, arrivals, elapsed) if path else origin_id
-        land_name = environment.narrative_location_name(land_at) if environment is not None else "此处"
+        land_name = environment.narrative_location_name(land_at)
 
         carried = _carried_of(state)
-        party = f"{actor_name}{self._company_clause(carried)}"
+        party = f"{doer_name}{self._company_clause(carried)}"
         if land_at == dest_id:
             # Already past halfway on the last leg: counts as arrived.
             base = f"{party}从{origin_name}赶往{dest_name}途中遭打断，仍抵达了{dest_name}。"
@@ -569,20 +572,14 @@ class MovementExecutor(ActionExecutor):
         # ActionExecutor.interrupt).
         breaker_outcome = base + format_interrupt_reason_3p(breaker_name, thought)
 
-        actor = agents.get(state.initiator_id)
-        if environment is not None and land_at and (actor is None or actor.is_active):
+        doer = agents.get(state.initiator_id)
+        if land_at and (doer is None or doer.is_active):
             # Death teardown also comes through here; a removed body must not be put back.
             environment.move_body(body_id=state.initiator_id, location_id=land_at)
-        if environment is not None and land_at:
-            # Same landing as the actor, even if the actor is dead: otherwise the captive is
+        if land_at:
+            # Same landing as the doer, even if the doer is dead: otherwise the captive is
             # left on IN_TRANSIT forever.
             self._carry_along(carried, land_at, environment)
-        if environment is None:
-            # API misuse: without environment a body in transit stays stranded.
-            logger.error(
-                "movement_interrupt_without_environment",
-                extra={"agent_id": state.initiator_id, "stranded_at": IN_TRANSIT},
-            )
 
         stub = AgentAction(
             agent_id=state.initiator_id,
@@ -604,7 +601,7 @@ class MovementExecutor(ActionExecutor):
             ),
             *(
                 self._carried_result(
-                    aid, step=step, actor_name=actor_name, origin_name=origin_name,
+                    aid, step=step, doer_name=doer_name, origin_name=origin_name,
                     land_name=land_name, landed_id=land_at, arrived=(land_at == dest_id),
                     estimated_steps=state.estimated_steps,
                     outcome=breaker_outcome if aid == breaker_id else base, observations=[],

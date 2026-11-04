@@ -107,6 +107,11 @@ h1{font-size:24px;margin:0 0 4px;text-wrap:balance}
 .sidecard>b{font-size:14px}
 .sidecard>code{font-family:var(--f-mono);font-size:11.5px;color:var(--muted);margin-top:-6px}
 .note{font-size:11.5px;color:var(--muted);line-height:1.55}
+.drivers{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.drv{border:1px solid var(--biz-b);border-radius:6px;padding:6px 8px;background:var(--bg);display:flex;flex-direction:column;gap:2px;min-width:0}
+.drv b{font-size:12px}
+.drv span{font-size:11.5px;color:var(--muted);line-height:1.4}
+.drv-conn{text-align:center;font-size:11px;color:var(--muted);margin:-4px 0}
 .legend{margin-top:18px;display:flex;flex-wrap:wrap;gap:8px 22px;font-size:12.5px;color:var(--muted);line-height:1.6}
 .legend b{color:var(--fg);font-weight:600}
 </style>
@@ -126,7 +131,7 @@ h1{font-size:24px;margin:0 0 4px;text-wrap:balance}
       <div class="band ui">
         <div class="band-label"><b>User Interface</b><code>frontend/, main.py</code></div>
         <div class="row">
-          <div class="box"><h3>Web App</h3><p>React app for managing worlds, watching them live, replaying history, and viewing a 2D map</p></div>
+          <div class="box"><h3>Web App</h3><p>React app for managing worlds, reviewing a generated setup before confirming it, watching live or performing one character, replaying history, and viewing a 2D map</p></div>
           <div class="box"><h3>Dev Tools</h3><p>LLM call tracing, quality audits, and prompt replay</p></div>
           <div class="box"><h3>CLI</h3><p>Commands: <span class="m">build</span>, <span class="m">list</span>, <span class="m">reset</span>, <span class="m">web</span></p></div>
         </div>
@@ -138,7 +143,7 @@ h1{font-size:24px;margin:0 0 4px;text-wrap:balance}
       <div class="band ia">
         <div class="band-label"><b>Interaction</b><code>interaction/</code></div>
         <div class="row">
-          <div class="box"><h3>Web API</h3><p>FastAPI. Starts, pauses, and stops worlds, streams live updates, and takes director input</p></div>
+          <div class="box"><h3>Web API</h3><p>FastAPI. Starts, pauses, and stops worlds, streams live updates, serves world identity tables, and takes director and actor input</p></div>
           <div class="box"><h3>World Manager</h3><p>Creates, loads, and resets worlds, and hosts running simulations</p></div>
           <div class="box"><h3>Replayer</h3><p>Replays history from snapshots and events</p></div>
         </div>
@@ -173,7 +178,7 @@ h1{font-size:24px;margin:0 0 4px;text-wrap:balance}
               </ol>
               <div class="chips"><span class="chip">Clock</span><span class="chip">Environment</span><span class="chip">Messaging</span><span class="chip">Executors: social, movement, work, covert, and more</span></div>
               <div class="authors">
-                <div><b>Event System</b><span>an AI editor that injects occasional story events</span></div>
+                <div><b>Narrative Editor</b><span>an AI editor that occasionally injects story twists</span></div>
                 <div><b>Director</b><span>lets a human author step in</span></div>
                 <div><b>Upkeep</b><span>memory decay, reflection, and goal updates</span></div>
               </div>
@@ -187,7 +192,12 @@ h1{font-size:24px;margin:0 0 4px;text-wrap:balance}
 
             <div class="focus">
               <div class="focus-head"><span class="tag">Key</span><h2>Agent Cognition</h2><code>agent/</code></div>
-              <p class="d">Every agent thinks with the same LLM-driven loop. Each stage is its own focused LLM call, sequenced by code.</p>
+              <p class="d">Every character thinks with the same staged loop, sequenced by code. One loop, two interchangeable drivers:</p>
+              <div class="drivers">
+                <div class="drv"><b>AI</b><span>the default for every character: each stage is its own focused LLM call</span></div>
+                <div class="drv"><b>Actor</b><span>the user, for at most one character: decides at the same stages, sees only what the character perceives</span></div>
+              </div>
+              <div class="drv-conn">↓ drives</div>
               <div class="cycle">
                 <div class="st"><b>Perceive</b><span>take in what is happening</span></div>
                 <div class="st"><b>Motivate</b><span>weigh needs, goals, and feelings</span></div>
@@ -202,7 +212,8 @@ h1{font-size:24px;margin:0 0 4px;text-wrap:balance}
                 <div><b>Selective context</b><span>each prompt gets only the state it needs: persona, emotion, goals, relationships, or memories</span></div>
               </div>
               <div class="chips"><span class="chip">Personality</span><span class="chip">Memory</span><span class="chip">Needs</span><span class="chip">Relationships</span><span class="chip">Goals</span><span class="chip">Reflection</span></div>
-              <p class="d"><b>Limited knowledge:</b> each agent knows only what it has perceived.</p>
+              <p class="d"><b>Driver-blind world:</b> both drivers go through the same perception, adjudication, and feedback. The world and the narrative know only characters, never who drives one.</p>
+              <p class="d"><b>Limited knowledge:</b> each character, and its actor, knows only what it has perceived. Events are public, shared, or private.</p>
             </div>
           </div>
         </div>
@@ -228,8 +239,8 @@ h1{font-size:24px;margin:0 0 4px;text-wrap:balance}
         <div class="row">
           <div class="box"><h3>LLM</h3><p>Any OpenAI-compatible API, plus a mock for tests. Models are set per task</p></div>
           <div class="box"><h3>Embeddings</h3><p>DashScope or any OpenAI-compatible API, with caching</p></div>
-          <div class="box"><h3>Storage</h3><p>Vector, agent, and snapshot stores, on disk or in memory</p></div>
-          <div class="box"><h3>Tracing</h3><p>Logs every LLM call to JSONL</p></div>
+          <div class="box"><h3>Storage</h3><p>Vector store and snapshots, on disk or in memory. Each step commits as one snapshot</p></div>
+          <div class="box"><h3>Tracing</h3><p>Logs every LLM call, and beats that land without one, to JSONL</p></div>
         </div>
       </div>
 

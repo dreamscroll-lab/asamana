@@ -15,19 +15,19 @@ def _spatial(location_id: str) -> SpatialPerception:
     )
 
 
-def test_location_scoped_ambient_excludes_actor() -> None:
+def test_location_scoped_ambient_excludes_doer() -> None:
     """A location-scoped ambient reaches every agent at that location EXCEPT the
-    excluded actor — the basis of the bystander-reaction test."""
+    excluded doer — the basis of the bystander-reaction test."""
     spatials = {
         "a1": _spatial("loc1"),  # victim, at the scene
         "a2": _spatial("loc1"),  # bystander, at the scene
-        "a3": _spatial("loc1"),  # the actor — excluded
+        "a3": _spatial("loc1"),  # the doer — excluded
         "a4": _spatial("loc2"),  # elsewhere
     }
-    name_by_id = {"a1": "Victim", "a2": "Bystander", "a3": "Actor", "a4": "Elsewhere"}
+    name_by_id = {"a1": "Victim", "a2": "Bystander", "a3": "Doer", "a4": "Elsewhere"}
     scenario = {
         "ambient": [
-            {"content": "持刃逼近", "strength": 0.8, "location": "loc1", "exclude": "Actor"}
+            {"content": "持刃逼近", "strength": 0.8, "location": "loc1", "exclude": "Doer"}
         ]
     }
 
@@ -35,7 +35,7 @@ def test_location_scoped_ambient_excludes_actor() -> None:
 
     assert [e.content for e in spatials["a1"].ambient_events] == ["持刃逼近"]
     assert [e.content for e in spatials["a2"].ambient_events] == ["持刃逼近"]
-    assert spatials["a3"].ambient_events == []  # actor excluded
+    assert spatials["a3"].ambient_events == []  # doer excluded
     assert spatials["a4"].ambient_events == []  # different location
 
 

@@ -1,0 +1,17 @@
+{
+  "multi_agent_multi_step": {
+    "judge_model": "qwen3.7-max",
+    "digest": "3f2da1920cab",
+    "generated_at": "2026-11-02T10:48:04.285363"
+  },
+  "initialization": {
+    "judge_model": "qwen3.7-max",
+    "digest": "1329f217ba83",
+    "generated_at": "2026-11-02T10:48:04.285363"
+  },
+  "single_agent_multi_step": {
+    "judge_model": "qwen3.7-max",
+    "digest": "fe50d17018ca",
+    "generated_at": "2026-11-02T10:48:04.285363"
+  }
+}

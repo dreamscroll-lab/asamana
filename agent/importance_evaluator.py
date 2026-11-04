@@ -8,13 +8,14 @@ store, embedding or vector index.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Mapping, Sequence
 
-from core.context import observe_stage
+from core.context import note_active_call_adoption, observe_stage
 from core.interfaces.llm import LLMMessage, LLMRouter, LLMScene, extract_json, output_budget
+from core.interfaces.perception import PerceivedIdentity
 from core.interfaces.trace import Stage
 from core.logging import get_logger
-from core.prompts import MEMORY_IMPORTANCE_SCORE_DEFINITION
+from core.prompts import MEMORY_IMPORTANCE_SCORE_DEFINITION, person_referent
 
 if TYPE_CHECKING:
     from agent.personality import PersonalityLayer
@@ -23,14 +24,18 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def render_related_people(directory: dict[str, str] | None) -> str:
-    """Render ``{id: name}`` as names for the prompt; a person with no name becomes the
-    descriptive "某位相关人物", never the id."""
+def render_related_people(
+    directory: "Mapping[str, PerceivedIdentity] | None", *, with_gender: bool,
+) -> str:
+    """Render ``{id: identity}`` for the prompt; a person with no name becomes the descriptive
+    "某位相关人物", never the id. ``with_gender`` for a prompt that writes about them (the memory
+    monologue says 他/她), roster form (``person_referent``); a pure ruling takes names only."""
     if not directory:
         return "无"
     parts = [
-        label or "某位相关人物"
-        for label in directory.values()
+        person_referent(who.name or "某位相关人物", who.gender) if with_gender
+        else who.name or "某位相关人物"
+        for who in directory.values()
     ]
     return "、".join(parts) if parts else "无"
 
@@ -49,7 +54,7 @@ class ImportanceEvaluator:
         *,
         personality: PersonalityLayer,
         related_agents: Sequence[str],
-        related_directory: dict[str, str] | None = None,
+        related_directory: dict[str, PerceivedIdentity] | None = None,
         related_relations_text: str = "",
         dominant_need_label: str = "",
     ) -> float:
@@ -60,7 +65,7 @@ class ImportanceEvaluator:
         event weighs very differently for a close friend than for a political enemy.
         """
         name = personality.soul.name
-        related_str = render_related_people(related_directory)
+        related_str = render_related_people(related_directory, with_gender=False)
         # The agent-specific label from personality.need_label, not a generic Maslow description.
         need_line = f"当前主导需求：{dominant_need_label}\n" if dominant_need_label else ""
         long_term = personality.state.long_term_goals or []
@@ -79,14 +84,14 @@ class ImportanceEvaluator:
         # The system prompt says only "被评判者" so it stays byte-identical across agents (prefix
         # cache); the real name and persona go in the user prompt.
         system_prompt = f"""\
-【角色】你是一个客观的记忆重要性评判器，第三视角评判刚发生的这件事对被评判者有多重要——
+【角色】你是一个客观的记忆重要程度评判器，第三视角评判刚发生的这件事对被评判者有多重要——
 不代入被评判者的情绪，只做结构性判断。
 
 【评判维度】综合权衡以下各轴给一个**整体**分（不是逐项打分求平均；每条都可正可负，也可不相关）：
  1. 需求关联：是否触及被评判者的需求，尤其主导需求
  2. 目标关联：是否推进或阻碍被评判者的长期/短期目标
  3. 关系影响：是否改变被评判者与他人的信任/亲疏/敌友格局
- 4. 自我与价值：是否触动被评判者的核心价值观/行为底线/自我认知，或改变其人生轨迹
+ 4. 自我与价值：是否触动被评判者的价值观/行为底线/自我认知，或改变其人生轨迹
  5. 预期反差：是否出乎被评判者意料、颠覆其原有认知（越意外越难忘）
  6. 安危关切：是否关乎被评判者的安全、性命或生计
  7. 其他方面的重要性。
@@ -119,6 +124,8 @@ class ImportanceEvaluator:
                 )
             data = extract_json(response.content)
             score = float(data.get("score", 0.5))
+            if "score" not in data:
+                note_active_call_adoption(False, "missing_score")
             logger.debug(
                 "memory_importance_llm",
                 extra={
@@ -129,6 +136,7 @@ class ImportanceEvaluator:
             )
             return max(0.0, min(1.0, score))
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning(
                 "memory_importance_llm_failed",
                 extra={"agent_id": self._agent_id, "error": str(exc)},

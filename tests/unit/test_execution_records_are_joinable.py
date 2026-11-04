@@ -12,7 +12,6 @@ at the source, because running the sim can't provoke the scenario reliably.
 from __future__ import annotations
 
 import pytest
-from types import SimpleNamespace
 
 from core.interfaces.action import ActionType, Ref
 from engine.executors.registry import ActionExecutorRegistry
@@ -148,6 +147,9 @@ async def test_a_move_relands_the_anchor_before_the_feedback_reads_it() -> None:
         def refresh_situation(self, spatial) -> None:  # noqa: ANN001
             self.anchored_at = spatial.location_view.name if spatial.location_view else None
 
+        def refresh_held(self, spatial) -> None:  # noqa: ANN001
+            pass
+
         async def finalize_ongoing_action(self, *, result, step) -> None:  # noqa: ANN001
             self.anchored_before_finalize = self.anchored_at is not None
 
@@ -169,13 +171,58 @@ async def test_a_move_relands_the_anchor_before_the_feedback_reads_it() -> None:
     assert spy.anchored_at == env.narrative_location_name("garden")
     assert spy.anchored_before_finalize, "补锚点必须在 finalize 之前，否则反馈读到的仍是旧地方"
 
-    # Complement: an action that doesn't move anyone isn't re-anchored, so feedback doesn't build a
-    # spatial view for nothing.
+    # Complement: an action that doesn't move anyone isn't re-anchored.
     still = _Spy()
     talk = _make_action(agent_id="agent-a", action_type=ActionType.TALK, target_agent_id="agent-b")
     idle = ActionResult(action=talk, expected_outcome="谈一谈", outcome="他们谈过了。", succeeded=True)
     await processor.land_result_feedback(idle, {"agent-a": still}, 7)  # type: ignore[arg-type]
     assert still.anchored_at is None
+
+
+@pytest.mark.asyncio
+async def test_feedback_reads_what_is_in_hand_after_the_action() -> None:
+    """The goal judge rules on "拿到 / 交出 X" from what is in hand. Perceived at step start, the
+    thing the action just made would be missing, so hands are re-read once the world changes
+    have landed."""
+    from core.interfaces.action import ActionResult, EntitySpawn
+    from engine.executors.registry import ActionExecutorRegistry
+
+    env = _make_environment()
+
+    class _Spy:
+        agent_id = "agent-a"
+        is_active = True
+
+        def __init__(self) -> None:
+            self.held: list[str] = []
+            self.held_at_finalize: list[str] = []
+
+        def refresh_situation(self, spatial) -> None:  # noqa: ANN001
+            pass
+
+        def refresh_held(self, spatial) -> None:  # noqa: ANN001
+            self.held = [e.name for e in spatial.held_by(self.agent_id)]
+
+        async def finalize_ongoing_action(self, *, result, step) -> None:  # noqa: ANN001
+            self.held_at_finalize = list(self.held)
+
+    processor = ExecutionProcessor(
+        executor_registry=ActionExecutorRegistry(),
+        environment=env,
+        message_system=None,  # type: ignore[arg-type]
+        directory=_directory({}),
+    )
+    action = _make_action(agent_id="agent-a", action_type=ActionType.WORK)
+    result = ActionResult(
+        action=action, expected_outcome="写成底稿", outcome="他写成了底稿。", succeeded=True,
+        entity_spawns=[EntitySpawn(name="核对底稿", holder_id="agent-a", is_public=False)],
+    )
+    spy = _Spy()
+    # The batch order: world changes land first, then character feedback.
+    processor.land_world_changes(result, 7)
+    await processor.land_agent_feedback(result, {"agent-a": spy}, 7)  # type: ignore[arg-type]
+
+    assert spy.held_at_finalize == ["核对底稿"]
 
 
 @pytest.mark.asyncio
@@ -205,9 +252,9 @@ async def test_a_leg_of_the_road_moves_the_anchor_with_the_body() -> None:
 
         def __init__(self) -> None:
             self.anchored_at: str | None = None
-            self.personality = SimpleNamespace(state=SimpleNamespace(
-                action_remaining_steps=3, action_status=None, current_action=None,
-            ), update_action_status=lambda **kw: None)
+
+        def advance_action(self, **_kw) -> None:  # noqa: ANN003
+            pass
 
         def refresh_situation(self, spatial) -> None:  # noqa: ANN001
             self.anchored_at = spatial.location_view.name if spatial.location_view else None

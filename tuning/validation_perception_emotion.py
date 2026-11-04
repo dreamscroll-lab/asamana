@@ -29,6 +29,7 @@ from core.container import Container
 from core.interfaces.llm import LLMProvider, LLMScene, extract_json
 from core.logging import get_logger
 from world.initializer import WorldInitializer
+from tuning.dry_run import isolate_container
 
 from tuning.judge_llm import create_judge
 from tuning.judge_perception_emotion import judge_perception_emotion
@@ -222,7 +223,7 @@ async def validate_perception_emotion(
     judge_llm = judge_provider or create_judge(config, judge_model)
 
     # One read-only restore to resolve placeholders (agent locations + an empty location).
-    world = await WorldInitializer(container).restore(world_id)
+    world = await WorldInitializer(await isolate_container(container, world_id)).restore(world_id)
     name_by_id = {aid: a.personality.soul.name for aid, a in world.agents.items()}
     id_by_name = {v: k for k, v in name_by_id.items()}
     agent_locations = {aid: world.environment.get_body_location(aid) for aid in world.agents}

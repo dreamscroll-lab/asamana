@@ -4,9 +4,8 @@ from datetime import datetime
 
 import pytest
 
-from core.interfaces.agent_store import AgentRelation, AgentState
 from core.interfaces.message import Message
-from core.interfaces.snapshot import WorldSnapshot
+from core.interfaces.snapshot import EngineState, WorldSnapshot, WorldState
 
 
 @pytest.mark.asyncio
@@ -56,47 +55,56 @@ async def test_in_memory_vector_store(container) -> None:
 
 
 @pytest.mark.asyncio
-async def test_in_memory_agent_store(container) -> None:
-    state = AgentState(
-        world_id="world-1",
-        agent_id="agent-1",
-        updated_step=1,
-        current_emotion="calm",
-        emotion_intensity=0.2,
-        emotion_valence=0.0,
-        emotion_triggered_by=None,
-        active_needs=["safety"],
-        dominant_need="safety",
-        long_term_goals=["survive"],
-        short_term_goals=["wait"],
-        current_location="palace",
-        activity_status="idle",
-        activity_target=None,
-        action_status="idle",
-        current_action=None,
-        action_remaining_steps=0,
-        last_action=None,
-        last_action_result=None,
-        last_action_succeeded=None,
+async def test_snapshot_save_and_load_freeze_nested_records(container) -> None:
+    snapshot = WorldSnapshot(
+        "w", 0, datetime.now(),
+        state=WorldState(agents={"a": {"goals": ["survive"]}}),
+        engine=EngineState(active_executions=[{"members": ["a"]}]),
     )
-    relation = AgentRelation(
-        world_id="world-1",
-        from_id="agent-1",
-        to_id="agent-2",
-        trust_objective=0.6,
-        affection_objective=0.2,
-        labels=["ally"],
-        updated_step=1,
-    )
+    await container.snapshot.save("w", 0, snapshot)
+    snapshot.state.agents["a"]["goals"].clear()
+    snapshot.engine.active_executions[0]["members"].append("b")
+    loaded = await container.snapshot.load("w", 0)
+    assert loaded.state.agents["a"]["goals"] == ["survive"]
+    assert loaded.engine.active_executions[0]["members"] == ["a"]
+    loaded.state.agents.clear()
+    assert (await container.snapshot.load_latest("w")).state.agents
 
-    await container.agent_store.save_agent_state("world-1", "agent-1", state)
-    await container.agent_store.save_relation(relation)
 
-    assert await container.agent_store.load_agent_state("world-1", "agent-1") == state
-    assert await container.agent_store.list_agent_ids("world-1") == ["agent-1"]
-    assert await container.agent_store.load_relation("world-1", "agent-1", "agent-2") == relation
-    assert await container.agent_store.load_all_relations("world-1", "agent-1") == [relation]
-    assert await container.agent_store.load_agent_state("world-2", "agent-1") is None
+@pytest.mark.asyncio
+@pytest.mark.parametrize("artifact", ["config", "setup", "map"])
+async def test_world_artifact_reads_and_writes_are_isolated(container, artifact) -> None:
+    save = getattr(container.snapshot, f"save_world_{artifact}")
+    load = getattr(container.snapshot, f"load_world_{artifact}")
+    data = {"nested": {"items": ["seed"]}}
+    await save("w", data)
+    data["nested"]["items"].append("external write")
+    loaded = await load("w")
+    assert loaded == {"nested": {"items": ["seed"]}}
+    loaded["nested"]["items"].clear()
+    assert (await load("w"))["nested"]["items"] == ["seed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["in_memory", "file"])
+async def test_vector_payload_input_and_results_are_isolated(tmp_path, provider) -> None:
+    from providers.vector_store.file import FileVectorStore
+    from providers.vector_store.in_memory import InMemoryVectorStore
+
+    store = FileVectorStore(str(tmp_path)) if provider == "file" else InMemoryVectorStore()
+    payload = {"nested": {"related_agents": ["a"]}}
+    await store.upsert("c", "m", [1.0], None, payload)
+    payload["nested"]["related_agents"].append("external write")
+    listed = (await store.list_all("c"))[0]
+    assert listed.payload == {"nested": {"related_agents": ["a"]}}
+    listed.payload["nested"]["related_agents"].append("external list")
+    hit = (await store.search("c", [1.0], None))[0]
+    assert hit.payload == {"nested": {"related_agents": ["a"]}}
+    hit.payload["nested"]["related_agents"].clear()
+    assert (await store.list_all("c"))[0].payload == {"nested": {"related_agents": ["a"]}}
+    await store.update_payload("c", "m", payload)
+    payload["nested"]["related_agents"].clear()
+    assert (await store.list_all("c"))[0].payload["nested"]["related_agents"] == ["a", "external write"]
 
 
 @pytest.mark.asyncio
@@ -150,15 +158,13 @@ async def test_in_memory_snapshot_provider(container) -> None:
         world_id="world-1",
         step=3,
         timestamp=datetime(2026, 1, 1, 9, 0),
-        actions_this_step=[{"agent_id": "a1"}],
-        metadata={"world_time": "09:00"},
+        events=[{"kind": "action", "seq": 3, "initiator_id": "a1"}],
     )
     earlier_snapshot = WorldSnapshot(
         world_id="world-1",
         step=1,
         timestamp=datetime(2026, 1, 1, 7, 0),
-        actions_this_step=[{"agent_id": "a1"}],
-        metadata={"world_time": "07:00"},
+        events=[{"kind": "action", "seq": 1, "initiator_id": "a1"}],
     )
     other_world_snapshot = WorldSnapshot(
         world_id="world-2",

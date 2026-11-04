@@ -37,7 +37,7 @@ def _result_view(r: ActionResult, name_by_id: dict | None = None) -> dict[str, A
     """Serialize an ActionResult for trace/judge (narrative-layer fields)."""
     nm = name_by_id or {}
     return {
-        "actor": nm.get(r.action.agent_id, r.action.agent_id),
+        "doer": nm.get(r.action.agent_id, r.action.agent_id),
         # Some checks branch on type (e.g. "accepted or not" only applies to errands); without it they'd have to guess.
         "action_type": getattr(r.action.action_type, "value", str(r.action.action_type)),
         "outcome": r.outcome,
@@ -58,7 +58,7 @@ def _result_view(r: ActionResult, name_by_id: dict | None = None) -> dict[str, A
                 "factual_memory": e.factual_memory,
                 "emotion_type": e.emotion_type, "emotion_intensity": e.emotion_intensity,
                 "emotion_valence": e.emotion_valence,
-                "relation_toward_actor": list(e.relation_toward_actor) if e.relation_toward_actor else None,
+                "relation_toward_doer": list(e.relation_toward_doer) if e.relation_toward_doer else None,
                 "vitality_damage": e.vitality_damage,
                 # The condition is narrative text. If it isn't included here it never shows up in the trace, never
                 # reaches the judge, and skips validation's id/step leak scan, as if the field didn't exist in tuning.
@@ -114,7 +114,7 @@ def _state_view(s: ActionExecutionState) -> dict[str, Any]:
 
 
 def _build_agent_action(
-    actor_id: str, spec: dict, *, env, run_step: int, id_by_name: dict, valid_ids,
+    doer_id: str, spec: dict, *, env, run_step: int, id_by_name: dict, valid_ids,
 ) -> AgentAction:
     atype = ActionType(spec["type"])
     tgt = spec.get("target")
@@ -128,7 +128,7 @@ def _build_agent_action(
             )
     elif atype == ActionType.MOVE:
         if str(tgt or "") == "$ADJACENT":
-            loc = env.space.get(env.get_body_location(actor_id))
+            loc = env.space.get(env.get_body_location(doer_id))
             dest = next(iter(loc.connections.keys()), None) if loc else None
             target = ActionTarget(acts_on=[Ref.place(dest)] if dest else [])
         else:
@@ -170,7 +170,7 @@ def _build_agent_action(
                 ),
             )
     return AgentAction(
-        agent_id=actor_id, step=run_step, action_type=atype,
+        agent_id=doer_id, step=run_step, action_type=atype,
         action_description=spec.get("description", ""),
         expected_outcome=spec.get("expected_outcome", ""),
         estimated_steps=int(spec.get("estimated_steps", 1)),
@@ -195,12 +195,12 @@ def _feasibility_view(action: AgentAction, env) -> dict[str, Any]:
     return {"ok": r.ok, "reason": r.reason, "checked": True}
 
 
-def _actor_input_view(agent, action: AgentAction, env, name_by_id: dict, seeded: list[str]) -> dict[str, Any]:
+def _doer_input_view(agent, action: AgentAction, env, name_by_id: dict, seeded: list[str]) -> dict[str, Any]:
     soul = agent.personality.soul
     st = agent.personality.state
     loc = env.get_body_location(agent.agent_id)
     return {
-        "actor_name": name_by_id.get(agent.agent_id, agent.agent_id),
+        "doer_name": name_by_id.get(agent.agent_id, agent.agent_id),
         "is_main_character": agent.is_main_character,
         "location": env.narrative_location_name(loc),
         "core_traits": list(getattr(soul, "core_traits", [])),
@@ -224,52 +224,53 @@ async def _run_lifecycle(
 ) -> None:
     env = world.environment
     valid_ids = list(world.agents.keys())
-    actor_id = resolve_ref(scenario["actor"], id_by_name, valid_ids)
-    agent = world.agents[actor_id]
+    doer_id = resolve_ref(scenario["doer"], id_by_name, valid_ids)
+    agent = world.agents[doer_id]
     spec = scenario["action"]
-    action = _build_agent_action(actor_id, spec, env=env, run_step=run_step, id_by_name=id_by_name, valid_ids=valid_ids)
+    action = _build_agent_action(doer_id, spec, env=env, run_step=run_step, id_by_name=id_by_name, valid_ids=valid_ids)
     seeded = [str(c) for e in (scenario.get("scene", {}) or {}).get("memories", []) for c in (e.get("factual") or [])]
     executor = registry.get_executor(action.action_type)
 
     phases: dict[str, Any] = {"pre": _feasibility_view(action, env)}
-    set_log_context(world_id=world_id, agent_id=actor_id, step=str(run_step))
+    set_log_context(world_id=world_id, agent_id=doer_id, step=str(run_step))
     try:
         result = await executor.start(
             action, run_step, agents=world.agents, environment=env, message_system=message_system)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("action_start_failed", extra={"world_id": world_id, "actor": actor_id, "error": str(exc)})
+        logger.warning("action_start_failed", extra={"world_id": world_id, "doer": doer_id, "error": str(exc)})
         clear_log_context()
         phases["start"] = {"error": str(exc)}
         _record_action_phase(sink, world_id, run_step, agent, action, env, name_by_id, seeded, phases)
         return
 
-    if isinstance(result, ActionResult):
-        phases["start"] = {"kind": "immediate", "result": _result_view(result, name_by_id)}
-        phases["complete"] = {"kind": "immediate(同 start)", "results": [_result_view(result, name_by_id)]}
+    registry.add_active(result)
+    phases["start"] = {"kind": "multi_step", "state": _state_view(result)}
+    ticks: list[dict] = []
+    total = result.estimated_steps
+    interrupt_at = scenario.get("interrupt_at")
+    # advance ticks until completion or the scheduled interrupt point
+    tick_limit = total - 1 if interrupt_at is None else min(int(interrupt_at), total - 1)
+    for _ in range(max(0, tick_limit)):
+        result.remaining_steps -= 1
+        trs = await executor.tick(result, run_step, agents=world.agents, environment=env, message_system=message_system)
+        ticks.append({"elapsed": total - result.remaining_steps,
+                      "narratives": [{"agent": name_by_id.get(t.agent_id, t.agent_id), "narrative": t.outcome} for t in trs]})
+    phases["tick"] = ticks
+    if interrupt_at is not None:
+        # interrupt_reason is what cut it off (third person); interrupt_reaction the doer's own
+        # reason for breaking off (first person).
+        finals = await executor.interrupt(
+            result, run_step,
+            agents=world.agents, environment=env,
+            interrupted_agent_id=doer_id,
+            thought=scenario.get("interrupt_reaction", ""),
+            cause=scenario.get("interrupt_reason", "突发变故"),
+        )
+        phases["complete"] = {"kind": "interrupt", "results": [_result_view(r, name_by_id) for r in finals]}
     else:
-        registry.add_active(result)
-        phases["start"] = {"kind": "multi_step", "state": _state_view(result)}
-        ticks: list[dict] = []
-        total = result.estimated_steps
-        interrupt_at = scenario.get("interrupt_at")
-        # advance ticks until completion or the scheduled interrupt point
-        tick_limit = total - 1 if interrupt_at is None else min(int(interrupt_at), total - 1)
-        for _ in range(max(0, tick_limit)):
-            result.remaining_steps -= 1
-            trs = await executor.tick(result, run_step, agents=world.agents, environment=env, message_system=message_system)
-            ticks.append({"elapsed": total - result.remaining_steps,
-                          "narratives": [{"agent": name_by_id.get(t.agent_id, t.agent_id), "narrative": t.outcome} for t in trs]})
-        phases["tick"] = ticks
-        if interrupt_at is not None:
-            finals = await executor.interrupt(
-                result, scenario.get("interrupt_reason", "突发变故"), run_step,
-                agents=world.agents, environment=env,
-                interrupted_agent_id=actor_id, reaction=scenario.get("interrupt_reaction", ""))
-            phases["complete"] = {"kind": "interrupt", "results": [_result_view(r, name_by_id) for r in finals]}
-        else:
-            result.remaining_steps = 0
-            finals = await executor.complete(result, run_step, agents=world.agents, environment=env, message_system=message_system)
-            phases["complete"] = {"kind": "complete", "results": [_result_view(r, name_by_id) for r in finals]}
+        result.remaining_steps = 0
+        finals = await executor.complete(result, run_step, agents=world.agents, environment=env, message_system=message_system)
+        phases["complete"] = {"kind": "complete", "results": [_result_view(r, name_by_id) for r in finals]}
     clear_log_context()
     _record_action_phase(sink, world_id, run_step, agent, action, env, name_by_id, seeded, phases)
 
@@ -277,7 +278,7 @@ async def _run_lifecycle(
 def _record_action_phase(sink, world_id, run_step, agent, action, env, name_by_id, seeded, phases) -> None:
     sink.record_phase(PhaseTrace(
         world_id=world_id, phase="stage.action", step=run_step, agent_id=agent.agent_id,
-        inputs=_actor_input_view(agent, action, env, name_by_id, seeded),
+        inputs=_doer_input_view(agent, action, env, name_by_id, seeded),
         outputs={"kind": "lifecycle", "phases": phases},
         timestamp=datetime.now().isoformat(),
     ))
@@ -294,7 +295,7 @@ async def _run_arbitration(
     planned: list = []
     actions_in: list[dict] = []
     for entry in scenario.get("actions", []):
-        aid = resolve_ref(entry["actor"], id_by_name, valid_ids)
+        aid = resolve_ref(entry["doer"], id_by_name, valid_ids)
         if aid not in world.agents:
             continue
         action = _build_agent_action(aid, entry["action"], env=env, run_step=run_step,
@@ -313,7 +314,7 @@ async def _run_arbitration(
         phase = "main" if world.agents[aid].is_main_character else "bg"
         planned.append((phase, world.agents[aid], plan))
         actions_in.append({
-            "actor": name_by_id.get(aid, aid),
+            "doer": name_by_id.get(aid, aid),
             "action_type": action.action_type.value,
             "target": [name_by_id.get(r.id, r.id) for r in action.target.acts_on],
             "estimated_steps": action.estimated_steps,
@@ -350,7 +351,7 @@ async def _run_arbitration(
         else:
             kind = "即时准入"
         verdicts.append({
-            "actor": name_by_id.get(plan.agent_id, plan.agent_id),
+            "doer": name_by_id.get(plan.agent_id, plan.agent_id),
             "kind": kind,
             "succeeded": not rejected and aa.action_result.succeeded,
             "is_passive_join": aa.is_passive_join,

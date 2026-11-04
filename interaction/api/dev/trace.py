@@ -1,4 +1,8 @@
-"""LLM trace explorer: per-step dimensions, calls grouped by stage/step/agent, build calls, one call."""
+"""LLM trace explorer: per-step dimensions, calls grouped by stage/step/agent, build calls, one call.
+
+Beats that landed without an LLM call (``BeatTrace``) are listed beside the calls of their group
+and counted in none of the call statistics: no request was made for them.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +11,7 @@ from dataclasses import asdict
 from typing import Any
 
 from core.interfaces.trace import (
+    SET_ASIDE_REASONS,
     build_scene_sort_key,
     stage_sort_key,
     to_jsonable as trace_to_jsonable,
@@ -22,10 +27,10 @@ def _aggregate(calls: list) -> dict[str, Any]:
     failures = sum(1 for c in calls if not getattr(c, "ok", True))
     parsed = [c for c in calls if getattr(c, "parse_ok", None) is not None]
     parse_failures = sum(1 for c in parsed if c.parse_ok is False)
-    # Adoption: of the calls whose consumer filed a verdict, how many were discarded.
-    # Rated against `judged` (not `calls`) so uninstrumented paths — which file no
-    # verdict — cannot dilute the rate into looking healthier than it is.
-    judged = [c for c in calls if getattr(c, "adopted", None) is not None]
+    # Provider failures have no output to adopt; successful output is adopted unless rejected.
+    # Output set aside for what happened around it is no verdict on the output, so it is left out.
+    judged = [c for c in calls if getattr(c, "adopted", None) is not None
+              and getattr(c, "reject_reason", "") not in SET_ASIDE_REASONS]
     discarded = sum(1 for c in judged if c.adopted is False)
     return {
         "calls": n,
@@ -69,10 +74,28 @@ def _keyword_filter(calls: list, query: str | None) -> list:
     return [c for c in calls if all(t in _haystack(c) for t in terms)]
 
 
+def _beat_keyword_filter(beats: list, query: str | None) -> list:
+    """``_keyword_filter`` for beats: every term in the payload or extra."""
+    terms = (query or "").lower().split()
+    if not terms:
+        return beats
+
+    def _haystack(b: Any) -> str:
+        return json.dumps([b.payload, b.extra], ensure_ascii=False, default=str).lower()
+
+    return [b for b in beats if all(t in _haystack(b) for t in terms)]
+
+
 def _serialize_call(call: Any, names: dict[str, str]) -> dict[str, Any]:
     data = trace_to_jsonable(call)
     data["agent_name"] = names.get(call.agent_id, call.agent_id) if call.agent_id else None
     data["total_tokens"] = call.total_tokens
+    return data
+
+
+def _serialize_beat(beat: Any, names: dict[str, str]) -> dict[str, Any]:
+    data = trace_to_jsonable(beat)
+    data["agent_name"] = names.get(beat.agent_id, beat.agent_id) if beat.agent_id else None
     return data
 
 
@@ -127,9 +150,19 @@ def build_trace_router(services: ApiServices) -> Any:
         call_id: str | None = None,
         q: str | None = None,
         group_by: str = "stage",
+        actor: bool = False,
     ) -> dict[str, Any]:
         calls = trace_sink.read_calls(world_id, step=step, stage=stage, agent_id=agent_id)
         calls = _keyword_filter(_call_id_filter(calls, call_id), q)
+        # A call id names a call; no beat has one.
+        beats = [] if call_id else _beat_keyword_filter(
+            [b for b in trace_sink.read_beats(world_id, step=step, agent_id=agent_id)
+             if stage is None or b.stage == stage],
+            q,
+        )
+        if actor:
+            calls = [c for c in calls if c.actor]
+            beats = [b for b in beats if b.actor]
         names = await agent_names(manager, world_id)
 
         def _group_key(rec: Any) -> str:
@@ -142,6 +175,10 @@ def build_trace_router(services: ApiServices) -> Any:
         groups: dict[str, list] = {}
         for call in calls:
             groups.setdefault(_group_key(call), []).append(call)
+        beat_groups: dict[str, list] = {}
+        for beat in beats:
+            beat_groups.setdefault(_group_key(beat), []).append(beat)
+            groups.setdefault(_group_key(beat), [])
 
         def _group_sort(key: str) -> Any:
             if group_by == "stage":
@@ -156,12 +193,14 @@ def build_trace_router(services: ApiServices) -> Any:
                 "label": names.get(key, key) if group_by == "agent" else key,
                 **_aggregate(group_calls),
                 "items": [_serialize_call(c, names) for c in group_calls],
+                "beats": [_serialize_beat(b, names) for b in beat_groups.get(key, [])],
             }
             for key, group_calls in sorted(groups.items(), key=lambda kv: _group_sort(kv[0]))
         ]
         return {
             "group_by": group_by,
-            "filters": {"step": step, "stage": stage, "agent_id": agent_id, "call_id": call_id, "q": q},
+            "filters": {"step": step, "stage": stage, "agent_id": agent_id, "call_id": call_id, "q": q,
+                        "actor": actor},
             "total": _aggregate(calls),
             "groups": group_list,
         }
@@ -184,6 +223,7 @@ def build_trace_router(services: ApiServices) -> Any:
                 "label": scene,
                 **_aggregate(scene_calls),
                 "items": [_serialize_call(c, names) for c in scene_calls],
+                "beats": [],
             }
             for scene, scene_calls in sorted(
                 groups.items(), key=lambda kv: (build_scene_sort_key(kv[0]), kv[0])

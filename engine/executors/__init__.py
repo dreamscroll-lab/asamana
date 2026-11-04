@@ -29,7 +29,9 @@ def build_default_registry(
     social = SocialExecutor(
         llm_router, directory, seconds_per_step=seconds_per_step, world_start_second_of_day=world_start_second_of_day)
     movement = MovementExecutor(directory, seconds_per_step=seconds_per_step)
-    work = WorkExecutor(llm_router, directory, seconds_per_step=seconds_per_step)
+    work = WorkExecutor(
+        llm_router, directory, seconds_per_step=seconds_per_step,
+        world_start_second_of_day=world_start_second_of_day)
     physical = PhysicalExecutor(llm_router, directory, seconds_per_step=seconds_per_step)
     covert = CovertExecutor(
         llm_router, directory, seconds_per_step=seconds_per_step,

@@ -22,7 +22,6 @@ from world.models import AgentDefinition, AgentTier, EmotionState, SoulLayer
 def _definition(agent_id: str, tier: AgentTier) -> AgentDefinition:
     return AgentDefinition(
         agent_id=agent_id,
-        name=agent_id.upper(),
         tier=tier,
         soul=SoulLayer(name=agent_id.upper(), role="", agent_id=agent_id),
         initial_location="taiji_palace",

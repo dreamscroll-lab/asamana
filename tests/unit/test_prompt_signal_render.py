@@ -78,9 +78,15 @@ def test_render_memory_recency_never_gets_younger_as_time_passes() -> None:
     assert seen == sorted(seen)
 
 
-def test_render_memory_insight_and_summary_have_no_recency_prefix() -> None:
-    """insight (cross-time belief) / summary (time span) get no time prefix; selective by kind."""
-    assert render_memory(_mem(content="他在躲我", kind="insight"), now_step=99, seconds_per_step=3600) == "他在躲我"
+def test_render_memory_dates_an_insight_by_when_it_was_drawn() -> None:
+    """An insight is a memory like an event and gets the same recency prefix."""
+    assert render_memory(
+        _mem(content="他在躲我", kind="insight", created_step=96), now_step=99, seconds_per_step=3600,
+    ) == "（几小时前）他在躲我"
+
+
+def test_render_memory_summary_has_no_recency_prefix() -> None:
+    """A summary covers a period, so no single point in time fits it."""
     assert render_memory(_mem(content="那段日子人心惶惶", kind="summary"), now_step=99, seconds_per_step=3600) == "那段日子人心惶惶"
 
 
@@ -160,8 +166,11 @@ def _msg(sender_id, sender_name, content):
     return SimpleNamespace(sender_id=sender_id, sender_name=sender_name, content=content)
 
 
-def _bc(content: str) -> Broadcast:
-    return Broadcast(content=content, source="system", broadcast_type=BroadcastType.WORLD_EVENT, deliver_step=1)
+def _bc(content: str, location_scope: str | None = None) -> Broadcast:
+    return Broadcast(
+        content=content, source="system", broadcast_type=BroadcastType.WORLD_EVENT, deliver_step=1,
+        location_scope=location_scope,
+    )
 
 
 def test_render_perceived_signals_labels_each_channel() -> None:
@@ -174,19 +183,24 @@ def test_render_perceived_signals_labels_each_channel() -> None:
     assert "同处一地的人：甲" in joined   # stative, so not read as an entrance
     assert "环境观察：远处有动静" in joined
     assert "收到来自乙的消息：速来" in joined
-    assert "世界广播：城门已闭" in joined
+    assert "全局广播：城门已闭" in joined
+
+
+def test_render_perceived_signals_labels_a_local_broadcast_local() -> None:
+    lines = render_perceived_signals(spatial=_spatial(), inbox=[], broadcasts=[_bc("东宫落雨", "donggong")])
+    assert "本地广播：东宫落雨" in lines
+    assert not any("donggong" in line for line in lines)
 
 
 def test_render_perceived_signals_narrator_message_labels_unknown_source() -> None:
-    """Narrator is like a message relayed from an unknown source: rendered as usual as
-    "收到来自不知来源的消息"; system concepts (the narrative engine) never enter in-character text."""
+    """An injected message exposes the same anonymous signature as a character letter."""
     narrator = SimpleNamespace(
-        sender_id="narrator", sender_name="不知来源",
-        content="李世民心头突然涌起一阵莫名的不安", metadata={"narrative": True},
+        sender_id="narrator", sender_name="匿名", anonymous=True,
+        content="李世民心头突然涌起一阵莫名的不安", metadata={"source": "system"},
     )
     lines = render_perceived_signals(spatial=_spatial(), inbox=[narrator], broadcasts=[])
     joined = "\n".join(lines)
-    assert "收到来自不知来源的消息：李世民心头突然涌起一阵莫名的不安" in joined
+    assert "收到来自匿名的消息：李世民心头突然涌起一阵莫名的不安" in joined
     assert "叙事引擎" not in joined and "narrator" not in joined
 
 

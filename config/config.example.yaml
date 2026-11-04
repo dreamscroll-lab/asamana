@@ -33,7 +33,7 @@
 #   default_provider  the vendor for any scene not listed under scenes
 #   scenes            only the scenes that differ from the default
 #
-# There are 15 scenes (see LLMScene in core/interfaces/llm.py); most need nothing written.
+# There are 16 scenes (see LLMScene in core/interfaces/llm.py); most need nothing written.
 #
 # [Resolution rules] one per field:
 #   provider = scenes[s].provider          else default_provider
@@ -213,12 +213,6 @@ vector_store:
     path: ./data/vectors
     # Clear this directory before changing dimension: upsert raises on a dimension mismatch.
 
-agent_store:
-  # file | in_memory
-  provider: file
-  params:
-    path: ./data/agents
-
 message:
   provider: in_memory
   params: {}
@@ -240,10 +234,10 @@ world:
 engine:
   max_concurrent_llm: 16       # process-wide cap on in-flight calls; orthogonal to rate_limit
   decay_interval: 5
-  event_system_enabled: true
-  max_events_per_window: 2     # injection density is a sliding-window quota: at most M in the last N steps
-  event_quota_window: 20
-  event_check_interval: 6
+  narrative_editor_enabled: true
+  max_injections_per_window: 3     # injection density is a sliding-window quota: at most M in the last N steps
+  injection_quota_window: 20
+  injection_check_interval: 5
   # An idle agent (no pressure, no urgent need, no strong emotion) is pulled back into the
   # decision loop at least every this many steps. One step ≈ one world hour and a waking day
   # is ~16 hours; both numbers are set in world time.

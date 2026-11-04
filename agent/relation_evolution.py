@@ -26,8 +26,8 @@ from agent.relation import (
     relation_legend,
     RelationSystem,
 )
-from core.interfaces.agent_store import AgentRelation
-from core.context import annotate_call
+from core.interfaces.relation import AgentRelation
+from core.context import annotate_active_call, annotate_call, note_active_call_adoption
 from core.interfaces.llm import (
     IndexedRef,
     LLMMessage,
@@ -42,6 +42,7 @@ from core.prompts import (
     MEMORY_ORDER_HINT,
     order_memories_chrono,
     person_referent,
+    relation_labels,
 )
 
 if TYPE_CHECKING:
@@ -137,6 +138,7 @@ class RelationEvolution:
                 )
             data = extract_json(response.content)
         except Exception as exc:
+            note_active_call_adoption(False, "unusable_payload")
             logger.warning(
                 "label_evolution_llm_failed",
                 extra={"agent_id": self._agent_id, "step": current_step, "error": str(exc)},
@@ -145,6 +147,7 @@ class RelationEvolution:
 
         updates_payload = data.get("updates") if isinstance(data, dict) else None
         if not isinstance(updates_payload, list):
+            note_active_call_adoption(False, "missing_updates")
             return []
 
         applied: list[tuple[str, list[str], str]] = []
@@ -169,7 +172,7 @@ class RelationEvolution:
             cleaned_labels: list[str] = []
             new_labels_raw = raw.get("labels")
             if isinstance(new_labels_raw, list):
-                cleaned_labels = [str(x).strip() for x in new_labels_raw if str(x).strip()]
+                cleaned_labels = relation_labels(new_labels_raw)
             applied_summary = str(raw.get("summary") or "").strip()
 
             if not cleaned_labels and not applied_summary:
@@ -216,6 +219,9 @@ class RelationEvolution:
             )
             applied.append((target_id, wrote_labels, wrote_summary))
 
+        annotate_active_call(updates_returned=len(updates_payload), updates_applied=len(applied))
+        if updates_payload and not applied:
+            note_active_call_adoption(False, "no_usable_updates")
         return applied
 
     async def _build_target_context(
@@ -266,7 +272,8 @@ class RelationEvolution:
 
 【评判规则】
 1. 先依据"最近相关事件"客观判断关系是否**真的**变了——多数关系应保持不变，不要为改而改。
-2. labels 格式见上述【关系数值说明】，要求同一世界同一类型用一致措辞，不在近义词间漂移；
+2. labels 格式见上述【关系数值说明】，写完按「该人物是被评判者的<角色>」读一遍，读不通就是写反了；
+   要求同一世界同一类型用一致措辞，不在近义词间漂移；
    涉及性别的称谓（父子/父女、兄弟/兄妹、夫/妻等）必须与双方标注的性别一致，不得凭名字臆断。
 3. labels 分三类，演化规则不同（**硬约束**）：
    · **血亲**（父子/兄弟等基于生物亲缘）——身份关系，一旦设定**永不删除或改写**，只能在其上新增。

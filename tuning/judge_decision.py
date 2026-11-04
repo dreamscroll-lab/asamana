@@ -47,9 +47,9 @@ def _agent_block(per_agent: list[dict[str, Any]]) -> str:
     for a in per_agent:
         inp = a.get("inputs", {}) or {}
         out = a.get("outputs", {}) or {}
-        tier = "主角" if inp.get("is_main_character") else "背景"
+        tier = "主角" if inp.get("is_main_character") else "背景角色"
         traits = "、".join(inp.get("core_traits") or []) or "—"
-        lines.append(f"### {a.get('agent_name')}（{tier}，位于 {inp.get('location', '?')}；性格：{traits}）")
+        lines.append(f"### {a.get('agent_name')}（{tier}，位于 {inp.get('location', '?')}；性格特点：{traits}）")
         # Judgment lens
         if inp.get("core_values"):
             lines.append("  价值观：" + "、".join(inp["core_values"]))
@@ -57,7 +57,7 @@ def _agent_block(per_agent: list[dict[str, Any]]) -> str:
             lines.append("  底线(不可逾越)：" + "；".join(inp["hard_constraints"]))
         emo = inp.get("emotion")
         if emo:
-            lines.append(f"  此刻情绪：{emo.get('primary')}（强度{emo.get('intensity')}，效价{emo.get('valence')}）")
+            lines.append(f"  此刻情绪：{emo.get('primary')}（强度{emo.get('intensity')}，情绪正负值{emo.get('valence')}）")
         # Direction
         lines.append(f"  最迫切的需求：{inp.get('dominant_need') or '—'}")
         if inp.get("short_term_goals"):
@@ -92,7 +92,7 @@ def _agent_block(per_agent: list[dict[str, Any]]) -> str:
         lines.append(f"  → 所选 action：{out.get('action_type')}（{tgt_str}，{out.get('estimated_steps')}步）")
         lines.append(f"  → 行动描述：{out.get('action_description')}")
         lines.append(f"  → 内心独白：{out.get('inner_monologue') or '（无）'}")
-        lines.append(f"  → 期望结果：{out.get('expected_outcome') or '（无）'}")
+        lines.append(f"  → 预期结果：{out.get('expected_outcome') or '（无）'}")
     return "\n".join(lines)
 
 
@@ -115,13 +115,13 @@ def _build_prompt(scenario_meta: dict, per_agent: list[dict], det_findings: dict
         "## 各维度的扣分项(各 1-5 整数;默认 5,命中问题才下调,问题越严重/越多扣得越狠)\n"
         "1. fields(语法/结构)——出现以下即扣:action_type 不在 7 类规范内;target 绑定非法(指向不在场的人 / "
         "去不相邻的地点 / PHYSICAL 没绑定目标);action_description 空泛不可上手、跳出第一人称、明显超长;"
-        "内心独白 / 期望结果缺失;estimated_steps < 1。\n"
+        "内心独白 / 预期结果缺失;estimated_steps < 1。\n"
         "2. action_fit(语义·选得对不对)——**逐角色、只依据它自己的信号 + 透镜/方向/现实**判断,出现以下即扣:"
         "所选 action 无视该角色此刻最迫切的需求与短期目标、漫无目的;违背它的人设 / 价值观 / 底线;"
         "把 action 绑到**不在场 / 够不着**的目标;脱离它已感知到的信号、臆造没感知到的人事;"
         "**仅因某人在场(并无指向它的动作)就对其采取激烈 action(对抗 / 加害 / 严防到行动)**;"
         "在没有任何指向性触发时跳到极端 action。\n"
-        "3. coherence(连贯)——出现以下即扣:内心独白 / 期望结果与所选 action 互相矛盾;独白写成了旁观者口吻或"
+        "3. coherence(连贯)——出现以下即扣:内心独白 / 预期结果与所选 action 互相矛盾;独白写成了旁观者口吻或"
         "事后命名、而非此刻被激起的理由;预设了它此刻无从得知的未来 / 信息。\n\n"
         "## 严格输出以下 JSON,不要任何多余内容:\n"
         '{"fields": {"rationale": "一句话,≤80字", "score": 1-5, "issues": ["扣分点,≤40字,最多3条", "..."]},'

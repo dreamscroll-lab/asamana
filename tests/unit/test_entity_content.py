@@ -15,8 +15,10 @@ from engine.directory import LiveWorldDirectory
 from engine.environment import EnvironmentSystem
 from engine.scene import SceneVisibility, SituationVoice, assemble_scene_context
 from providers.llm.mock import MockLLMProvider
-from world.models import EntityPresence, WorldEntity, WorldEntitySeed, WorldEntityType
+from world.models import WorldEntitySeed
+from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
 from core.interfaces.place import Place
+from tests.unit.env_state import restore, saved
 
 SECRET = "明晨卯时，玄武门换防"
 CARVED = "敢有擅入者斩"
@@ -25,7 +27,7 @@ CARVED = "敢有擅入者斩"
 def _letter(**over) -> WorldEntity:
     kw = dict(
         entity_id="letter", name="密信", entity_type=WorldEntityType.ITEM,
-        presence_ref="hall", is_takeable=True, content=SECRET,
+        presence_ref="hall", content=SECRET,
     )
     kw.update(over)
     return WorldEntity(**kw)
@@ -34,7 +36,7 @@ def _letter(**over) -> WorldEntity:
 def _stele() -> WorldEntity:
     return WorldEntity(
         entity_id="stele", name="石碑", entity_type=WorldEntityType.LANDMARK,
-        presence_ref="hall", is_takeable=False, content=CARVED,
+        presence_ref="hall", content=CARVED,
     )
 
 
@@ -150,7 +152,7 @@ def test_the_physical_target_block_carries_no_content() -> None:
     env.register_entity(letter)
     router = LLMRouter({scene: MockLLMProvider() for scene in LLMScene})
     executor = PhysicalExecutor(router, LiveWorldDirectory.from_agents({}, env))
-    assert SECRET not in executor._entity_target_block(letter, actor_id="a2")
+    assert SECRET not in executor._entity_target_block(letter, doer_id="a2")
 
 
 # --------------------------------------------------------------------------- #
@@ -166,7 +168,7 @@ def test_render_entity_prints_content_only_when_handed_it() -> None:
 def test_spawned_content_lands_on_the_thing() -> None:
     env = _env()
     spawn = EntitySpawn(name="密信", content=SECRET, holder_id="a1", is_public=False)
-    assert env.spawn_entity(spawn, ground=env.get_body_location("a1"), actor_id="a1")
+    assert env.spawn_entity(spawn, ground=env.get_body_location("a1"), doer_id="a1")
     assert env.get_entity(spawn.entity_id).content == SECRET
 
 
@@ -175,12 +177,12 @@ def test_content_survives_restore_for_made_and_seeded_things_alike() -> None:
     env.register_entity(_letter(content=""))
     env.change_entity_state(EntityStateChange(entity_id="letter", new_content=SECRET))
     made = EntitySpawn(name="账册", content="欠粮三百石", holder_id="a1")
-    env.spawn_entity(made, ground=env.get_body_location("a1"), actor_id="a1")
-    snapshot = env.snapshot_state()
+    env.spawn_entity(made, ground=env.get_body_location("a1"), doer_id="a1")
+    snapshot = saved(env)
 
     fresh = _env()
     fresh.register_entity(_letter(content=""))   # seeds are rebuilt as they were at creation
-    fresh.restore_state(snapshot)
+    restore(fresh, snapshot)
     assert fresh.get_entity("letter").content == SECRET
     assert fresh.get_entity(made.entity_id).content == "欠粮三百石"
 

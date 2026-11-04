@@ -4,7 +4,7 @@ Covers code paths test_decision.py doesn't:
 - _build_decision_prompt 9-section structure
 - _step_duration_hint's 4 time branches
 - _extract_json_object with markdown fences + nested objects
-- _expected_outcome's 5 action_type branches
+- a missing expected_outcome stays empty
 - decide()/_llm_select failure → None (no decision, Rule 1 fallback tier-1)
 - person_index / destination_index resolution
 """
@@ -38,6 +38,7 @@ from agent.personality import (
 from core.interfaces.action import ActionType
 from core.interfaces.message import Message
 from core.interfaces.perception import (
+    NpcIdentity, PerceivedNpc,
     PerceivedIdentity,
     PerceivedPresence,
     Broadcast, BroadcastType, LocationView, ReachableLocation, SpatialPerception, VisibleEntity,
@@ -192,7 +193,7 @@ def test_main_prompt_contains_role_section(main_engine) -> None:
     prompt = _decision_prompt(main_engine, personality, packet, candidates=[])
     assert "【我是谁】" in prompt
     assert "李世民" in prompt
-    assert "核心性格：" in prompt  # the persona block has no person; the 【我是谁】 heading carries it
+    assert "性格特点：" in prompt  # the persona block has no person; the 【我是谁】 heading carries it
 
 
 def test_main_prompt_contains_motivation_section(main_engine) -> None:
@@ -205,13 +206,13 @@ def test_main_prompt_contains_motivation_section(main_engine) -> None:
 
 
 def test_main_prompt_external_goals_labeled_by_urgency(main_engine) -> None:
-    """external_goals fall into three urgency bands: 【紧急】≥0.75, 【一般】≥0.45, 【留意】<0.45."""
+    """external_goals fall into three urgency bands: 【紧急】≥0.75, 【一般】≥0.45, 【不紧急】<0.45."""
     egs = [
-        ExternalGoal(text="紧急任务", source_id="world", urgency=Urgency.HIGH,
+        ExternalGoal(text="紧急任务", source_ids=(), urgency=Urgency.HIGH,
                      drive_type=ExternalDriveType.THREAT),
-        ExternalGoal(text="重要任务", source_id="world", urgency=Urgency.NORMAL,
+        ExternalGoal(text="重要任务", source_ids=(), urgency=Urgency.NORMAL,
                      drive_type=ExternalDriveType.OBLIGATION),
-        ExternalGoal(text="留意任务", source_id="world", urgency=Urgency.LOW,
+        ExternalGoal(text="留意任务", source_ids=(), urgency=Urgency.LOW,
                      drive_type=ExternalDriveType.EVENT),
     ]
     need_eval = _make_need_eval(external_goals=egs)
@@ -220,7 +221,7 @@ def test_main_prompt_external_goals_labeled_by_urgency(main_engine) -> None:
     assert "外部驱动" in prompt
     assert "【紧急】 紧急任务" in prompt
     assert "【一般】 重要任务" in prompt
-    assert "【留意】 留意任务" in prompt
+    assert "【不紧急】 留意任务" in prompt
 
 
 def test_main_prompt_external_goals_section_omitted_when_empty(main_engine) -> None:
@@ -291,7 +292,7 @@ def test_main_prompt_visible_entities_empty_says_无(main_engine) -> None:
     """
     packet = _make_packet()          # no visible_entities
     prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
-    assert "我够得着的东西：无" in prompt
+    assert "眼前的东西：无" in prompt
     # All three lists behave the same: any empty one is reported as empty
     assert "我能触及的人：无" in prompt
     assert "我可前往：无处" in prompt
@@ -386,7 +387,7 @@ def test_main_prompt_json_schema_uses_index_fields(main_engine) -> None:
 def test_main_prompt_inbox_messages_rendered(main_engine) -> None:
     from types import SimpleNamespace
     inbox = [SimpleNamespace(
-        sender_id="agent-yuan", sender_name="李渊", sender_is_agent=True,
+        sender_id="agent-yuan", sender_name="李渊", sender_is_agent=True, anonymous=False,
         content="即刻觐见", urgency=Urgency.HIGH, metadata={},
     )]
     packet = _make_packet(inbox=inbox)
@@ -398,19 +399,17 @@ def test_main_prompt_inbox_messages_rendered(main_engine) -> None:
 
 
 def test_main_prompt_narrator_message_labels_unknown_source(main_engine) -> None:
-    """The narrator (metadata.narrative) is treated like a message of unknown origin: it goes under
-    "有人捎话给我" headed "不知来源". System concepts (the narrative engine) never enter an
-    in-character prompt."""
+    """Injected messages expose the anonymous signature without the engine author."""
     from types import SimpleNamespace
     inbox = [SimpleNamespace(
-        sender_id="narrator", sender_name="不知来源", sender_is_agent=True,
+        sender_id="narrator", sender_name="匿名", sender_is_agent=False, anonymous=True,
         content="李世民心头突然涌起一阵莫名的不安", urgency=Urgency.HIGH,
-        metadata={"narrative": True},
+        metadata={"source": "system"},
     )]
     packet = _make_packet(inbox=inbox)
     prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
     assert "有人捎话给我：" in prompt
-    assert "不知来源：李世民心头突然涌起一阵莫名的不安" in prompt
+    assert "匿名：李世民心头突然涌起一阵莫名的不安" in prompt
     assert "叙事引擎" not in prompt and "narrator" not in prompt
 
 
@@ -419,9 +418,15 @@ def test_main_prompt_broadcasts_rendered(main_engine) -> None:
         content="宫廷政变迹象", source="system",
         broadcast_type=BroadcastType.WORLD_EVENT, deliver_step=1, severity="high",
     )
-    packet = _make_packet(broadcasts=[bc])
+    local = Broadcast(
+        content="东宫落雨", source="director", broadcast_type=BroadcastType.WORLD_EVENT,
+        deliver_step=1, location_scope="donggong",
+    )
+    packet = _make_packet(broadcasts=[bc, local])
     prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
-    assert "宫廷政变迹象" in prompt
+    assert "全局广播：宫廷政变迹象" in prompt
+    assert "本地广播：东宫落雨" in prompt
+    assert "donggong" not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -525,55 +530,23 @@ def test_extract_json_object_skips_a_span_that_does_not_parse() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _expected_outcome's 5 action_type branches
+# A missing expected_outcome stays empty: no intent is guessed for the model
 # ---------------------------------------------------------------------------
 
 
-def test_expected_outcome_talk(container) -> None:
+@pytest.mark.asyncio
+async def test_decide_leaves_a_missing_expected_outcome_empty(container) -> None:
+    """MOVE writes the intent into memory as "我打算「…」"; a guessed template would be fabricated
+    first-person narrative, so an omitted field stays empty."""
     engine = DecisionEngine(container.llm_router)
-    out = engine._expected_outcome(ActionType.TALK, _make_need_eval())
-    assert "交谈" in out
+    payload = json.loads(_OBJECTLESS_REST_COMPLETE)
+    del payload["expected_outcome"]
+    _stub_responses(engine, [json.dumps(payload, ensure_ascii=False)])
 
+    result = await engine.decide(personality=_make_personality(), packet=_make_packet())
 
-def test_expected_outcome_rest(container) -> None:
-    engine = DecisionEngine(container.llm_router)
-    out = engine._expected_outcome(ActionType.REST, _make_need_eval())
-    assert "恢复" in out or "平静" in out
-
-
-def test_expected_outcome_physical(container) -> None:
-    engine = DecisionEngine(container.llm_router)
-    out = engine._expected_outcome(ActionType.PHYSICAL, _make_need_eval())
-    assert "物理" in out or "影响" in out
-
-
-def test_expected_outcome_covert(container) -> None:
-    """COVERT's expected outcome needs both parts: acting unnoticed, and learning something not
-    known before.
-
-    "Achieve the goal without drawing attention" alone describes covert action as quietly getting
-    something done, but it gets nothing done. It doesn't change the world, only the actor's model
-    of it. Without the "what was learned" part, the gap would measure whether it was done quietly
-    instead of what was gained.
-    """
-    engine = DecisionEngine(container.llm_router)
-    out = engine._expected_outcome(ActionType.COVERT, _make_need_eval())
-    assert any(w in out for w in ("不被察觉", "不引人注意", "暗中")), "缺「不被察觉」这一维"
-    assert any(w in out for w in ("探到", "得知", "知道")), "缺「探到什么」这一维"
-
-
-def test_expected_outcome_work_default_uses_dominant_need(container) -> None:
-    engine = DecisionEngine(container.llm_router)
-    need_eval = _make_need_eval(dominant=NeedType.ESTEEM)
-    out = engine._expected_outcome(ActionType.WORK, need_eval)
-    assert "推进" in out
-
-
-def test_expected_outcome_work_no_dominant_need(container) -> None:
-    engine = DecisionEngine(container.llm_router)
-    need_eval = _make_need_eval(dominant=None)
-    out = engine._expected_outcome(ActionType.WORK, need_eval)
-    assert "稳定" in out
+    assert result.action is not None
+    assert result.action.expected_outcome == ""
 
 
 # ---------------------------------------------------------------------------
@@ -730,7 +703,7 @@ class _CallBox:
 
     def __init__(self) -> None:
         self.parse_ok = None
-        self.adopted = None
+        self.adopted = True
         self.reject_reason = ""
 
 
@@ -888,10 +861,11 @@ def test_parse_person_index_resolves_absent_recipient(container) -> None:
     """
     engine = DecisionEngine(container.llm_router)
     packet = _make_packet(visible_agent_ids=[], inbox=[_absent_sender_msg()])
-    candidates = [ActionCandidate(ActionType.SEND_MESSAGE, "传讯")]
+    candidates = [ActionCandidate(ActionType.SEND_MESSAGE, ActionType.SEND_MESSAGE.label)]
     raw = json.dumps({
         "selected_index": 0, "person_indices": [1],
-        "action_description": "回信尉迟恭：按计划即刻行事", "estimated_steps": 1,
+        "action_description": "回信尉迟恭：按计划即刻行事", "message_content": "按计划即刻行事。",
+        "estimated_steps": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -903,10 +877,10 @@ def test_parse_send_message_stray_item_id_not_bound(container) -> None:
     recipient."""
     engine = DecisionEngine(container.llm_router)
     packet = _make_packet(visible_agent_ids=[])
-    candidates = [ActionCandidate(ActionType.SEND_MESSAGE, "传讯")]
+    candidates = [ActionCandidate(ActionType.SEND_MESSAGE, ActionType.SEND_MESSAGE.label)]
     raw = json.dumps({
-        "selected_index": 0, "item_id": "禁军统领", "message_announce": True,
-        "action_description": "通告全军戒备", "estimated_steps": 1,
+        "selected_index": 0, "item_name": "禁军统领", "message_announce": True,
+        "action_description": "通告全军戒备", "message_content": "全军戒备。", "estimated_steps": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -1004,7 +978,7 @@ def test_parse_physical_without_target_rejected(container) -> None:
     # adjudicated as an untracked thing. Catching that would require guessing from the string
     # whether a name looks like a person, which is the keyword matching Rule 7 forbids.
     freeform = json.dumps({
-        "selected_index": 0, "item_id": "宫门",
+        "selected_index": 0, "item_name": "宫门",
         "action_description": "我用肩撞开紧闭的宫门", "estimated_steps": 1,
     })
     sel = engine._parse_llm_selection(freeform, candidates, packet)
@@ -1047,34 +1021,93 @@ def test_recipient_index_precedes_action_description_in_schema(main_engine) -> N
     assert prompt.index('"physical_recipient_index"') < prompt.index('"action_description"')
 
 
+def test_only_things_in_hand_can_be_handed_over(main_engine) -> None:
+    """Binding rejects a hand-over of something not held (physical_recipient_not_held) and the
+    retry gets the same prompt, so the boundary has to be in the prompt: for the character's own
+    decision and for the actor's interpretation alike."""
+    prompt = _decision_prompt(main_engine, _make_personality(), _make_packet(), candidates=[])
+    recipient = next(line for line in prompt.split("\n") if '"physical_recipient_index"' in line)
+    assert "我手上的东西" in recipient
+    assert "交得出去的只有“我手上的东西”那一组里的；不在我手上的，得先拿到手" in prompt
+    intent = main_engine._intent_system_prompt()  # noqa: SLF001
+    recipient = next(line for line in intent.split("\n") if '"physical_recipient_index"' in line)
+    assert "我手上的东西" in recipient and "交不出去" in recipient
+
+
+
+def test_spoken_words_follow_action_description_in_schema(main_engine) -> None:
+    """The words said are what the step comes to in speech: written after the step, so they carry
+    it out instead of the step being summed up to fit them (§5b)."""
+    prompt = _decision_prompt(main_engine, _make_personality(), _make_packet(), candidates=[])
+    described = prompt.index('"action_description"')
+    assert described < prompt.index('"message_content"')
+    assert described < prompt.index('"errand_message"')
+
+
+
+def test_the_relation_legend_sits_in_the_system_prefix(main_engine) -> None:
+    """The legend is the same for every call: in system it stays in the cached prefix; beside the
+    relations in user it would be resent with every call."""
+    from core.prompts import relation_legend
+
+    rel = PerceivedRelation(trust=0.85, affection=0.4, target_agent_id="agent-weichi",
+                            target_agent_name="尉迟恭", labels=["心腹"])
+    system, user, _facts = main_engine._build_decision_prompt(  # noqa: SLF001
+        _make_personality(), _make_packet(relevant_relations=[rel]), candidates=[],
+    )
+    assert relation_legend() in system and relation_legend() not in user
+    assert system.index("【说明】") < system.index(relation_legend()) < system.index("【输出】")
+    assert "尉迟恭" in user
+
 def test_item_list_marks_who_holds_what(main_engine) -> None:
-    """One list, one set of indices. Holding is an attribute of an entry, not a second namespace.
+    """One list, one set of indices, shown in two groups: what is in my hands, and what isn't.
 
     A separate list would mean a second index space, and index spaces bleeding into each other is
-    how a physical target gets bound to the wrong thing. Names come only from the perception
-    packet (the holder is always at my location), and no id appears in the prompt.
+    how a physical target gets bound to the wrong thing. Marked only per entry, something lying
+    beside me gets read as already in hand and handed over, so the groups say it outright. Names
+    come only from the perception packet (the holder is always at my location), and no id appears
+    in the prompt. Perception lists my own things first (``reachable_in_order``).
     """
     packet = _make_packet(
         visible_agent_ids=["agent-weichi"],
         visible_agents={"agent-weichi": PerceivedIdentity(name="尉迟恭")},
     )
+    packet.spatial.visible_npcs["npc-runner"] = PerceivedNpc(NpcIdentity(name="信使"))
     packet.spatial.visible_entities.extend([
-        VisibleEntity(entity_id="e1", name="灯笼", entity_type="item"),
         VisibleEntity(entity_id="e2", name="短刀", entity_type="item", holder_id="agent-shimin",
                       is_takeable=True),
+        VisibleEntity(entity_id="e1", name="灯笼", entity_type="item"),
         VisibleEntity(entity_id="e3", name="虎符", entity_type="item", holder_id="agent-weichi",
                       is_takeable=True),
         VisibleEntity(entity_id="e4", name="密函", entity_type="item", holder_id="agent-ghost"),
+        VisibleEntity(entity_id="e5", name="包裹", entity_type="item", holder_id="npc-runner", is_takeable=True),
     ])
     prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
+    actor_prompt = main_engine._intent_user_prompt("拿回包裹", _make_personality(), packet, recent=(), recalled=(), fixed=None)
 
-    assert "我够得着的东西：" in prompt
-    assert "#1 灯笼" in prompt and "持有" not in prompt.split("#1 灯笼")[1].split("\n")[0]
-    assert "#2 短刀（由我持有；可交出）" in prompt     # in my hands: what I can do is hand it over
-    assert "#3 虎符（由尉迟恭持有）" in prompt       # in someone else's hands: not marked "可取"
-    assert "#4 密函（由某人持有" in prompt      # an unrecognized holder falls back to a descriptive referent
-    for leaked in ("agent-shimin", "agent-weichi", "agent-ghost", "e1", "e2"):
-        assert leaked not in prompt
+    for text in (prompt, actor_prompt):    # the actor's interpretation reads the same lists
+        mine = text.index("我手上的东西：")
+        not_mine = text.index("不在我手上的东西（放在此处，或在别人手上）：")
+        assert text.index("眼前的东西（两组的序号连着数）：") < mine < text.index("#1 短刀") < not_mine
+        assert "#1 短刀（由我持有；可交出）" in text     # in my hands: what I can do is hand it over
+        assert not_mine < text.index("#2 灯笼") < text.index("#3 虎符")
+        assert "持有" not in text.split("#2 灯笼")[1].split("\n")[0]
+        assert "#3 虎符（由尉迟恭持有）" in text       # in someone else's hands: not marked "可取"
+        assert "#4 密函（由某人持有" in text      # an unrecognized holder falls back to a descriptive referent
+        assert "#5 包裹（由信使持有）" in text
+        for leaked in ("agent-shimin", "agent-weichi", "agent-ghost", "npc-runner", "e1", "e2"):
+            assert leaked not in text
+
+
+def test_item_list_says_my_hands_are_empty(main_engine) -> None:
+    """With nothing in hand the group still shows, as 无: that is what corrects a memory that thinks
+    something is held, and only the things not in hand are offered."""
+    packet = _make_packet()
+    packet.spatial.visible_entities.append(
+        VisibleEntity(entity_id="e1", name="说明", entity_type="item", is_takeable=True))
+    prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
+    assert "我手上的东西：无" in prompt
+    assert "#1 说明（可取）" in prompt
 
 
 def test_parse_binds_a_recipient_alongside_the_entity(container) -> None:

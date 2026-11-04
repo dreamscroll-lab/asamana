@@ -36,13 +36,13 @@ def _written_memory_view(m: Memory) -> dict[str, Any]:
 
 
 async def _inject_relations_for(agent, scenario: dict, id_by_name: dict, name_by_id: dict, valid_ids) -> None:
-    """Plant a substantive actor→target relation so the write prompts get a relation block.
+    """Plant a substantive doer→target relation so the write prompts get a relation block.
 
     scene.relations = [{"from","to","trust"?,"affection"?,"labels"?,"history"?,"interaction_count"?}].
     Baseline relations are often blank defaults (trust 0.5 / no labels / no history / 0 interactions),
     which `_resolve_relation_context` correctly skips (no substantive relation, nothing injected) — so a scenario that wants to
-    exercise relation-colored importance/experiential must seed the relationship. Must run AFTER
-    isolate_agent: writes land in the dry-run shadow store, baseline ./data untouched. Test scaffolding.
+    exercise relation-colored importance/experiential must seed the relationship. Edits the agent's
+    held relations in memory; baseline ./data untouched. Test scaffolding.
     """
     for r in (scenario.get("scene", {}) or {}).get("relations", []):
         from_id = resolve_ref(str(r.get("from", "")), id_by_name, valid_ids)
@@ -63,7 +63,6 @@ async def _inject_relations_for(agent, scenario: dict, id_by_name: dict, name_by
         rel.interaction_count = max(int(rel.interaction_count), int(r.get("interaction_count", 1)))
         if not rel.to_name:
             rel.to_name = name_by_id.get(to_id, to_id)
-        await agent.relation_system._store.save_relation(rel)  # noqa: SLF001 — dry-store shadow
 
 
 async def run_memory_write(
@@ -80,7 +79,7 @@ async def run_memory_write(
     Drives the real production write: importance LLM appraisal + asymmetric-write gate
     (``_should_write_experiential``) + factual write (verbatim mirror) + experiential LLM
     rewrite (first-person, personality-colored). Persistence is shadowed by
-    _DryRunAgentStore + InMemoryVectorStore so the baseline world's ./data is never written.
+    isolate_container so the baseline world's ./data is never written.
     The event + the writer's current emotion/personality are the inputs; the produced
     factual/experiential memories + resolved importance + the write gate are captured.
     Zero production changes (only scene injection and dry-run isolation are scaffolding).
@@ -94,9 +93,9 @@ async def run_memory_write(
     spec = scenario["event"]
 
     kind = scenario.get("kind", "self")
-    actor_refs = scenario.get("actors") if kind == "contrast" else [scenario["actor"]]
-    # apply_action_scene placement keys off a single "actor"; give it the first one.
-    scenario.setdefault("actor", resolve_ref(actor_refs[0], id_by_name, valid_ids))
+    doer_refs = scenario.get("doers") if kind == "contrast" else [scenario["doer"]]
+    # apply_action_scene placement keys off a single "doer"; give it the first one.
+    scenario.setdefault("doer", resolve_ref(doer_refs[0], id_by_name, valid_ids))
     # scene.emotion sets each writer's current emotion — the coloring prism for the
     # experiential rewrite AND the intensity that drives the asymmetric-write gate.
     await apply_action_scene(scenario, world, run_step, id_by_name)
@@ -113,35 +112,35 @@ async def run_memory_write(
         # Same agent, same event, different injected emotions — emotion colors the experiential
         # (and is a minor importance input). Tests: experiential shifts with mood while persona +
         # event stay constant; importance stays structurally stable (shouldn't swing with mood).
-        actor_id = resolve_ref(scenario["actor"], id_by_name, valid_ids)
-        primary_actor_id = actor_id
-        agent = world.agents[actor_id]
+        doer_id = resolve_ref(scenario["doer"], id_by_name, valid_ids)
+        primary_doer_id = doer_id
+        agent = world.agents[doer_id]
         isolate_agent(agent, name_by_id)
         await _inject_relations_for(agent, scenario, id_by_name, name_by_id, valid_ids)
-        related_ids = [r for r in (resolve_ref(x, id_by_name, valid_ids) for x in related_refs) if r and r != actor_id]
-        core_ids = [r for r in (resolve_ref(x, id_by_name, valid_ids) for x in core_refs) if r and r != actor_id]
+        related_ids = [r for r in (resolve_ref(x, id_by_name, valid_ids) for x in related_refs) if r and r != doer_id]
+        core_ids = [r for r in (resolve_ref(x, id_by_name, valid_ids) for x in core_refs) if r and r != doer_id]
         for emo in scenario.get("emotions", []) or []:
             agent.personality.update_emotion(
                 primary=parse_emotion_type(str(emo.get("type", "neutral"))),
                 intensity=float(emo.get("intensity", 0.5)),
                 valence=float(emo.get("valence", 0.0)),
                 triggered_by="scene")
-            set_log_context(world_id=world_id, agent_id=actor_id, step=str(run_step))
+            set_log_context(world_id=world_id, agent_id=doer_id, step=str(run_step))
             writes.append(await _write_one_event(
                 agent, name_by_id=name_by_id, run_step=run_step, raw_content=raw_content,
                 experiential_seed=spec.get("experiential"), dominant_need=dominant_need,
                 triggered_by=triggered_by, related_ids=related_ids, core_ids=core_ids, world_id=world_id))
         clear_log_context()
     else:
-        primary_actor_id = resolve_ref(actor_refs[0], id_by_name, valid_ids)
-        for ref in actor_refs:
-            actor_id = resolve_ref(ref, id_by_name, valid_ids)
-            agent = world.agents[actor_id]
+        primary_doer_id = resolve_ref(doer_refs[0], id_by_name, valid_ids)
+        for ref in doer_refs:
+            doer_id = resolve_ref(ref, id_by_name, valid_ids)
+            agent = world.agents[doer_id]
             isolate_agent(agent, name_by_id)
             await _inject_relations_for(agent, scenario, id_by_name, name_by_id, valid_ids)
-            related_ids = [r for r in (resolve_ref(x, id_by_name, valid_ids) for x in related_refs) if r and r != actor_id]
-            core_ids = [r for r in (resolve_ref(x, id_by_name, valid_ids) for x in core_refs) if r and r != actor_id]
-            set_log_context(world_id=world_id, agent_id=actor_id, step=str(run_step))
+            related_ids = [r for r in (resolve_ref(x, id_by_name, valid_ids) for x in related_refs) if r and r != doer_id]
+            core_ids = [r for r in (resolve_ref(x, id_by_name, valid_ids) for x in core_refs) if r and r != doer_id]
+            set_log_context(world_id=world_id, agent_id=doer_id, step=str(run_step))
             writes.append(await _write_one_event(
                 agent, name_by_id=name_by_id, run_step=run_step, raw_content=raw_content,
                 experiential_seed=spec.get("experiential"), dominant_need=dominant_need,
@@ -152,10 +151,10 @@ async def run_memory_write(
               "dominant_need": dominant_need.value if dominant_need else None,
               "triggered_by": triggered_by}
     if kind == "contrast":
-        inputs = {**shared, "actors": [w["persona"]["actor_name"] for w in writes]}
+        inputs = {**shared, "doers": [w["persona"]["doer_name"] for w in writes]}
         outputs = {"kind": "contrast", "event": raw_content, "writes": writes}
     elif kind == "emotion_contrast":
-        inputs = {**shared, "actor_name": writes[0]["persona"]["actor_name"] if writes else "",
+        inputs = {**shared, "doer_name": writes[0]["persona"]["doer_name"] if writes else "",
                   "dominant_need_label": writes[0]["dominant_need_label"] if writes else "",
                   "emotions": [w["persona"]["current_emotion"] for w in writes]}
         outputs = {"kind": "emotion_contrast", "event": raw_content, "writes": writes}
@@ -169,7 +168,7 @@ async def run_memory_write(
                    "write_gate": w["write_gate"], "factual": w["factual"],
                    "experiential": w["experiential"], "error": w["error"]}
     trace_sink.record_phase(PhaseTrace(
-        world_id=world_id, phase="stage.memory_write", step=run_step, agent_id=primary_actor_id,
+        world_id=world_id, phase="stage.memory_write", step=run_step, agent_id=primary_doer_id,
         inputs=inputs, outputs=outputs, timestamp=datetime.now().isoformat(),
     ))
     logger.info("tuning_memory_write_dry_run_complete",
@@ -180,7 +179,7 @@ async def run_memory_write(
 def _persona_view(agent, name: str) -> dict[str, Any]:
     soul = agent.personality.soul
     return {
-        "actor_name": name,
+        "doer_name": name,
         "is_main_character": agent.is_main_character,
         "core_traits": list(getattr(soul, "core_traits", [])),
         "core_values": list(getattr(soul, "core_values", [])),
@@ -223,7 +222,7 @@ async def _write_one_event(
         error = None
     except Exception as exc:  # noqa: BLE001 — one writer's failure must not abort the run
         logger.warning("memory_write_failed",
-                       extra={"world_id": world_id, "actor": agent.agent_id, "error": str(exc)})
+                       extra={"world_id": world_id, "doer": agent.agent_id, "error": str(exc)})
         error = str(exc)
     new = [m for mid, m in agent.memory_system._entries.items() if mid not in before_mem]  # noqa: SLF001
     factual = next((m for m in new if m.stream == MemoryStream.FACTUAL), None)

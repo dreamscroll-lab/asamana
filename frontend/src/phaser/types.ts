@@ -58,6 +58,7 @@ export interface AgentToken {
   // fixed offset above the feet would put the bubble through a taller figure's chest.
   color: number; // stable role/main color — tints this agent's name tag in bubbles
   baseAlpha: number; // how solid this figure is before the x-ray (what focus and death say).
+  presenceAlpha: number; // visibility transition, composed with focus/death and ground occlusion
   // Only the scene's update() writes the container's alpha, multiplying this by the x-ray
   // factor; a second writer would flick a dimmed corpse back to full opacity behind a tree.
   floor: number; // y below which a downward bubble must start, to clear the name roster (0 = none)
@@ -66,6 +67,7 @@ export interface AgentToken {
   deadMark?: Phaser.GameObjects.Container;
   vitTrack: Phaser.GameObjects.Rectangle; // vitality bar backing (hidden at full health)
   vitFill: Phaser.GameObjects.Rectangle; // vitality bar fill, scaled by vitality
+  identityRings: Phaser.GameObjects.Ellipse[];
   focusRing: Phaser.GameObjects.Ellipse; // purple ground ring shown when this agent is focused
   actionChip?: Phaser.GameObjects.Container; // step-scoped "result" pill under the token, a
   // child of `container`. Shows this step's outcome + success/failure until clearEphemeral
@@ -138,6 +140,7 @@ export const DEAD_MARK_PAD_Y = 1;
  * sealed letter) would vanish the moment someone picked it up. The pocket shows it.
  */
 export interface CarriedItem {
+  id: string;
   name: string;
   state: string;
   // Nobody standing beside him can perceive this one (`is_public: false` on the wire). Shown

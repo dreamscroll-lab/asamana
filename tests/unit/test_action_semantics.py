@@ -139,9 +139,11 @@ class TestTargetOnTheWire:
         )["target"]["reaches"] == []
 
     def test_relinquish_is_a_physical_deed(self):
-        """Handing over is PHYSICAL's seventh verb and survives a parse_deed round-trip intact."""
-        from core.interfaces.action import PHYSICAL_DEEDS, parse_deed
-        assert Deed.RELINQUISH in PHYSICAL_DEEDS
+        """Handing over is a PHYSICAL deed the judge can be offered, and survives a parse_deed
+        round-trip intact."""
+        from core.interfaces.action import parse_deed
+        from core.prompts import PHYSICAL_DEED_DESCRIPTIONS
+        assert Deed.RELINQUISH in PHYSICAL_DEED_DESCRIPTIONS
         assert parse_deed("relinquish", default=Deed.OPERATE) is Deed.RELINQUISH
 
     def test_a_physical_target_reaches_the_observer_as_a_directed_id(self):
@@ -209,7 +211,7 @@ class TestResolveDeed:
     def _resolve(label, **kw):
         from engine.executors.physical import PhysicalExecutor
         base = dict(is_person=False, has_entity=False, seize_available=False,
-                    actor_holds=False, target_damage=0.0)
+                    doer_holds=False, target_damage=0.0)
         return PhysicalExecutor._resolve_deed(label, **{**base, **kw})
 
     def test_blood_settles_it(self):
@@ -224,9 +226,9 @@ class TestResolveDeed:
         # Same guard, mirrored twice more: taking what is already in his own hand is not a
         # taking, and letting go of what he is not holding is not a letting-go.
         assert self._resolve("seize", has_entity=True, seize_available=False,
-                             actor_holds=True) is Deed.OPERATE
-        assert self._resolve("relinquish", has_entity=True, actor_holds=False) is Deed.OPERATE
-        assert self._resolve("relinquish", has_entity=True, actor_holds=True) is Deed.RELINQUISH
+                             doer_holds=True) is Deed.OPERATE
+        assert self._resolve("relinquish", has_entity=True, doer_holds=False) is Deed.OPERATE
+        assert self._resolve("relinquish", has_entity=True, doer_holds=True) is Deed.RELINQUISH
 
     def test_a_state_word_saying_it_is_gone_settles_it(self):
         # Both fields say "it's destroyed"; the judge just picked the wrong channel. Without
@@ -299,8 +301,8 @@ async def _judge_with(payload: str, *, agent, is_person: bool, has_entity: bool,
     ex = PhysicalExecutor(llm, LiveWorldDirectory.from_agents({}, EnvironmentSystem()))  # type: ignore[arg-type]
     verdict = await ex._judge(
         agent, description="做点什么", expected_outcome="", scene="",
-        target_block="目标", is_person=is_person, has_entity=has_entity,
-        seize_available=takeable, actor_holds=holds, needs_relation=needs_relation,
+        target_block="目标", shows_relations=False, is_person=is_person, has_entity=has_entity,
+        seize_available=takeable, doer_holds=holds, needs_relation=needs_relation,
         recipient_line=recipient_line, step=1,
     )
     return verdict, llm
@@ -313,7 +315,7 @@ class TestJudgeParsesDeed:
         agent = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
         verdict, llm = await _judge_with(
             '{"reason":"他弯腰把它收进袖中","deed":"seize","success":true,'
-            '"outcome":"甲拿起了令牌","fact":"我拿起了令牌","new_entity_state":"intact","actor_damage":0.0}',
+            '"outcome":"甲拿起了令牌","fact":"我拿起了令牌","new_entity_state":"intact","doer_damage":0.0}',
             agent=agent, is_person=False, has_entity=True, takeable=True,
         )
         assert verdict is not None and verdict.deed is Deed.SEIZE
@@ -329,7 +331,7 @@ class TestJudgeParsesDeed:
         agent = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
         _, llm = await _judge_with(
             '{"reason":"r","deed":"seize","success":false,"outcome":"甲没拿到","fact":"我没拿到",'
-            '"why":"对方攥得紧","relation":"negative","new_entity_state":"","actor_damage":0.0}',
+            '"why":"对方攥得紧","relation":"negative","new_entity_state":"","doer_damage":0.0}',
             agent=agent, is_person=False, has_entity=True, takeable=True, needs_relation=True,
         )
         system = llm.messages[0].content
@@ -350,7 +352,7 @@ class TestJudgeParsesDeed:
         from tests.unit.test_action_executors import _make_agent
         agent = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
         _, llm = await _judge_with(
-            '{"reason":"r","success":true,"outcome":"甲动了手","fact":"我动了手","actor_damage":0.0}',
+            '{"reason":"r","success":true,"outcome":"甲动了手","fact":"我动了手","doer_damage":0.0}',
             agent=agent, is_person=is_person, has_entity=has_entity, takeable=has_entity,
         )
         assert ("不会让任何东西易手" in llm.messages[0].content) is expected
@@ -364,7 +366,7 @@ class TestJudgeParsesDeed:
         agent = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
         verdict, llm = await _judge_with(
             '{"reason":"他推开了它","deed":"seize","success":true,'
-            '"outcome":"甲推开了门","fact":"我推开了门","new_entity_state":"open","actor_damage":0.0}',
+            '"outcome":"甲推开了门","fact":"我推开了门","new_entity_state":"open","doer_damage":0.0}',
             agent=agent, is_person=False, has_entity=True, takeable=False,
         )
         assert verdict is not None and verdict.deed is Deed.OPERATE
@@ -384,7 +386,7 @@ class TestJudgeParsesDeed:
             '{"reason":"帛书在场且标注可取","deed":"operate","success":true,'
             '"outcome":"李建成取出密报帛书细读后亲手销毁，帛书不再存在。",'
             '"fact":"我取出密报帛书细读，暗记线索后亲手销毁。","why":"",'
-            '"new_entity_state":"destroyed","actor_damage":0.05,"frees_actor":false}',
+            '"new_entity_state":"destroyed","doer_damage":0.05,"frees_doer":false}',
             agent=agent, is_person=False, has_entity=True, takeable=True,
         )
         assert verdict is not None and verdict.deed is Deed.DESTROY
@@ -396,7 +398,7 @@ class TestJudgeParsesDeed:
         verdict, _ = await _judge_with(
             '{"reason":"他只想拦住对方","deed":"restrain","success":true,'
             '"outcome":"甲拦住了乙","fact":"我拦住了乙","relation":"negative",'
-            '"target_damage":0.5,"actor_damage":0.0}',
+            '"target_damage":0.5,"doer_damage":0.0}',
             agent=agent, is_person=True, has_entity=False, takeable=False,
         )
         assert verdict is not None and verdict.deed is Deed.STRIKE  # blood settles it
@@ -406,7 +408,7 @@ class TestJudgeParsesDeed:
         from tests.unit.test_action_executors import _make_agent
         agent = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
         verdict, llm = await _judge_with(
-            '{"reason":"他用力一推","success":true,"outcome":"甲使了把力","fact":"我使了把力","actor_damage":0.1}',
+            '{"reason":"他用力一推","success":true,"outcome":"甲使了把力","fact":"我使了把力","doer_damage":0.1}',
             agent=agent, is_person=False, has_entity=False, takeable=False,
         )
         assert verdict is not None and verdict.deed is Deed.EXERT
@@ -453,8 +455,8 @@ class TestTargetSurvivesTheExecutor:
 class TestSpawnAttribution:
     """Which beat created a thing — only the backend can answer that.
 
-    The observer can diff out "it appeared this step" (the entity table only grows; tombstones
-    stay), but when several people act in one step it can't infer who made it. The renderer uses
+    An entity's birth step says when it appeared, but when several people act in one step it
+    cannot say who made it. The renderer uses
     this to hold the entrance until the causing beat; otherwise the thing pops up at step start,
     before the narration says he finished.
     """
@@ -467,10 +469,38 @@ class TestSpawnAttribution:
                              action_description="拟定换防部署")
         result = ActionResult(
             action=action, expected_outcome="", outcome="常何写完了换防部署令。",
-            entity_spawns=[EntitySpawn(name="换防部署令", entity_id="made_x")],
+            entity_spawns=[EntitySpawn(name="换防部署令", entity_id="made_entity_x")],
         )
 
-        assert action_semantics(action, result)["affected_entity_ids"] == ["made_x"]
+        semantics = action_semantics(action, result)
+        assert semantics["affected_entity_ids"] == ["made_entity_x"]
+        assert semantics["created_entity_ids"] == ["made_entity_x"]
+
+    def test_modifying_an_injected_item_is_not_creating_it(self) -> None:
+        action = AgentAction(agent_id="agent-a", step=13, action_type=ActionType.PHYSICAL)
+        result = _result(action, deed=Deed.SEIZE.value, entity_state_changes=[
+            EntityStateChange(entity_id="injected-copy", owner_id="agent-a"),
+        ])
+
+        semantics = action_semantics(action, result)
+
+        assert semantics["affected_entity_ids"] == ["injected-copy"]
+        assert semantics["created_entity_ids"] == []
+
+    def test_partial_work_failure_keeps_only_its_own_accepted_creations(self) -> None:
+        from core.interfaces.action import EntitySpawn
+
+        action = AgentAction(agent_id="agent-a", step=13, action_type=ActionType.WORK)
+        result = _result(
+            action, succeeded=False,
+            entity_state_changes=[EntityStateChange(entity_id="injected-copy", new_state="annotated")],
+            entity_spawns=[EntitySpawn(name="Draft", entity_id="draft"), EntitySpawn(name="Rejected")],
+        )
+
+        semantics = action_semantics(action, result)
+
+        assert semantics["affected_entity_ids"] == ["injected-copy", "draft"]
+        assert semantics["created_entity_ids"] == ["draft"]
 
     def test_a_refused_spawn_touched_nothing(self) -> None:
         """World is full → spawn_entity returns no id → it really touched nothing, so don't report."""
@@ -485,6 +515,7 @@ class TestSpawnAttribution:
         )
 
         assert action_semantics(action, result)["affected_entity_ids"] == []
+        assert action_semantics(action, result)["created_entity_ids"] == []
 
 
 class TestAKindIsCarriedThrough:
@@ -539,13 +570,13 @@ class TestWhatTheJudgeIsToldAboutATarget:
         """On the menu branch, ``Ref.id`` is a real id; it can only miss because the thing was
         destroyed this beat. Ids don't cross the LLM boundary, so fall back to a descriptive
         referent."""
-        block = self._executor()._unresolved_target_block("made_blade-1", KIND_ITEM)
-        assert "made_blade-1" not in block and block == "某物"
+        block = self._executor()._unresolved_target_block("made_entity_blade-1", KIND_ITEM)
+        assert "made_entity_blade-1" not in block and block == "某物"
 
     def test_a_routing_key_is_never_shown_to_the_judge(self) -> None:
         """``object`` / ``item`` are code-layer coordinates; printing them for the judge is
         useless and a layer leak."""
         executor = self._executor()
-        for target_id, kind in (("地上的血迹", KIND_OBJECT), ("made_blade-1", KIND_ITEM)):
+        for target_id, kind in (("地上的血迹", KIND_OBJECT), ("made_entity_blade-1", KIND_ITEM)):
             block = executor._unresolved_target_block(target_id, kind)
             assert kind not in block, (target_id, kind)
