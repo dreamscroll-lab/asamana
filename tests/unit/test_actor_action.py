@@ -156,7 +156,7 @@ async def test_words_read_as_an_action_name_targets_by_id(container, engine) -> 
     _reply(
         container, reason="想和大哥当面说清楚", decision="act", selected_index=_index_of(ActionType.TALK),
         person_indices=[1, 9], message_content="大哥，借一步说话",
-        action_description="请大哥借一步说话", estimated_steps=2,
+        action_description="请大哥借一步说话", estimated_hours=2,
     )
 
     reading = await _read(engine, "跟大哥说借一步说话", short_term_goals=["探明大哥的打算"])
@@ -183,7 +183,7 @@ async def test_free_text_and_autonomous_decisions_bind_only_relevant_fields(cont
     packet = _packet()
     packet.spatial.visible_npcs["runner"] = PerceivedNpc(NpcIdentity("信使", "男"))
     payload = {
-        "selected_index": _index_of(action_type), "action_description": "我按计划行动", "estimated_steps": 3,
+        "selected_index": _index_of(action_type), "action_description": "我按计划行动", "estimated_hours": 3,
         "inner_monologue": "我想清楚了", "expected_outcome": "完成眼前的事", "urgency": "high",
         "unknown_field": {"noise": True}, **related, **unrelated,
     }
@@ -303,8 +303,8 @@ def test_the_reading_fields_come_in_dependency_order(engine) -> None:
     system, _user = _intent_prompt(engine, "去玄武门")
     schema = system[system.index("【输出】"):]
     order = ["reason", "decision", "selected_index", "person_indices", "errand_recipient_index",
-             "action_description", "talk_topic", "message_content", "errand_message",
-             "expected_outcome", "estimated_steps", "urgency"]
+             "estimated_hours", "action_description", "talk_topic", "message_content", "errand_message",
+             "expected_outcome", "urgency"]
     positions = [schema.index(f'"{key}"') for key in order]
     assert positions == sorted(positions)
     assert '"operation"' not in schema and '"operation_consistent"' not in schema
@@ -354,3 +354,15 @@ def test_the_perceived_entry_is_the_letters_and_broadcasts_that_reached_the_char
     assert len(together.messages) == 1
     assert perception.messages == (BriefMessage(sender_name="李建成", content="今夜子时，玄武门见", urgency="high"),)
     assert perception.broadcasts == ("东宫走水",)
+
+
+def test_the_reading_knows_the_step_and_sizes_only_what_it_drafts(engine) -> None:
+    """The step's length is an input; only a step the reading drafts from a bare aim is sized to it,
+    and what the intent settled keeps its own size."""
+    system, _user = _intent_prompt(engine, "去玄武门")
+    inputs = system[system.index("【输入】"):system.index("【任务】")]
+    assert "时间每推进一步是" in inputs and "约约" not in system
+    task = system[system.index("【任务】"):system.index("【约束】")]
+    assert "分量按这一步的时长来定" in task.split("\n3.")[1].split("\n4.")[0]
+    constraints = system[system.index("【约束】"):system.index("【行动类型】")]
+    assert "不因这一步有多长而把它扩大或缩小" in constraints

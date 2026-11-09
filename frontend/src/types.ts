@@ -26,7 +26,7 @@ export interface WorldMeta {
   /**
    * World time per step, in seconds; authored by the theme analysis, revisable in the setup and
    * frozen by confirming. Shown on the creation-review card since it decides whether the
-   * story runs in hours or days. 0 when unknown.
+   * story runs in hours or days, and in the actor console. 0 when unknown.
    */
   seconds_per_step: number;
   run_state: RunState;

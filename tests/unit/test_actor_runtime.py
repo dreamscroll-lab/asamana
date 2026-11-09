@@ -727,7 +727,7 @@ def _other_talks_to_hero(other, *, talk_topic: str = "") -> None:
 
     talk = json.dumps({
         "selected_index": _TALK_INDEX, "person_indices": [1], "action_description": "找二郎说话。",
-        "inner_monologue": "有事相商。", "estimated_steps": 1,
+        "inner_monologue": "有事相商。", "estimated_hours": 1,
         **({"talk_topic": talk_topic} if talk_topic else {}),
     })
     other.decision_engine._llm_router = LLMRouter(  # noqa: SLF001

@@ -138,7 +138,7 @@ async def test_the_progress_beat_actually_reaches_the_step_stream(container) -> 
     # A WORK that SPANS steps — the whole point. (The shared helper pins estimated_steps=1,
     # which is born-zero: it starts and finishes on one step and never ticks at all.)
     container.llm_router.get(LLMScene.AGENT_DECISION_MAIN).fixed_response = (
-        '{"selected_index": 3, "action_description": "重新审视案头那份手诏", "estimated_steps": 3}'
+        '{"selected_index": 3, "action_description": "重新审视案头那份手诏", "estimated_hours": 3}'
     )
 
     await runtime.run_step([agent])                       # step 1: he sets out

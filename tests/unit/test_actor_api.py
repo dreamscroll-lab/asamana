@@ -544,7 +544,8 @@ async def test_self_operations_use_turn_identity_and_follow_description_requirem
     provider = mock_build_container.llm_router.get(LLMScene.ACTOR_INTENT)
     provider.fixed_response = json.dumps({
         "decision": "act",
-        "action_description": "我按描述完成自己的行动", "estimated_steps": 3,
+        # Six hours in this world's two-hour steps: the summary below expects three.
+        "action_description": "我按描述完成自己的行动", "estimated_hours": 6,
     })
     parser = AsyncMock(wraps=provider.complete)
     monkeypatch.setattr(provider, "complete", parser)

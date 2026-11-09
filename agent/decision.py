@@ -45,6 +45,7 @@ from core.interfaces.actor import (
     ActorDecision,
     ActorIntent,
 )
+from core.action_duration import estimated_hours_to_steps
 from core.duration import describe_duration, describe_seconds
 from core.interfaces.llm import IndexedRef, LLMMessage, LLMRouter, LLMScene, extract_json_object, output_budget
 from core.interfaces.urgency import Urgency, parse_urgency
@@ -586,6 +587,12 @@ def _slots_for(payload: dict, packet: PerceptionPacket | None) -> _Slots:
     )
 
 
+def _with_estimated_steps(payload: dict, seconds_per_step: int) -> dict:
+    """A model's answer with its ``estimated_hours`` converted into the slots' ``estimated_steps``.
+    The model never states steps; a step count it writes anyway is ignored."""
+    return {**payload, "estimated_steps": estimated_hours_to_steps(payload.get("estimated_hours"), seconds_per_step)}
+
+
 def _select(payload: dict, action_type: ActionType, slots: _Slots) -> LLMSelection | None:
     """One selection of ``action_type`` from the flat slots, bound by that type's binder.
 
@@ -978,7 +985,7 @@ class DecisionEngine:
                 ],
                 temperature=0.2,
                 # reason ≤60 chars ≈90 + action_description ≤40 ≈60 + expected_outcome ≤30 ≈45
-                # + decision/selected_index/estimated_steps ≈9 → ~204, plus per type (exclusive):
+                # + decision/selected_index/estimated_hours ≈9 → ~204, plus per type (exclusive):
                 # SEND_MESSAGE message_content ≤60 ≈90 + urgency ≈3 + ≤10 person indices ≈30 +
                 # announce + anonymous ≈6 → ~333; ERRAND errand_message ≤60 ≈90 + four indices ≈12
                 # + announce ≈3 → ~309; TALK talk_topic ≤30 ≈45 + indices ≈30 → ~279.
@@ -996,6 +1003,7 @@ class DecisionEngine:
             note_active_call_adoption(False, "no_json_object")
             logger.info("actor_decision_unreadable", extra={"agent_id": agent_id})
             return None
+        payload = _with_estimated_steps(payload, self._seconds_per_step)
         reason = _text(payload, "reason")
         decision = payload.get("decision")
         # Idling is no reading of an intent that already fixed an act: that conflict is unclear.
@@ -1018,6 +1026,7 @@ class DecisionEngine:
         fixed part of an intent and everything about the character go in the user message."""
         catalog = "\n".join(_format_candidate_line(i, c) for i, c in enumerate(_ACTION_SPACE))
         output = ",\n".join(f'  "{key}": {value}' for key, value in self._intent_output_fields().items())
+        step_duration = self._step_duration_hint()
         return f"""【角色】
 你是意图解析器：把一个角色此刻的意图，解析成他这一步可执行的决策（落到下面的行动类型和带 #序号 的名单上）。目的只来自意图本身；你只为它找到能执行的做法，不替角色另立目的。
 
@@ -1025,18 +1034,20 @@ class DecisionEngine:
 - 下面先给出这个角色是谁、他的关系、近来做过的事、记得的相关的事和这一步传到他这里的动静、广播与捎话，再给出他此刻的处境和可指认的名单。都以角色的「我」来写，名单各带 #序号。
 - 若有【已定下的】，那是这个意图里已经定死的行动类型、对象和参数。
 - 最后是他此刻的意图。意图里的「我」、「他」「她」或角色名，都指这个角色。
+- 这个世界里时间每推进一步是{step_duration}。
 
 【任务】
 先看意图具体到哪一档，再照这一档解析：
 1. 说清了一件具体的事：照原样落地，不增不改。
 2. 说了要做什么，但缺对象或参数：从他所知的里补齐，只补到能执行为止。
-3. 只说了方向或目标（比如要知道什么、要讨好谁、要离开……）：拟出此刻最直接、他够得着的第一步，只拟这一步。
+3. 只说了方向或目标（比如要知道什么、要讨好谁、要离开……）：拟出此刻最直接、他够得着的第一步，只拟这一步，分量按这一步的时长来定，不只做片刻。比如意图是要弄清一件事，这一步有好几个小时，就拟成找他把这件事问清楚，而不只是上前问一句。
 4. 明确说的是这一步先不动（比如先等等、看看再说等等）：decision 填 idle。
 5. 读不出他要什么，或把决定交了出去（比如"看着办""随便"等等）：decision 填 unclear。
 
 【约束】
 - 目的只来自意图：他的关系和所知的信息只用来找做法，不用来添一个意图里没有的目的。
 - 意图里说明了的（行动类型、对象、要说的原话、参数等等）一律不改。【已定下的】栏原样保留，不在输出里重复。
+- 意图里说定了的事，分量照原样：不因这一步有多长而把它扩大或缩小。
 - 要说出口的话：意图里有原话就照录；只说了要传达的意思，就照这意思写成他会说出口的话；什么都没说就不写。
 - 只用所给的：名单上找不到的对象就留空，不猜一个相近的；不臆造他不知道的人和事。
 - 序号只取自对应名单，各份名单各自从 1 数起，不混用。
@@ -1078,13 +1089,13 @@ class DecisionEngine:
             "errand_item_index": '<ERRAND 让他带上的东西，"眼前的东西"序号，只能是"我手上的东西"里的>',
             "errand_recipient_index": '<ERRAND 交给或说给谁，"我能触及的人"序号>',
             "errand_announce": '<ERRAND 到了那处当众说出 errand_message 时填 true>',
+            "estimated_hours": f'<act 时：数字，单位小时，可带小数；这件事要做多久——意图里说了就照它；没说就按要做的事本身估：意图说定的事照它本来的长短，照第 3 档拟出的事按这一步的时长来定，持续做下去的事一般占满一步或几步。要合乎常理、和这件事相称（比如睡一觉一般是几个小时，不会是两天两夜）；每步{step_duration}，不足一步按一步算>',
             "action_description": '"<act 时：角色第一人称，写这一步做什么，≤40字>"',
             "talk_topic": '"<TALK 时，意图里说明的、要让对方一开始就知道的来意，≤30字；没说明就不填>"',
             "message_content": '"<SEND_MESSAGE 要送出的原话，第一人称对收件人说，≤60字；SEND_MESSAGE 必填。TALK 不填：交谈的话由角色当面一句句说>"',
             "anonymous": '<仅 SEND_MESSAGE：意图明确要求不让收件人知道是谁发的时填 true，否则填 false；固定参数必须原样保留。匿名只隐藏发送人的名字，跟这话有多机密、多要紧无关：定向消息旁人本来就看不到，比如「私下」「悄悄」「秘密地」「别让旁人知道」说的是保密，一般情况下实名就够了，不用匿名；广播时在场的人都听得到内容，匿名也只是让他们不知道是谁说的。如果意图里确实说了不想让收件人知道是角色自己（如「匿名」「不署名」「别让他知道是我」，比如要给不信他的人发一句假话、误导的话，又不想让对方知道是他发的），填 true>',
             "errand_message": '"<ERRAND 他到那头要原样说出口的话，≤60字>"',
             "expected_outcome": '"<act 时：角色第一人称，这一步想带来什么，≤30字；意图里读不出就不填>"',
-            "estimated_steps": f'<act 时：整数，>=1；先定这件事要做多久——意图里说了就照它，没说就按事情本身估——再按每步{step_duration}折成步数，四舍五入、至少为1>',
             "urgency": '"<SEND_MESSAGE 时：low | normal | high | critical，照上面这句原话有多急来定>"',
         }
 
@@ -1337,9 +1348,9 @@ class DecisionEngine:
 
 【我要做的】
 - 此刻我要为接下来定一件事：从【我能做的】里挑出**恰好一个**最该做的行动，作为我推进需求与目标的下一步；这一动若指向外部的人 / 地点 / 物，就把它落到具体对象上，若只关乎我自己，就没有对象可落。
+- 时间每推进一步是{step_hint}。我先看清这一步有多长，再定这一段里要做什么、做多久：这件事的分量要配得上这段时长——一件持续做下去的事，或围绕同一目的接连做的几件事，而不是只做片刻就停下；要好几步才做得完的事，就一直做下去。单次做完和持续做下去都说得通时，我选持续做下去。比如这一步有好几个小时，与其只上前问他一句，不如找他把要紧的事当面谈透。只有本来就短促的当机立断之举（出手夺物、当场喝止），照它本来的长短，不硬撑满。
 - 选之前我先逐条看清【我能做的】里每个选项的**说明**——别只看类型名，要按它实际能做什么来挑那个真正贴合我此刻需求和目标的（比如对方在不在场、是同步当面还是异步发送消息、是改变状态还是只是观察等等）。
 - 动手前我先把【我所处的现实】里那几份带 #序号 的名单看清楚——“我能触及的人”有谁(标了在场/不在场)、“可前往”何处、“眼前的东西”有哪些、哪些在我手上；我要落到的对象，必须用对应名单里的 #序号来指认，名单上没有的，我此刻就够不着、绝不凭空写一个名字或编号。
-- 想清楚该行动是否需要持续做，如果是，estimated_steps表示的是持续这个行动的时长，可以大些，否则，estimated_steps表示完成该行动的时长。对于单次行动和持续行动都符合的条件下，优先选择持续行动。
 - 选择地点，物品，人物时可以先理解它们的描述并做出合理的选择。如果没有合理的选择，宁愿不选也不要乱选。
 
 【我被约束的】
@@ -1372,10 +1383,11 @@ class DecisionEngine:
 【输出】
 我用严格 JSON 说出我的选择，不写任何多余内容。字段按我心里成形的先后排列，我就照这个次序往下写：
 先在 inner_monologue 里把此刻的思考和权衡想清楚 → 决定这一拍要不要出手(act) → 挑定行动类型(selected_index)
-→ **这一动若指向外部对象，从名单里指认它(序号)** → 对象已经定死（或这一动本就无对象可指认），我再写出我要做什么、要说什么。
+→ **这一动若指向外部对象，从名单里指认它(序号)** → 按这一步的时长定下这件事做多久(estimated_hours)
+→ 对象和时长都已定死（或这一动本就无对象可指认），我再写出我要做什么、要说什么。
 只要 act=true，action_description 就**必须**写：它是这一动唯一的实质内容——哪怕这一动只关乎我自己、没有任何对象可指认，也照样要写清我此刻在做什么。
 {{
-  "inner_monologue": "<第一人称，我此刻心里是怎么思考的、怎么权衡的、为什么倾向某个选择，20-60字（先想，再据此定 act 与下面的 selected_index）>",
+  "inner_monologue": "<第一人称，接下来这段时间（{step_hint}）里我打算怎么过：我此刻心里是怎么思考的、怎么权衡的、为什么倾向某个选择，20-60字（先想，再据此定 act 与下面的 selected_index）>",
   "act": <true=我要行动；false=我通盘想过，此刻确实没有任何值得行动的事（比如没有该回应的、该推进的等等），于是什么都不做——这是正当选择，不为填满这一拍硬编一个行动，也不用它逃避该面对的抉择。填 false 时，下面 selected_index 及其余字段一律省略>,
   "selected_index": <仅当 act=true：我选的行动，【我能做的】里 0 到 N 的整数>,
   "person_indices": <最多10个整数，序号取自"我能触及的人"(1起)。SEND_MESSAGE 可填**多个**序号群发给指定多人；TALK 只填一个(多填只取第一个)，TALK 只能选标(在场)。SEND_MESSAGE 可选(不在场)的>,
@@ -1392,13 +1404,13 @@ class DecisionEngine:
   "errand_item_index": <仅当我要让他带上某样东西：填"眼前的东西"里那一件的序号(1起)，**只能选"我手上的东西"那一组里的**——不能带别人手上、也带不了放在此处的东西，得先拿到手才托得出去。不带东西就省略>,
   "errand_recipient_index": <仅当这一趟是**只限于对某个人的**：填"我能触及的人"里的序号(1起)。**这一栏决定东西和话落到哪儿**——填了就是交到他手上、只说给他听；不填就是把东西搁在那处、把话在那处当众说出。只是去看看情形则省略>,
   "errand_announce": <仅当我要他到了那处把 errand_message *当众*广播宣告给在场的所有听时：填 true。我看不见那处有谁，所以公开是我主动选的，不是默认；只说给某个人听、或那只是我对他的交代，就省略此字段>,
-  "action_description": "<**act=true 时必填，任何行动都不可省**。第一人称，写我打算做什么，内容要具体完整：若上面指认了对象，就落到那个人 / 地点 / 物上；若这一动只关乎我自己(无对象可指认)，就直接写我此刻要做的事。描述具体清晰，简洁明了，15-40字>",
+  "estimated_hours": <数字，单位小时，可带小数；这件事要做多久（完成它的时长，或持续做它的时长）。照上面说的，先看这一步是{step_hint}：持续做下去的事一般占满一步或几步，取一步时长的倍数即可；本来就短促的举动照实写，不足一步按一步算。时长要合乎常理、和这件事本身相称，比如睡一觉一般是几个小时，不会是两天两夜。MOVE 由距离自动决定，填 1 即可；若选 REST，休息时长看两头——身体亏空越深(越接近垮掉)越要久，手头待办越多/越急则越短(只够缓口气)，在两者间权衡取值。>,
+  "action_description": "<**act=true 时必填，任何行动都不可省**。第一人称，写我打算做什么，内容要具体完整、配得上上面定下的时长：若上面指认了对象，就落到那个人 / 地点 / 物上；若这一动只关乎我自己(无对象可指认)，就直接写我此刻要做的事。描述具体清晰，简洁明了，15-40字>",
   "talk_topic": "<仅当 TALK：我找对方谈的来意，谈话一开始对方和旁听的人就都知道；不想让他们事先知道我的来意，就省略此字段。≤30字>",
   "message_content": "<仅当 SEND_MESSAGE：我此刻要对**上面 person_indices 指认的那些收件人**(或在场众人)传达的**原话**，第一人称直接对其说，像真的在对他们传话——不是对我自己动作的描述，也不要以第三人称提到对方；20-60字。SEND_MESSAGE 必填：没有原话，这一动就作废。其他行动一律省略此字段>",
   "anonymous": <仅当 SEND_MESSAGE：我要不要隐藏自己的名字，让收到的人不知道这话是我发的；true 为匿名，false 为实名。匿名只管收到的人知不知道是我，跟这话有多机密、多要紧无关：定向消息旁人本来就看不到。比如跟信得过的人说悄悄话、说秘密，一般情况下实名就够了；广播时在场的人都听得到内容，匿名也只是让他们不知道是谁说的。只有我确实不想让收到的人知道是我（比如给不信我的人发送句假话，误导的话，而且不想让他知道是我发的），才填 true。>,
   "errand_message": "<他到了那头**说出口**的原话。**先定听众**：填了 errand_recipient_index 就只说给那一个人听；填了 errand_announce=true 就是当众宣告。两个都没有，那这句话就不会被他说出口——它会被当成我指派任务时的交代收起来。写成能照着说出口的话：第一人称，对听的人说，20-60字。这次任务是干什么的已经写在 action_description 里，不必在这儿重复。不带话就省略>",
   "expected_outcome": "<我期望这一步带来什么，10-30字>",
-  "estimated_steps": <整数，>=1；先估这件事要花多久（完成它的时长，或持续做它的时长），再按每步{step_hint}折成步数，四舍五入、至少为1；MOVE 由距离自动决定，填 1 即可；若选 REST，休息时长看两头——身体亏空越深(越接近垮掉)越要久，手头待办越多/越急则越短(只够缓口气)，在两者间权衡取值。>,
   "urgency": <"low"|"normal"|"high"|"critical"，仅 SEND_MESSAGE 有效；照我上面写下的原话有多急来定，对方据此判断是否中断手头事>
 }}
 （urgency 取值含义：{URGENCY_SCALE_DESCRIPTION}）
@@ -1423,6 +1435,7 @@ class DecisionEngine:
         payload = content if isinstance(content, dict) else extract_json_object(content)
         if not isinstance(payload, dict):
             return _reject("no_json_object")
+        payload = _with_estimated_steps(payload, self._seconds_per_step)
         raw_index = payload.get("selected_index")
         if not isinstance(raw_index, int) or isinstance(raw_index, bool):
             return _reject("missing_selected_index")

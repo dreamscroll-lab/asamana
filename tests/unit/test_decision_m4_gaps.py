@@ -634,7 +634,7 @@ _OBJECTLESS_REST_MISSING_DESCRIPTION = json.dumps(
         "act": True,
         "selected_index": 6,
         "expected_outcome": "恢复体力与心神",
-        "estimated_steps": 3,
+        "estimated_hours": 3,
     },
     ensure_ascii=False,
 )
@@ -646,7 +646,7 @@ _OBJECTLESS_REST_COMPLETE = json.dumps(
         "selected_index": 6,
         "action_description": "寻一僻静处暂歇，闭目养神以缓解连日奔波的疲惫",
         "expected_outcome": "恢复体力与心神",
-        "estimated_steps": 3,
+        "estimated_hours": 3,
     },
     ensure_ascii=False,
 )
@@ -801,7 +801,7 @@ def test_parse_person_index_resolves_to_agent_id(container) -> None:
         "person_indices": [2],  # → agent-cheng
         "action_description": "与程知节商议",
         "inner_monologue": "",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -817,7 +817,7 @@ def test_parse_destination_index_resolves_to_location_id(container) -> None:
         "selected_index": 0,
         "destination_index": 1,
         "action_description": "前往玄武门",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -834,13 +834,13 @@ def test_parse_move_without_resolved_destination_rejected(container) -> None:
     candidates = [ActionCandidate(ActionType.MOVE, "移动")]
     # destination_index omitted
     omitted = json.dumps({
-        "selected_index": 0, "action_description": "动身离开", "estimated_steps": 1,
+        "selected_index": 0, "action_description": "动身离开", "estimated_hours": 1,
     })
     assert engine._parse_llm_selection(omitted, candidates, packet) is None
     # destination_index out of range (only 2 neighboring locations, picks 9)
     out_of_range = json.dumps({
         "selected_index": 0, "destination_index": 9,
-        "action_description": "动身离开", "estimated_steps": 1,
+        "action_description": "动身离开", "estimated_hours": 1,
     })
     assert engine._parse_llm_selection(out_of_range, candidates, packet) is None
 
@@ -865,7 +865,7 @@ def test_parse_person_index_resolves_absent_recipient(container) -> None:
     raw = json.dumps({
         "selected_index": 0, "person_indices": [1],
         "action_description": "回信尉迟恭：按计划即刻行事", "message_content": "按计划即刻行事。",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -880,7 +880,7 @@ def test_parse_send_message_stray_item_id_not_bound(container) -> None:
     candidates = [ActionCandidate(ActionType.SEND_MESSAGE, ActionType.SEND_MESSAGE.label)]
     raw = json.dumps({
         "selected_index": 0, "item_name": "禁军统领", "message_announce": True,
-        "action_description": "通告全军戒备", "message_content": "全军戒备。", "estimated_steps": 1,
+        "action_description": "通告全军戒备", "message_content": "全军戒备。", "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -901,7 +901,7 @@ def test_parse_physical_entity_index_resolves_visible_entity(container) -> None:
     candidates = [ActionCandidate(ActionType.PHYSICAL, "物理干预")]
     raw = json.dumps({
         "selected_index": 0, "physical_entity_index": 1,
-        "action_description": "我一把抓起调兵符节藏入怀中", "estimated_steps": 1,
+        "action_description": "我一把抓起调兵符节藏入怀中", "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -920,7 +920,7 @@ def test_parse_physical_person_index_on_person(container) -> None:
     candidates = [ActionCandidate(ActionType.PHYSICAL, "物理干预")]
     raw = json.dumps({
         "selected_index": 0, "physical_person_index": 1,
-        "action_description": "我夺刀制住李建成", "inner_monologue": "先发制人", "estimated_steps": 1,
+        "action_description": "我夺刀制住李建成", "inner_monologue": "先发制人", "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -944,7 +944,7 @@ def test_parse_physical_channels_never_cross_namespaces(container) -> None:
     candidates = [ActionCandidate(ActionType.PHYSICAL, "物理干预")]
     raw = json.dumps({
         "selected_index": 0, "physical_person_index": 9,   # out-of-range person index
-        "action_description": "我按住李建成", "estimated_steps": 1,
+        "action_description": "我按住李建成", "estimated_hours": 1,
     })
     assert engine._parse_llm_selection(raw, candidates, packet) is None
 
@@ -967,7 +967,7 @@ def test_parse_physical_without_target_rejected(container) -> None:
     # person_indices)
     unbound = json.dumps({
         "selected_index": 0, "person_indices": [1],
-        "action_description": "扑向李建成，死死拽住他衣袖", "estimated_steps": 1,
+        "action_description": "扑向李建成，死死拽住他衣袖", "estimated_hours": 1,
     })
     assert engine._parse_llm_selection(unbound, candidates, packet) is None
     # ② A self-filled item_id goes through the abstract-target channel, and its kind is always
@@ -979,14 +979,14 @@ def test_parse_physical_without_target_rejected(container) -> None:
     # whether a name looks like a person, which is the keyword matching Rule 7 forbids.
     freeform = json.dumps({
         "selected_index": 0, "item_name": "宫门",
-        "action_description": "我用肩撞开紧闭的宫门", "estimated_steps": 1,
+        "action_description": "我用肩撞开紧闭的宫门", "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(freeform, candidates, packet)
     assert sel is not None and sel.target.acted_on_kind == "object"
     # ③ The person index points to someone on the list who isn't present
     not_present = json.dumps({
         "selected_index": 0, "physical_person_index": 2,
-        "action_description": "我冲上去制住尉迟恭", "estimated_steps": 1,
+        "action_description": "我冲上去制住尉迟恭", "estimated_hours": 1,
     })
     assert engine._parse_llm_selection(not_present, candidates, packet) is None
 
@@ -1128,7 +1128,7 @@ def test_parse_binds_a_recipient_alongside_the_entity(container) -> None:
 
     sel = engine._parse_llm_selection(json.dumps({
         "selected_index": 0, "physical_entity_index": 1, "physical_recipient_index": 1,
-        "action_description": "我把虎符双手奉给尉迟恭", "estimated_steps": 1,
+        "action_description": "我把虎符双手奉给尉迟恭", "estimated_hours": 1,
     }), candidates, packet)
     assert sel is not None
     assert sel.target.acted_on_ids == ["e1"] and sel.target.acted_on_kind == "item"
@@ -1138,7 +1138,7 @@ def test_parse_binds_a_recipient_alongside_the_entity(container) -> None:
     # Not handed to anyone, just put down → empty recipient, still a valid entity binding.
     dropped = engine._parse_llm_selection(json.dumps({
         "selected_index": 0, "physical_entity_index": 1,
-        "action_description": "我把虎符搁在案上", "estimated_steps": 1,
+        "action_description": "我把虎符搁在案上", "estimated_hours": 1,
     }), candidates, packet)
     assert dropped is not None and dropped.target.reached_agents == []
 
@@ -1163,12 +1163,12 @@ def test_a_bad_recipient_burns_the_beat(container) -> None:
     # ① Recipient index out of range
     assert engine._parse_llm_selection(json.dumps({
         "selected_index": 0, "physical_entity_index": 1, "physical_recipient_index": 9,
-        "action_description": "我把虎符交给他", "estimated_steps": 1,
+        "action_description": "我把虎符交给他", "estimated_hours": 1,
     }), candidates, packet) is None
     # ② Recipient filled but the person channel was used, so there's nothing to hand over
     assert engine._parse_llm_selection(json.dumps({
         "selected_index": 0, "physical_person_index": 1, "physical_recipient_index": 1,
-        "action_description": "我把虎符交给他", "estimated_steps": 1,
+        "action_description": "我把虎符交给他", "estimated_hours": 1,
     }), candidates, packet) is None
 
 
@@ -1201,7 +1201,7 @@ def test_parse_out_of_range_person_index_falls_through(container) -> None:
         "selected_index": 0,
         "person_indices": [99],  # out of range
         "action_description": "与某人对话",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     # Out of range falls back to an empty target. TALK with no target then fails the spatial check
@@ -1222,7 +1222,7 @@ def test_parse_non_integer_person_index_falls_through(container) -> None:
         "selected_index": 0,
         "person_indices": ["abc"],  # string → filtered by IndexedRef
         "action_description": "对话",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     # The index is invalid at parse time → no agent bound; the later spatial check (TALK needs a
@@ -1243,7 +1243,7 @@ def test_parse_index_takes_precedence_over_string_field(container) -> None:
         "person_indices": [1],        # → Yuchi Gong
         "target_agent_id": "agent-cheng",  # distractor field
         "action_description": "对话",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None

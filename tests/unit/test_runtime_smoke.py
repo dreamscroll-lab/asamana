@@ -78,7 +78,7 @@ def _set_work_decision(container) -> None:
     from core.interfaces.llm import LLMScene
 
     container.llm_router.get(LLMScene.AGENT_DECISION_MAIN).fixed_response = (
-        '{"selected_index": 3, "action_description": "批阅文书", "estimated_steps": 1}'
+        '{"selected_index": 3, "action_description": "批阅文书", "estimated_hours": 1}'
     )
 
 
@@ -490,7 +490,7 @@ async def test_multi_step_action_defers_redecision_to_settle_step(container) -> 
     )
     # Pin a 2-step WORK selection (estimated_steps=2).
     container.llm_router.get(LLMScene.AGENT_DECISION_MAIN).fixed_response = (
-        '{"selected_index": 3, "action_description": "批阅文书", "estimated_steps": 2}'
+        '{"selected_index": 3, "action_description": "批阅文书", "estimated_hours": 2}'
     )
 
     s1 = await runtime.run_step([agent])
@@ -528,7 +528,7 @@ async def test_interrupted_agent_re_decides_in_the_same_step(container) -> None:
                          name="Li Jiancheng", is_main_character=False)
 
     container.llm_router.get(LLMScene.AGENT_DECISION_MAIN).fixed_response = (
-        '{"selected_index": 3, "action_description": "批阅文书", "estimated_steps": 6}'
+        '{"selected_index": 3, "action_description": "批阅文书", "estimated_hours": 6}'
     )
     s1 = await runtime.run_step([agent, other])
     assert "agent-1" in s1.scheduled_agent_ids
@@ -581,7 +581,7 @@ async def test_a_multi_step_action_is_marked_at_its_opening_only(container) -> N
     # The decision claims 6 steps; the execution sets the remainder by its own rules, and the mark
     # must use the latter.
     container.llm_router.get(LLMScene.AGENT_DECISION_MAIN).fixed_response = (
-        '{"selected_index": 3, "action_description": "批阅文书", "estimated_steps": 6}'
+        '{"selected_index": 3, "action_description": "批阅文书", "estimated_hours": 6}'
     )
     await runtime.run_step([agent])
 
@@ -736,7 +736,7 @@ async def test_talk_to_active_agent_is_rejected_without_double_booking(container
         "person_indices": [1],
         "action_description": "找B说话。",
         "inner_monologue": "需要和B交流。",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     })
     fixed_llm = SequentialMockLLM([talk_response] * 20)
     agent_a.decision_engine._llm_router = LLMRouter({scene: fixed_llm for scene in LLMScene})  # noqa: SLF001

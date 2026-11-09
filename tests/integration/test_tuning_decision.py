@@ -41,7 +41,7 @@ _DECIDE_RESPONSE = json.dumps({
     "action_description": "我专注推敲未竟的方略，逐条落定部署",
     "inner_monologue": "趁此静时，把计议想周全要紧",
     "expected_outcome": "方略更完整，心里更有底",
-    "estimated_steps": 2,
+    "estimated_hours": 2,
 }, ensure_ascii=False)
 _JUDGE_RESPONSE = json.dumps({
     "fields": {"score": 5, "rationale": "结构规范", "issues": []},

@@ -47,7 +47,7 @@ async def test_run_plan_step_restores_and_captures_plans(container, test_config)
     # A parseable decision (selected_index=3 → WORK) so plan_step yields a real
     # decision; "{}" would parse to no selection → action=None (agent skipped).
     providers[LLMScene.AGENT_DECISION_MAIN] = MockLLMProvider(
-        fixed_response='{"selected_index": 3, "action_description": "整理书卷", "estimated_steps": 1}'
+        fixed_response='{"selected_index": 3, "action_description": "整理书卷", "estimated_hours": 1}'
     )
     container.llm_router = LLMRouter(providers)
 

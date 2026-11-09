@@ -64,7 +64,7 @@ def test_extra_person_indices_become_listeners_not_the_interlocutor(container: o
             "person_indices": [1, 2],
             "action_description": "我与他们二人密议。",
             "inner_monologue": "此事须当面说定。",
-            "estimated_steps": 1,
+            "estimated_hours": 1,
         },
         ensure_ascii=False,
     )

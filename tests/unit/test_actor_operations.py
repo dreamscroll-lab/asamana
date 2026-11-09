@@ -149,7 +149,7 @@ def test_summary_duration_uses_execution_authority(action_type: ActionType, expe
     assert summary.estimated_duration_seconds == expected_steps * seconds_per_step
 
 
-@pytest.mark.parametrize("travel_seconds,expected_steps", [(600, 1), (18000, 2), (21600, 3)])
+@pytest.mark.parametrize("travel_seconds,expected_steps", [(600, 1), (18000, 3), (21600, 3)])
 def test_move_summary_duration_uses_scheduled_travel_time(travel_seconds: int, expected_steps: int) -> None:
     packet = _packet()
     packet.spatial.reachable_locations[0] = replace(packet.spatial.reachable_locations[0], travel_seconds=travel_seconds)
@@ -484,7 +484,7 @@ async def test_helping_a_person_with_redundant_person_indices_reaches_confirmati
     container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps({
         "decision": "act",
         "reason": "搀扶眼前的人坐下", "person_indices": [1],
-        "action_description": "我搀住他的手臂，扶他坐下。", "estimated_steps": 1,
+        "action_description": "我搀住他的手臂，扶他坐下。", "estimated_hours": 1,
     })
     result = await runtime.actor_intent(ActorIntent(
         turn.turn_id, operation=ActorOperation.PHYSICAL, target=Ref.agent(agents[1].agent_id), description="搀扶他坐下",

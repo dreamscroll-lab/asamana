@@ -148,7 +148,7 @@ def mock_build_container(test_config: object) -> Container:
         fixed_response=MOCK_ADJUDICATION_RESPONSE
     )
     providers[LLMScene.AGENT_DECISION_MAIN] = MockLLMProvider(
-        fixed_response='{"selected_index": 3, "action_description": "处理政务", "estimated_steps": 1}'
+        fixed_response='{"selected_index": 3, "action_description": "处理政务", "estimated_hours": 1}'
     )
     c.llm_router = LLMRouter(providers)
     return c

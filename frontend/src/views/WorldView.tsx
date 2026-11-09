@@ -572,6 +572,7 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
                   step={feed[0]?.step ?? 0}
                   pace={meta?.actor_pace ?? "every_step"}
                   immersive={immersive}
+                  stepSeconds={meta?.seconds_per_step ?? 0}
                 />
               )}
               {viewer && mode === "live" && turn?.kind === "decide" && turn.briefing && operationTarget?.turnId === turn.turn_id && (
