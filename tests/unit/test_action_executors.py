@@ -6744,7 +6744,9 @@ async def test_talk_recent_past_comes_first_and_the_other_blocks_give_way() -> N
         relation_system=SimpleNamespace(perceive=_perceive),
         memory_system=SimpleNamespace(
             recall_about_agent=_recall_about, retrieve=_retrieve,
-            sample_recent_events=lambda step, top_k: pairs[:top_k],
+            sample_recent_events=lambda step, top_k, require_factual=False: [
+                pair for pair in pairs if pair[0] is not None or not require_factual
+            ][:top_k],
         ),
     )
     ctx = await SocialExecutor(None, _directory())._gather_context(agent, "b", "议事", "议事", 5)  # type: ignore[arg-type]
@@ -6784,7 +6786,7 @@ async def test_talk_one_failed_recall_does_not_blank_the_other_blocks() -> None:
         relation_system=SimpleNamespace(perceive=_perceive),
         memory_system=SimpleNamespace(
             recall_about_agent=_boom, retrieve=_retrieve,
-            sample_recent_events=lambda step, top_k: [(fact, None)],
+            sample_recent_events=lambda step, top_k, **_kw: [(fact, None)],
         ),
     )
     ctx = await SocialExecutor(None, _directory())._gather_context(agent, "b", "议事", "议事", 5)  # type: ignore[arg-type]

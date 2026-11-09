@@ -148,8 +148,8 @@ async def test_sample_recent_events_pairs_streams_and_includes_factual_only(cont
 
 @pytest.mark.asyncio
 async def test_sample_recent_events_keeps_newer_on_importance_tie(container: object) -> None:
-    """When the top_k cut falls inside one importance tier, the newer events survive it, and a
-    newer but less important event still doesn't displace an older, more important one."""
+    """When the importance fill's cut falls inside one tier, the newer events survive it; the
+    floor (new_low, mid_4) is taken first and doesn't count against the fill's tie-break."""
     system = _make_memory_system(container, provider=SequentialMockLLM([]), is_main_character=True)
     personality = _make_personality()
     await system.write("要事一桩。", MemoryStream.FACTUAL, personality=personality,
@@ -161,9 +161,82 @@ async def test_sample_recent_events_keeps_newer_on_importance_tie(container: obj
     await system.write("琐事一桩。", MemoryStream.FACTUAL, personality=personality,
                        importance=MemoryImportance.LOW, current_step=5, event_group_id="new_low")
 
-    events = system.sample_recent_events(current_step=6, lookback=10, top_k=3)
+    events = system.sample_recent_events(current_step=6, lookback=10, top_k=4)
 
-    assert [(f or e).event_group_id for f, e in events] == ["old_high", "mid_4", "mid_3"]
+    assert [(f or e).event_group_id for f, e in events] == ["old_high", "mid_4", "mid_3", "new_low"]
+
+
+@pytest.mark.asyncio
+async def test_sample_recent_events_keeps_latest_events_in_a_dense_window(container: object) -> None:
+    """The latest RECENT_EVENT_FLOOR events survive a window crowded with more important ones;
+    the remaining slots still go by importance."""
+    from agent.memory import RECENT_EVENT_FLOOR
+
+    system = _make_memory_system(container, provider=SequentialMockLLM([]), is_main_character=True)
+    personality = _make_personality()
+    for step in (1, 2, 3, 4):
+        await system.write(f"要事{step}。", MemoryStream.FACTUAL, personality=personality,
+                           importance=MemoryImportance.HIGH, current_step=step,
+                           event_group_id=f"high_{step}")
+    await system.write("寻常一事。", MemoryStream.FACTUAL, personality=personality,
+                       importance=MemoryImportance.MEDIUM, current_step=5, event_group_id="mid_5")
+    await system.write("琐事一桩。", MemoryStream.FACTUAL, personality=personality,
+                       importance=MemoryImportance.LOW, current_step=5, event_group_id="low_5")
+
+    events = system.sample_recent_events(current_step=6, lookback=10, top_k=4)
+
+    assert RECENT_EVENT_FLOOR == 2
+    # Importance order; the two step-5 events are the floor, high_4/high_3 the importance fill.
+    assert [(f or e).event_group_id for f, e in events] == ["high_4", "high_3", "mid_5", "low_5"]
+
+
+@pytest.mark.asyncio
+async def test_sample_recent_events_floor_is_a_parameter(container: object) -> None:
+    """A caller's floor replaces the default; floor=0 is pure importance ranking."""
+    system = _make_memory_system(container, provider=SequentialMockLLM([]), is_main_character=True)
+    personality = _make_personality()
+    for step in (1, 2, 3):
+        await system.write(f"要事{step}。", MemoryStream.FACTUAL, personality=personality,
+                           importance=MemoryImportance.HIGH, current_step=step,
+                           event_group_id=f"high_{step}")
+    for step in (4, 5, 6):
+        await system.write(f"琐事{step}。", MemoryStream.FACTUAL, personality=personality,
+                           importance=MemoryImportance.LOW, current_step=step,
+                           event_group_id=f"low_{step}")
+
+    def groups(**kw: int) -> list[str]:
+        return [(f or e).event_group_id for f, e in system.sample_recent_events(7, top_k=3, **kw)]
+
+    assert groups() == ["high_3", "low_6", "low_5"]
+    assert groups(floor=3) == ["low_6", "low_5", "low_4"]
+    assert groups(floor=0) == ["high_3", "high_2", "high_1"]
+
+
+@pytest.mark.asyncio
+async def test_sample_recent_events_filters_before_selecting(container: object) -> None:
+    """before_step, require_factual and exclude_group_ids apply before the floor and the top_k
+    cut, so the floor falls on the latest event that passes them and the result stays full."""
+    system = _make_memory_system(container, provider=SequentialMockLLM(["我心头一紧。"]),
+                                 is_main_character=True)
+    personality = _make_personality()
+    for step in (1, 2):
+        await system.write(f"要事{step}。", MemoryStream.FACTUAL, personality=personality,
+                           importance=MemoryImportance.HIGH, current_step=step,
+                           event_group_id=f"high_{step}")
+    await system.write("寻常一事。", MemoryStream.FACTUAL, personality=personality,
+                       importance=MemoryImportance.LOW, current_step=3, event_group_id="low_3")
+    await system.write("只有感受。", MemoryStream.EXPERIENTIAL, personality=personality,
+                       importance=MemoryImportance.LOW, current_step=4, event_group_id="exp_4")
+    await system.write("刚才那件。", MemoryStream.FACTUAL, personality=personality,
+                       importance=MemoryImportance.LOW, current_step=4, event_group_id="current")
+    await system.write("本步所见。", MemoryStream.FACTUAL, personality=personality,
+                       importance=MemoryImportance.LOW, current_step=5, event_group_id="this_step")
+
+    events = system.sample_recent_events(
+        current_step=5, top_k=3, before_step=5, require_factual=True, exclude_group_ids=("current",),
+    )
+
+    assert [(f or e).event_group_id for f, e in events] == ["high_2", "high_1", "low_3"]
 
 
 @pytest.mark.asyncio

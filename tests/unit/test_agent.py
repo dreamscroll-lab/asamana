@@ -1402,7 +1402,7 @@ def test_supplement_recent_empty_recent_is_noop() -> None:
 def test_supplement_caps_are_factual_heavy() -> None:
     """Contract: the factual supplement quota exceeds experiential (the feeling stream tends to
     make decide drift)."""
-    assert _DECIDE_RECENT_FACTUAL_SUPPLEMENT_K == 5
+    assert _DECIDE_RECENT_FACTUAL_SUPPLEMENT_K == 7
     assert _DECIDE_RECENT_EXPERIENTIAL_SUPPLEMENT_K < _DECIDE_RECENT_FACTUAL_SUPPLEMENT_K
 
 
@@ -1610,3 +1610,52 @@ async def test_pressure_recent_past_brings_back_his_past_with_each_person_presen
     assert person_id == "a_yuchi" and kw["before_step"] == now and kw["stream"] is MemoryStream.FACTUAL
     assert len(lines) == 1 and lines[0].endswith("尉迟恭当众折辱了我")
     assert len(general_excludes) == 1 and len(general_excludes[0]) == 1
+
+
+@pytest.mark.asyncio
+async def test_decide_recent_supplement_leaves_out_this_steps_perceptions(container) -> None:
+    """This step's perceptions are in memory before planning, but reach decide as signals: the
+    recent supplement takes what came before them, so they never fill its floor slots."""
+    agent = _make_agent(container)
+    await agent.memory_system.record_event(
+        current_step=4, raw_content="我把奏折送到了偏殿", personality=agent.personality, importance=0.3,
+    )
+    await agent.memory_system.record_event(
+        current_step=5, raw_content="[环境观察] 殿外起了风", personality=agent.personality, importance=0.3,
+    )
+    await agent.memory_system.drain_writes()
+    spatial = _make_spatial()
+
+    context = await agent._build_internal_context(  # noqa: SLF001
+        spatial=spatial, inbox=[], broadcasts=[], current_step=5, generate_goals=False,
+    )
+
+    steps = {m.created_step for m in context.factual_memories}
+    assert 5 not in steps
+    assert 4 in steps
+
+
+@pytest.mark.asyncio
+async def test_decide_recent_supplement_keeps_three_latest_in_a_dense_window(container) -> None:
+    """Decide's factual supplement keeps its own floor of 3 latest events, even when the window
+    holds more important ones than its 7 slots."""
+    from agent.agent import _DECIDE_RECENT_FACTUAL_FLOOR
+
+    agent = _make_agent(container)
+    for step in range(1, 9):
+        await agent.memory_system.record_event(
+            current_step=step, raw_content=f"要事{step}", personality=agent.personality, importance=0.9,
+        )
+    for step in (9, 10, 11):
+        await agent.memory_system.record_event(
+            current_step=step, raw_content=f"琐事{step}", personality=agent.personality, importance=0.1,
+        )
+    await agent.memory_system.drain_writes()
+
+    context = await agent._build_internal_context(  # noqa: SLF001
+        spatial=_make_spatial(), inbox=[], broadcasts=[], current_step=12, generate_goals=False,
+    )
+
+    steps = {m.created_step for m in context.factual_memories}
+    assert _DECIDE_RECENT_FACTUAL_FLOOR == 3
+    assert {9, 10, 11} <= steps

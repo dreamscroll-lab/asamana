@@ -15,7 +15,7 @@ from agent.actor_briefing import build_actor_briefing
 from agent.actor_mind import build_actor_mind
 from agent.actor_perception import build_perceived_entry
 from agent.decision import DecisionEngine, DecisionStatus
-from agent.memory import MemorySystem
+from agent.memory import RECENT_EVENT_FLOOR, MemorySystem
 from agent.memory_types import Memory, MemoryImportance, MemoryStream
 from agent.reflection import INSIGHT_BASE_IMPORTANCE, ReflectionEngine
 from agent.relation_evolution import RelationEvolution
@@ -105,7 +105,10 @@ _FEEDBACK_EMOTION_RECENT_FACTUAL_K = 6
 _PERCEPTION_EMOTION_RECENT_FACTUAL_K = 6
 # Recent-memory supplement for decide: vector recall misses just-happened events unrelated to the scene
 # (see _supplement_recent). More factual (objective anchors), fewer experiential (feelings make decide drift).
-_DECIDE_RECENT_FACTUAL_SUPPLEMENT_K = 5
+# The factual supplement samples on its own, with a larger floor than the shared pool: decide is where
+# a lost "what I just did" breaks the action chain.
+_DECIDE_RECENT_FACTUAL_SUPPLEMENT_K = 7
+_DECIDE_RECENT_FACTUAL_FLOOR = 3
 _DECIDE_RECENT_EXPERIENTIAL_SUPPLEMENT_K = 2
 # Reading an intent: his latest doings let "go on" read as going on with them, and memories the
 # intent brings up let a goal resolve into a first step he knows how to take.
@@ -754,15 +757,17 @@ class Agent:
                     rel.deceased = True
         return perceived
 
-    def _recent_factuals(self, step: int, *, top_k: int, before_step: bool = False) -> list[Memory]:
+    def _recent_factuals(
+        self, step: int, *, top_k: int, floor: int = RECENT_EVENT_FLOOR, before_step: bool = False,
+    ) -> list[Memory]:
         """Recent factual memories, by importance; the one fetch shared by the cognition prompts.
 
-        ``before_step`` drops this step's entries (already in the signal block) and those lacking a
-        factual; 8 extra are fetched so top_k survives the filter.
+        ``before_step`` drops this step's entries (already in the signal block).
         """
-        fetched = self.memory_system.sample_recent_events(step, top_k=top_k + 8 if before_step else top_k)
-        if before_step:
-            fetched = [pair for pair in fetched if pair[0] is not None and pair[0].created_step < step][:top_k]
+        fetched = self.memory_system.sample_recent_events(
+            step, top_k=top_k, floor=floor, before_step=step if before_step else None,
+            require_factual=True,
+        )
         return [fact for fact, _exp in fetched if fact is not None]
 
     def _recent_factual_lines(self, step: int, *, top_k: int, before_step: bool = False) -> list[str]:
@@ -863,9 +868,11 @@ class Agent:
         # Recent first-hand memories (in-memory scan) for goal generation, kept as their own prompt
         # section rather than mixed into the retrieval query. Both streams: feelings alone make
         # short-term goals repeat/drift. sample_recent_events returns importance order, so sort
-        # chronologically for MEMORY_ORDER_HINT; always via order_memories_chrono.
+        # chronologically for MEMORY_ORDER_HINT; always via order_memories_chrono. Before this step:
+        # perceive_step already wrote this step's perceptions, which reach goal generation and
+        # decide as signals and would otherwise take the floor slots meant for what came before.
         recent_events = order_memories_chrono(
-            self.memory_system.sample_recent_events(current_step, top_k=10),
+            self.memory_system.sample_recent_events(current_step, top_k=10, before_step=current_step),
             key=lambda pair: pair[0] or pair[1],
         )
         recent_memory_texts = [
@@ -952,10 +959,16 @@ class Agent:
         )
         factual_memories = [m for m in retrieval_result.events if m.stream == MemoryStream.FACTUAL]
         experiential_memories = [m for m in retrieval_result.events if m.stream == MemoryStream.EXPERIENTIAL]
-        # Add recent anchors recall missed (see _supplement_recent), reusing recent_events.
+        # Add recent anchors recall missed (see _supplement_recent). Experiential reuses recent_events.
+        decide_recent_factuals = order_memories_chrono(self._recent_factuals(
+            current_step,
+            top_k=_DECIDE_RECENT_FACTUAL_SUPPLEMENT_K,
+            floor=_DECIDE_RECENT_FACTUAL_FLOOR,
+            before_step=True,
+        ))
         factual_memories = _supplement_recent(
             factual_memories,
-            (fact for fact, _exp in recent_events),
+            decide_recent_factuals,
             limit=_DECIDE_RECENT_FACTUAL_SUPPLEMENT_K,
         )
         experiential_memories = _supplement_recent(

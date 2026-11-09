@@ -924,18 +924,19 @@ class SocialExecutor(ActionExecutor):
             )
 
         # Fetched first: otherwise the other columns take the latest key event and this timeline
-        # loses its key link. Fetch extra (as Agent._recent_factual_lines) to survive dropping
-        # entries without factual.
+        # loses its key link.
         recent: list = []
         try:
-            pairs = agent.memory_system.sample_recent_events(step, top_k=_TALK_RECENT_FACTUAL_K + 8)
+            pairs = agent.memory_system.sample_recent_events(
+                step, top_k=_TALK_RECENT_FACTUAL_K, require_factual=True,
+            )
         except Exception as exc:  # noqa: BLE001 — read failed: drop recent events, continue
             logger.warning(
                 "social_recent_memory_failed",
                 extra={"agent_id": agent.agent_id, "error": str(exc)},
             )
             pairs = []
-        recent = [fact for fact, _exp in pairs if fact is not None][:_TALK_RECENT_FACTUAL_K]
+        recent = [fact for fact, _exp in pairs if fact is not None]
         seen: set[str] = {m.id for m in recent}
 
         # exclude_ids inside retrieval, so each column still fills its quota; run in order.
