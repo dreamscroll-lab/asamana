@@ -110,11 +110,16 @@ class NpcIdentity:
 
 @dataclass(frozen=True)
 class PlaceIdentity:
-    """A place's public identity, fixed at build and identical for every viewer."""
+    """A place's public identity, fixed at build and identical for every viewer.
+
+    ``sub_places``: the names of its sub-places (``core.interfaces.place.SubPlace``), from the
+    world's setup; fixed with it at confirmation.
+    """
 
     location_id: str
     name: str
     description: str
+    sub_places: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -145,6 +150,14 @@ class WorldGraph:
 
     nodes: list[GraphNode] = field(default_factory=list)
     edges: list[GraphEdge] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SubPlaceSetupView:
+    """One sub-place of a world's setup (``SubPlace``): a named spot of the place ``location_id``."""
+
+    location_id: str
+    name: str
 
 
 @dataclass(frozen=True)
@@ -291,6 +304,7 @@ class SetupView:
     npcs: list[NpcSetupView] = field(default_factory=list)
     historical_events: list[SetupHistoricalEventView] = field(default_factory=list)
     relations: list[SetupRelationView] = field(default_factory=list)
+    sub_places: list[SubPlaceSetupView] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

@@ -128,7 +128,7 @@ describe("stepCast public identity", () => {
   const npcs: Npcs = {
     runner: { npc_id: "runner", name: "王二", gender: "男", age: 34, description: "跑腿", color: "#8a93a6" },
   };
-  const places: Places = { here: { location_id: "here", name: "大殿", description: "" } };
+  const places: Places = { here: { location_id: "here", name: "大殿", description: "", sub_places: [] } };
 
   it("resolves identities in dialogue even when their bodies are absent from the step", () => {
     const current = at(1, [place("here", { agents: [agent("present")] })]);

@@ -544,11 +544,15 @@ export interface NpcIdentity {
   description: string;
 }
 
-/** Public place identity, fixed at build and identical for every viewer (GET /worlds/{id}/places). */
+/**
+ * Public place identity, fixed at build and identical for every viewer (GET /worlds/{id}/places).
+ * `sub_places`: the names of the place's sub-places, the named spots belonging to it.
+ */
 export interface PlaceIdentity {
   location_id: string;
   name: string;
   description: string;
+  sub_places: string[];
 }
 
 /**
@@ -651,6 +655,13 @@ export interface SetupView {
   npcs: NpcSetupView[];
   historical_events: SetupHistoricalEventView[];
   relations: SetupRelationView[];
+  sub_places: SubPlaceSetupView[];
+}
+
+/** One sub-place of a world's setup: a named spot belonging to the place `location_id`. */
+export interface SubPlaceSetupView {
+  location_id: string;
+  name: string;
 }
 
 /** A value of one of the backend's closed vocabularies and its label. */

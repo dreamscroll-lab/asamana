@@ -264,7 +264,7 @@ async def run_narrative_editor(
                 current_step=current_step, world_time=world_time,
                 narrative_summary=brief, all_agents=world.agents,
                 agent_locations=agent_locations,
-                locations=world.environment.space.all_places(),
+                space=world.environment.space,
                 entities=world.environment.all_live_entities())
             plan_view = _injection_plan_view(plan, world.directory)
     except Exception as exc:  # noqa: BLE001 — capture, never abort the suite

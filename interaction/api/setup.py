@@ -14,6 +14,7 @@ from agent.need import NeedState, NeedType
 from config.models import MAX_CAST_SIZE
 from core.prompts import canonical_relation_label
 from agent.personality import EmotionState, EmotionType
+from core.interfaces.place import SubPlace
 from world.setup import (
     OPENING_TIME_FIELDS, CharacterRevision, EntityRevision, MapPlaces, NpcRevision, SetupHistoricalEvent,
     SetupRejected, SetupRelation, WorldSetup,
@@ -30,6 +31,7 @@ from interaction.models import (
     InnateNeedView,
     SetupRelationView,
     SetupView,
+    SubPlaceSetupView,
     agent_profile,
 )
 
@@ -93,6 +95,7 @@ def setup_view(setup: WorldSetup) -> SetupView:
             )
             for r in setup.relations
         ],
+        sub_places=[SubPlaceSetupView(location_id=s.location_id, name=s.name) for s in setup.sub_places],
     )
 
 
@@ -200,6 +203,16 @@ def relations(payload: Any) -> list[SetupRelation]:
             ),
         )
         for item in _list(payload, "relations")
+    ]
+
+
+def sub_places(payload: Any) -> list[SubPlace]:
+    return [
+        SubPlace(
+            location_id=_text(_field(item, "location_id"), "location_id"),
+            name=_text(_field(item, "name"), "name"),
+        )
+        for item in _list(payload, "sub_places")
     ]
 
 
@@ -350,6 +363,12 @@ def build_setup_router(services: ApiServices) -> Any:
     async def replace_relations(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
         seeds = _parsed(relations, payload)
         setup = await _revise(world_id, lambda s, places: s.with_relations(seeds, places=places))
+        return to_wire_json(setup_view(setup))
+
+    @router.put("/sub_places")
+    async def replace_sub_places(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
+        revised = _parsed(sub_places, payload)
+        setup = await _revise(world_id, lambda s, places: s.with_sub_places(revised, places=places))
         return to_wire_json(setup_view(setup))
 
     return router

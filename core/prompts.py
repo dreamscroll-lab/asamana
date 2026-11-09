@@ -492,16 +492,27 @@ def render_npc(npc, *, index: int | None = None) -> str:
     return f"#{index} {body}" if index is not None else body
 
 
+def render_sub_places(location) -> str:
+    """The clause naming a location's sub-places, "甲、乙都在此地"; "" when it has none. The one
+    rendering of sub-places in prompts."""
+    names = [n for n in (getattr(location, "sub_places", ()) or ()) if n]
+    return f"{'、'.join(names)}都在此地" if names else ""
+
+
 def render_location(location) -> str:
-    """Render a location (LocationView, duck-typed) as in-character text "name——description" (name alone if no description).
+    """Render a location (LocationView, duck-typed) as in-character text "name——description；sub-places"
+    (name alone if it has neither).
 
     None or an empty name renders as "某处", never the location_id.
     """
     name = ((getattr(location, "name", "") or "").strip()) if location is not None else ""
     if not name:
         return "某处"
-    desc = (getattr(location, "description", "") or "").strip()
-    rendered = f"{name}——{desc}" if desc else name
+    detail = "；".join(
+        part for part in ((getattr(location, "description", "") or "").strip(), render_sub_places(location))
+        if part
+    )
+    rendered = f"{name}——{detail}" if detail else name
     # A perceived fact, not a bar on this person (see LocationView.is_public).
     return rendered if getattr(location, "is_public", True) else f"{rendered}（不对外开放但可前往）"
 

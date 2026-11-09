@@ -100,6 +100,7 @@ class WorldInitializer:
         setup.validate(MapPlaces.of(world_config))
         clock_config = self._clock_config_for(setup.lore, world_config)
         environment = EnvironmentSystem(world_config, max_npcs=self._max_npcs)
+        environment.space.register_sub_places(setup.sub_places)
         await self._instantiate_entity_seeds(setup.entity_seeds, environment)
         self._instantiate_npc_seeds(setup.npc_seeds, environment)
         agents: dict[str, Agent] = {}
@@ -377,6 +378,8 @@ class WorldInitializer:
             )
 
         environment = EnvironmentSystem(active_world_config, max_npcs=self._max_npcs)
+        # Fixed by the setup frozen in step 0, like the places: nothing at runtime changes them.
+        environment.space.register_sub_places(setup.sub_places)
         await self._instantiate_entity_seeds(setup.entity_seeds, environment)
         # Npcs aren't rebuilt here, deliberately unlike entity seeds: the npc_states payload is
         # self-contained (identity + position + condition + current errand) and _restore_environment_state

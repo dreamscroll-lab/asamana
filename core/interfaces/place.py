@@ -45,3 +45,28 @@ class Place:
         raw_connections = payload.get("connections") or {}
         payload["connections"] = {str(k): int(v) for k, v in dict(raw_connections).items()}
         return cls(**payload)
+
+
+@dataclass(frozen=True)
+class SubPlace:
+    """A named part of a place, within it: a building, facility, venue or area the story touches
+    (a mansion in a ward, a hall in a palace). It belongs to exactly one place.
+
+    Narrative only, never a node: it isn't in the graph, nobody stands "in" it, and whoever is at
+    ``location_id`` is in every one of its sub-places, seen and heard by all there. Its job is to
+    give the story's places a name the map lacks, so going there means going to ``location_id``.
+
+    Not a ``Place`` (no connections, capacity or occupants), not a landmark (a landmark is a thing,
+    with state, that can be acted on), not an alias (an alias names the whole place). The theme
+    supplies it at build time, so it lives in the world's setup, never in the theme-agnostic map.
+    """
+
+    location_id: str
+    name: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {"location_id": self.location_id, "name": self.name}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SubPlace":
+        return cls(location_id=str(data["location_id"]), name=str(data["name"]))

@@ -22,7 +22,7 @@ function elements(node: ReactNode): Element[] {
 const setup: SetupView = {
   narrative_theme: "信任", seconds_per_step: 3600,
   opening_time: { era_name: "", start_year: 1, start_month: 1, start_day: 1, start_hour: 6 },
-  characters: [], entities: [], npcs: [], relations: [], historical_events: [],
+  characters: [], entities: [], npcs: [], relations: [], historical_events: [], sub_places: [],
 };
 beforeEach(() => { hooks.values = []; hooks.index = 0; });
 it("uses shared inputs and native validation, preserving the draft when saving fails", async () => {

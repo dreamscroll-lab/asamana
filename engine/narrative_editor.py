@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     from agent.agent import Agent
     from core.interfaces.entity import WorldEntity
     from core.interfaces.place import Place
+    from engine.space import SpaceManager
 
 logger = get_logger(__name__)
 
@@ -214,15 +215,15 @@ class NarrativeEditor:
         world_id: str,
         all_agents: Mapping[str, "Agent"],
         agent_locations: Mapping[str, str],
-        locations: Sequence["Place"],
+        space: "SpaceManager",
         entities: Sequence["WorldEntity"],
     ) -> CommittedInjection | None:
         """The step loop's single injection entry point: commit a finished background generation
         and return it, or start one and return None. Never blocks on the LLM.
 
-        ``agent_locations`` (agent id → where his body is; no entry when unplaced), ``locations``
+        ``agent_locations`` (agent id → where his body is; no entry when unplaced), ``space``
         and ``entities`` are read-only views from ``EnvironmentSystem`` (the author layer doesn't
-        hold it). Where people
+        hold it). Places render from ``space``'s views, sub-places included, as characters see them. Where people
         are comes from ``agent_locations``, the table broadcasts are delivered by; don't read
         ``personality.state.current_location``: that is the agent's own record, which lags while
         he travels.
@@ -231,7 +232,7 @@ class NarrativeEditor:
         if ready is not None:
             return ready
         self._ensure_generation(
-            current_step, world_time, world_id, all_agents, agent_locations, locations, entities,
+            current_step, world_time, world_id, all_agents, agent_locations, space, entities,
         )
         return None
 
@@ -242,7 +243,7 @@ class NarrativeEditor:
         world_id: str,
         all_agents: Mapping[str, "Agent"],
         agent_locations: Mapping[str, str],
-        locations: Sequence["Place"],
+        space: "SpaceManager",
         entities: Sequence["WorldEntity"],
     ) -> None:
         """If eligible and nothing is in flight, start "gate + plan generation" in the
@@ -253,7 +254,7 @@ class NarrativeEditor:
             return
         self._inflight = asyncio.create_task(
             self._generate_plan(
-                current_step, world_time, world_id, all_agents, agent_locations, locations, entities,
+                current_step, world_time, world_id, all_agents, agent_locations, space, entities,
             )
         )
 
@@ -286,7 +287,7 @@ class NarrativeEditor:
         world_id: str,
         all_agents: Mapping[str, "Agent"],
         agent_locations: Mapping[str, str],
-        locations: Sequence["Place"],
+        space: "SpaceManager",
         entities: Sequence["WorldEntity"],
     ) -> "_InjectionPlan | None":
         """Gate + generation, returning a plan or None. No side effects: committing lives in
@@ -303,7 +304,7 @@ class NarrativeEditor:
             narrative_summary=narrative_summary,
             all_agents=all_agents,
             agent_locations=agent_locations,
-            locations=locations,
+            space=space,
             entities=entities,
         )
 
@@ -602,7 +603,7 @@ class NarrativeEditor:
         narrative_summary: str,
         all_agents: Mapping[str, "Agent"],
         agent_locations: Mapping[str, str],
-        locations: Sequence["Place"],
+        space: "SpaceManager",
         entities: Sequence["WorldEntity"],
     ) -> _InjectionPlan | None:
         """The LLM generates an injection and declares its channels (spawn / alter / destroy /
@@ -628,12 +629,12 @@ class NarrativeEditor:
         headcount = Counter(agent_locations.get(aid) for aid in living)
         on_ground = [e for e in entities if e.location_id is not None]
         places = _menu_places(
-            locations, headcount, Counter(e.location_id for e in on_ground),
+            space.all_places(), headcount, Counter(e.location_id for e in on_ground),
             random.Random(current_step),
         )
         location_ref = IndexedRef(loc.place_id for loc in places)
         location_lines = "\n".join(
-            f"#{i + 1} {render_location(loc)}"
+            f"#{i + 1} {render_location(space.view_of(loc.place_id))}"
             f"（{f'此刻{headcount[loc.place_id]}人' if headcount[loc.place_id] else '此刻无人'}）"
             for i, loc in enumerate(places)
         ) or "（无）"

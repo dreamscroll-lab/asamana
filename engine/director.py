@@ -45,6 +45,7 @@ from core.prompts import (
     render_location,
 )
 from engine.clock import WorldTime
+from engine.space import SpaceManager
 from engine.injection import (
     Author,
     BroadcastSpec,
@@ -56,7 +57,6 @@ from engine.injection import (
     parse_message_spec,
 )
 from core.interfaces.entity import Npc, WorldEntity, WorldEntityType
-from core.interfaces.place import Place
 from engine.world_mutation import (
     ConditionMutation,
     EntityMutation,
@@ -317,7 +317,7 @@ class DirectorChannel:
         all_agents: Mapping[str, "Agent"],
         agent_locations: Mapping[str, str],
         npcs: Sequence[NpcOnMenu],
-        locations: Sequence[Place],
+        space: SpaceManager,
         entities: Sequence[WorldEntity],
         world_time: WorldTime,
     ) -> DirectiveResult:
@@ -334,7 +334,7 @@ class DirectorChannel:
             all_agents=all_agents,
             agent_locations=agent_locations,
             npcs=npcs,
-            locations=locations,
+            space=space,
             entities=entities,
             world_time=world_time,
         )
@@ -365,7 +365,7 @@ class DirectorChannel:
             text=text,
             all_agents=all_agents,
             npcs=npcs,
-            locations=locations,
+            space=space,
             entities=entities,
         )
         if plan is None:
@@ -380,7 +380,7 @@ class DirectorChannel:
         all_agents: Mapping[str, "Agent"],
         agent_locations: Mapping[str, str],
         npcs: Sequence[NpcOnMenu],
-        locations: Sequence[Place],
+        space: SpaceManager,
         entities: Sequence[WorldEntity],
         world_time: WorldTime,
     ) -> DirectivePrompt:
@@ -398,7 +398,7 @@ class DirectorChannel:
                 all_agents=all_agents,
                 agent_locations=agent_locations,
                 npcs=npcs,
-                locations=locations,
+                space=space,
                 entities=entities,
                 world_time=world_time,
             ),
@@ -407,7 +407,7 @@ class DirectorChannel:
                     str(i): names.get(pid, "")
                     for i, pid in enumerate(_people_ids(all_agents, npcs), 1)
                 },
-                "location": {str(i): loc.name for i, loc in enumerate(locations, 1)},
+                "location": {str(i): loc.name for i, loc in enumerate(space.all_places(), 1)},
                 "entity": {str(i): e.name for i, e in enumerate(entities, 1)},
             },
         )
@@ -419,7 +419,7 @@ class DirectorChannel:
         text: str = "",
         all_agents: Mapping[str, "Agent"],
         npcs: Sequence[NpcOnMenu],
-        locations: Sequence[Place],
+        space: SpaceManager,
         entities: Sequence[WorldEntity],
     ) -> tuple[DirectiveResult, DirectivePlan | None]:
         """Validate raw LLM output into an answer + a plan without queueing, so the developer
@@ -448,7 +448,7 @@ class DirectorChannel:
             directive_text=text,
             person_ids=_people_ids(all_agents, npcs),
             npc_ids={n.npc.npc_id for n in npcs},
-            location_ids=[loc.place_id for loc in locations],
+            location_ids=space.all_place_ids(),
             entity_ids=[e.entity_id for e in entities],
         )
         if plan is None:
@@ -550,7 +550,7 @@ class DirectorChannel:
         all_agents: Mapping[str, "Agent"],
         agent_locations: Mapping[str, str],
         npcs: Sequence[NpcOnMenu],
-        locations: Sequence[Place],
+        space: SpaceManager,
         entities: Sequence[WorldEntity],
         world_time: WorldTime,
     ) -> str:
@@ -571,8 +571,8 @@ class DirectorChannel:
         ) or "（无）"
         # ``render_location`` keeps the director's menu and what characters see in one format.
         location_lines = "\n".join(
-            f"#{i + 1} {clip_text(render_location(loc), _MENU_DESCRIPTION_CHARS)}"
-            for i, loc in enumerate(locations)
+            f"#{i + 1} {clip_text(render_location(space.view_of(loc.place_id)), _MENU_DESCRIPTION_CHARS)}"
+            for i, loc in enumerate(space.all_places())
         ) or "（无）"
         entity_lines = "\n".join(
             self._entity_line(i + 1, e, names) for i, e in enumerate(entities)

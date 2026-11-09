@@ -60,11 +60,15 @@ class LocationView:
     ``is_public`` is a perceived fact, NOT a gate: whether THIS person may enter turns on who he
     is and what he's doing, a judgment (CLAUDE.md §5). A boolean bar would shut a palace against
     the emperor who lives in it.
+
+    ``sub_places`` names this place's sub-places (``core.interfaces.place.SubPlace``), public
+    knowledge like the place itself.
     """
 
     name:        str
     description: str = ""
     is_public:   bool = True
+    sub_places:  tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

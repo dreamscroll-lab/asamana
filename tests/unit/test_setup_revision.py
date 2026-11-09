@@ -14,7 +14,10 @@ from agent.need import NeedState, NeedType
 from agent.personality import EmotionState, EmotionType
 from interaction.application import NarrativeApplication
 from world import WorldCatalog
-from world.models import HistoricalEventSeed, NpcSeed, RelationSeed, ThemeAnalysis, WorldEntitySeed
+from core.interfaces.place import SubPlace
+from world.models import (
+    SUB_PLACE_LIMIT, HistoricalEventSeed, NpcSeed, RelationSeed, ThemeAnalysis, WorldEntitySeed,
+)
 from world.setup import (
     CharacterRevision, EntityRevision, MapPlaces, NpcRevision, SetupHistoricalEvent, SetupRelation, WorldSetup,
 )
@@ -164,6 +167,47 @@ def test_npcs_and_things_stand_on_the_map() -> None:
     ))
     with pytest.raises(ValueError, match="location of"):
         lost.validate(PLACES)
+
+
+def _with_sub_places(*sub_places: tuple[str, str]) -> WorldSetup:
+    return replace(_setup(), sub_places=tuple(SubPlace(location_id=l, name=n) for l, n in sub_places))
+
+
+def test_sub_places_round_trip_and_pass_within_the_limit() -> None:
+    setup = _with_sub_places(*(("palace", f"殿{i}") for i in range(SUB_PLACE_LIMIT)), ("garden", "荷池"))
+    setup.validate(PLACES)
+    assert WorldSetup.from_dict(setup.as_dict()) == setup
+
+
+@pytest.mark.parametrize("sub_places,match", [
+    ((("palace", "御花园"),), "a place's name"),                 # named like a place
+    ((("moon", "广寒宫"),), "location of"),                       # under no place on the map
+    ((("palace", " "),), "sub-place name"),
+    ((("palace", "偏殿"), ("garden", "偏殿")), "used twice"),     # one name, two sub-places
+    ((("palace", "甲"),), "used twice"),                          # named like a character
+])
+def test_validate_refuses_a_bad_sub_place(sub_places, match) -> None:
+    with pytest.raises(ValueError, match=match):
+        _with_sub_places(*sub_places).validate(PLACES)
+
+
+def test_a_place_past_the_limit_passes_with_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    setup = _with_sub_places(*(("palace", f"殿{i}") for i in range(SUB_PLACE_LIMIT + 1)))
+    with caplog.at_level("WARNING"):
+        setup.validate(PLACES)
+    assert any(r.getMessage() == "sub_places_over_limit" for r in caplog.records)
+
+
+def test_the_sub_place_edit_refuses_a_place_past_the_limit() -> None:
+    over = tuple(SubPlace(location_id="palace", name=f"殿{i}") for i in range(SUB_PLACE_LIMIT + 1))
+    with pytest.raises(ValueError, match="at most"):
+        _setup().with_sub_places(over, places=PLACES)
+
+
+def test_a_thing_cannot_take_a_sub_places_name() -> None:
+    setup = replace(_with_seeds(things=("偏殿",)), sub_places=(SubPlace(location_id="palace", name="偏殿"),))
+    with pytest.raises(ValueError, match="used twice"):
+        setup.validate(PLACES)
 
 
 def test_distinct_names_pass() -> None:
@@ -990,3 +1034,28 @@ async def test_initialization_validates_lore_before_materializing(mock_build_con
     with pytest.raises(ValueError, match="start_hour"):
         await WorldInitializer(mock_build_container).initialize(world_id)
     assert await mock_build_container.snapshot.list_steps(world_id) == []
+
+
+@pytest.mark.asyncio
+async def test_sub_places_are_revised_whole_until_the_world_is_confirmed(mock_build_container, test_config) -> None:
+    catalog = WorldCatalog(None)
+    world_id, _ = await _built_world(mock_build_container, test_config, catalog)
+    url = f"/api/worlds/{world_id}/setup/sub_places"
+    with _client(mock_build_container, test_config, catalog) as client:
+        added = client.put(url, json={"sub_places": [
+            {"location_id": "donggong", "name": "显德殿"}, {"location_id": "donggong", "name": "崇教殿"},
+        ]})
+        assert added.status_code == 200
+        assert added.json()["sub_places"] == [
+            {"location_id": "donggong", "name": "显德殿"}, {"location_id": "donggong", "name": "崇教殿"},
+        ]
+        # Renamed one, removed the other.
+        revised = client.put(url, json={"sub_places": [{"location_id": "donggong", "name": "崇教殿"}]})
+        assert revised.json()["sub_places"] == [{"location_id": "donggong", "name": "崇教殿"}]
+        assert client.put(url, json={"sub_places": [{"location_id": "moon", "name": "广寒宫"}]}).status_code == 400
+        assert client.put(url, json={"sub_places": [{"name": "无主之地"}]}).status_code == 400
+
+        assert client.post(f"/api/worlds/{world_id}/confirm").status_code == 200
+        places = client.get(f"/api/worlds/{world_id}/places").json()
+        assert next(p for p in places if p["location_id"] == "donggong")["sub_places"] == ["崇教殿"]
+        assert client.put(url, json={"sub_places": []}).status_code == 409

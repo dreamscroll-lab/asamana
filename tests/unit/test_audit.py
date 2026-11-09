@@ -83,6 +83,7 @@ _SETUP = {
     "npc_seeds": [
         {"npc_id": "npc_1", "name": "营门卒", "gender": "男", "age": 28,
          "location": "north_camp", "description": "守营门，认符不认人"}],
+    "sub_places": [{"location_id": "north_camp", "name": "辕门"}],
 }
 _WORLD_CONFIG = {"places": {"north_camp": {"place_id": "north_camp", "name": "北营"}}}
 

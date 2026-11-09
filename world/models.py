@@ -228,6 +228,12 @@ class HistoricalEventSeed:
         }
 
 
+# Most sub-places one place gets. A generated setup past it is warned about, never cut; a
+# sub-place edit past it is refused. Don't raise it much: every place's sub-place names ride along
+# in each decide's "我可前往" list, and a place crowded with them says less about each.
+SUB_PLACE_LIMIT = 5
+
+
 @dataclass(frozen=True)
 class LocationSeed:
     """A named narrative location from theme analysis.
@@ -238,12 +244,14 @@ class LocationSeed:
 
     name: str
     description: str = ""
+    # Names of this place's sub-places (``core.interfaces.place.SubPlace``).
+    sub_places: tuple[str, ...] = ()
 
-    def as_dict(self) -> dict[str, str]:
-        return {
-            "name": self.name,
-            "description": self.description,
-        }
+    def as_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"name": self.name, "description": self.description}
+        if self.sub_places:
+            data["sub_places"] = list(self.sub_places)
+        return data
 
 
 @dataclass(frozen=True)

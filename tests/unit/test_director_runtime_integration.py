@@ -69,7 +69,7 @@ async def _submit(runtime, environment, agents, text: str):
         all_agents={a.agent_id: a for a in agents},
         agent_locations={a.agent_id: environment.get_body_location(a.agent_id) for a in agents},
         npcs=_npc_menu(environment),
-        locations=environment.space.all_places(),
+        space=environment.space,
         entities=environment.all_live_entities(),
         world_time=runtime.clock.current,
     )

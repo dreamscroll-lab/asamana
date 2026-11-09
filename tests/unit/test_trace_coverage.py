@@ -86,9 +86,10 @@ async def test_failed_build_flushes_rejected_attempts_to_disk(mock_build_contain
     sink = BufferedJsonlTraceSink(str(tmp_path))
     mock_build_container.trace_sink = sink
     mock_build_container.llm_router._trace_sink = sink  # noqa: SLF001
+    # Sub-place generation is the first call on this scene, so it is the stage that fails.
     mock_build_container.llm_router.get(LLMScene.WORLD_BUILDING).fixed_response = "broken json"
     previous = get_log_context()
-    with pytest.raises(ValueError, match="ThemeAnalyzer failed"):
+    with pytest.raises(ValueError, match="SubPlaceGenerator failed"):
         await WorldBuilder(mock_build_container).build(
             "a world", world_id="failed-build", world_configs=[TiledWorldConfig(template="changan_iso")],
         )

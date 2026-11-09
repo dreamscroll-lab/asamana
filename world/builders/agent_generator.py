@@ -44,7 +44,7 @@ from world.models import (
     AgentDefinition, AgentTier, CastDesign, FigureCastRole, unique_agent_id,
     ThemeAnalysis, ThemeFigure,
 )
-from world.builders import BuildReplyRejected, complete_with_build_retry
+from world.builders import LOCATION_NAME_RULE, BuildReplyRejected, complete_with_build_retry
 
 logger = get_logger(__name__)
 
@@ -219,7 +219,7 @@ class AgentGenerator:
             "life_goal": "人生目标（一句话、≤50字），可选，也可以没有，不用硬编。用第一人称。",
             "long_term_goals": ["当前阶段的长期目标（一句话、每条≤40字，最多3条）。长期目标是要走很长一段路才能推进或守住的【方向】：比手头的小事远得多、又不像 life_goal 那样遥不可及，需持续奋斗、不会轻易到手，且是个能长出多种走法的方向，而非某一桩具体的事或一次具体行动。以角色自身当下的视角表述意图，不得引用任何事件的史称或事后命名，不得把尚未发生的事件当作已确定的未来，这个很重要！"],
             "hard_constraints": ["<一句话、≤40字不可逾越的底线，描述该角色绝对不会做或绝对会坚守的事，至多3条，也可以一条都没有>"],
-            "initial_location": "初始地点（使用可用地点列表中的 name 字段值），需要结合角色本身和开局情景选择地点，不要乱选。",
+            "initial_location": f"初始地点（{LOCATION_NAME_RULE}），需要结合角色本身和开局情景选择地点，不要乱选。",
             "initial_emotion": {
                 "primary": f"情绪类型（{EmotionType.prompt_list()} 之一）",
                 "intensity": EMOTION_INTENSITY_DEFINITION,

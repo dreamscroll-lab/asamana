@@ -65,7 +65,7 @@ const setup: SetupView = {
   narrative_theme: "",
   opening_time: { era_name: "", start_year: 1, start_month: 1, start_day: 1, start_hour: 6 },
   entities: [], npcs: [],
-  seconds_per_step: 3600, historical_events: [], relations: [],
+  seconds_per_step: 3600, historical_events: [], relations: [], sub_places: [],
   characters: [{
     agent_id: "a", name: "甲", role: "新身份", age: 30, gender: "女", background: "新背景",
     appearance: "", color: "#123456", core_traits: [], core_values: [], self_image: "",

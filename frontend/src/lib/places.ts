@@ -31,7 +31,13 @@ export function placeName(places: Places, locationId: string | null): string {
   return identityOf(locationId, places)?.name || "某地";
 }
 
-/** A place's hover card: its name, then what it is. A place without a description is its name alone. */
-export function placeTipLines(name: string, description: string): TipLine[] {
-  return [{ text: name, tone: "head" }, ...(description ? [{ text: description, tone: "background" as const }] : [])];
+/**
+ * A place's hover card: its name, then what it is, then the sub-places in it. A place with
+ * neither a description nor sub-places is its name alone.
+ */
+export function placeTipLines(name: string, description: string, subPlaces: readonly string[] = []): TipLine[] {
+  const lines: TipLine[] = [{ text: name, tone: "head" }];
+  if (description) lines.push({ text: description, tone: "background" });
+  if (subPlaces.length) lines.push({ text: `${subPlaces.join("、")}都在此地`, tone: "background" });
+  return lines;
 }

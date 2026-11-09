@@ -392,8 +392,8 @@ async def test_places_lists_the_worlds_place_identities(container, test_config) 
 
     client = _client(container, test_config)
     assert client.get(f"/api/worlds/{world_id}/places").json() == [
-        {"location_id": "palace", "name": "太极宫", "description": "宫城正殿"},
-        {"location_id": "yard", "name": "内院", "description": ""},
+        {"location_id": "palace", "name": "太极宫", "description": "宫城正殿", "sub_places": []},
+        {"location_id": "yard", "name": "内院", "description": "", "sub_places": []},
     ]
     step = client.get(f"/api/worlds/{world_id}/steps/0").json()
     assert "name" not in step["locations"]["palace"]

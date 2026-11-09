@@ -51,6 +51,7 @@ async def test_run_build_records_phases_and_llm_calls(container, test_config) ->
     phase_names = {p.phase for p in sink.phases}
     assert phase_names == {
         "world_build.template_selection",
+        "world_build.sub_places",
         "world_build.theme_analysis",
         "world_build.cast_design",
         "world_build.agent_generation",

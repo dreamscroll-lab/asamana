@@ -22,6 +22,7 @@ import type {
   SetupHistoricalEventView,
   PlaceIdentity,
   SetupRelationView,
+  SubPlaceSetupView,
   SetupView,
   EntityRevision,
   NewEntity,
@@ -130,7 +131,7 @@ export const api = {
     req<SetupView>(`/api/worlds/${id}/setup/npcs/${npcId}`, {
       method: "PATCH", body: JSON.stringify(revision),
     }),
-  // Both replace the whole list: an event or a relation left out is removed.
+  // These replace the whole list: an event, a relation or a sub-place left out is removed.
   replaceHistory: (id: string, events: SetupHistoricalEventView[]) =>
     req<SetupView>(`/api/worlds/${id}/setup/history`, {
       method: "PUT",
@@ -140,6 +141,11 @@ export const api = {
     req<SetupView>(`/api/worlds/${id}/setup/relations`, {
       method: "PUT",
       body: JSON.stringify({ relations }),
+    }),
+  replaceSubPlaces: (id: string, subPlaces: SubPlaceSetupView[]) =>
+    req<SetupView>(`/api/worlds/${id}/setup/sub_places`, {
+      method: "PUT",
+      body: JSON.stringify({ sub_places: subPlaces }),
     }),
   deleteWorld: (id: string) =>
     req<{ deleted: boolean }>(`/api/worlds/${id}`, { method: "DELETE" }),

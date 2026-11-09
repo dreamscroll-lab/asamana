@@ -19,7 +19,7 @@ describe("setupGraph", () => {
       opening_time: { era_name: "", start_year: 1, start_month: 1, start_day: 1, start_hour: 6 },
       seconds_per_step: 3600,
       characters: [character("a", true), character("b", false)],
-      historical_events: [],
+      historical_events: [], sub_places: [],
       relations: [{
         source_id: "a", target_id: "b", trust: 0.6, affection: 0.3, labels: ["父子:父亲"],
         reverse_trust: 0.4, reverse_affection: 0.1, reverse_labels: ["父子:儿子"],

@@ -65,12 +65,13 @@ export class HoverTip {
   }
 
   /**
-   * The card over a place's name on the map: what the place is called and what it is. On the
-   * name, not the whole region: regions tile the map, so the card would never come down.
+   * The card over a place's name on the map: what the place is called, what it is and its
+   * sub-places. On the name, not the whole region: regions tile the map, so the card would never
+   * come down.
    */
-  showPlace(x: number, y: number, name: string, description: string): void {
+  showPlace(x: number, y: number, name: string, description: string, subPlaces: readonly string[]): void {
     this.hide();
-    const card = this.build(placeTipLines(name, description));
+    const card = this.build(placeTipLines(name, description, subPlaces));
     if (!card) return;
     this.tip = card.setPosition(x, y).setDepth(FREE_TIP_DEPTH);
   }

@@ -199,7 +199,7 @@ async def _submit(channel, text, agents, environment):
         text,
         all_agents=agents, agent_locations=_agent_locations(agents, environment),
         npcs=_npc_menu(environment),
-        locations=environment.space.all_places(),
+        space=environment.space,
         entities=environment.all_live_entities(),
         world_time=_time(),
     )
@@ -608,7 +608,7 @@ async def test_build_prompt_is_the_very_prompt_submit_sends(container) -> None:
         "西市起火",
         all_agents=agents, agent_locations=_agent_locations(agents, environment),
         npcs=_npc_menu(environment),
-        locations=environment.space.all_places(),
+        space=environment.space,
         entities=environment.all_live_entities(),
         world_time=_time(),
     )
@@ -621,6 +621,23 @@ async def test_build_prompt_is_the_very_prompt_submit_sends(container) -> None:
     # who it pointed at, so it must be the one in the prompt, not a recount.
     assert prompt.menus["cast"] == {"1": "李世民", "2": "李建成"}
     assert "#1 李世民" in prompt.user
+
+
+def test_the_place_menu_names_each_places_sub_places(container) -> None:
+    """The director's place menu renders as characters see a place, sub-places included."""
+    from core.interfaces.place import SubPlace
+
+    channel, agents, environment, *_ = _world(container, _Router())
+    environment.space.register_sub_places((SubPlace(location_id="palace", name="临湖殿"),))
+
+    prompt = channel.build_prompt(
+        "让临湖殿起火",
+        all_agents=agents, agent_locations=_agent_locations(agents, environment),
+        npcs=_npc_menu(environment), space=environment.space,
+        entities=environment.all_live_entities(), world_time=_time(),
+    )
+
+    assert "太极宫——宫城正殿，天子听政之所；临湖殿都在此地" in prompt.user
 
 
 def test_interpret_validates_without_queueing_anything(container) -> None:
@@ -637,7 +654,7 @@ def test_interpret_validates_without_queueing_anything(container) -> None:
         raw,
         all_agents=agents,
         npcs=_npc_menu(environment),
-        locations=environment.space.all_places(),
+        space=environment.space,
         entities=environment.all_live_entities(),
     )
 
@@ -660,7 +677,7 @@ def test_interpret_reports_the_same_refusal_the_director_would_hear(container) -
                    message={"recipients": [99], "content": "急讯", "urgency": "high"}),
         all_agents=agents,
         npcs=_npc_menu(environment),
-        locations=environment.space.all_places(),
+        space=environment.space,
         entities=environment.all_live_entities(),
     )
 
@@ -710,7 +727,7 @@ async def test_menu_says_who_is_holding_a_thing(container) -> None:
         "把消息放出去",
         all_agents=agents, agent_locations=_agent_locations(agents, environment),
         npcs=_npc_menu(environment),
-        locations=environment.space.all_places(),
+        space=environment.space,
         entities=[held],
         world_time=_time(),
     )
@@ -740,7 +757,7 @@ async def test_npcs_follow_the_agents_on_the_one_cast_menu(container) -> None:
 
     prompt = channel.build_prompt(
         "截住那个跑腿的", all_agents=agents, agent_locations=_agent_locations(agents, environment), npcs=_npc_menu(environment),
-        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+        space=environment.space, entities=environment.all_live_entities(),
         world_time=_time(),
     )
 
@@ -763,7 +780,7 @@ async def test_an_npc_index_resolves_to_the_npc(container, mutation, expected) -
 
     result, plan = channel.interpret(
         raw, all_agents=agents, npcs=_npc_menu(environment),
-        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+        space=environment.space, entities=environment.all_live_entities(),
     )
 
     assert result.accepted is True and plan is not None
@@ -781,7 +798,7 @@ async def test_a_message_is_never_addressed_to_an_npc(container) -> None:
 
     _, plan = channel.interpret(
         raw, all_agents=agents, npcs=_npc_menu(environment),
-        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+        space=environment.space, entities=environment.all_live_entities(),
     )
 
     assert plan is not None and plan.message is not None
@@ -797,7 +814,7 @@ async def test_a_message_only_to_an_npc_is_no_message_at_all(container) -> None:
 
     result, plan = channel.interpret(
         raw, all_agents=agents, npcs=_npc_menu(environment),
-        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+        space=environment.space, entities=environment.all_live_entities(),
     )
 
     assert plan is None and result.accepted is False
@@ -815,7 +832,7 @@ async def test_a_thing_an_npc_holds_is_named_in_its_hands(container) -> None:
 
     prompt = channel.build_prompt(
         "烧了那封信", all_agents=agents, agent_locations=_agent_locations(agents, environment), npcs=_npc_menu(environment),
-        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+        space=environment.space, entities=environment.all_live_entities(),
         world_time=_time(),
     )
 
@@ -844,7 +861,7 @@ async def test_life_and_death_on_an_npc_is_refused_at_submit_not_dropped_at_drai
 
     result, plan = channel.interpret(
         raw, all_agents=agents, npcs=_npc_menu(environment),
-        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+        space=environment.space, entities=environment.all_live_entities(),
     )
 
     assert plan is None and result.accepted is False
@@ -869,7 +886,7 @@ async def test_director_can_put_a_new_thing_down_somewhere(container) -> None:
 
     _, plan = channel.interpret(
         raw, all_agents=agents, npcs=_npc_menu(environment),
-        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+        space=environment.space, entities=environment.all_live_entities(),
     )
 
     assert plan is not None
@@ -906,7 +923,7 @@ async def test_director_can_rewrite_how_a_thing_looks_and_what_it_says(container
 
     _, plan = channel.interpret(
         raw, all_agents=agents, npcs=_npc_menu(environment),
-        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+        space=environment.space, entities=environment.all_live_entities(),
     )
 
     assert plan is not None
@@ -930,7 +947,7 @@ async def test_the_menu_shows_what_every_thing_says_held_or_not(container) -> No
 
     prompt = channel.build_prompt(
         "改那封信", all_agents=agents, agent_locations=_agent_locations(agents, environment), npcs=_npc_menu(environment),
-        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+        space=environment.space, entities=environment.all_live_entities(),
         world_time=_time(),
     )
 
@@ -946,7 +963,7 @@ async def test_a_new_thing_of_no_known_kind_is_refused_at_submit(container) -> N
 
     result, plan = channel.interpret(
         raw, all_agents=agents, npcs=_npc_menu(environment),
-        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+        space=environment.space, entities=environment.all_live_entities(),
     )
 
     assert plan is None and result.accepted is False
@@ -965,7 +982,7 @@ async def test_an_entity_change_that_changes_nothing_is_refused(container) -> No
 
     result, plan = channel.interpret(
         raw, all_agents=agents, npcs=_npc_menu(environment),
-        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+        space=environment.space, entities=environment.all_live_entities(),
     )
 
     assert plan is None and result.accepted is False
@@ -980,7 +997,7 @@ async def test_the_menu_places_people_where_their_bodies_are(container) -> None:
 
     prompt = channel.build_prompt(
         "西市起火", all_agents=agents, agent_locations=_agent_locations(agents, environment),
-        npcs=_npc_menu(environment), locations=environment.space.all_places(),
+        npcs=_npc_menu(environment), space=environment.space,
         entities=environment.all_live_entities(), world_time=_time(),
     )
 
@@ -995,7 +1012,7 @@ def test_the_menu_names_no_place_for_an_unplaced_body(container) -> None:
 
     prompt = channel.build_prompt(
         "西市起火", all_agents=agents, agent_locations=_agent_locations(agents, environment),
-        npcs=_npc_menu(environment), locations=environment.space.all_places(),
+        npcs=_npc_menu(environment), space=environment.space,
         entities=environment.all_live_entities(), world_time=_time(),
     )
 
@@ -1034,7 +1051,7 @@ async def test_the_console_reads_every_mutation_kind_by_name(container) -> None:
 
     _, plan = channel.interpret(
         raw, all_agents=agents, npcs=_npc_menu(environment),
-        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+        space=environment.space, entities=environment.all_live_entities(),
     )
 
     described = channel.describe_plan(plan)["mutations"]
@@ -1056,7 +1073,7 @@ async def test_a_condition_carries_whether_it_restricts_freedom_of_action(contai
 
     _, plan = channel.interpret(
         raw, all_agents=agents, npcs=_npc_menu(environment),
-        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+        space=environment.space, entities=environment.all_live_entities(),
     )
 
     assert plan is not None
@@ -1075,7 +1092,7 @@ async def test_lifting_a_condition_never_confines(container) -> None:
 
     _, plan = channel.interpret(
         raw, all_agents=agents, npcs=_npc_menu(environment),
-        locations=environment.space.all_places(), entities=environment.all_live_entities(),
+        space=environment.space, entities=environment.all_live_entities(),
     )
 
     assert plan is not None

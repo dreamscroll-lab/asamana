@@ -12,6 +12,7 @@ from core.interfaces.llm import (
     LLMMessage, LLMResponse, LLMRouter, LLMScene, extract_json_object, output_budget,
 )
 from core.interfaces.perception import DEFAULT_ENTITY_STATE
+from core.context import annotate_call
 from core.logging import get_logger
 from core.prompts import (
     AFFECTION_RANGE, MEMORY_IMPORTANCE_SCORE_DEFINITION, RELATION_LABEL_FORMAT, TRUST_RANGE,
@@ -34,7 +35,7 @@ from world.models import (
     name_key,
 )
 from core.interfaces.entity import WorldEntityType
-from world.builders import BuildReplyRejected, complete_with_build_retry
+from world.builders import LOCATION_NAME_RULE, BuildReplyRejected, complete_with_build_retry
 
 logger = get_logger(__name__)
 
@@ -157,7 +158,7 @@ _THEME_PROMPT_SCHEMA = {
                 "对 landmark：人物的位置会变，描述里不要写某人此刻在此。"
             ),
             "initial_state": "初始状态词（≤8字，intact/sealed/active/covert 等）",
-            "location_name": "所在地点名称（必须是可用地点列表中的 name 字段值）",
+            "location_name": f"所在地点名称（{LOCATION_NAME_RULE}）",
             "content": (
                 "≤80字：它**上面写着、记着的东西本身**——纸上写的内容、账上的数、碑上的字；"
                 "拿到它的人读到的就是这一栏，要有具体、实质内容、写实写全，不写「一封密信」这种概括或者介绍。"
@@ -179,7 +180,7 @@ _THEME_PROMPT_SCHEMA = {
                 "**每个人要各有各的特点**，不要写成一批可以互换的人；点到为止，不必量化。"
                 "只写**外在看得出的**：他没有内心，所以不写性格、心情、立场与心事等等"
             ),
-            "location_name": "所在地点名称（必须是可用地点列表中的 name 字段值，同时需要结合description进行选定，不要乱选。）",
+            "location_name": f"所在地点名称（{LOCATION_NAME_RULE}；结合 description 选定，不要乱选）",
         }
     ],
 }
@@ -403,13 +404,15 @@ class ThemeAnalyzer:
             LLMMessage(role="user", content=user_prompt),
         ]
         async def call() -> LLMResponse:
-            return await self._llm_router.complete(
-                # Everything comes out in one call. The budget varies with cast size, so _theme_max_tokens computes it (see its derivation).
-                # (Truncation → invalid JSON → futile retry → Rule 2 raise, so give it enough. max_tokens is a cap, not billed.)
-                LLMScene.WORLD_BUILDING, messages,
-                max_tokens=_theme_max_tokens(max_agents, max_npcs),
-                json_mode=True,
-            )
+            # Theme analysis and sub-place generation share a scene; the tag tells their traces apart.
+            with annotate_call(builder="theme_analysis"):
+                return await self._llm_router.complete(
+                    # Everything comes out in one call. The budget varies with cast size, so _theme_max_tokens computes it (see its derivation).
+                    # (Truncation → invalid JSON → futile retry → Rule 2 raise, so give it enough. max_tokens is a cap, not billed.)
+                    LLMScene.WORLD_BUILDING, messages,
+                    max_tokens=_theme_max_tokens(max_agents, max_npcs),
+                    json_mode=True,
+                )
 
         def parse(content: str) -> ThemeAnalysis:
             payload = extract_json_object(content)
@@ -594,8 +597,7 @@ class ThemeAnalyzer:
         ]
         if available_locations:
             input_lines.append(
-                "- 可用地点列表（world_entity_seeds 的 location_name 必须从中选取一个 name 值，"
-                "不要自创地点名）："
+                "- 可用地点列表（location_name 只从中选取，不要自创地点名；sub_places 是该地点的子地点）："
                 + json.dumps(
                     [location.as_dict() for location in available_locations],
                     ensure_ascii=False,

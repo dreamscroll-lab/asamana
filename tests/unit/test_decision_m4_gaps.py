@@ -1321,3 +1321,17 @@ def test_roster_omits_gender_when_unknown(main_engine) -> None:
     )
     prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
     assert "#1 无名氏（在场）" in prompt
+
+
+def test_main_prompt_names_each_destinations_sub_places_and_how_to_reach_them(main_engine) -> None:
+    """A destination's sub-places are part of its description; a spot inside the place I'm
+    already in needs no move."""
+    packet = _make_packet(
+        reachable_location_ids=["donggong"],
+        location_views={"donggong": LocationView(
+            name="东宫", description="皇太子居所", sub_places=("显德殿", "崇教殿"),
+        )},
+    )
+    prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
+    assert "#1 东宫（脚程约1小时）：皇太子居所；显德殿、崇教殿都在此地" in prompt
+    assert "我已身在其中，不必移动" in prompt

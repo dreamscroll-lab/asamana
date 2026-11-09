@@ -68,6 +68,7 @@ from core.prompts import (
     render_memory_lines,
     relation_legend,
     render_situation_header,
+    render_sub_places,
     situation_location,
     urgency_label,
     vitality_line,
@@ -1343,7 +1344,7 @@ class DecisionEngine:
 
 【我被约束的】
 - 我想说话/动手的人、想去的地方、想用的东西，只能从【我所处的现实】里带#序号的名单里挑，用序号指认——没列出的，我此刻够不着。
-- “我可前往”的每一处都是一大片地方，里头还有许多具体的去处。我想去的地方若不在名单上，多半就落在其中某一处里头——我照名单上各处的说明判断它最可能在哪一处，就去那一处；若我心里本没有非去不可的地方，就不必硬挑一个。
+- “我可前往”的每一处都是一大片地方，里头还有许多具体的去处。我想去的地方若不在名单上，多半就落在某一处里头——我照各处的说明判断它最可能在哪一处（我此刻所在之地也算一处），就去那一处；若那一处正是我此刻所在之地，我已身在其中，不必移动；若我心里本没有非去不可的地方，就不必硬挑一个。
 - 交谈/暗中探查/动手（TALK/COVERT/PHYSICAL-对人）只能挑“我能触及的人”里标(在场)的；只有发送消息（SEND_MESSAGE）可以发给标(不在场)的人。
 - 动手（PHYSICAL）必须指认出下手的对象，且**只指认一个**：对“我能触及的人”里的人就填 physical_person_index，对“此处可接受任务指派的人”里的人就填 physical_npc_index（两份名单各数各的序号，拿错名单就打到别人身上了），对物就填 physical_entity_index，名单外的抽象之物才自填 item_name——四者填其一，一个都不填等于没动手，这一拍就白费了。
 - 唯一的例外是「把我手上的东西交出去」：这一动受动的仍是那样东西（照填 physical_entity_index），只是另可填 physical_recipient_index 指认我要交给谁——他必须是“我能触及的人”里标(在场)的。我只是把东西放下、不交给谁，就不填它。交得出去的只有“我手上的东西”那一组里的；不在我手上的，得先拿到手。比如某样东西就搁在我身边，这一拍先把它拿起来，交给某人是下一拍的事。
@@ -1606,7 +1607,8 @@ def _render_candidate_lists(
         lines.append("我可前往（含需赶路的远处）：")
         for idx, rl in enumerate(spatial.reachable_locations, 1):
             name = rl.view.name or "某处"
-            desc_part = f"：{rl.view.description}" if rl.view.description else ""
+            detail = "；".join(part for part in (rl.view.description, render_sub_places(rl.view)) if part)
+            desc_part = f"：{detail}" if detail else ""
             dist = describe_seconds(rl.travel_seconds)
             lines.append(f"  #{idx} {name}（脚程{dist}）{desc_part}")
             facts.add("我可前往", f"{name}（脚程{dist}）")

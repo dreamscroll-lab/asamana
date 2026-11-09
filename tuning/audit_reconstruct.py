@@ -543,8 +543,16 @@ def _build_init(setup: WorldSetup, world_config: WorldConfig) -> tuple[dict[str,
         return names.get(aid) or "某人"
 
     lore = setup.lore
+    config_places = world_config.get_places()
     init = {
         "world_name": lore.world_name,
+        # The places the theme hung sub-places under, with the map's own description of each: what
+        # the audit needs to judge whether a sub-place belongs where it was put and fits the story.
+        "sub_places": [
+            {"name": config_places[pid].name, "description": config_places[pid].description,
+             "sub_places": [s.name for s in setup.sub_places if s.location_id == pid]}
+            for pid in dict.fromkeys(s.location_id for s in setup.sub_places) if pid in config_places
+        ],
         # Opening things and errand-runners: like personas, they're the initial world fixed at build time
         # for the whole run. The audit needs to see them to judge whether the opening has anything to fight
         # over or anyone to send; a world with no affordances can only move forward through talk.

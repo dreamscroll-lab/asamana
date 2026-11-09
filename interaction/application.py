@@ -717,7 +717,7 @@ class NarrativeApplication:
                 NpcOnMenu(npc=npc, location_id=environment.get_body_location(npc.npc_id))
                 for npc in environment.all_npcs()
             ],
-            "locations": environment.space.all_places(),
+            "space": environment.space,
             # Newest first: the director usually wants whatever just appeared. Don't truncate: an
             # author who can't reach something has a broken tool; if it grows to hundreds, filter
             # by the instruction instead. Sorted once: rendering, index mapping and id resolution
@@ -751,7 +751,7 @@ class NarrativeApplication:
             raw_response,
             all_agents=menu["all_agents"],
             npcs=menu["npcs"],
-            locations=menu["locations"],
+            space=menu["space"],
             entities=menu["entities"],
         )
         return result, None if plan is None else director.describe_plan(plan)

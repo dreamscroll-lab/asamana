@@ -658,7 +658,8 @@ export class TiledWorldScene
     if (!id || p.isDown || p.wasTouch) return;
     const label = obj as Phaser.GameObjects.Text;
     const top = label.y - label.displayHeight / 2 - 4;
-    this.hoverTip.showPlace(label.x, top, label.text, identityOf(String(id), this.places)?.description ?? "");
+    const place = identityOf(String(id), this.places);
+    this.hoverTip.showPlace(label.x, top, label.text, place?.description ?? "", place?.sub_places ?? []);
   }
 
   private handleContext(p: Phaser.Input.Pointer): void {
