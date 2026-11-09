@@ -20,7 +20,7 @@ from core.interfaces.message import Message
 from core.interfaces.perception import PerceivedIdentity
 from core.interfaces.snapshot import EngineState, WorldSnapshot
 from core.interfaces.urgency import Urgency
-from engine.executors.simple import SimpleExecutor
+from engine.executors.send_message import SendMessageExecutor
 from engine.message_system import MessageSystem
 from engine.step_record import message_events
 from interaction.actor_view import step_view_for
@@ -111,7 +111,7 @@ async def test_executor_keeps_anonymous_choice_in_action_and_own_memory(containe
         target=ActionTarget(acts_on=[Ref.agent("agent-b")]) if directed else ActionTarget(),
     )
     env = _make_environment()
-    executor = SimpleExecutor(_directory())
+    executor = SendMessageExecutor(_directory())
     state = await executor.start(action, 1, agents={}, environment=env, message_system=system)
     [result] = await executor.complete(state, 1, agents={}, environment=env, message_system=system)
     assert result.succeeded and result.action.anonymous

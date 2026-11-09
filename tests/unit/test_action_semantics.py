@@ -427,12 +427,12 @@ class TestTargetSurvivesTheExecutor:
     @pytest.mark.asyncio
     async def test_send_message_result_keeps_its_recipients(self, container) -> None:
         from tests.unit.test_action_executors import _make_agent, _make_environment, _directory
-        from engine.executors.simple import SimpleExecutor
+        from engine.executors.send_message import SendMessageExecutor
         from core.interfaces.action import AgentAction as AA
 
         sender = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
         env = _make_environment()
-        ex = SimpleExecutor(_directory({"agent-a": sender}))
+        ex = SendMessageExecutor(_directory({"agent-a": sender}))
         action = AA(
             agent_id="agent-a", step=1, action_type=ActionType.SEND_MESSAGE,
             action_description="传讯给乙", target=ActionTarget(acts_on=[Ref.agent("agent-b")]),

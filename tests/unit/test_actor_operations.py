@@ -749,9 +749,10 @@ async def test_shortcut_broadcast_records_the_spoken_message_in_sender_feedback(
     assert result.status == "submitted"
     await task
     snapshot = await container.snapshot.load(world_id, 1)
-    ended = next(entry for entry in snapshot.actor_thread if entry["kind"] == "ended")
-    assert message in ended["fact"]
-    assert "宣告：「我向此处的人广播」" not in ended["fact"]
+    # A broadcast is momentary: the actor is told of it in one entry.
+    acted = next(entry for entry in snapshot.actor_thread if entry["kind"] == "acted")
+    assert message in acted["fact"]
+    assert "宣告：「我向此处的人广播」" not in acted["fact"]
     memories = agents[0].memory_system._entries.values()  # noqa: SLF001
     assert any(memory.stream is MemoryStream.FACTUAL and message in memory.raw_content for memory in memories)
 

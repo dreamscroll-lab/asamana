@@ -11,6 +11,7 @@ from engine.executors.errand import ErrandExecutor
 from engine.executors.movement import MovementExecutor
 from engine.executors.physical import PhysicalExecutor
 from engine.executors.registry import ActionExecutorRegistry
+from engine.executors.send_message import SendMessageExecutor
 from engine.executors.simple import SimpleExecutor
 from engine.executors.social import SocialExecutor
 from engine.executors.work import WorkExecutor
@@ -39,7 +40,7 @@ def build_default_registry(
     errand = ErrandExecutor(directory)
 
     registry.register(ActionType.REST, simple)
-    registry.register(ActionType.SEND_MESSAGE, simple)
+    registry.register(ActionType.SEND_MESSAGE, SendMessageExecutor(directory))
     registry.register(ActionType.TALK, social)
     registry.register(ActionType.MOVE, movement)
     registry.register(ActionType.WORK, work)
@@ -66,6 +67,7 @@ __all__ = [
     "ErrandExecutor",
     "MovementExecutor",
     "PhysicalExecutor",
+    "SendMessageExecutor",
     "SimpleExecutor",
     "SocialExecutor",
     "WorkExecutor",

@@ -244,7 +244,7 @@ async def test_apply_feedback_vitality_damage_below_lethal(container) -> None:
     """vitality_damage > 0 but not lethal in _apply_feedback: drops, but is_alive stays True."""
     agent = _make_agent(container, vitality=1.0)
     result = _action_result_with_damage(0.3)
-    await agent._apply_feedback(result=result, dominant_need=NeedType.SAFETY, emotion=_neutral_emotion())
+    await agent._apply_feedback(result=result, dominant_need=NeedType.SAFETY, emotion=_neutral_emotion(), releases_body=True)
     assert agent.personality.state.vitality == pytest.approx(0.7)
     assert agent.personality.is_alive is True
     assert agent.is_active is True
@@ -256,7 +256,7 @@ async def test_apply_feedback_lethal_vitality_triggers_death(container) -> None:
     death memory written for the dead."""
     agent = _make_agent(container, vitality=0.1)
     result = _action_result_with_damage(0.5)
-    await agent._apply_feedback(result=result, dominant_need=NeedType.SAFETY, emotion=_neutral_emotion())
+    await agent._apply_feedback(result=result, dominant_need=NeedType.SAFETY, emotion=_neutral_emotion(), releases_body=True)
     assert agent.personality.state.vitality == 0.0
     assert agent.personality.is_alive is False
     assert agent.is_active is False
@@ -270,6 +270,6 @@ async def test_apply_feedback_zero_vitality_damage_unchanged(container) -> None:
     """_apply_feedback with vitality_damage=0 → vitality unchanged."""
     agent = _make_agent(container, vitality=0.8)
     result = _action_result_with_damage(0.0)
-    await agent._apply_feedback(result=result, dominant_need=NeedType.SAFETY, emotion=_neutral_emotion())
+    await agent._apply_feedback(result=result, dominant_need=NeedType.SAFETY, emotion=_neutral_emotion(), releases_body=True)
     assert agent.personality.state.vitality == pytest.approx(0.8)
     assert agent.is_active is True

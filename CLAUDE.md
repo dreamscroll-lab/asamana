@@ -915,6 +915,11 @@ Every action type exists to do at least one of:
 
 **A new action type must** meet at least one of these, with an effect no existing type can produce. If two candidates serve the same purpose with the same effect, merge them.
 
+**Momentary acts:**
+
+1. An act is momentary if, once issued, it no longer needs the doer's own body; that is the only test.
+2. Within one step a character has at most one act occupying its body, alongside any number of momentary acts.
+
 ---
 
 ## Executor / Feedback Boundary Rule

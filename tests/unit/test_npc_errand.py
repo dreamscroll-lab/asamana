@@ -289,6 +289,26 @@ async def test_telling_someone_costs_the_teller_exactly_one_beat() -> None:
     assert state.participant_ids == ["a1"]       # takes nobody else's turn
 
 
+@pytest.mark.asyncio
+async def test_the_order_is_seen_where_it_was_given() -> None:
+    """Giving an order is momentary: if the assigner is taken elsewhere the same step, the order
+    was still given where he stood, and that is where onlookers saw it."""
+    env = _world()
+    npc_id = _bearer(env)
+    env.place_agent(agent_id="a1", location_id="hall")
+    executor = ErrandExecutor(LiveWorldDirectory.from_agents({}, env))
+    state = await executor.start(
+        _action("a1", npc_id, ErrandOrder(npc_id, "gate")), 1,
+        agents={}, environment=env, message_system=None,
+    )
+    env.move_body(body_id="a1", location_id="yard")   # carried off the same step
+
+    [result] = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
+    assert result.succeeded
+    assert [o.location_id for o in result.observations] == ["hall"]
+    assert "大殿" in result.outcome and "庭中" not in result.outcome
+
+
 # ---------------------------------------------------------------------------
 # Progress: walk, do, look, return, report
 

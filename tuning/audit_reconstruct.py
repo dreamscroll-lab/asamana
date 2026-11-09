@@ -11,8 +11,9 @@ step) and never reruns the simulation. This module regroups the flat JSONL calls
 
 The audit's basic unit is the step: everything that happened to one body in one step.
 Occasionally two things land in one step (an interrupt tears down an in-flight execution and
-settles it on the spot, then a new round of cognition runs). Multi-valued slots are then stored as
-lists in arrival order; see ``summarize``.
+settles it on the spot, then a new round of cognition runs; or a momentary act lands beside the
+body-occupying act). Multi-valued slots are then stored as lists in arrival order; see
+``summarize``.
 
 Beats that land without an LLM call (``BeatTrace``: a decision or interrupt answer settled without
 one, mind amendments, injections landing) are read alongside the calls and fold into the same
@@ -62,6 +63,7 @@ from world.setup import WorldSetup
 #   decision call:    action_menu / person_candidates / destination_candidates /
 #                     item_candidates / npc_candidates                 ← agent/decision.py _attempt_selection
 #                     verdict (what arbitration did with this intent) / spans_steps (multi-step start, from the execution)
+#                     joined_execution (the act his body was drawn into: execution_id / initiator / purpose / spans_steps)
 #                                                                      ← engine/runtime.py commit point
 #   action call:      action_owner / conscripted_input / talk_role / acted_upon ← engine/executors/*
 #                     action_description / action_initiator / action_participants (which action
@@ -77,7 +79,8 @@ from world.setup import WorldSetup
 #                     name)                                              ← engine/executors/social.py
 #   every call in the step-start settlement phase: settles_prior_action (this segment settles the action
 #                           already in hand, not this step's new round) ← engine/runtime.py, three places at step start
-# ``execution_id`` is the engine's own key for joining action records; the audit doesn't infer from it.
+# ``execution_id`` is the engine's own key for joining action records; the audit groups a cell's results,
+# reactions, goal progress and memories by it, and never parses it.
 # "What happened to this intent" is stated outright by the verdict arbitration stamps, not reverse-
 # engineered from whether there's an id, whether there's an action call, or what talk_role is.
 # Candidate/target maps (action_menu / *_candidates / goal_texts) are keyed by stringified indices:
@@ -175,7 +178,8 @@ class AgentStepView:
 
     Occasionally two things land in one step (an interrupt tears down an in-flight execution and
     settles it on the spot, then a new round of cognition runs; or the agent is pulled into someone
-    else's action in the step it settles). ``summarize`` stores such multi-valued slots as lists in
+    else's action in the step it settles; or a momentary act, such as a letter, lands beside his
+    body-occupying act). ``summarize`` stores such multi-valued slots as lists in
     arrival order. Don't merge them (merging pairs A's result with B's inputs), and don't split them
     into numbered "beats" (that needs machinery whose only job is reassembling them).
     """
@@ -291,6 +295,10 @@ def _fold_decision(s: dict[str, Any], extra: dict[str, Any], decision: dict[str,
     filters them). An intent that never executed would only be compared with someone else's action
     result below and flagged as fabrication / a broken chain.
     """
+    if joined := extra.get("joined_execution"):
+        # The act his body was drawn into this step, whatever became of his own intent: a
+        # momentary one still went, a body-occupying one was set aside.
+        s["joined_execution"] = joined
     if extra.get("verdict") in _DISCARDED_VERDICTS:
         s.pop("short_term_goals", None)
         s.pop("motivation_thought", None)
@@ -326,7 +334,8 @@ def _fold_beat(s: dict[str, Any], b: StageBeat) -> None:
 
 def _fold(calls: list[StageCall], agent_name: str, beats: list[StageBeat] | None = None) -> dict[str, Any]:
     """Fold one segment's calls (within one phase) into a summary block. Two things can still land in
-    one phase (pulled into someone else's action in the step it settles); multi-valued slots are then
+    one phase (pulled into someone else's action in the step it settles, or a momentary act beside
+    the body-occupying act); multi-valued slots are then
     listed one by one, not merged: merging pairs A's result with B's inputs."""
     s: dict[str, Any] = {}
     for b in beats or []:
@@ -407,24 +416,36 @@ def _fold(calls: list[StageCall], agent_name: str, beats: list[StageBeat] | None
                     for g in goals:
                         if isinstance(g, dict) and str(g.get("index")) in texts:
                             g["text"] = texts[str(g["index"])]
-                _append(s, "goal_progress", goals)
-                _append(s, "residue", c.extra.get("residue"))
+                _append_of(s, "goal_progress", goals, c.extra.get("execution_id"))
+                _append_of(s, "residue", c.extra.get("residue"), c.extra.get("execution_id"))
             else:
                 _append(s, "appraisal", {"emotion": out.get("emotion"),
                                          "intensity": out.get("intensity"),
                                          "valence": out.get("valence"),
-                                         "of": c.extra.get("feedback_action_desc")})
-                # When the action stage has no result for this agent (in a two-party TALK the other party's fact is
-                # attached to the initiator's id; see the TODO), fall back to this agent's result attached to extra by feedback.
-                if not s.get("results") and (actual := c.extra.get("feedback_action_actual")):
-                    # There's no action call on this path (the action failed before adjudication), so no participant list;
-                    # feedback's own description says which action it was.
-                    _append(s, "results", {"did": c.extra.get("feedback_action_desc"), "fact": actual})
+                                         "of": c.extra.get("feedback_action_desc"),
+                                         # Points the reaction at its result; never rendered.
+                                         "execution_id": c.extra.get("execution_id")})
+                # When the action stage left no result for this feedback's action, fall back to the result feedback
+                # carries: an act no executor call adjudicates (SEND_MESSAGE, ERRAND), or a two-party TALK whose
+                # other party's fact is traced under the initiator's id (see the TODO). Matched per execution, not
+                # "no result yet": a momentary act lands beside a body-occupying act in one step, and the latter's
+                # result must not hide the momentary one's.
+                eid = c.extra.get("execution_id")
+                landed = (any(r.get("execution_id") == eid for r in s.get("results") or []) if eid
+                          else bool(s.get("results")))
+                if not landed and (actual := c.extra.get("feedback_action_actual")):
+                    # No action call on this path, so no participant list; feedback's own description says which action it was.
+                    _append(s, "results", {
+                        "did": c.extra.get("feedback_action_desc"), "fact": actual,
+                        **({"success": c.extra["feedback_action_success"]}
+                           if c.extra.get("feedback_action_success") is not None else {}),
+                        **({"execution_id": eid} if eid else {})})
         elif c.stage == "memory":
             if c.scene == "memory_importance":
                 _append(s, "memory_importance", out.get("score"))
             else:  # memory_summarization → first-person memory prose
-                _append(s, "memory", c.output if isinstance(c.output, str) else None)
+                _append_of(s, "memory", c.output if isinstance(c.output, str) else None,
+                           c.extra.get("execution_id"))
     # Nothing adopted = nothing happened this step, and that has to be said: a bare "no decision" reads as missing data or mechanical repetition.
     if discarded and "decision" not in s:
         s["decision_discarded"] = discarded[0]
@@ -438,6 +459,16 @@ def _append(s: dict[str, Any], key: str, value: Any) -> None:
     if value in (None, [], ""):
         return
     s.setdefault(key, []).append(value)
+
+
+def _append_of(s: dict[str, Any], key: str, value: Any, execution_id: Any) -> None:
+    """``_append``, plus which execution the value belongs to in ``<key>_of``, aligned index for
+    index. Never rendered; the renderer groups by it. Both lists grow in one place, so a value
+    ``_append`` skips can't shift the ids of the ones after it."""
+    if value in (None, [], ""):
+        return
+    _append(s, key, value)
+    s.setdefault(f"{key}_of", []).append(execution_id)
 
 
 def _fold_action(s: dict[str, Any], c: StageCall, out: dict, agent_name: str) -> None:
@@ -482,7 +513,14 @@ def _fold_action(s: dict[str, Any], c: StageCall, out: dict, agent_name: str) ->
     if fields:
         whose = {k: v for k, v in (("did", c.extra.get("action_description")),
                                    ("initiator", c.extra.get("action_initiator")),
-                                   ("participants", parts)) if v}
+                                   ("participants", parts),
+                                   # Joins the feedback fallback to this result; never rendered.
+                                   ("execution_id", c.extra.get("execution_id")),
+                                   # Who drew him into this act, or what was done to him, so it
+                                   # reads with its own result.
+                                   ("joined", c.extra.get("conscripted_input")
+                                    if c.extra.get("talk_role") == "addressee" else None),
+                                   ("acted_upon", c.extra.get("acted_upon"))) if v}
         _append(s, "results", {**whose, **fields})
 
 

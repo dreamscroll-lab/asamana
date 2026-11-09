@@ -592,6 +592,7 @@ class EntryKind(str, Enum):
     BEGAN = "began"
     PROGRESSED = "progressed"
     ENDED = "ended"
+    ACTED = "acted"
     DIALOGUE_TURN = "dialogue_turn"
 
 
@@ -713,6 +714,29 @@ class EndedEntry:
 
 
 @dataclass(frozen=True)
+class ActedEntry:
+    """An act of the character's told in one entry. An act with an inside (steps going by,
+    dialogue, a break-off) is told as a ``BeganEntry`` … ``EndedEntry`` pair; one without is told
+    whole: an act that never held the body, which may fall inside the act in progress and leaves
+    it untouched, and an act that never started. ``fact``, ``succeeded`` and ``happened`` read as
+    in ``EndedEntry``.
+
+    A momentary act's entry is recorded at feedback, which lands after the step's adjudication,
+    so it can follow the dialogue of a live conversation settled the same step though the act
+    came first. Accepted: settling momentary acts in a batch of their own would delay every such
+    step by a feedback round."""
+
+    step: int
+    description: str
+    fact: str
+    succeeded: bool
+    happened: bool = True
+    time_label: str = ""
+    kind: EntryKind = field(default=EntryKind.ACTED, init=False)
+    entry_id: str = field(default_factory=_entry_id)
+
+
+@dataclass(frozen=True)
 class DialogueTurnEntry:
     """A dialogue turn of a live conversation, either side's. ``end``: the conversation ends with
     it, by the speaker's choice or because the turns ran out; an ending turn's line may be empty.
@@ -728,5 +752,5 @@ class DialogueTurnEntry:
 
 ActorEntry = (
     PerceivedEntry | AskedEntry | SaidEntry | AnsweredEntry | BreakOffEntry | BeganEntry
-    | ProgressedEntry | EndedEntry | DialogueTurnEntry
+    | ProgressedEntry | EndedEntry | ActedEntry | DialogueTurnEntry
 )

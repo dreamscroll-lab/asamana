@@ -50,37 +50,38 @@ from core.interfaces.action import DialogueTurn, Ref
 from core.interfaces.trace import SUPERSEDED, BeatKind, Stage, TraceSink, record_beat
 from core.prompts import situation_location
 from core.interfaces.actor import (
-    UNREADABLE,
+    ActedEntry,
     ActorAction,
     ActorAmendments,
     ActorAnswer,
     ActorAnswerRejected,
-    ActorDecision,
     ActorConfirmation,
+    ActorDecision,
+    ActorDecisionSummary,
+    ActorDialogueTurn,
+    ActorEntry,
+    ActorIdleAnswer,
     ActorIntent,
     ActorIntentResult,
-    ActorOperations,
-    ActorDecisionSummary,
-    ActorPublicAnswer,
-    ActorIdleAnswer,
-    ActorEntry,
     ActorInterruptAnswer,
     ActorInvitationAnswer,
-    ActorDialogueTurn,
     ActorMind,
+    ActorOperations,
     ActorPace,
+    ActorPublicAnswer,
     ActorTurn,
     AnsweredEntry,
-    Invitation,
     AskedEntry,
     BeganEntry,
     BreakOffEntry,
     Conversation,
     DialogueTurnEntry,
     EndedEntry,
+    Invitation,
     ProgressedEntry,
     SaidEntry,
     TurnKind,
+    UNREADABLE,
 )
 from core.logging import get_logger
 from core.serialization import dump_json
@@ -253,6 +254,13 @@ class ActorCoordinator:
     def ended(self, *, step: int, fact: str, succeeded: bool, happened: bool) -> None:
         self._freed = True
         self._record(EndedEntry(step=step, fact=fact, succeeded=succeeded, happened=happened))
+
+    def acted(self, *, step: int, description: str, fact: str, succeeded: bool, happened: bool) -> None:
+        # Its own act is over: asked at either pace once the body is free, as after ``ended``.
+        self._freed = True
+        self._record(ActedEntry(
+            step=step, description=description, fact=fact, succeeded=succeeded, happened=happened,
+        ))
 
     def decides_this_step(self, *, step: int, signals: "PerceivedSignals") -> bool:
         # Weighed first, never short-circuited: the turn's reason needs it at either pace.

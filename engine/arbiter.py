@@ -207,22 +207,30 @@ class ExecutionArbiter:
         agents_dict: Dict[str, "Agent"],
         step: int,
         in_progress_at_step_start: set[str],
-    ) -> tuple[dict[str, ArbitratedAction], list[dict[str, Any]]]:
+    ) -> tuple[dict[str, ArbitratedAction], list[dict[str, Any]], dict[str, list[ArbitratedAction]]]:
         """Collapse this step's mutually-unaware decisions onto the shared world.
 
         Two phases: ``_resolve`` only keeps the books (no start, no teardown, no world), then
         ``_enact`` lands admissions in adjudication order. So an admission revoked by a later
         compulsory conscription is simply struck: it never happened, nothing to restore.
 
+        Returns ``(body, seize_records, momentary)``. ``body`` holds each agent's one verdict on
+        his body (his own act, a join, a rejection); ``momentary`` holds his momentary acts
+        (``ActionExecutor.momentary``), which occupy no body and stand beside it.
+
         It writes no agent state itself. ``Conscription.COMPEL`` on a body already in an
         execution does end that execution with writeback, through
         ``ExecutionProcessor.teardown_with_writeback``, i.e. in the feedback layer.
         """
         plans_by_id = {plan.agent_id: plan for _phase, _agent, plan in planned_steps}
-        admissions, claimed_by, denied, refused = await self._resolve(
+        admissions, momentary, claimed_by, denied, refused = await self._resolve(
             planned_steps, plans_by_id, agents_dict, step, in_progress_at_step_start,
         )
-        return await self._enact(admissions, claimed_by, denied, refused, plans_by_id, agents_dict, step)
+        momentary_arbitration = await self._enact_momentary(momentary, step, agents_dict)
+        arbitration, seize_records = await self._enact(
+            admissions, claimed_by, denied, refused, plans_by_id, agents_dict, step,
+        )
+        return arbitration, seize_records, momentary_arbitration
 
     async def _resolve(
         self,
@@ -231,14 +239,19 @@ class ExecutionArbiter:
         agents_dict: Dict[str, "Agent"],
         step: int,
         in_progress_at_step_start: set[str],
-    ) -> tuple[dict[str, _Admission], dict[str, str], dict[str, str], set[str]]:
+    ) -> tuple[dict[str, _Admission], list[_Admission], dict[str, str], dict[str, str], set[str]]:
         """Adjudication: who is admitted, whom they enlist, who is rejected. Pure bookkeeping;
         the world and registry it reads are as of step start. It writes nothing, so a step
         withdrawn while it waits on an invitee's answer leaves nothing behind.
 
-        Returns ``(admissions, claimed_by, denied, refused)``: admissions in adjudication order
-        (which is landing order); ``claimed_by`` maps enlisted → initiator; ``denied`` maps
-        rejected → reason; ``refused`` are the rejected whose invitation was refused.
+        Returns ``(admissions, momentary, claimed_by, denied, refused)``: admissions in
+        adjudication order (which is landing order); ``momentary`` the momentary acts, in
+        initiative order; ``claimed_by`` maps enlisted → initiator; ``denied`` maps rejected →
+        reason; ``refused`` are the rejected whose invitation was refused.
+
+        A momentary act is admitted outright: it takes no body, so there is nothing to contend
+        for. Its doer stays out of ``consumed``, free to be invited or compelled, and nothing
+        done to his body revokes it.
 
         Walks ``planned_steps`` in initiative order. Two gates:
 
@@ -268,6 +281,7 @@ class ExecutionArbiter:
         resolution of symmetric mutual actions (they need a resource ledger with no consumer yet).
         """
         admissions: dict[str, _Admission] = {}
+        momentary: dict[str, _Admission] = {}
         claimed_by: dict[str, str] = {}
         denied: dict[str, str] = {}
         # Rejected-as-busy → the bodies that blocked them; revoking those makes the reason false.
@@ -325,6 +339,17 @@ class ExecutionArbiter:
             plan = queue.popleft()
             agent_id = plan.agent_id
             reached.add(agent_id)
+
+            # Before the enrollment check: being taken this step doesn't revoke a momentary act.
+            # A re-queued doer reaches here again; his act is booked once.
+            momentary_executor = self._momentary_executor(plan.action)
+            if momentary_executor is not None:
+                if agent_id not in momentary:
+                    momentary[agent_id] = _Admission(
+                        plan=plan, action=plan.action, executor=momentary_executor,
+                        co_participants=[], seized=[],
+                    )
+                continue
 
             # Enrollment doesn't depend on the agent's own decision, so this precedes the
             # no-action check: a decision-failed agent can still passive-join.
@@ -422,8 +447,8 @@ class ExecutionArbiter:
                 for pid in co_participants:
                     if (pid, agent_id) not in accepted:
                         accepted[pid, agent_id] = await agents_dict[pid].accepts_invitation(
-                            plans_by_id[pid], inviter_id=agent_id, action_type=plan.action.action_type,
-                            talk_topic=plan.action.talk_topic,
+                            self._body_plan(plans_by_id[pid]), inviter_id=agent_id,
+                            action_type=plan.action.action_type, talk_topic=plan.action.talk_topic,
                         )
                     if not accepted[pid, agent_id]:
                         refusers.append(pid)
@@ -461,7 +486,48 @@ class ExecutionArbiter:
                 claimed_by[pid] = agent_id
                 consumed.add(pid)
 
-        return admissions, claimed_by, denied, refused
+        return admissions, list(momentary.values()), claimed_by, denied, refused
+
+    def _momentary_executor(self, action: "AgentAction | None") -> "ActionExecutor | None":
+        """The executor of a momentary act; None for no action or a body-occupying act."""
+        if action is None or not self._executor_registry.is_momentary(action.action_type):
+            return None
+        return self._executor_registry.get_executor(action.action_type)
+
+    def _body_plan(self, plan: AgentStepPlan) -> AgentStepPlan:
+        """The plan as his body sees it: a momentary act isn't what a join would set aside."""
+        if self._momentary_executor(plan.action) is None:
+            return plan
+        return dataclasses.replace(plan, action=None)
+
+    async def _enact_momentary(
+        self, momentary: list[_Admission], step: int, agents_dict: Dict[str, "Agent"],
+    ) -> dict[str, list[ArbitratedAction]]:
+        """Start the momentary acts, before anything else lands this step: issued first, they
+        start against the step-start world (see ``ActionExecutor.momentary``)."""
+        arbitration: dict[str, list[ArbitratedAction]] = {}
+        for adm in momentary:
+            agent_id = adm.plan.agent_id
+            try:
+                with observe_stage(Stage.ACTION, agent_id=agent_id):
+                    exec_state = await adm.executor.start(
+                        adm.action, step, agents=agents_dict,
+                        environment=self._environment, message_system=self._message_system,
+                    )
+            except Exception as exc:  # noqa: BLE001 — Rule 5: an executor exception must not kill the run
+                logger.error(
+                    "executor_start_failed",
+                    extra={
+                        "step": step, "agent_id": agent_id,
+                        "action_type": adm.action.action_type.value, "error": str(exc),
+                    },
+                )
+                continue
+            self._executor_registry.add_active(exec_state)
+            arbitration.setdefault(agent_id, []).append(self._start_arbitrated(
+                adm.plan, exec_state, location_id=self._environment.get_body_location(agent_id),
+            ))
+        return arbitration
 
     async def _enact(
         self,

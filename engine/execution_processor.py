@@ -70,6 +70,22 @@ class ExecutionProcessor:
         completing_pos: List[int] = []
 
         for exec_state in self._executor_registry.all_active():
+            if self._executor_registry.is_momentary(exec_state.action_type):
+                # A momentary act settles in the step it was issued in (the same-step sweep), so
+                # one still active here is a broken invariant. Don't tick it: it holds no body, and
+                # advancing its doer would advance his body-occupying act. Void it instead.
+                logger.error(
+                    "momentary_execution_outlived_step",
+                    extra={
+                        "step": step,
+                        "execution_id": exec_state.execution_id,
+                        "action_type": exec_state.action_type.value,
+                        "initiator_id": exec_state.initiator_id,
+                    },
+                )
+                self._executor_registry.remove_active(exec_state.execution_id)
+                self.release_stuck_participants(exec_state, agents_dict, step)
+                continue
             executor = self._executor_registry.get_executor(exec_state.action_type)
             if executor is None:
                 continue
@@ -443,7 +459,10 @@ class ExecutionProcessor:
                 agent_obj.refresh_situation(spatial)
             agent_obj.refresh_held(spatial)
             try:
-                await agent_obj.finalize_ongoing_action(result=result, step=step)
+                if self._executor_registry.is_momentary(result.action.action_type):
+                    await agent_obj.finalize_momentary_act(result=result, step=step)
+                else:
+                    await agent_obj.finalize_ongoing_action(result=result, step=step)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "finalize_writeback_failed",
@@ -513,7 +532,15 @@ class ExecutionProcessor:
     ) -> None:
         """Release the surviving participants of an execution that couldn't finalize normally
         (``Agent.release_action``); otherwise they stay IN_PROGRESS forever once it leaves the
-        registry. A null step: nothing is written but the action's end."""
+        registry. A null step: nothing is written but the action's end.
+
+        A momentary execution held no body, so there is none to release: its doer is only told
+        the act came to nothing (``Agent.void_momentary_act``)."""
+        if self._executor_registry.is_momentary(exec_state.action_type):
+            doer = agents_dict.get(exec_state.initiator_id)
+            if doer is not None and doer.is_active:
+                doer.void_momentary_act(step=step, description=exec_state.purpose)
+            return
         for pid in exec_state.participant_ids:
             agent = agents_dict.get(pid)
             if agent is None or not agent.is_active:
@@ -719,6 +746,10 @@ class ExecutionProcessor:
                 continue
             completion["visible_agent_ids"] = list(rec.get("visible_agent_ids", []))
             completion["message_ids"] = list(rec.get("message_ids", []))
+            # A momentary act happened where it was issued (``ActionExecutor.momentary``); by
+            # the sweep its doer may have been carried off.
+            if self._executor_registry.is_momentary(exec_state.action_type):
+                completion["location_id"] = rec.get("location_id", completion["location_id"])
             # Only the begin record knows the decision's thought; completion_record must not.
             completion["inner_monologue"] = rec.get("inner_monologue", "")
             # The completion supersedes the opening only where it is itself seen. Elsewhere the

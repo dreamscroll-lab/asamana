@@ -1013,6 +1013,9 @@ export type ActorEntry =
   // How it ended, as the character remembers it; `fact` empty when it was never adjudicated,
   // `happened` false when it never engaged the world.
   | { kind: "ended"; entry_id: string; step: number; time_label: string; fact: string; succeeded: boolean; happened: boolean }
+  // A momentary act, told whole as it landed: it never held the body, so it neither begins nor
+  // ends the act in progress. `fact`, `succeeded`, `happened` as in `ended`.
+  | { kind: "acted"; entry_id: string; step: number; time_label: string; description: string; fact: string; succeeded: boolean; happened: boolean }
   // A dialogue turn of a live conversation, either side's. `end`: the conversation ends with it
   // (by the speaker's choice, or the turns ran out); an ending turn's line may be empty. SPEAK
   // turns leave no `asked` or `answered` entries: these are their record.

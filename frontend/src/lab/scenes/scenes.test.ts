@@ -4,6 +4,8 @@ import { indexStep } from "../../lib/step";
 import { buildScenes } from "./index";
 import { SHI, fixtureCast, fixtureNpcs } from "./fixtures";
 import { DEED_BODY } from "../../phaser/deedPose";
+import { playsBeforeWalk } from "../../phaser/figures";
+import { ActionType } from "../../lib/contract";
 import type { LabPlaces } from "../places";
 
 const room = (id: string) => ({ id, name: `地点-${id}` });
@@ -93,6 +95,24 @@ describe("lab scenes", () => {
       expect(staged.has(deed), `no scene stages deed "${deed}"`).toBe(true);
     }
   });
+
+  it.each(["walk-after-letter", "walk-after-announce", "walk-carried-after-letter"])(
+    "%s files the letter where it was sent, so it plays before the walk",
+    (id) => {
+      // Filed where its sender ends the step, the letter would play after he arrived: the very
+      // ordering the scene is there to show.
+      const walkStep = indexStep(scenes.find((s) => s.id === id)!.steps[1]);
+      const sends = walkStep.actions.filter((a) => a.action_type === ActionType.send_message);
+      const move = walkStep.actions.find((a) => a.action_type === ActionType.move)!;
+      expect(sends).toHaveLength(1);
+      for (const doer of sends[0].participant_ids) {
+        const endsAt = walkStep.agents[doer].location_id;
+        expect(playsBeforeWalk(sends[0], endsAt)).toBe(true);
+      }
+      expect(move.location_id).toBe(walkStep.agents[move.initiator_id].location_id);
+      expect(sends[0].seq).toBeLessThan(move.seq);
+    },
+  );
 
   it.each(["death", "death-offscreen", "death-on-arrival"])("dates %s's death to the step he falls on", (id) => {
     // The map draws a body only on its death step; a death re-dated each step would draw him again.

@@ -1,4 +1,4 @@
-"""Tests for the ActionExecutor framework: SimpleExecutor, SocialExecutor,
+"""Tests for the ActionExecutor framework: SimpleExecutor, SendMessageExecutor, SocialExecutor,
 MovementExecutor, WorkExecutor, and the registry."""
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from engine.scene import SceneVisibility
 from engine.executors.covert import CovertExecutor
 from engine.executors.movement import MovementExecutor, arrival_view, carried_bodies
 from engine.executors.registry import ActionExecutorRegistry
+from engine.executors.send_message import SendMessageExecutor
 from engine.executors.simple import SimpleExecutor
 from engine.executors.social import SocialExecutor
 from engine.executors.work import WorkExecutor
@@ -346,19 +347,6 @@ class TestSimpleExecutor:
         assert state.initiator_id == "agent-a"
 
     @pytest.mark.asyncio
-    async def test_send_message_start_returns_immediate_result(self) -> None:
-        from core.interfaces.action import ActionResult
-        executor = SimpleExecutor(_directory())
-        env = _make_environment()
-        action = _make_action(agent_id="agent-a", action_type=ActionType.SEND_MESSAGE, estimated_steps=1)
-        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
-        assert isinstance(state, ActionExecutionState)
-        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
-        result = results[0]
-        assert isinstance(result, ActionResult)
-        assert result.succeeded
-
-    @pytest.mark.asyncio
     async def test_rest_tick_produces_narrative(self) -> None:
         executor = SimpleExecutor(_directory())
         env = _make_environment()
@@ -394,128 +382,6 @@ class TestSimpleExecutor:
         s1 = await executor.start(action, 1, agents={}, environment=env, message_system=None)
         s2 = await executor.start(action, 2, agents={}, environment=env, message_system=None)
         assert s1.execution_id != s2.execution_id
-
-    # --- SEND_MESSAGE memory ---
-
-    @pytest.mark.asyncio
-    async def test_send_message_factual_memory_renders_recipient_name_not_id(self, container) -> None:
-        """Memory records the recipient by name (narrative layer), not by agent id."""
-        from core.interfaces.action import ActionResult
-        agent_b = _make_agent(container, world_id="w", agent_id="bob", name="鲍勃", is_main=False)
-        executor = SimpleExecutor(_directory({"bob": agent_b}))
-        env = _make_environment()
-        action = _make_action(
-            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="约他见面", content="明天见面", target_agent_id="bob",
-        )
-        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
-        assert isinstance(state, ActionExecutionState)
-        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
-        result = results[0]
-        assert isinstance(result, ActionResult)
-        assert result.factual_memory is not None
-        assert "鲍勃" in result.factual_memory
-        assert "bob" not in result.factual_memory    # no id leak
-        assert "明天见面" in result.factual_memory
-
-    @pytest.mark.asyncio
-    async def test_send_message_unknown_recipient_falls_back_to_descriptive(self) -> None:
-        """A recipient the directory doesn't know falls back to "某人" (someone), never to an id."""
-        from core.interfaces.action import ActionResult
-        executor = SimpleExecutor(_directory())  # empty directory, so every lookup misses
-        env = _make_environment()
-        action = _make_action(
-            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="密报", target_agent_id="ghost-id",
-        )
-        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
-        assert isinstance(state, ActionExecutionState)
-        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
-        result = results[0]
-        assert isinstance(result, ActionResult)
-        assert "某人" in result.factual_memory
-        assert "ghost-id" not in result.factual_memory
-
-    @pytest.mark.asyncio
-    async def test_broadcast_memory_names_who_actually_heard_it(self, container) -> None:
-        """A broadcast's memory names everyone who was present, not a vague "在场众人" (everyone
-        present): later it has to answer "who heard this"."""
-        from core.interfaces.action import ActionResult
-        listener = _make_agent(container, world_id="w", agent_id="agent-b", name="李元吉")
-        executor = SimpleExecutor(_directory({"agent-b": listener}))
-        env = _make_environment()
-        action = _make_action(
-            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="向众人示警", content="敌军来犯", target_agent_id=None,
-        )
-        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
-        assert isinstance(state, ActionExecutionState)
-        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
-        result = results[0]
-        assert isinstance(result, ActionResult)
-        assert result.succeeded
-        assert "李元吉" in result.factual_memory
-        assert "在场众人" not in result.factual_memory
-        assert "敌军来犯" in result.factual_memory
-        assert "hall" in result.factual_memory
-        assert result.outcome.count("成功") == 1  # not "成功向…成功宣告" (success repeated)
-
-    @pytest.mark.asyncio
-    async def test_a_shout_into_an_empty_room_is_not_a_delivery(self) -> None:
-        """Announcing to an empty room is not a successful delivery, and nothing is delivered."""
-        from core.interfaces.action import ActionResult
-        executor = SimpleExecutor(_directory())
-        env = _make_environment()
-        env.move_body(body_id="agent-b", location_id="garden")   # he's the only one left
-        sent: list = []
-
-        class _Spy:
-            async def dispatch_from_action(self, action, **kw):  # noqa: ANN001
-                sent.append(action)
-
-        action = _make_action(
-            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="向众人示警", content="敌军来犯", target_agent_id=None,
-        )
-        state = await executor.start(action, 1, agents={}, environment=env, message_system=_Spy())
-        results = await executor.complete(
-            state, 1, agents={}, environment=env, message_system=_Spy(),
-        )
-        result = results[0]
-        assert isinstance(result, ActionResult)
-        assert result.succeeded is False
-        assert result.failure_reason == "此处无人"
-        assert "没有人听见" in result.factual_memory and "敌军来犯" in result.factual_memory
-        assert not sent, "没有接收者的消息不该进队列"
-        # Nothing broke; the room really is empty. This must not be filtered out as a null step.
-        assert result.adjudication_failed is False
-
-    @pytest.mark.asyncio
-    async def test_send_message_directed_delivers_regardless_of_location(self) -> None:
-        """A directed message has location_scope=None so it reaches absent recipients; a broadcast
-        is scoped to the sender's location."""
-        captured: list[dict] = []
-
-        class _CaptureMessageSystem:
-            async def dispatch_from_action(self, action, *, current_step, sender_name="", location_scope=None):
-                captured.append({"recipients": list(action.target.acted_on_agents), "location_scope": location_scope})
-
-        executor = SimpleExecutor(_directory())
-        env = _make_environment()  # agent-a is in hall
-        # directed at bob, who is elsewhere, so scope must be None
-        directed = _make_action(
-            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="速归", target_agent_id="bob",
-        )
-        await executor.start(directed, 1, agents={}, environment=env, message_system=_CaptureMessageSystem())
-        assert captured[-1]["location_scope"] is None
-
-        broadcast = _make_action(
-            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="全体集合", target_agent_id=None,
-        )
-        await executor.start(broadcast, 1, agents={}, environment=env, message_system=_CaptureMessageSystem())
-        assert captured[-1]["location_scope"] == "hall"
 
     @pytest.mark.asyncio
     async def test_rest_tick_is_narrative_only(self) -> None:
@@ -677,57 +543,6 @@ class TestSimpleExecutor:
         assert "。，" not in done.factual_memory and "」。。" not in done.factual_memory
 
     @pytest.mark.asyncio
-    async def test_send_message_outcome_quotes_delivered_words_and_preserves_intent(self) -> None:
-        """The words delivered are distinct from the sender's description of the action."""
-        class _Sink:
-            async def dispatch_from_action(self, action, *, current_step, sender_name="", location_scope=None):
-                return None
-
-        executor = SimpleExecutor(_directory(), seconds_per_step=3600)
-        env = _make_environment()
-        action = AgentAction(
-            agent_id="agent-a", step=1, action_type=ActionType.SEND_MESSAGE,
-            action_description="我传话给他，约他今夜在府中相见",
-            content="今夜府中一见。",
-            target=ActionTarget(acts_on=[Ref.agent("agent-b")]),
-        )
-        state = await executor.start(
-            action, 1, agents={}, environment=env, message_system=_Sink(),
-        )
-        result = state.extra["completed_result"]
-        assert "：「今夜府中一见。」" in result.outcome
-        assert "我传话给他" not in result.outcome
-        assert "今夜府中一见。" in result.factual_memory
-        assert result.factual_memory.startswith("我成功在")
-        assert result.action.action_description == action.action_description
-        assert result.action.content == action.content
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("directed", [True, False])
-    @pytest.mark.parametrize("heard", [True, False])
-    async def test_message_results_retain_verbatim_words_for_delivery_and_unheard_attempts(
-        self, directed: bool, heard: bool,
-    ) -> None:
-        executor = SimpleExecutor(_directory())
-        env = _make_environment()
-        if not heard:
-            env.move_body(body_id="agent-b", location_id="garden")
-        recipient = "agent-b" if heard else "agent-a"
-        message = "今夜你会来吗？别走！"
-        description = "我传话提醒大家"
-        action = AgentAction(
-            agent_id="agent-a", step=1, action_type=ActionType.SEND_MESSAGE,
-            action_description=description, content=message,
-            target=ActionTarget(acts_on=[Ref.agent(recipient)] if directed else []),
-        )
-        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
-        result = (await executor.complete(state, 1, agents={}, environment=env, message_system=None))[0]
-        assert result.succeeded is heard
-        assert message in result.outcome and message in result.factual_memory
-        assert description not in result.outcome and description not in result.factual_memory
-        assert result.action.action_description == description and result.action.content == message
-
-    @pytest.mark.asyncio
     async def test_rest_outcome_without_description_uses_default(self) -> None:
         """A description with no substance (a bare 'rest') falls back to the default "休息"
         wording."""
@@ -761,6 +576,196 @@ class TestSimpleExecutor:
         assert not result.succeeded
         assert result.vitality_damage < 0  # negative = partial recovery
         assert "2" in result.factual_memory
+
+
+# ---------------------------------------------------------------------------
+# SendMessageExecutor
+# ---------------------------------------------------------------------------
+
+class TestSendMessageExecutor:
+    @pytest.mark.asyncio
+    async def test_send_message_start_returns_immediate_result(self) -> None:
+        from core.interfaces.action import ActionResult
+        executor = SendMessageExecutor(_directory())
+        env = _make_environment()
+        action = _make_action(agent_id="agent-a", action_type=ActionType.SEND_MESSAGE, estimated_steps=1)
+        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
+        assert isinstance(state, ActionExecutionState)
+        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
+        result = results[0]
+        assert isinstance(result, ActionResult)
+        assert result.succeeded
+
+    @pytest.mark.asyncio
+    async def test_send_message_factual_memory_renders_recipient_name_not_id(self, container) -> None:
+        """Memory records the recipient by name (narrative layer), not by agent id."""
+        from core.interfaces.action import ActionResult
+        agent_b = _make_agent(container, world_id="w", agent_id="bob", name="鲍勃", is_main=False)
+        executor = SendMessageExecutor(_directory({"bob": agent_b}))
+        env = _make_environment()
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
+            description="约他见面", content="明天见面", target_agent_id="bob",
+        )
+        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
+        assert isinstance(state, ActionExecutionState)
+        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
+        result = results[0]
+        assert isinstance(result, ActionResult)
+        assert result.factual_memory is not None
+        assert "鲍勃" in result.factual_memory
+        assert "bob" not in result.factual_memory    # no id leak
+        assert "明天见面" in result.factual_memory
+
+    @pytest.mark.asyncio
+    async def test_send_message_unknown_recipient_falls_back_to_descriptive(self) -> None:
+        """A recipient the directory doesn't know falls back to "某人" (someone), never to an id."""
+        from core.interfaces.action import ActionResult
+        executor = SendMessageExecutor(_directory())  # empty directory, so every lookup misses
+        env = _make_environment()
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
+            description="密报", target_agent_id="ghost-id",
+        )
+        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
+        assert isinstance(state, ActionExecutionState)
+        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
+        result = results[0]
+        assert isinstance(result, ActionResult)
+        assert "某人" in result.factual_memory
+        assert "ghost-id" not in result.factual_memory
+
+    @pytest.mark.asyncio
+    async def test_broadcast_memory_names_who_actually_heard_it(self, container) -> None:
+        """A broadcast's memory names everyone who was present, not a vague "在场众人" (everyone
+        present): later it has to answer "who heard this"."""
+        from core.interfaces.action import ActionResult
+        listener = _make_agent(container, world_id="w", agent_id="agent-b", name="李元吉")
+        executor = SendMessageExecutor(_directory({"agent-b": listener}))
+        env = _make_environment()
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
+            description="向众人示警", content="敌军来犯", target_agent_id=None,
+        )
+        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
+        assert isinstance(state, ActionExecutionState)
+        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
+        result = results[0]
+        assert isinstance(result, ActionResult)
+        assert result.succeeded
+        assert "李元吉" in result.factual_memory
+        assert "在场众人" not in result.factual_memory
+        assert "敌军来犯" in result.factual_memory
+        assert "hall" in result.factual_memory
+        assert result.outcome.count("成功") == 1  # not "成功向…成功宣告" (success repeated)
+
+    @pytest.mark.asyncio
+    async def test_a_shout_into_an_empty_room_is_not_a_delivery(self) -> None:
+        """Announcing to an empty room is not a successful delivery, and nothing is delivered."""
+        from core.interfaces.action import ActionResult
+        executor = SendMessageExecutor(_directory())
+        env = _make_environment()
+        env.move_body(body_id="agent-b", location_id="garden")   # he's the only one left
+        sent: list = []
+
+        class _Spy:
+            async def dispatch_from_action(self, action, **kw):  # noqa: ANN001
+                sent.append(action)
+
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
+            description="向众人示警", content="敌军来犯", target_agent_id=None,
+        )
+        state = await executor.start(action, 1, agents={}, environment=env, message_system=_Spy())
+        results = await executor.complete(
+            state, 1, agents={}, environment=env, message_system=_Spy(),
+        )
+        result = results[0]
+        assert isinstance(result, ActionResult)
+        assert result.succeeded is False
+        assert result.failure_reason == "此处无人"
+        assert "没有人听见" in result.factual_memory and "敌军来犯" in result.factual_memory
+        assert not sent, "没有接收者的消息不该进队列"
+        # Nothing broke; the room really is empty. This must not be filtered out as a null step.
+        assert result.adjudication_failed is False
+
+    @pytest.mark.asyncio
+    async def test_send_message_directed_delivers_regardless_of_location(self) -> None:
+        """A directed message has location_scope=None so it reaches absent recipients; a broadcast
+        is scoped to the sender's location."""
+        captured: list[dict] = []
+
+        class _CaptureMessageSystem:
+            async def dispatch_from_action(self, action, *, current_step, sender_name="", location_scope=None):
+                captured.append({"recipients": list(action.target.acted_on_agents), "location_scope": location_scope})
+
+        executor = SendMessageExecutor(_directory())
+        env = _make_environment()  # agent-a is in hall
+        # directed at bob, who is elsewhere, so scope must be None
+        directed = _make_action(
+            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
+            description="速归", target_agent_id="bob",
+        )
+        await executor.start(directed, 1, agents={}, environment=env, message_system=_CaptureMessageSystem())
+        assert captured[-1]["location_scope"] is None
+
+        broadcast = _make_action(
+            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
+            description="全体集合", target_agent_id=None,
+        )
+        await executor.start(broadcast, 1, agents={}, environment=env, message_system=_CaptureMessageSystem())
+        assert captured[-1]["location_scope"] == "hall"
+
+    @pytest.mark.asyncio
+    async def test_send_message_outcome_quotes_delivered_words_and_preserves_intent(self) -> None:
+        """The words delivered are distinct from the sender's description of the action."""
+        class _Sink:
+            async def dispatch_from_action(self, action, *, current_step, sender_name="", location_scope=None):
+                return None
+
+        executor = SendMessageExecutor(_directory())
+        env = _make_environment()
+        action = AgentAction(
+            agent_id="agent-a", step=1, action_type=ActionType.SEND_MESSAGE,
+            action_description="我传话给他，约他今夜在府中相见",
+            content="今夜府中一见。",
+            target=ActionTarget(acts_on=[Ref.agent("agent-b")]),
+        )
+        state = await executor.start(
+            action, 1, agents={}, environment=env, message_system=_Sink(),
+        )
+        result = state.extra["completed_result"]
+        assert "：「今夜府中一见。」" in result.outcome
+        assert "我传话给他" not in result.outcome
+        assert "今夜府中一见。" in result.factual_memory
+        assert result.factual_memory.startswith("我成功在")
+        assert result.action.action_description == action.action_description
+        assert result.action.content == action.content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("directed", [True, False])
+    @pytest.mark.parametrize("heard", [True, False])
+    async def test_message_results_retain_verbatim_words_for_delivery_and_unheard_attempts(
+        self, directed: bool, heard: bool,
+    ) -> None:
+        executor = SendMessageExecutor(_directory())
+        env = _make_environment()
+        if not heard:
+            env.move_body(body_id="agent-b", location_id="garden")
+        recipient = "agent-b" if heard else "agent-a"
+        message = "今夜你会来吗？别走！"
+        description = "我传话提醒大家"
+        action = AgentAction(
+            agent_id="agent-a", step=1, action_type=ActionType.SEND_MESSAGE,
+            action_description=description, content=message,
+            target=ActionTarget(acts_on=[Ref.agent(recipient)] if directed else []),
+        )
+        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
+        result = (await executor.complete(state, 1, agents={}, environment=env, message_system=None))[0]
+        assert result.succeeded is heard
+        assert message in result.outcome and message in result.factual_memory
+        assert description not in result.outcome and description not in result.factual_memory
+        assert result.action.action_description == description and result.action.content == message
 
 
 # ---------------------------------------------------------------------------
@@ -1453,7 +1458,6 @@ class TestSocialExecutor:
         # Recovered: this beat has dialogue as usual and isn't a null step.
         assert all(r.dialogue for r in results)
         assert all(r.adjudication_failed is False for r in results)
-
 
     @pytest.mark.asyncio
     async def test_one_unattributable_line_voids_the_whole_transcript(self, container) -> None:
@@ -3594,7 +3598,6 @@ class TestPhysicalExecutor:
             env.change_entity_state(change, doer_id="agent-a")
         assert env.find_item("letter_7").owner_id == "agent-a", "世界必须真的变了"
 
-
     @pytest.mark.parametrize("payload", [
         '{"success": true, "fact": "我按住了他。"}',                    # no outcome
         '{"success": true, "outcome": "甲按住了乙。"}',                  # no fact
@@ -4746,7 +4749,6 @@ class TestPhysicalExecutor:
         result = results[0]
         assert isinstance(result, ActionResult)
         assert result.target_effects == []
-
 
     @pytest.mark.asyncio
     async def test_landmark_physical_action_declares_state_change_without_owner(self, container) -> None:

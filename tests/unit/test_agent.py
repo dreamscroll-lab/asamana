@@ -234,7 +234,7 @@ async def test_apply_feedback_on_success_increases_trust(container: object) -> N
     trust_before = relation_before.trust_objective
 
     result = _make_action_result(succeeded=True, target_agent_id=target)
-    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion())  # noqa: SLF001
+    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion(), releases_body=True)  # noqa: SLF001
 
     relation_after = await agent.relation_system.get_or_create(target)
     assert relation_after.trust_objective > trust_before
@@ -250,12 +250,12 @@ async def test_apply_feedback_on_failure_decreases_trust_more_than_success_incre
     base_trust = relation_base.trust_objective
 
     result_success = _make_action_result(succeeded=True, target_agent_id=target)
-    await agent._apply_feedback(result=result_success, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion())  # noqa: SLF001
+    await agent._apply_feedback(result=result_success, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion(), releases_body=True)  # noqa: SLF001
     after_success = (await agent.relation_system.get_or_create(target)).trust_objective
     gain = after_success - base_trust
 
     result_failure = _make_action_result(succeeded=False, target_agent_id=target)
-    await agent._apply_feedback(result=result_failure, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion())  # noqa: SLF001
+    await agent._apply_feedback(result=result_failure, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion(), releases_body=True)  # noqa: SLF001
     after_failure = (await agent.relation_system.get_or_create(target)).trust_objective
     loss = after_success - after_failure
 
@@ -269,7 +269,7 @@ async def test_apply_feedback_with_none_dominant_need_skips_need_update(containe
     result = _make_action_result(succeeded=True)
 
     # Just assert no exception raised — need engine skips update when dominant_need is None
-    await agent._apply_feedback(result=result, dominant_need=None, emotion=_neutral_emotion())  # noqa: SLF001
+    await agent._apply_feedback(result=result, dominant_need=None, emotion=_neutral_emotion(), releases_body=True)  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -481,7 +481,7 @@ async def test_adjudication_failure_enqueues_no_residue(container: object) -> No
     result = _make_action_result(succeeded=False)
     result.adjudication_failed = True
 
-    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1)
+    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1, releases_body=True)
 
     assert not [
         g for g in agent.personality.state.short_term_goal_entities
@@ -499,7 +499,7 @@ async def test_not_executed_enqueues_no_residue(container: object) -> None:
     result = _make_action_result(succeeded=False)
     result.not_executed = True
 
-    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1)
+    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1, releases_body=True)
 
     assert not [
         g for g in agent.personality.state.short_term_goal_entities
@@ -524,7 +524,7 @@ async def test_record_completion_isolates_slot_failure(
 
     result = _make_action_result(succeeded=True)
     # Must NOT raise despite the goal-eval slot exploding.
-    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1)
+    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1, releases_body=True)
 
     # The other slot (apply_feedback) still fully landed → the lived action memory (provisional
     # factual, synchronously inserted) is present, proving it was not cancelled mid-flight.
@@ -552,7 +552,7 @@ async def test_record_completion_skips_goal_eval_for_not_executed(
 
     result = _make_action_result(succeeded=False, relation_updates=[])
     result.not_executed = True
-    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1)
+    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1, releases_body=True)
 
     # goal-eval never ran.
     assert goal_eval_calls == []
@@ -596,6 +596,7 @@ async def test_goal_judge_runs_concurrently_with_outcome_appraisal(
     monkeypatch.setattr(agent, "_judge_goal_progress", _judge)
 
     await agent._record_completion(
+        releases_body=True,
         result=_make_action_result(succeeded=True), dominant_need=NeedType.SOCIAL, step=1,
     )
 
@@ -637,6 +638,7 @@ async def test_feedback_slot_sees_pre_action_goals_even_if_judge_returns_first(
     monkeypatch.setattr(agent, "_apply_feedback", _apply)
 
     await agent._record_completion(
+        releases_body=True,
         result=_make_action_result(succeeded=True), dominant_need=NeedType.SOCIAL, step=1,
     )
 
@@ -712,7 +714,7 @@ async def test_an_act_with_no_fact_is_not_remembered(container: object, caplog) 
         succeeded=False,
         factual_memory=None,
     )
-    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion())  # noqa: SLF001
+    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion(), releases_body=True)  # noqa: SLF001
 
     assert not agent.memory_system._entries  # noqa: SLF001
     assert "action_fact_missing" in caplog.text
@@ -742,7 +744,7 @@ async def test_not_executed_is_not_persisted_but_reaches_decide(container: objec
         factual_memory="想要做：与父亲相谈，但是结果是：对方不在场",
         not_executed=True,
     )
-    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion())  # noqa: SLF001
+    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion(), releases_body=True)  # noqa: SLF001
 
     # Principles 1 + 3: not a single persistent memory was written.
     assert agent.memory_system._entries == {}
@@ -841,6 +843,7 @@ async def test_foiled_misses_counts_misses_and_clears_once_the_intent_happens(
         result.action = _foiled_action(step)
         result.not_executed = True
         await agent._record_completion(
+            releases_body=True,
             result=result, dominant_need=NeedType.SOCIAL, step=step
         )
     assert agent._foiled_misses_for(_foiled_action(3), 3) == 3
@@ -848,6 +851,7 @@ async def test_foiled_misses_counts_misses_and_clears_once_the_intent_happens(
     landed = _make_action_result(succeeded=False)   # it landed; the talk just broke down
     landed.action = _foiled_action(4)
     await agent._record_completion(
+        releases_body=True,
         result=landed, dominant_need=NeedType.SOCIAL, step=4
     )
     assert agent._foiled_misses_for(_foiled_action(4), 4) == 0
@@ -985,7 +989,7 @@ async def test_apply_feedback_writes_factual_memory_verbatim(container: object) 
         succeeded=True,
         factual_memory="送出了报告",
     )
-    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion())  # noqa: SLF001
+    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion(), releases_body=True)  # noqa: SLF001
 
     factual = [
         m for m in agent.memory_system._entries.values() if "送出了报告" in m.stored_content
@@ -1232,7 +1236,8 @@ async def test_apply_feedback_with_none_emotion_keeps_current_mood(container: ob
     agent = _make_agent(container)
     agent.personality.update_emotion(primary=EmotionType.ANGER, intensity=0.8, valence=-0.6)
 
-    await agent._apply_feedback(  # noqa: SLF001
+    await agent._apply_feedback( # noqa: SLF001
+        releases_body=True,
         result=_make_action_result(succeeded=False),
         dominant_need=NeedType.SOCIAL,
         emotion=None,

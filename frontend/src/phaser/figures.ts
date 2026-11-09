@@ -112,6 +112,16 @@ export function figuresOf(index: StepIndex, cast: Cast, identities: Npcs): Figur
   return [...agents, ...npcs];
 }
 
+/**
+ * Whether a beat plays before its figure walks. A figure's beats play where they happened:
+ * those at the place he left first, then the walk, then those where he arrives. A step holds at
+ * most one walk, so a beat recorded anywhere but where he ends the step happened before he
+ * left. An unplaced beat or figure plays after.
+ */
+export function playsBeforeWalk(beat: Pick<Beat, "location_id">, endsAt: string): boolean {
+  return Boolean(beat.location_id) && Boolean(endsAt) && beat.location_id !== endsAt;
+}
+
 export function beatsOf(index: StepIndex, cast: Cast, viewer: Viewer = null): Beat[] {
   const nameOf = (id: string) => identityOf(id, cast)?.name ?? "某人";
   return index.actions.flatMap((act) => {

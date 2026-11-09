@@ -120,8 +120,8 @@ def activity_status_for(action_type: ActionType) -> AgentActivityStatus:
         return AgentActivityStatus.MOVING
     if action_type == ActionType.COVERT:
         return AgentActivityStatus.COVERT
-    # ERRAND lands here: status says what he is doing right now, just saying a few words; someone
-    # else does the running. Don't give it its own status.
+    # Momentary acts (SEND_MESSAGE, ERRAND) never come here: they don't occupy the body, so they
+    # never show as what it is doing. Don't give them a status of their own.
     return AgentActivityStatus.WORKING
 
 
@@ -463,19 +463,25 @@ class PersonalityLayer:
         result_summary: str,
         succeeded: bool,
         emotion: EmotionState | None,
+        releases_body: bool,
     ) -> None:
         """Apply the post-action state transition.
 
         ``emotion=None`` means the appraisal failed: keep the current mood, don't synthesize one
         (fallback tier 1). The action result is a known fact and is recorded as usual.
+
+        ``releases_body``: False for a momentary act, which never held the body; ending it would
+        reset the body-occupying act in progress (one it was drawn into the same step).
         """
 
-        self.update_action_result(
+        self.record_action_result(
             step=step,
             action=description,
             result=result_summary,
             succeeded=succeeded,
         )
+        if releases_body:
+            self.end_action(succeeded=succeeded)
         if emotion is not None:
             self._state.emotion = _copy_emotion(emotion)
 
@@ -569,7 +575,7 @@ class PersonalityLayer:
         self._state.current_action = current_action
         self._state.action_remaining_steps = max(0, remaining_steps)
 
-    def update_action_result(
+    def record_action_result(
         self,
         *,
         step: int,
@@ -577,12 +583,16 @@ class PersonalityLayer:
         result: str,
         succeeded: bool,
     ) -> None:
-        """Apply the last action's result."""
+        """Record the last action's result; the latest one recorded is kept."""
 
         self._state.step = step
         self._state.last_action = action
         self._state.last_action_result = result
         self._state.last_action_succeeded = succeeded
+
+    def end_action(self, *, succeeded: bool) -> None:
+        """The body-occupying act ended: the body is free again."""
+
         self._state.current_action = None
         self._state.action_remaining_steps = 0
         self._state.action_status = ActionStatus.COMPLETED if succeeded else ActionStatus.FAILED

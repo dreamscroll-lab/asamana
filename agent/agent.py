@@ -1033,6 +1033,7 @@ class Agent:
         result: ActionResult,
         dominant_need: NeedType | None,
         emotion: EmotionState | None,
+        releases_body: bool,
     ) -> None:
         """Write the already-appraised emotion (from _appraise_outcome) and the action's declared
         effects into agent state.
@@ -1060,6 +1061,7 @@ class Agent:
             result_summary=result.outcome,
             succeeded=result.succeeded,
             emotion=emotion,
+            releases_body=releases_body,
         )
         # personality.state.need_intensities is the only source of truth for need intensity.
         new_intensities = self.need_engine.evolve_intensities(
@@ -1138,10 +1140,12 @@ class Agent:
             self.personality.clear_condition()
 
     async def _record_completion(
-        self, *, result: ActionResult, dominant_need: NeedType | None, step: int,
+        self, *, result: ActionResult, dominant_need: NeedType | None, step: int, releases_body: bool,
     ) -> None:
-        """The single feedback sink for every action, reached only via finalize_ongoing_action:
-        appraise → apply → judge goal progress. The runtime persists the result at step end.
+        """The single feedback sink for every action, reached only via finalize_ongoing_action or
+        finalize_momentary_act: appraise → apply → judge goal progress. The runtime persists the
+        result at step end. ``releases_body``: False for a momentary act (see
+        ``Personality.complete_action``); the actor is then told of it in one entry.
 
         Logs exactly one "agent_feedback_recorded" line per feedback, so "decisions == feedbacks"
         is auditable.
@@ -1159,20 +1163,30 @@ class Agent:
         if result.adjudication_failed:
             # Infra failure, not an in-world outcome → null step: skip all writeback, only reset to
             # idle. A genuine in-world failure has adjudication_failed=False and is remembered.
-            self.personality.update_action_result(
+            if not releases_body:
+                self.void_momentary_act(step=step, description=result.action.action_description)
+                return
+            self.personality.record_action_result(
                 step=step,
                 action=result.action.action_description,
                 result="",
                 succeeded=False,
             )
+            self.personality.end_action(succeeded=False)
             if self.actor is not None:
                 self.actor.ended(step=step, fact="", succeeded=False, happened=True)
             return
         if self.actor is not None:
-            self.actor.ended(
-                step=step, fact=(result.factual_memory or "").strip(), succeeded=result.succeeded,
-                happened=not result.not_executed,
-            )
+            fact = (result.factual_memory or "").strip()
+            if releases_body:
+                self.actor.ended(
+                    step=step, fact=fact, succeeded=result.succeeded, happened=not result.not_executed,
+                )
+            else:
+                self.actor.acted(
+                    step=step, description=result.action.action_description, fact=fact,
+                    succeeded=result.succeeded, happened=not result.not_executed,
+                )
         # appraise → apply_feedback and the goal judge run concurrently (the judge only reads).
         # Goals are written back only after the join: apply_feedback's importance prompt reads
         # goals, and an early write-back would make it see pre- or post-action goals unpredictably.
@@ -1181,7 +1195,8 @@ class Agent:
         async def _appraise_and_apply() -> None:
             emotion = await self._appraise_outcome(result, dominant_need)
             await self._apply_feedback(
-                result=result, dominant_need=dominant_need, emotion=emotion
+                result=result, dominant_need=dominant_need, emotion=emotion,
+                releases_body=releases_body,
             )
 
         slots: list[tuple[str, Awaitable[Any]]] = [("apply_feedback", _appraise_and_apply())]
@@ -1578,6 +1593,35 @@ class Agent:
         (e.g. MOVE distance); ``total_steps`` is that whole duration, the start step included,
         for the actor's record of the act.
         """
+        self._land_motivation(plan)
+        self.personality.begin_action(
+            step=plan.step,
+            description=plan.action.action_description,
+            activity_status=activity_status_for(plan.action.action_type),
+            target=plan.action.target.single_acted_on_agent,
+            estimated_steps=estimated_steps if estimated_steps is not None else plan.action.estimated_steps,
+        )
+        if self.actor is not None:
+            self.actor.began(
+                step=plan.step,
+                description=plan.action.action_description,
+                total_steps=total_steps if total_steps is not None else plan.action.estimated_steps,
+            )
+
+    def begin_momentary_act(self, *, plan: AgentStepPlan) -> None:
+        """Begin half of a momentary act (begin → ``finalize_momentary_act``): the decision's
+        motivation lands, the body is left free. It may still be drawn into someone else's act
+        this step, which then begins through ``join_ongoing_action``."""
+        self._land_motivation(plan)
+
+    def void_momentary_act(self, *, step: int, description: str) -> None:
+        """The momentary act started and came to nothing adjudicated (a null step): nothing is
+        written, and the body was never held. One that never started is ``drop_unstarted_intent``'s."""
+        if self.actor is not None:
+            self.actor.acted(step=step, description=description, fact="", succeeded=False, happened=True)
+
+    def _land_motivation(self, plan: AgentStepPlan) -> None:
+        """Where the character decided from, and the needs and goals behind the decision."""
         self.personality.update_location(step=plan.step, location=plan.spatial.location_id)
         # Don't write need_intensities here: active_needs[].intensity is this step's salience
         # score, not the stored intensity, and would hand the survival check values in the wrong unit.
@@ -1592,19 +1636,6 @@ class Agent:
             long_term_goals=plan.need_evaluation.long_term_goals,
             short_term_goal_entities=list(plan.need_evaluation.short_term_goal_entities),
         )
-        self.personality.begin_action(
-            step=plan.step,
-            description=plan.action.action_description,
-            activity_status=activity_status_for(plan.action.action_type),
-            target=plan.action.target.single_acted_on_agent,
-            estimated_steps=estimated_steps if estimated_steps is not None else plan.action.estimated_steps,
-        )
-        if self.actor is not None:
-            self.actor.began(
-                step=plan.step,
-                description=plan.action.action_description,
-                total_steps=total_steps if total_steps is not None else plan.action.estimated_steps,
-            )
 
     async def join_ongoing_action(
         self,
@@ -1729,11 +1760,13 @@ class Agent:
 
     def drop_unstarted_intent(self, action: "AgentAction", step: int) -> None:
         """The action decided this step never started: the engine failed to start it, so nothing
-        was adjudicated and nothing is remembered; the character decides afresh next step. The
-        actor is told the act came to nothing, or they would wait on it."""
+        was adjudicated and nothing is remembered. The actor is told the act came to nothing, or
+        they would wait on it, in one entry: it never began, so it has nothing to end."""
         if self.actor is not None:
-            self.actor.began(step=step, description=action.action_description, total_steps=1)
-            self.actor.ended(step=step, fact="", succeeded=False, happened=False)
+            self.actor.acted(
+                step=step, description=action.action_description, fact="", succeeded=False,
+                happened=False,
+            )
 
     async def accepts_invitation(
         self, plan: AgentStepPlan, *, inviter_id: str, action_type: ActionType, talk_topic: str = "",
@@ -1976,6 +2009,17 @@ class Agent:
             result=result,
             dominant_need=self._resolve_dominant_need_from_state(),
             step=step,
+            releases_body=True,
+        )
+
+    async def finalize_momentary_act(self, *, result: ActionResult, step: int) -> None:
+        """Feedback for a momentary act: the same writeback as ``finalize_ongoing_action``, but the
+        body is left as it is, since the act never held it."""
+        await self._record_completion(
+            result=result,
+            dominant_need=self._resolve_dominant_need_from_state(),
+            step=step,
+            releases_body=False,
         )
 
     async def _judge_goal_progress(

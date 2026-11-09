@@ -298,7 +298,7 @@ async def test_unscheduled_agent_is_still_conscriptable(container) -> None:
         ("background", b, _plan_for(b, None, env, decision_status=DecisionStatus.NOT_SCHEDULED)),
     ]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
 
     # A's TALK was admitted — NOT rejected as 「毫无回应」.
     a_aa = arb["agent-a"]

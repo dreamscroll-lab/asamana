@@ -810,10 +810,9 @@ async def test_an_act_that_fails_to_start_is_told_and_the_actor_is_asked_again(c
     executor.start = _broken  # type: ignore[method-assign]
     await _step_answering(runtime, agents, ActorDecision(action=_work()))
 
-    acts = [e for e in await _thread(container, runtime, world_id) if e["kind"] in ("began", "ended")]
-    assert [(e["kind"], e.get("fact"), e.get("happened")) for e in acts] == [
-        ("began", None, None), ("ended", "", False),
-    ]
+    # It never began, so it is told in one entry, not as a begin and an end.
+    acts = [e for e in await _thread(container, runtime, world_id) if e["kind"] in ("began", "ended", "acted")]
+    assert [(e["kind"], e.get("fact"), e.get("happened")) for e in acts] == [("acted", "", False)]
     # Free again: even at this pace it is asked what next, not left waiting on the lost act.
     runtime.set_actor_pace(ActorPace.WHEN_REACHED)
     _result, turns = await _step_answering(runtime, agents, _IDLE)

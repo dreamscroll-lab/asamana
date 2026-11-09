@@ -18,6 +18,7 @@ from engine.environment import EnvironmentSystem
 from engine.executors.base import ActionExecutionState
 from engine.executors.covert import CovertExecutor
 from engine.executors.movement import MovementExecutor
+from engine.executors.send_message import SendMessageExecutor
 from engine.executors.simple import SimpleExecutor
 from engine.executors.social import SocialExecutor
 from engine.executors.work import WorkExecutor
@@ -186,7 +187,7 @@ async def test_talk_duration_respects_actor_participation(container, performed: 
 async def test_send_message_always_one_step_regardless_of_estimated_steps(container) -> None:
     env = _make_environment()
     action = _make_action(ActionType.SEND_MESSAGE, estimated_steps=10)
-    state = await SimpleExecutor(_directory()).start(
+    state = await SendMessageExecutor(_directory()).start(
         action, step=1, agents={}, environment=env, message_system=None,  # type: ignore
     )
     assert state.estimated_steps == 1
