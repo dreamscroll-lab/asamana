@@ -6,7 +6,7 @@ import { indexStep } from "../../lib/step";
 import type { Npcs } from "../../lib/npcs";
 import type { Cast } from "../../lib/cast";
 import type { Places } from "../../lib/places";
-import { buildFeed } from "./feed";
+import { buildFeed, involves } from "./feed";
 import type {
   ActionSummary, AgentView, LocationScope, MessageSummary, ObservationSummary, StepView,
 } from "../../types";
@@ -119,6 +119,22 @@ describe("buildFeed", () => {
   });
 });
 
+
+describe("involves", () => {
+  const errand = act(5, {
+    action_type: "errand", deed: "errand",
+    target: { acts_on: [{ kind: "npc", id: "npc_runner" }], claims: [], reaches: [] },
+  });
+  const [item] = buildFeed(at(1, [place("loc-hall", { events: [errand] })]));
+
+  it("指派任务关乎被指派的 NPC", () => {
+    expect(involves(item, new Set(["npc_runner"]))).toBe(true);
+  });
+
+  it("与焦点无关的人仍被折叠", () => {
+    expect(involves(item, new Set(["someone_else"]))).toBe(false);
+  });
+});
 
 describe("stepCast public identity", () => {
   const cast: Cast = {

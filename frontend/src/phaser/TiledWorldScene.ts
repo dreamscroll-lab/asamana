@@ -6,9 +6,9 @@ import type { ActorTarget, BroadcastSummary, MapFocus, MapSelect, NpcView, StepV
 import { type Placed, type PlacedEntity, type Scoped, indexStep } from "../lib/step";
 import { type Beat, type Figure, beatsOf, drawsVeil, figuresOf, playsBeforeWalk } from "./figures";
 import { THEME } from "../lib/theme";
-import { ActionType, type ActionTypeValue, Phase, actedOnAgents } from "../lib/contract";
+import { ActionType, type ActionTypeValue, Phase, actedOnAgents, actedOnNpcs } from "../lib/contract";
 import { ACTION_IDENTITY } from "../lib/actionIdentity";
-import { type BodyHost, BodyRig } from "./body";
+import { type BodyHost, BodyRig, DEAD_ALPHA } from "./body";
 import { type EntityHost, EntityLayer } from "./entities";
 import { WorldMap } from "./worldMap";
 import {
@@ -69,7 +69,7 @@ function tweenTargets(targets: unknown): object[] {
 // Level-of-detail: below this camera zoom, hide per-token labels/pip/vitality bar
 // (unless the token is focused) so a zoomed-out map reads as clean color dots.
 const DETAIL_ZOOM = 0.85;
-// Opacity of a figure the viewer did NOT single out; applyFocus explains the two values.
+// Opacity of a figure the viewer did NOT single out; solidity() explains the two values.
 const BG_ALPHA = 0.3;
 const BG_ALPHA_MARKED = 0.45;
 // How far tokens may be enlarged as the camera pulls back — this buys far-view legibility.
@@ -382,11 +382,13 @@ export class TiledWorldScene
     for (const [id, tok] of bodies) {
       // A figure on ground the map's art hides fades — the only occlusion handling. The test is
       // the backend's `standable` grid, the same one A* tolls (HIDDEN_STEP_TOLL) and findStanding
-      // refuses: one truth, no second opinion about the art. The fade and the focus dim (baseAlpha)
+      // refuses: one truth, no second opinion about the art. The fade and solidity (focus, death)
       // both mean "less prominent", so the dimmer one wins; don't multiply them: a background
       // figure under a canopy (0.3 × 0.42) vanishes.
+      const foc = focusOn ? this.isFocused(id) : false;
+      const solid = this.solidity(tok, focusOn, foc);
       const hidden = this.map.hiddenGround(tok.container.x, tok.container.y);
-      const want = hidden ? Math.min(tok.baseAlpha, HIDDEN_ALPHA) : tok.baseAlpha;
+      const want = hidden ? Math.min(solid, HIDDEN_ALPHA) : solid;
       tok.container
         .setDepth(sortDepth(tok.container.y, geometry))
         .setAlpha(tok.container.alpha + (want * tok.presenceAlpha - tok.container.alpha) * fadeStep)
@@ -423,7 +425,6 @@ export class TiledWorldScene
           this.body.applyPose(tok, "idle");
         }
       }
-      const foc = focusOn ? this.isFocused(id) : false;
       const detail = detailZoom || foc;
       // The nameplate shows as one unit at detail zoom or when focused. A focus does not hide
       // other plates: at background alpha the name is the last way to tell who the crowd is.
@@ -448,6 +449,20 @@ export class TiledWorldScene
     this.announcer.pinBanner();
     this.camera.fly(this.focus, this.focusActive(), dt * this.speedScale);
     this.ambient.follow();
+  }
+
+  /**
+   * How solid a figure is before ground occlusion: death and the focus dim, the dimmer winning.
+   * Derived every frame, never stored: the body report and the focus are written at different
+   * moments of a step, and a stored value lets the later writer erase the other's (a figure
+   * whose beat lands after applyFocus would come back to full opacity outside the focus).
+   */
+  private solidity(tok: AgentToken, focusOn: boolean, focused: boolean): number {
+    const life = tok.dead ? DEAD_ALPHA : 1;
+    if (!focusOn || focused) return life;
+    // A figure under a standing condition keeps a higher floor: the mark is a child of this
+    // container, so the dim multiplies into it and at BG_ALPHA it would be a smudge.
+    return Math.min(life, tok.condText ? BG_ALPHA_MARKED : BG_ALPHA);
   }
 
   // --- FxHost surface ---------------------------------------------------------
@@ -728,8 +743,8 @@ export class TiledWorldScene
     return false;
   }
 
-  // Emphasis/dim pass: focused subjects get full opacity and the focus ring, the rest are
-  // dimmed. A location focus also dims everything outside it.
+  // Emphasis pass: focused subjects get the focus ring and full chips, and a location focus
+  // darkens the map outside it. The dim itself is not set here; update() derives it (solidity).
   private applyFocus(): void {
     const active = this.focusActive();
     // A panel belonging to somebody the viewer just stopped watching stands down.
@@ -747,7 +762,6 @@ export class TiledWorldScene
     }
     for (const [id, tok] of this.tokens) {
       if (!active) {
-        tok.baseAlpha = tok.dead ? 0.5 : 1;
         tok.focusRing.setVisible(false);
         this.hud.renderChip(tok); // focus cleared → every chip back to compact
         this.pockets.sync(id, tok); // …and every condition back to its bare mark
@@ -755,9 +769,6 @@ export class TiledWorldScene
       }
       const on = this.isFocused(id);
       tok.focusRing.setVisible(on);
-      // A figure under a standing condition keeps a higher floor: the mark is a child of this
-      // container, so the dim multiplies into it and at BG_ALPHA it would be a smudge.
-      tok.baseAlpha = on ? 1 : tok.condText ? BG_ALPHA_MARKED : BG_ALPHA;
       this.hud.renderChip(tok); // focused subject → full text, others → compact (no-op if no chip)
       this.pockets.sync(id, tok); // words for the subject, the bare mark for everyone else
     }
@@ -870,7 +881,7 @@ export class TiledWorldScene
     container.on("pointerout", () => this.hoverTip.hide());
     tok = {
       container, sprite, skinId, posed: false, headY: this.body.measureHeadY(skinId),
-      plate, focusRing, identityRings, label, color, baseAlpha: 1, presenceAlpha: 1, floor: 0, vitTrack, vitFill,
+      plate, focusRing, identityRings, label, color, presenceAlpha: 1, floor: 0, vitTrack, vitFill,
       condPip: pip, pouch, condText: "",
       locationId: state.location_id, dead: false, hurt: false, vit: 1, phase: Math.random() * Math.PI * 2,
       dir: INITIAL_DIR,
@@ -1236,8 +1247,11 @@ export class TiledWorldScene
     };
     const acts = [...group.actions]
       .filter((a) => a.action_type !== ActionType.move)
-      // Under a focus only the subjects' actions play; everyone still moves.
-      .filter((a) => !this.focusActive() || this.isFocused(a.agent_id))
+      // Under a focus only what the subjects do, or what is done to them, plays; everyone still
+      // moves. "Done to" matters for an NPC: it has no deeds of its own, so its errand being
+      // handed over is the only beat about it.
+      .filter((a) => !this.focusActive() || this.isFocused(a.agent_id)
+        || [...actedOnAgents(a.target), ...actedOnNpcs(a.target)].some((id) => this.isFocused(id)))
       // Backend emission ordinal = causal order; a joint act's beats share it and keep their
       // participant order (stable sort).
       .sort((a, b) => a.seq - b.seq);
