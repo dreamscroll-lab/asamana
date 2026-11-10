@@ -104,6 +104,26 @@ async def test_an_exit_is_for_good(mock_build_container, test_config, catalog) -
         await application.release_actor(world_id)
 
 
+def _announced_epochs(queue: asyncio.Queue) -> list[str]:
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    return [e["epoch"] for e in events if e and e.get("type") == "epoch"]
+
+
+@pytest.mark.asyncio
+async def test_an_exit_begins_a_new_epoch(mock_build_container, test_config, catalog) -> None:
+    """Every payload clients hold was filtered to the character; none of it stands after."""
+    application, world_id, character_id = await _built(mock_build_container, test_config, catalog)
+    await application.confirm_world(world_id, character_id=character_id)
+    before = application.epoch(world_id)
+    queue = mock_build_container.event_bus.subscribe(world_id)
+
+    await application.release_actor(world_id)
+
+    assert _announced_epochs(queue) == [application.epoch(world_id)] != [before]
+
+
 @pytest.mark.asyncio
 async def test_an_exit_the_catalog_refuses_leaves_the_actor_performing(
     mock_build_container, test_config, catalog, monkeypatch,
@@ -116,8 +136,10 @@ async def test_an_exit_the_catalog_refuses_leaves_the_actor_performing(
         raise OSError("The world catalog could not be refreshed for set_actor_casting")
 
     monkeypatch.setattr(catalog, "set_actor_casting", refuse)
+    before = application.epoch(world_id)
     with pytest.raises(OSError):
         await application.release_actor(world_id)
+    assert application.epoch(world_id) == before
 
     assert application.get_session(world_id) is performing
     assert performing.world.agents[character_id].actor is not None

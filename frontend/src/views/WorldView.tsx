@@ -38,19 +38,23 @@ const LiveWorldMap = lazy(() => import("../components/LiveWorldMap"));
  * without a key it would all survive the switch: world A's step would render onto world B's
  * map, and the step cache, keyed by step number, could serve world A's step 3 as world B's.
  *
- * Keyed rather than reset on an `id` effect: every `useState` added later would have to join
- * a reset list, and a remount cannot forget.
+ * Keyed rather than cleared on an `id` effect: every `useState` added later would have to join
+ * a list of things to clear, and a remount cannot forget.
  */
 export default function WorldView() {
   const { id = "" } = useParams();
   return <WorldEntry key={id} id={id} />;
 }
 
+/**
+ * Reads the world, then mounts its observation. `onReload` reads it again and remounts, so the
+ * observation holds nothing from an epoch that has ended.
+ */
 function WorldEntry({ id }: { id: string }) {
   const navigate = useNavigate();
   const [meta, setMeta] = useState<WorldMeta | null>(null);
   const [error, setError] = useState("");
-  const [resets, setResets] = useState(0);
+  const [loads, setLoads] = useState(0);
   useEffect(() => {
     let current = true;
     api.getWorld(id).then((world) => {
@@ -59,12 +63,12 @@ function WorldEntry({ id }: { id: string }) {
       else setMeta(world);
     }).catch((failure) => { if (current) setError(String(failure)); });
     return () => { current = false; };
-  }, [id, navigate, resets]);
+  }, [id, navigate, loads]);
   if (!meta?.confirmed) return <p className="p-6 text-sm text-slate-500">{error || "正在加载世界…"}</p>;
-  return <WorldObservation key={resets} id={id} initialMeta={meta} onReset={() => { setMeta(null); setResets((n) => n + 1); }} />;
+  return <WorldObservation key={loads} id={id} initialMeta={meta} onReload={() => { setMeta(null); setLoads((n) => n + 1); }} />;
 }
 
-function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMeta: WorldMeta; onReset: () => void }) {
+function WorldObservation({ id, initialMeta, onReload }: { id: string; initialMeta: WorldMeta; onReload: () => void }) {
   const navigate = useNavigate();
   const { cast } = useCast(id);
   const { npcs, status: npcStatus } = useNpcs(id);
@@ -180,6 +184,12 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
   useEffect(() => {
     const onFrame = (frame: WsFrame) => {
       if (frame.type === "status") setRunState(frame.data.status);
+      // A new epoch, begun from anywhere (this page, another tab, any API client), reaches every
+      // page here, and on reconnect if it began while the socket was down: its steps, caches and
+      // feed no longer stand.
+      else if (frame.type === "epoch") {
+        if (frame.data.epoch !== initialMeta.epoch) onReload();
+      }
       else if (frame.type === "actor_turn") setTurn(frame.data);
       else if (frame.type === "actor_entry") setThread((t) => mergeEntries(t, [frame.data]));
       else onLiveStep(frame.data);
@@ -239,7 +249,7 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
     await control(async () => {
       await api.exitActor(id);
       await refreshWorlds();
-      onReset();
+      // No remount here: the exit begins a new epoch, whose announcement remounts this page.
     });
   }
 
@@ -420,12 +430,9 @@ function WorldObservation({ id, initialMeta, onReset }: { id: string; initialMet
                 className={BTN}
                 disabled={isBusy || !modelKeys}
                 title={modelKeys ? undefined : NO_MODEL_KEYS_HINT}
-                onClick={() =>
-                  control(async () => {
-                    await api.reset(id);
-                    onReset();
-                  })
-                }
+                // No remount here: the reset begins a new epoch, whose announcement remounts this
+                // page as it does every other one watching the world.
+                onClick={() => control(() => api.reset(id))}
               >
                 ↺ 重置
               </button>

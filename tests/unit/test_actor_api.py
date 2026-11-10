@@ -388,6 +388,7 @@ async def test_actor_turn_is_delivered_and_restored_only_through_websocket(mock_
         with client.websocket_connect(f"/ws/{world_id}") as ws:
             assert ws.receive_json()["type"] == "status"
             assert ws.receive_json() == {"type": "actor_turn", "data": None}
+            assert ws.receive_json()["type"] == "epoch"
             assert ws.receive_json()["type"] == "latest_step"
             assert client.post(f"{base}/run", json={"steps": 1}).status_code == 200
             while True:
@@ -420,6 +421,7 @@ async def test_turns_and_entries_reach_the_websocket(mock_build_container, test_
         with client.websocket_connect(f"/ws/{world_id}") as ws:
             assert ws.receive_json()["type"] == "status"
             assert ws.receive_json() == {"type": "actor_turn", "data": None}
+            assert ws.receive_json()["type"] == "epoch"
             assert ws.receive_json()["type"] == "latest_step"
             mock_build_container.event_bus.publish({"type": "actor_turn", "world_id": world_id, "turn": turn})
             mock_build_container.event_bus.publish({"type": "actor_turn", "world_id": world_id, "turn": None})

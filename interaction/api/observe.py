@@ -9,11 +9,13 @@ steps, profiles, graphs and the feed answer as that character perceived the worl
 (``interaction.actor_view``); once the actor exits, they answer in full again.
 
 The WebSocket pushes off the in-process event bus (subscribe, not poll): on
-connect it sends the current run state, the turn waiting for the actor (if one is) and the latest
-persisted step (a ``latest_step`` frame), then forwards each live ``step``, ``status``,
-``actor_turn`` and ``actor_entry`` event for its world. An ``actor_turn`` frame carries the whole
-turn when one opens and null when it closes; an ``actor_entry`` frame one new entry of the actor's
-thread, whose history a client reads from ``GET /actor/thread``.
+connect it sends the current run state, the turn waiting for the actor (if one is), the world's
+epoch and the latest persisted step (a ``latest_step`` frame), then forwards each live ``step``,
+``status``, ``epoch``, ``actor_turn`` and ``actor_entry`` event for its world. An ``actor_turn``
+frame carries the whole turn when one opens and null when it closes; an ``actor_entry`` frame one
+new entry of the actor's thread, whose history a client reads from ``GET /actor/thread``. An
+``epoch`` other than the one a client holds means what it holds no longer stands (see
+``NarrativeApplication.epoch``).
 """
 
 from __future__ import annotations
@@ -184,6 +186,11 @@ def build_observe_router(services: ApiServices) -> Any:
         await websocket.send_json(
             {"type": "actor_turn", "data": to_wire_json(turn) if turn is not None else None}
         )
+        # Before any step: a client holding state from an epoch that ended while it was
+        # disconnected learns here that it no longer stands.
+        await websocket.send_json(
+            {"type": "epoch", "data": {"world_id": world_id, "epoch": application.epoch(world_id)}}
+        )
         steps = await manager.list_steps(world_id)
         # Skip the step the initial frame already covered (subscribing first causes this overlap).
         sent_step = -1
@@ -196,6 +203,7 @@ def build_observe_router(services: ApiServices) -> Any:
                 pass
 
         async def _pump() -> None:
+            nonlocal sent_step
             # Guard the whole loop: a payload value to_wire_json can't encode (a set, or any other
             # non-JSON type in a dict[str, Any] field) would kill this unawaited task silently,
             # leaving the socket open and "connected" while the queue fills.
@@ -216,6 +224,14 @@ def build_observe_router(services: ApiServices) -> Any:
                         )
                     elif etype == "actor_entry":
                         await websocket.send_json({"type": "actor_entry", "data": event.get("entry")})
+                    elif etype == "epoch":
+                        # The step numbers sent so far may count a history a reset discarded: the
+                        # next one sent may be step 1 again.
+                        sent_step = -1
+                        await websocket.send_json(
+                            {"type": "epoch",
+                             "data": {"world_id": world_id, "epoch": event.get("epoch")}}
+                        )
                     elif etype == "status":
                         await websocket.send_json(
                             {"type": "status",

@@ -65,6 +65,29 @@ class RuntimeSession:
     task: "asyncio.Task[None] | None" = field(default=None)
 
 
+@dataclass
+class WorldLifecycle:
+    """What this process keeps of one world across its sessions.
+
+    Only state that outlives every session and needs no persisting belongs here: sessions come
+    and go (restored on demand, replaced by a reset or a recast, gone after a failed reset), and
+    what must stay put through that lives here. State that must survive a restart goes in the
+    catalog; state that lives and dies with a session goes in ``RuntimeSession``.
+
+    Never removed, not even when the world is deleted: a new entry would bring a new lock, and
+    waiters on the old and new locks would proceed together. Cost: one small entry per world ever
+    touched.
+    """
+
+    # Serializes restore, reset, recast and delete: each replaces the session across several
+    # awaits, and an overwritten session may still own an unreachable run loop.
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # The world's epoch (see ``NarrativeApplication.epoch``). In memory only: clients compare
+    # epochs for equality, so a restart that starts every world on a new one costs each client a
+    # reload.
+    epoch: str = field(default_factory=lambda: uuid4().hex)
+
+
 class NarrativeApplication:
     """Own world build and runtime orchestration outside the interaction layer."""
 
@@ -83,11 +106,7 @@ class NarrativeApplication:
         self._catalog = catalog
         # Held only so no in-flight flush is garbage-collected mid-write (see _flush_trace_async).
         self._trace_flush_tasks: set["asyncio.Task[None]"] = set()
-        # One lifecycle lock per world: restore, reset and delete replace _sessions[world_id]
-        # across several awaits, and an overwritten session may still own an unreachable run loop.
-        # Don't remove the lock in delete: setdefault would create a new one, and waiters on the
-        # old and new locks would proceed together. Cost: one small lock per world ever touched.
-        self._lifecycle_locks: dict[str, "asyncio.Lock"] = {}
+        self._lifecycles: dict[str, WorldLifecycle] = {}
         # Set by shutdown: no run may start once the process is going down.
         self._shutting_down = False
 
@@ -178,7 +197,7 @@ class NarrativeApplication:
         Confirming a confirmed world again just returns it. A materialization that fails leaves
         the world unconfirmed, and the next attempt clears what it wrote.
         """
-        async with self._lifecycle_lock(world_id):
+        async with self._lifecycle(world_id).lock:
             entry = self._catalog.get(world_id) if self._catalog is not None else None
             if self._catalog is not None and self._catalog.is_confirmed(world_id):
                 if character_id is not None:
@@ -230,9 +249,12 @@ class NarrativeApplication:
         await container.vector_store.delete_world(world_id)
         await container.message_provider.clear(world_id)
 
-    def _lifecycle_lock(self, world_id: str) -> "asyncio.Lock":
-        """This world's lifecycle lock (see ``_lifecycle_locks``)."""
-        return self._lifecycle_locks.setdefault(world_id, asyncio.Lock())
+    def _lifecycle(self, world_id: str) -> WorldLifecycle:
+        """This world's lifecycle, made on first touch (see ``WorldLifecycle``)."""
+        lifecycle = self._lifecycles.get(world_id)
+        if lifecycle is None:
+            lifecycle = self._lifecycles[world_id] = WorldLifecycle()
+        return lifecycle
 
     def _refuse_while_mutating(self, world_id: str) -> None:
         """Refuse to start a run while this world's lifecycle is being changed.
@@ -242,8 +264,9 @@ class NarrativeApplication:
         await, so reading ``locked()`` closes the window in which a run would start on a session
         being replaced and keep advancing a runtime nobody can reach.
         """
-        lock = self._lifecycle_locks.get(world_id)
-        if lock is not None and lock.locked():
+        # Read without making one: a world no lifecycle operation has touched isn't mutating.
+        lifecycle = self._lifecycles.get(world_id)
+        if lifecycle is not None and lifecycle.lock.locked():
             raise ValueError(
                 f"World {world_id!r} is being restored, reset or deleted — cannot start a run."
             )
@@ -264,7 +287,7 @@ class NarrativeApplication:
         two run loops on one world. An already restored session is reused.
         """
 
-        async with self._lifecycle_lock(world_id):
+        async with self._lifecycle(world_id).lock:
             existing = self._sessions.get(world_id)
             if existing is not None:
                 return existing.world
@@ -313,12 +336,12 @@ class NarrativeApplication:
         Drops everything after step 0, then rebuilds through the canonical ``restore`` path,
         which resumes from step 0's snapshot: agent states and relations come back as built.
         Memory keeps its backstory seeds and traces keep the build segment: only what the *run*
-        produced is purged.
+        produced is purged. The reset begins a new epoch.
 
         Runs under the lifecycle lock, re-checking inside that no loop is running: the
         rollback spans many awaits, and a loop started meanwhile would be orphaned.
         """
-        async with self._lifecycle_lock(world_id):
+        async with self._lifecycle(world_id).lock:
             return await self._reset_session_locked(world_id)
 
     async def _reset_session_locked(self, world_id: str) -> World:
@@ -328,36 +351,61 @@ class NarrativeApplication:
 
         initializer = WorldInitializer(self._container, max_npcs=self._config.engine.max_npcs)
 
-        # Out before the stores are touched: a reset that fails halfway must not leave the step-N
-        # session in place, running on against stores already rewound. With none, the next access
-        # restores from what storage holds. Closing also stops in-flight event generation,
-        # written for the step-N world.
-        if existing is not None:
-            del self._sessions[world_id]
-            await existing.runtime.aclose()
+        try:
+            # Out before the stores are touched: a reset that fails halfway must not leave the step-N
+            # session in place, running on against stores already rewound. With none, the next access
+            # restores from what storage holds. Closing also stops in-flight event generation,
+            # written for the step-N world.
+            if existing is not None:
+                del self._sessions[world_id]
+                await existing.runtime.aclose()
 
-        # Drop in-flight messages and post-step-0 snapshots so restore resumes from step 0 and
-        # no stale message is delivered after the reset.
-        await self._container.message_provider.clear(world_id)
-        await self._container.snapshot.delete_steps_after(world_id, 0)
+            # Drop in-flight messages and post-step-0 snapshots so restore resumes from step 0 and
+            # no stale message is delivered after the reset.
+            await self._container.message_provider.clear(world_id)
+            await self._container.snapshot.delete_steps_after(world_id, 0)
 
-        # Traces rewind with the clock (see TraceSink.delete_run_traces).
-        self._container.trace_sink.delete_run_traces(world_id)
+            # Traces rewind with the clock (see TraceSink.delete_run_traces).
+            self._container.trace_sink.delete_run_traces(world_id)
 
-        # restore() resumes at step 0 and purges every memory written after it. The casting
-        # stands: it belongs to the world's setup, not to its run.
-        casting = self._casting(world_id)
-        world = await initializer.restore(world_id, casting=casting)
+            # restore() resumes at step 0 and purges every memory written after it. The casting
+            # stands: it belongs to the world's setup, not to its run.
+            casting = self._casting(world_id)
+            world = await initializer.restore(world_id, casting=casting)
 
-        self._sessions[world_id] = RuntimeSession(
-            world=world,
-            runtime=self._build_runtime(world, casting=casting, start_step=0),
+            self._sessions[world_id] = RuntimeSession(
+                world=world,
+                runtime=self._build_runtime(world, casting=casting, start_step=0),
+            )
+            logger.info(
+                "world_session_reset",
+                extra={"world_id": world_id, "world_name": world.setup.lore.world_name},
+            )
+            return world
+        finally:
+            # However the reset ends: once the stores are touched, what clients hold is gone,
+            # and they reload whatever storage now holds.
+            self._begin_epoch(world_id)
+
+    def epoch(self, world_id: str) -> str:
+        """The world's epoch: an opaque token naming the state clients may trust. A client whose
+        epoch differs from the current one holds state that no longer stands and reloads it whole.
+
+        A new epoch begins only when what clients hold is invalidated as a whole: a reset (the
+        steps belong to a discarded history) or the actor's exit (every payload was filtered to
+        the character). Changes a client can apply as they come (a new step, the run state, a
+        rename, the actor's turn) have their own events and never begin one.
+        """
+        return self._lifecycle(world_id).epoch
+
+    def _begin_epoch(self, world_id: str) -> None:
+        """Begin a new epoch, after the change it marks has landed: a client that reads the world
+        while the change is still under way gets the old one, and reloads on this announcement."""
+        lifecycle = self._lifecycle(world_id)
+        lifecycle.epoch = uuid4().hex
+        self._container.event_bus.publish(
+            {"type": "epoch", "world_id": world_id, "epoch": lifecycle.epoch}
         )
-        logger.info(
-            "world_session_reset",
-            extra={"world_id": world_id, "world_name": world.setup.lore.world_name},
-        )
-        return world
 
     # ------------------------------------------------------------------
     # Actor casting. Chosen once while the world is still being set up; afterwards the only
@@ -371,7 +419,7 @@ class NarrativeApplication:
         """Show the user the whole cast, as the director. One way: whoever has read every
         character's secrets can't then live in the world as one of them, so the world takes no
         actor afterwards."""
-        async with self._lifecycle_lock(world_id):
+        async with self._lifecycle(world_id).lock:
             if self._catalog is None or self._catalog.get(world_id) is None:
                 raise ValueError(f"World {world_id!r} is not cataloged.")
             if self.performing_character(world_id) is not None:
@@ -384,17 +432,20 @@ class NarrativeApplication:
         It stays main tier, and nobody can be cast in this world again. Stop the run first: a
         step suspended on the actor's turn is discarded by the stop (see ``stop_run``).
         """
-        async with self._lifecycle_lock(world_id):
+        async with self._lifecycle(world_id).lock:
             casting = self._casting(world_id)
             if casting is None or casting.exited:
                 raise ValueError(f"No actor is performing a character in world {world_id!r}.")
-            return await self._recast_locked(
+            world = await self._recast_locked(
                 world_id, ActorCasting(character_id=casting.character_id, exited=True),
             )
+            # After the recast only: it lands whole or changes nothing.
+            self._begin_epoch(world_id)
+            return world
 
     async def record_director_read(self, world_id: str) -> None:
         """Keep a private read and actor casting mutually exclusive."""
-        async with self._lifecycle_lock(world_id):
+        async with self._lifecycle(world_id).lock:
             if self.performing_character(world_id) is not None:
                 raise ValueError(f"An actor performs in world {world_id!r}; private director reads are closed.")
             # Uncataloged worlds cannot cast an actor, so they need no casting gate.
@@ -416,7 +467,7 @@ class NarrativeApplication:
         when the setup is closed, and ``SetupRejected`` when ``revise`` refuses the revision;
         either way nothing changes.
         """
-        async with self._lifecycle_lock(world_id):
+        async with self._lifecycle(world_id).lock:
             if self._catalog is None or self._catalog.get(world_id) is None:
                 raise ValueError(f"World {world_id!r} is not cataloged.")
             if self._catalog.is_confirmed(world_id):
@@ -483,7 +534,7 @@ class NarrativeApplication:
 
     async def set_actor_pace(self, world_id: str, pace: ActorPace) -> None:
         """Set when the performed character's actor is asked to decide; kept with the casting."""
-        async with self._lifecycle_lock(world_id):
+        async with self._lifecycle(world_id).lock:
             casting = self._casting(world_id)
             if casting is None or casting.exited:
                 raise ValueError(f"No actor is performing a character in world {world_id!r}.")
@@ -893,7 +944,7 @@ class NarrativeApplication:
         concurrent ``/run`` would otherwise write to stores being purged.
         """
 
-        async with self._lifecycle_lock(world_id):
+        async with self._lifecycle(world_id).lock:
             await self._delete_world_locked(world_id)
 
     async def _delete_world_locked(self, world_id: str) -> None:

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 from config.content import theme_presets
@@ -23,7 +23,6 @@ from world.stored_config import StoredWorldConfig
 from worlds.tiled import TiledWorldConfig, list_templates
 
 from interaction.api.app import ApiServices
-from interaction.api.serialization import to_wire_json
 
 logger = get_logger(__name__)
 
@@ -158,7 +157,7 @@ def build_lifecycle_router(services: ApiServices) -> Any:
         worlds = await manager.list_worlds()
         result = []
         for meta in worlds:
-            result.append(_with_run_state(meta))
+            result.append(services.world_payload(meta))
         return result
 
     @router.get("/{world_id}")
@@ -166,7 +165,7 @@ def build_lifecycle_router(services: ApiServices) -> Any:
         meta = await manager.get_world(world_id)
         if meta is None:
             raise HTTPException(status_code=404, detail=f"World not found: {world_id}")
-        return _with_run_state(meta)
+        return services.world_payload(meta)
 
     @router.patch("/{world_id}")
     async def rename_world(world_id: str, payload: dict = Body(...)) -> dict[str, Any]:
@@ -184,7 +183,7 @@ def build_lifecycle_router(services: ApiServices) -> Any:
             meta = await manager.rename_world(world_id, name)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return _with_run_state(meta)
+        return services.world_payload(meta)
 
     @router.post("/{world_id}/review")
     async def open_review(world_id: str) -> dict[str, Any]:
@@ -199,7 +198,7 @@ def build_lifecycle_router(services: ApiServices) -> Any:
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         meta = await manager.get_world(world_id)
-        return _with_run_state(meta)
+        return services.world_payload(meta)
 
     @router.post("/{world_id}/confirm")
     async def confirm_world(world_id: str, payload: dict = Body(default={})) -> dict[str, Any]:
@@ -220,7 +219,7 @@ def build_lifecycle_router(services: ApiServices) -> Any:
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         meta = await manager.get_world(world_id)
-        return _with_run_state(meta)
+        return services.world_payload(meta)
 
     @router.delete("/{world_id}")
     async def delete_world(world_id: str) -> dict[str, Any]:
@@ -292,15 +291,6 @@ def build_lifecycle_router(services: ApiServices) -> Any:
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _status_payload(world_id)
-
-    def _with_run_state(meta: Any) -> dict[str, Any]:
-        """A world's catalog entry plus its run state — what every per-world route answers with.
-
-        While an actor performs, who the main characters are is not theirs to know (see
-        ``interaction.actor_view``)."""
-        if application.performing_character(meta.world_id) is not None:
-            meta = replace(meta, main_agent_names=[])
-        return {**to_wire_json(meta), "run_state": services.run_state(meta.world_id)}
 
     def _status_payload(world_id: str) -> dict[str, Any]:
         return {"world_id": world_id, "run_state": services.run_state(world_id)}

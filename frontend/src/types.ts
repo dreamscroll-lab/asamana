@@ -41,6 +41,9 @@ export interface WorldMeta {
   actor_pace: ActorPace;
   // The whole cast has been shown to the user as the director; the world takes no actor after.
   director_reviewed: boolean;
+  // The state a client may trust, as an opaque token compared only for equality. A new one begins
+  // when what a client holds no longer stands as a whole (a reset, the actor's exit).
+  epoch: string;
 }
 
 /** What this backend deployment offers, independent of any world. */
@@ -743,6 +746,9 @@ export type MapSelect =
 // WebSocket envelope: the backend tags each frame with a type.
 export type WsFrame =
   | { type: "status"; data: { world_id: string; status: RunState } }
+  // The world's epoch: sent on connect, then whenever a new one begins. One other than the epoch
+  // a client holds means what it holds no longer stands.
+  | { type: "epoch"; data: { world_id: string; epoch: string } }
   // The latest persisted step, sent once on connect; then `step` frames as they complete.
   | { type: "latest_step"; data: StepView }
   | { type: "step"; data: StepView }
