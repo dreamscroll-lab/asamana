@@ -1032,7 +1032,7 @@ class DecisionEngine:
 
 【输入】
 - 下面先给出这个角色是谁、他的关系、近来做过的事、记得的相关的事和这一步传到他这里的动静、广播与捎话，再给出他此刻的处境和可指认的名单。都以角色的「我」来写，名单各带 #序号。
-- 若有【已定下的】，那是这个意图里已经定死的行动类型、对象和参数。
+- 若有【已定下的】，那是这个意图里已经定死的行动类型、对象和参数；这时意图以这件事开头，后面接着的是他对这件事的交代。
 - 最后是他此刻的意图。意图里的「我」、「他」「她」或角色名，都指这个角色。
 - 这个世界里时间每推进一步是{step_duration}。
 
@@ -1127,21 +1127,30 @@ class DecisionEngine:
             lines.extend([situation_header, ""])
         lines.append("【名单】")
         _render_candidate_lists(personality, packet, lines, GivenFacts())
+        words = text.strip()
         if fixed is not None:
             base, payload = fixed
             shown = {k: v for k, v in payload.items() if k not in _INTENT_FILLED_FIELDS}
             lines.extend([
                 "",
                 "【已定下的】",
-                f"这件事：{base.action_description}",
                 f"已定下的栏（序号沿用上面的名单）：{json.dumps(shown, ensure_ascii=False)}",
             ])
             if base.action_type is ActionType.TALK:
                 lines.append("person_indices 的第一个已定下；旁听的人可以按意图再添。")
+            # The fixed thing heads the intent instead of standing beside it, so a subject or
+            # object the words leave out falls on it: read alone, "去某处看看" under a fixed errand
+            # reads as the character going himself, a conflict. An errand with a fixed destination
+            # already carries a colon ("…指派任务：前往某处看看").
+            head = base.action_description
+            if words:
+                words = f"{head}{'，' if '：' in head else '：'}{words}"
+            else:
+                words = head
         lines.extend([
             "",
             "【意图】",
-            text.strip(),
+            words,
             "",
             "依上面说定的规则与 JSON 格式解析，只输出 JSON。",
         ])

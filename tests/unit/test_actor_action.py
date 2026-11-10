@@ -318,7 +318,8 @@ def test_one_system_prompt_serves_free_words_and_a_fixed_operation(engine) -> No
 
     assert free_system == fixed_system
     fixed = fixed_user[fixed_user.index("【已定下的】"):fixed_user.index("【意图】")]
-    assert "我前往玄武门" in fixed and '"destination_index": 1' in fixed
+    assert '"destination_index": 1' in fixed and "我前往玄武门" not in fixed
+    assert "【意图】\n我前往玄武门：悄悄地去\n" in fixed_user
 
 
 def test_the_briefing_lists_are_the_binding_lists() -> None:

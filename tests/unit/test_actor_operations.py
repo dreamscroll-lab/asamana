@@ -371,6 +371,34 @@ def test_operation_prompt_preserves_explicit_false_announce(container) -> None:
     assert '"errand_announce": false' in section
 
 
+def _intent_section(engine: DecisionEngine, intent, packet) -> str:
+    from agent.decision import _fixed_intent_payload
+
+    base = build_actor_operation(intent, packet)
+    user = engine._intent_user_prompt(  # noqa: SLF001
+        intent.description, _make_personality(), packet, recent=(), recalled=(),
+        fixed=(base, _fixed_intent_payload(packet, intent, base)),
+    )
+    return user[user.index("【意图】"):]
+
+
+@pytest.mark.parametrize("destination,expected", [
+    (None, "我打算向信使（男）指派任务：去那边看看"),
+    ("xuanwu_gate", "指派任务：前往玄武门看看，去那边看看"),
+])
+def test_the_fixed_thing_heads_the_intent_words(container, destination, expected) -> None:
+    """The words are read as said about the fixed thing, so an omitted subject falls on it."""
+    packet = _packet()
+    packet.spatial.visible_npcs["runner"] = PerceivedNpc(NpcIdentity("信使", "男"))
+    params = {"destination_id": destination} if destination else {}
+    intent = _intent("errand", Ref.npc("runner"), description="去那边看看", **params)
+    engine = DecisionEngine(container.llm_router)
+
+    assert expected in _intent_section(engine, intent, packet)
+    section, _fixed = _fixed_part(engine, intent, packet)
+    assert "指派任务" not in section
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("constrained", [False, True])
 @pytest.mark.parametrize("response", [None, "not JSON", '{"decision": "unclear"}', '{"decision": "act", "selected_index": -1}'])
