@@ -177,7 +177,7 @@ async def test_words_read_as_an_action_name_targets_by_id(container, engine) -> 
     (ActionType.WORK, {}, {"physical_person_index": 1, "message_content": "不应传出的话"}),
     (ActionType.REST, {}, {"destination_index": 1}),
     (ActionType.COVERT, {}, {"person_indices": [1], "physical_entity_index": 1}),
-    (ActionType.ERRAND, {"errand_npc_index": 1, "errand_destination_index": 1}, {"person_indices": [1]}),
+    (ActionType.ERRAND, {"errand_npc_index": 3, "errand_destination_index": 1}, {"person_indices": [1]}),
 ])
 async def test_free_text_and_autonomous_decisions_bind_only_relevant_fields(container, engine, action_type: ActionType, related: dict, unrelated: dict) -> None:
     packet = _packet()

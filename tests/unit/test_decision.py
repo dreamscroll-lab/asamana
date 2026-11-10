@@ -38,7 +38,7 @@ from agent.personality import (
     SoulLayer,
     StateLayer,
 )
-from core.interfaces.action import ActionType, AgentAction
+from core.interfaces.action import ActionType, AgentAction, Ref
 from core.interfaces.message import Message
 from core.interfaces.perception import (
     Broadcast,
@@ -242,7 +242,7 @@ def test_an_index_outside_the_roster_is_recorded_not_just_dropped() -> None:
     slots = _Slots(payload={"person_indices": [1, 9], "destination_index": 7},
                    packet=object(), visible_ids=[], roster_ids=["a1", "a2"],
                    reachable_ids=["loc1"], entity_ids=[], entity_types={}, entity_holders={}, npc_ids=[],
-                   own_item_ids=[])
+                   npc_start=3, own_item_ids=[])
     assert slots.many("person_indices", slots.roster_ids) == ["a1"]     # #9 is outside the list
     assert slots.one("destination_index", slots.reachable_ids) is None  # #7, same
     assert len(slots.dropped) == 2
@@ -252,7 +252,7 @@ def test_an_index_outside_the_roster_is_recorded_not_just_dropped() -> None:
     # Record nothing when everything is in range; a silent channel shouldn't make noise.
     clean = _Slots(payload={"person_indices": [1]}, packet=object(), visible_ids=[],
                    roster_ids=["a1"], reachable_ids=[], entity_ids=[], entity_types={}, entity_holders={},
-                   npc_ids=[], own_item_ids=[])
+                   npc_ids=[], npc_start=2, own_item_ids=[])
     assert clean.many("person_indices", clean.roster_ids) == ["a1"] and clean.dropped == []
 
 
@@ -1762,3 +1762,38 @@ def test_a_hand_on_a_runner_is_not_a_way_to_send_him(container: object) -> None:
     block = prompt.split("【此刻够不着的行动】")[1].split("【")[0]
     assert "physical_npc_index" in block      # the path to stop him is still there
     assert "不是指派任务" in block                 # but it isn't a substitute for an errand
+
+
+def test_runners_are_numbered_on_from_the_people_i_can_reach(container: object) -> None:
+    """Both lists are people. Numbered from #1 each, a number taken from the wrong list binds
+    whoever holds it there: a talk meant for a runner lands on roster #1, and the talk is
+    written with him. Continued, the runner's number is out of range for ``person_indices`` and
+    a roster number is out of range for the runner slots, so the decision is rejected."""
+    from agent.decision import _ACTION_SPACE
+
+    engine = _make_engine(container)
+    packet = _make_packet(
+        visible_agent_ids=["a1"], reachable_location_ids=["gate"],
+        visible_npcs={"npc_a": _runner("东宫卫士")},
+    )
+    prompt = _decision_prompt(engine, _make_personality(), packet, _ACTION_SPACE)
+    assert "#2 东宫卫士" in prompt
+    assert "#1 东宫卫士" not in prompt
+
+    def _parse(action_type: ActionType, **slots: object):
+        payload = {
+            "selected_index": next(i for i, c in enumerate(_ACTION_SPACE) if c.action_type is action_type),
+            "action_description": "我叫住他问话", "inner_monologue": "先问清楚", "estimated_hours": 1,
+            **slots,
+        }
+        return engine._parse_llm_selection(payload, _ACTION_SPACE, packet)  # noqa: SLF001
+
+    assert _parse(ActionType.TALK, person_indices=[2]) is None       # the runner's number
+    talk = _parse(ActionType.TALK, person_indices=[1])
+    assert talk is not None and talk.target.acts_on == [Ref.agent("a1")]
+
+    errand = _parse(ActionType.ERRAND, errand_npc_index=2, errand_destination_index=1)
+    assert errand is not None and errand.target.acts_on == [Ref.npc("npc_a")]
+    assert _parse(ActionType.ERRAND, errand_npc_index=1, errand_destination_index=1) is None
+    held = _parse(ActionType.PHYSICAL, physical_npc_index=2)
+    assert held is not None and held.target.acts_on == [Ref.npc("npc_a")]

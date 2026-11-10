@@ -488,7 +488,7 @@ async def test_selected_operation_ignores_unrelated_output_fields(container, ope
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("target_field,target_index", [
-    ("physical_person_index", 2), ("physical_npc_index", 1), ("physical_entity_index", 1),
+    ("physical_person_index", 2), ("physical_npc_index", 3), ("physical_entity_index", 1),
 ])
 async def test_selected_physical_operation_rejects_rewritten_targets(container, target_field: str, target_index: int) -> None:
     packet = _packet()

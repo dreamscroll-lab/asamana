@@ -205,6 +205,7 @@ class _Slots:
     # Who holds each thing within reach: a code-layer key from perception, never a prompt line.
     entity_holders: dict[str, str]
     npc_ids: List[str]          # people here with no mind of their own: errand_npc_index / physical_npc_index
+    npc_start: int              # the first runner's number (see ``CandidateLists.npc_start``)
     # What I'm holding: a membership set, not an indexed list (see ``_own_item_ids``).
     own_item_ids: List[str]
     # Bare perceived name for each roster id (narrative layer), for text written about recipients.
@@ -244,14 +245,19 @@ class _Slots:
             return [raw]
         return raw if isinstance(raw, list) else []
 
-    def one(self, key: str, ids: Sequence[str]) -> str | None:
+    def one(self, key: str, ids: Sequence[str], *, start: int = 1) -> str | None:
         if not self.grounded or not self.filled(key):
             return None
         raw = self.payload.get(key)
-        resolved = IndexedRef(ids).resolve([raw])
+        resolved = IndexedRef(ids, start=start).resolve([raw])
         if not resolved:
-            self.dropped.append(f"{key} 填了 #{raw}，而这份名单只有 {len(ids)} 项")
+            self.dropped.append(
+                f"{key} 填了 #{raw}，而这份名单是 #{start} 到 #{start + len(ids) - 1}" if ids
+                else f"{key} 填了 #{raw}，而这份名单是空的")
         return resolved[0] if resolved else None
+
+    def npc(self, key: str) -> str | None:
+        return self.one(key, self.npc_ids, start=self.npc_start)
 
     def many(self, key: str, ids: Sequence[str]) -> List[str]:
         """Resolve several indices, dropping duplicates and out-of-range ones."""
@@ -383,7 +389,7 @@ def _bind_physical(slots: _Slots) -> "_Bound | None":
         if person_id is not None and person_id in slots.visible_ids:   # a person must be present
             acted_on = Ref.agent(person_id)
     elif slots.filled("physical_npc_index"):
-        npc_id = slots.one("physical_npc_index", slots.npc_ids)
+        npc_id = slots.npc("physical_npc_index")
         if npc_id is not None:
             acted_on = Ref.npc(npc_id)
     elif slots.filled("physical_entity_index"):
@@ -455,7 +461,7 @@ def _bind_errand(slots: _Slots) -> "_Bound | None":
     - Recipients come from the reachable roster, absent people included; whether he's there is
       settled at execution (a "not there" report is itself narrative).
     """
-    npc_id = slots.one("errand_npc_index", slots.npc_ids)
+    npc_id = slots.npc("errand_npc_index")
     if slots.grounded and npc_id is None:
         return slots.reject("errand_without_bearer")
     destination = slots.one("errand_destination_index", slots.reachable_ids)
@@ -551,6 +557,14 @@ class CandidateLists:
     def roster_ids(self) -> List[str]:
         return [aid for aid, _who in self.roster]
 
+    @property
+    def npc_start(self) -> int:
+        """Runners are numbered on from the roster, not from #1: both lists are people, and a
+        number shared by both lets a slot take it from the wrong one and silently bind whoever
+        holds it there (a talk meant for a runner lands on roster #1). Continued, the wrong
+        list's number falls out of range and the decision is rejected."""
+        return len(self.roster) + 1
+
 
 def candidate_lists(packet: PerceptionPacket) -> CandidateLists:
     spatial = packet.spatial
@@ -581,6 +595,7 @@ def _slots_for(payload: dict, packet: PerceptionPacket | None) -> _Slots:
             if packet else {}
         ),
         npc_ids=lists.npc_ids if lists else [],
+        npc_start=lists.npc_start if lists else 1,
         # Sending something requires holding it (see ``_own_item_ids``).
         own_item_ids=_own_item_ids(packet) if packet else [],
         roster_names={aid: who.name for aid, who in lists.roster} if lists else {},
@@ -818,8 +833,9 @@ class DecisionEngine:
         #   item_candidates       = 1-based, matches #N in "眼前的东西" (visible_entities order;
         #                           short name e.name, plus the holder for held items so audits can
         #                           tell whether it was free to take).
-        #   npc_candidates        = 1-based, matches #N in the people-here list (visible_npcs
-        #                           order); shared by errand_npc_index and physical_npc_index.
+        #   npc_candidates        = numbered on from person_candidates (CandidateLists.npc_start),
+        #                           matches #N in the people-here list (visible_npcs order);
+        #                           shared by errand_npc_index and physical_npc_index.
         #   The recipient (physical_recipient_index) uses the person_candidates indices; no
         #   separate map. Errand recipient indices also use person_candidates;
         #   errand_item_index uses a subset of item_candidates (only what I hold), so no map either.
@@ -840,7 +856,7 @@ class DecisionEngine:
         }
         npc_candidates = {
             str(i): (packet.spatial.visible_npcs[nid].identity.name or "某人")
-            for i, nid in enumerate(packet.spatial.visible_npc_ids, 1)
+            for i, nid in enumerate(packet.spatial.visible_npc_ids, candidate_lists(packet).npc_start)
         }
         item_candidates = {
             str(i): (
@@ -1326,7 +1342,7 @@ class DecisionEngine:
             restrictions.append(
                 "此处可接受任务指派的人都正在执行任务或行动受限，此刻不能接受新任务：不可选 ERRAND。"
                 "**别改用发送消息去联系他** —— 他不在「我能触及的人」名单上，消息到不了他；"
-                "硬挑一个序号，话就落到名单上那个不相干的人头上。要么等他回来，要么我自己去找他。"
+                "硬填他的序号，这一动就作废。要么等他回来，要么我自己去找他。"
             )
         if restrictions:
             lines.append("【此刻够不着的行动】（硬规则：先据此排除，再在剩下的里挑；若都够不着，就 act:false 什么都不做）")
@@ -1366,7 +1382,7 @@ class DecisionEngine:
 - 我想说话/动手的人、想去的地方、想用的东西，只能从【我所处的现实】里带#序号的名单里挑，用序号指认——没列出的，我此刻够不着。
 - “我可前往”的每一处都是一大片地方，里头还有许多具体的去处。我想去的地方若不在名单上，多半就落在某一处里头——我照各处的说明判断它最可能在哪一处（我此刻所在之地也算一处），就去那一处；若那一处正是我此刻所在之地，我已身在其中，不必移动；若我心里本没有非去不可的地方，就不必硬挑一个。
 - 交谈/暗中探查/动手（TALK/COVERT/PHYSICAL-对人）只能挑“我能触及的人”里标(在场)的；只有发送消息（SEND_MESSAGE）可以发给标(不在场)的人。
-- 动手（PHYSICAL）必须指认出下手的对象，且**只指认一个**：对“我能触及的人”里的人就填 physical_person_index，对“此处可接受任务指派的人”里的人就填 physical_npc_index（两份名单各数各的序号，拿错名单就打到别人身上了），对物就填 physical_entity_index，名单外的抽象之物才自填 item_name——四者填其一，一个都不填等于没动手，这一拍就白费了。
+- 动手（PHYSICAL）必须指认出下手的对象，且**只指认一个**：对“我能触及的人”里的人就填 physical_person_index，对“此处可接受任务指派的人”里的人就填 physical_npc_index（两份名单的序号连着数，人在哪份名单上就填哪一栏），对物就填 physical_entity_index，名单外的抽象之物才自填 item_name——四者填其一，一个都不填等于没动手，这一拍就白费了。
 - 唯一的例外是「把我手上的东西交出去」：这一动受动的仍是那样东西（照填 physical_entity_index），只是另可填 physical_recipient_index 指认我要交给谁——他必须是“我能触及的人”里标(在场)的。我只是把东西放下、不交给谁，就不填它。交得出去的只有“我手上的东西”那一组里的；不在我手上的，得先拿到手。比如某样东西就搁在我身边，这一拍先把它拿起来，交给某人是下一拍的事。
 - 指派任务（ERRAND）时我交代他的话——去看什么、看完回来报我、别惊动人——写进 action_description，绝不写进 errand_message：那一栏他会一字不改说出口，我的交代一旦写进去，就等于我自己把此行的目的喊了出来。
 - 如果要进行的行动涉及到人，行动一定要与下面「相关人物的关系」中描述的关系符合常识，除非有特殊情况。
@@ -1404,11 +1420,11 @@ class DecisionEngine:
   "destination_index": <若我选 MOVE，填"我可前往"里的序号(1起)，不过如果没有合理的地点，也可以省略，不要乱填；否则省略>,
   "move_carry_indices": <最多10个整数，仅当我选 MOVE 且要把人强行一并带走：填"我能触及的人"里那些标(在场)者的序号(1起)；我独自走，或没有非带不可的人，就省略此字段>,
   "physical_person_index": <若我选 PHYSICAL 且要**对"我能触及的人"里的人**动手：填其中某个标(在场)者的序号(1起)；对此处可接受任务指派的人动手改填 physical_npc_index，其他情况则省略>,
-  "physical_npc_index": <若我选 PHYSICAL 且要对**此处可接受任务指派的人**动手(拦下、按住、夺他手里的东西)：填"此处可接受任务指派的人"里的序号(1起)；否则省略>,
+  "physical_npc_index": <若我选 PHYSICAL 且要对**此处可接受任务指派的人**动手(拦下、按住、夺他手里的东西)：填"此处可接受任务指派的人"里他的序号；否则省略>,
   "physical_entity_index": <若我选 PHYSICAL 且要**对物**动手：填"眼前的东西"里那样东西的序号(1起)；对人动手则省略>,
   "physical_recipient_index": <仅当我这一动是把"我手上的东西"里的一件交到某人手上：填"我能触及的人"里某个标(在场)者的序号(1起)；只是把东西放下、或这一动与交付无关，一律省略>,
   "item_name": "<仅当 PHYSICAL 的目标不在上面两份名单里(抽象之物，如'门'、'地面')才自填名称，≤10字；能用序号就别用它；非 PHYSICAL 省略>",
-  "errand_npc_index": <若我选 ERRAND：填"此处可接受任务指派的人"里那个人的序号(1起)；否则省略。**必填**——这一动就是向他指派任务，没有执行任务的人就不成立>,
+  "errand_npc_index": <若我选 ERRAND：填"此处可接受任务指派的人"里那个人的序号；否则省略。**必填**——这一动就是向他指派任务，没有执行任务的人就不成立>,
   "errand_destination_index": <若我选 ERRAND：填"我可前往"里他要去的那个地方的序号(1起)；否则省略。**必填**——不去别处的任务不成立，那种事我自己伸手就够得到>,
   "errand_item_index": <仅当我要让他带上某样东西：填"眼前的东西"里那一件的序号(1起)，**只能选"我手上的东西"那一组里的**——不能带别人手上、也带不了放在此处的东西，得先拿到手才托得出去。不带东西就省略>,
   "errand_recipient_index": <仅当这一趟是**只限于对某个人的**：填"我能触及的人"里的序号(1起)。**这一栏决定东西和话落到哪儿**——填了就是交到他手上、只说给他听；不填就是把东西搁在那处、把话在那处当众说出。只是去看看情形则省略>,
@@ -1590,7 +1606,8 @@ def _render_candidate_lists(
     # physical_person_index. Marked "在场" / "不在场": TALK and PHYSICAL-on-a-person may only
     # pick present people; only SEND_MESSAGE may target absent ones. (COVERT doesn't bind
     # from this list — its object lives in action_description.)
-    roster = candidate_lists(packet).roster
+    lists = candidate_lists(packet)
+    roster = lists.roster
     if roster:
         lines.append(f"我能触及的人（默认都是有生命值的人，除非明确标识{DECEASED_MARK}）：")
         for idx, (aid, who) in enumerate(roster, 1):
@@ -1620,9 +1637,10 @@ def _render_candidate_lists(
             "此处可接受任务指派的人（按指定内容执行任务，不自行变更任务，也不会拒绝任务："
             "空闲且行动未受限制时，我可以向其指派任务；正在执行任务或行动受限时，不能接受新任务，"
             "但仍可成为动手的对象。**他们不在上面「我能触及的人」名单里** —— "
-            "跟他们打交道只有指派任务(ERRAND)或动手(PHYSICAL)这两条路，SEND_MESSAGE, TALK等其他行动不能选这个名单的人）："
+            "跟他们打交道只有指派任务(ERRAND)或动手(PHYSICAL)这两条路，SEND_MESSAGE, TALK等其他行动不能选这个名单的人；"
+            "序号接着上面的名单往下数）："
         )
-        for idx, npc_id in enumerate(spatial.visible_npc_ids, 1):
+        for idx, npc_id in enumerate(spatial.visible_npc_ids, lists.npc_start):
             rendered = render_npc(spatial.visible_npcs[npc_id], index=idx)
             lines.append(f"  {rendered}")
             facts.add("此处可接受任务指派的人", rendered.split(" ", 1)[-1])
@@ -1678,7 +1696,7 @@ class ActorTargetSlot(NamedTuple):
 
     field: str
     slot: str
-    kind: str   # "person" | "place" | "npc" | "entity"; see _KIND_IDS
+    kind: str   # "person" | "place" | "npc" | "entity"; see _KIND_REFS
 
 
 ACTOR_TARGET_SLOTS: tuple[ActorTargetSlot, ...] = (
@@ -1694,11 +1712,11 @@ ACTOR_TARGET_SLOTS: tuple[ActorTargetSlot, ...] = (
     ActorTargetSlot("errand_item_id", "errand_item_index", "entity"),
     ActorTargetSlot("errand_recipient_id", "errand_recipient_index", "person"),
 )
-_KIND_IDS: dict[str, Callable[[CandidateLists], List[str]]] = {
-    "person": lambda c: c.roster_ids,
-    "place": lambda c: c.reachable_ids,
-    "npc": lambda c: c.npc_ids,
-    "entity": lambda c: c.entity_ids,
+_KIND_REFS: dict[str, Callable[[CandidateLists], IndexedRef]] = {
+    "person": lambda c: IndexedRef(c.roster_ids),
+    "place": lambda c: IndexedRef(c.reachable_ids),
+    "npc": lambda c: IndexedRef(c.npc_ids, start=c.npc_start),
+    "entity": lambda c: IndexedRef(c.entity_ids),
 }
 # Slots with no list: same meaning in both shapes, and only ``item_name`` is named differently.
 _ACTOR_TEXT_SLOTS: tuple[tuple[str, str], ...] = (
@@ -1729,11 +1747,12 @@ def _actor_payload(action: ActorAction, lists: CandidateLists) -> dict:
         value = getattr(action, field_name)
         if not value:
             continue
-        ids = _KIND_IDS[kind](lists)
+        ref = _KIND_REFS[kind](lists)
         wanted = list(value) if isinstance(value, tuple) else [value]
-        if any(v not in ids for v in wanted):
-            raise ActorAnswerRejected(f"{field_name}_not_perceived")
-        indices = [ids.index(v) + 1 for v in wanted]
+        try:
+            indices = [ref.number(v) for v in wanted]
+        except ValueError:
+            raise ActorAnswerRejected(f"{field_name}_not_perceived") from None
         payload[key] = indices if isinstance(value, tuple) else indices[0]
     return payload
 
@@ -1776,13 +1795,13 @@ def _actor_action_from_payload(payload: dict, lists: CandidateLists) -> ActorAct
     for key in _ACTOR_FLAG_SLOTS:
         fields[key] = payload.get(key) is True
     for field_name, key, kind in ACTOR_TARGET_SLOTS:
-        list_of = _KIND_IDS[kind]
+        ref = _KIND_REFS[kind](lists)
         raw = payload.get(key)
         if field_name.endswith("_ids"):
             indices = raw if isinstance(raw, list) else [raw] if isinstance(raw, int) else []
-            fields[field_name] = tuple(IndexedRef(list_of(lists)).resolve(indices))
+            fields[field_name] = tuple(ref.resolve(indices))
         else:
-            resolved = IndexedRef(list_of(lists)).resolve([raw]) if raw is not None else []
+            resolved = ref.resolve([raw]) if raw is not None else []
             fields[field_name] = resolved[0] if resolved else None
     steps = payload.get("estimated_steps")
     fields["estimated_steps"] = steps if isinstance(steps, int) and not isinstance(steps, bool) and steps >= 1 else 1

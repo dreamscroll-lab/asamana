@@ -98,7 +98,8 @@ def test_binding_never_puts_one_where_arbitration_would_look_for_an_agent() -> N
         payload={"errand_npc_index": 1, "errand_destination_index": 1},
         packet=_packet(),
         visible_ids=[], roster_ids=[], reachable_ids=["gate"],
-        entity_ids=[], entity_types={}, entity_holders={}, npc_ids=["npc_x"], own_item_ids=[],
+        entity_ids=[], entity_types={}, entity_holders={}, npc_ids=["npc_x"], npc_start=1,
+        own_item_ids=[],
     )
     bound = _bind_errand(slots)
     assert bound is not None
@@ -120,14 +121,14 @@ def test_the_thing_it_carries_is_numbered_off_the_list_that_was_printed() -> Non
     def _bind(index: int):
         return _bind_errand(_Slots(
             payload={
-                "errand_npc_index": 1, "errand_destination_index": 1,
+                "errand_npc_index": 2, "errand_destination_index": 1,
                 "errand_item_index": index, "errand_recipient_index": 1,
             },
             packet=_packet(),
             visible_ids=[], roster_ids=["a2"], reachable_ids=["gate"],
             # Three items in the printed list; only the second is in my hand.
             entity_ids=["floor_lamp", "my_letter", "his_seal"],
-            entity_types={}, entity_holders={}, npc_ids=["npc_x"], own_item_ids=["my_letter"],
+            entity_types={}, entity_holders={}, npc_ids=["npc_x"], npc_start=2, own_item_ids=["my_letter"],
         ))
 
     bound = _bind(2)                      # the second printed item = the letter in my hand
@@ -566,10 +567,11 @@ def test_a_word_with_no_audience_is_not_shouted_but_kept_as_the_briefing() -> No
 
     def _bind(**extra):
         return _bind_errand(_Slots(
-            payload={"errand_npc_index": 1, "errand_destination_index": 1, **extra},
+            payload={"errand_npc_index": 2, "errand_destination_index": 1, **extra},
             packet=_packet(),
             visible_ids=[], roster_ids=["a2"], reachable_ids=["gate"],
-            entity_ids=[], entity_types={}, entity_holders={}, npc_ids=["npc_x"], own_item_ids=[],
+            entity_ids=[], entity_types={}, entity_holders={}, npc_ids=["npc_x"], npc_start=2,
+            own_item_ids=[],
         ))
 
     # No listener: the words aren't spoken, but they don't vanish either; they go into the
