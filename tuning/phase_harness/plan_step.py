@@ -69,7 +69,7 @@ async def run_plan_step(
             agent_id=agent.agent_id, step=run_step, world_time=world_time.time_label
         )
         attach_presence(
-            spatial, directory=world.directory, agents=world.agents,
+            spatial, viewer_id=agent.agent_id, directory=world.directory, agents=world.agents,
             environment=world.environment,
         )
         # Attribute each agent's LLM calls (captured by the traced router) and

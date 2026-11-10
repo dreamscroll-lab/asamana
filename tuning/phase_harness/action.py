@@ -302,7 +302,7 @@ async def _run_arbitration(
                                      id_by_name=id_by_name, valid_ids=valid_ids)
         sp = env.spatial_for(agent_id=aid, step=run_step)
         attach_presence(
-            sp, directory=world.directory, agents=world.agents,
+            sp, viewer_id=aid, directory=world.directory, agents=world.agents,
             environment=env,
         )
         need = NeedEvaluation(

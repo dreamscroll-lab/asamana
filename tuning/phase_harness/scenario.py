@@ -29,7 +29,7 @@ def spatials_for(world: World, run_step: int, world_time_label: str) -> dict:
             continue
         sp = world.environment.spatial_for(agent_id=aid, step=run_step, world_time=world_time_label)
         attach_presence(
-            sp, directory=world.directory, agents=world.agents,
+            sp, viewer_id=aid, directory=world.directory, agents=world.agents,
             environment=world.environment,
         )
         spatials[aid] = sp

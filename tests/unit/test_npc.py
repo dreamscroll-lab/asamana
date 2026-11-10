@@ -115,7 +115,7 @@ def test_identity_comes_from_the_directory_and_the_rest_from_the_body() -> None:
     assert identity.description == "认得路"
 
     spatial = env.spatial_for(agent_id="a1")
-    attach_presence(spatial, directory=directory, agents={}, environment=env)
+    attach_presence(spatial, viewer_id="a1", directory=directory, agents={}, environment=env)
     seen = spatial.visible_npcs[npc.npc_id]
     assert seen.identity.name == "王二"
     assert seen.busy is True

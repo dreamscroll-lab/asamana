@@ -99,7 +99,7 @@ class WorldInitializer:
         # It passed every revision's check; this is the last line before anything is written.
         setup.validate(MapPlaces.of(world_config))
         clock_config = self._clock_config_for(setup.lore, world_config)
-        environment = EnvironmentSystem(world_config, max_npcs=self._max_npcs)
+        environment = EnvironmentSystem(world_config, clock_config=clock_config, max_npcs=self._max_npcs)
         environment.space.register_sub_places(setup.sub_places)
         await self._instantiate_entity_seeds(setup.entity_seeds, environment)
         self._instantiate_npc_seeds(setup.npc_seeds, environment)
@@ -377,7 +377,10 @@ class WorldInitializer:
                 f"World {world_id!r} has no character {casting.character_id!r} to cast the actor as"
             )
 
-        environment = EnvironmentSystem(active_world_config, max_npcs=self._max_npcs)
+        clock_config = self._clock_config_for(setup.lore, active_world_config)
+        environment = EnvironmentSystem(
+            active_world_config, clock_config=clock_config, max_npcs=self._max_npcs,
+        )
         # Fixed by the setup frozen in step 0, like the places: nothing at runtime changes them.
         environment.space.register_sub_places(setup.sub_places)
         await self._instantiate_entity_seeds(setup.entity_seeds, environment)
@@ -385,7 +388,6 @@ class WorldInitializer:
         # self-contained (identity + position + condition + current errand) and _restore_environment_state
         # loads it in one go. Building them on both paths would collide on ids, and since ids are slugs of
         # names, a collision splits one person into two in the world.
-        clock_config = self._clock_config_for(setup.lore, active_world_config)
         agents: dict[str, Agent] = {}
 
         # The step the world resumes at = the latest persisted snapshot. This is the

@@ -240,8 +240,9 @@ class WorldPressureEvaluator:
             Situation(
                 location_view=spatial.location_view if spatial is not None else None,
                 time_label=world_time_label,
+                arrival=spatial.arrival if spatial is not None else "",
             ),
-            voice=SituationVoice.THIRD,
+            voice=SituationVoice.THIRD, who=agent.personality.soul.name,
         )
         prompt = self._build_agent_prompt(
             agent,
@@ -301,6 +302,7 @@ class WorldPressureEvaluator:
                 "id": vid,
                 "name": (who.name if who else "") or "某人",
                 "gender": who.gender if who else "",
+                "arrival": presence.arrival if presence is not None else "",
                 "condition": presence.condition if presence is not None else "",
                 "trust": round(rel.trust_objective, 2) if rel is not None else None,
                 "affection": round(rel.affection_objective, 2) if rel is not None else None,
@@ -348,7 +350,7 @@ class WorldPressureEvaluator:
 
     @classmethod
     def _co_located_line(cls, c: dict[str, Any]) -> str:
-        who = person_referent(c["name"], c.get("gender", ""), *((c["condition"],) if c.get("condition") else ()))
+        who = person_referent(c["name"], c.get("gender", ""), c.get("arrival", ""), c.get("condition", ""))
         history = f"；与该角色的过往：{c['history']}" if c.get("history") else ""
         return f"{who} — 关系：{cls._format_relation(c)}{history}"
 

@@ -55,7 +55,7 @@ def _apply_present_from_scenario(
         reset_visible(sp, seen)
         if directory is not None and agents is not None and environment is not None:
             attach_presence(
-                sp, directory=directory, agents=agents, environment=environment,
+                sp, viewer_id=aid, directory=directory, agents=agents, environment=environment,
             )
 
 

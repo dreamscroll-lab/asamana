@@ -745,7 +745,7 @@ class NeedEngine:
             + "\n"
             if any(recent_factuals) else ""
         )
-        situation_header = render_situation_header(situation, voice=SituationVoice.THIRD)
+        situation_header = render_situation_header(situation, voice=SituationVoice.THIRD, who=agent_name)
         system_prompt = _GOAL_EVALUATION_SYSTEM
         user_prompt = _GOAL_EVALUATION_USER.format(
             situation_header=situation_header,

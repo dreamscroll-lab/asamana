@@ -607,19 +607,88 @@ def render_memory(memory, *, now_step: int, seconds_per_step: int, world_start_s
     ) + content
 
 
-def recency_prefix(
+def recency_label(
     *, now_step: int, ref_step: int, seconds_per_step: int, world_start_second_of_day: int = 0,
 ) -> str:
-    """Render how long ago ``ref_step`` was as a bracketed recency word, e.g. "（昨日）".
+    """How long ago ``ref_step`` was as a bare recency word, e.g. "昨日".
 
-    One vocabulary for everything past (memories, closed goals), so the LLM can place them on one
-    timeline.
+    One vocabulary for everything past (memories, closed goals, arrivals), so the LLM can place
+    them on one timeline.
     """
     sps = max(1, seconds_per_step)
     now_seconds = world_start_second_of_day + now_step * sps
     elapsed_seconds = max(0, now_step - ref_step) * sps
     day_delta = now_seconds // 86400 - (now_seconds - elapsed_seconds) // 86400
-    return f"（{_recency_label(elapsed_seconds, day_delta)}）"
+    return _recency_label(elapsed_seconds, day_delta)
+
+
+def recency_prefix(
+    *, now_step: int, ref_step: int, seconds_per_step: int, world_start_second_of_day: int = 0,
+) -> str:
+    """``recency_label`` bracketed, e.g. "（昨日）", as memory lines carry it."""
+    return "（" + recency_label(
+        now_step=now_step, ref_step=ref_step, seconds_per_step=seconds_per_step,
+        world_start_second_of_day=world_start_second_of_day,
+    ) + "）"
+
+
+# Someone present who was here before the viewer came. Says only "before me", never how long:
+# the viewer didn't see them arrive (information asymmetry). No "我" in any mark: the same roster
+# also reaches third-person prompts (pressure assessment).
+ALREADY_HERE_MARK = "早已在此"
+
+
+def arrival_mark(
+    *, now_step: int, viewer_arrived: int, other_arrived: int,
+    seconds_per_step: int, world_start_second_of_day: int = 0,
+) -> str:
+    """Someone present's arrival as the viewer knows it: timed ("昨日抵达") when they arrived in
+    the viewer's beat or later, else ``ALREADY_HERE_MARK``.
+
+    The viewer decides only whether the time is known; the time itself is always counted to now.
+    Don't give the same beat a mark of its own ("arrived with me"): it carries no time, so a
+    day-old arrival would still read as news. Both timed, the viewer's header and the mark show
+    the same time.
+
+    Both ``*_arrived`` are ``EnvironmentSystem.arrived_step``. Step 0 is no arrival (world start,
+    or a body placed with no record), so a step-0 body is "already here". An arrival is timed from
+    the step after its beat, when onlookers first perceive it and their memory of it is dated, so
+    the mark and that memory read the same.
+
+    Known pitfall: a relocation by injection lands before that step's perception, so it is seen a
+    step early and reads "刚刚" one step too long. Accepted: telling the two apart would take a
+    perception-phase signal from the runtime for this rare case alone.
+    """
+    if other_arrived <= 0 or other_arrived < viewer_arrived:
+        return ALREADY_HERE_MARK
+    return _arrived_label(
+        now_step=now_step, arrived_step=other_arrived, seconds_per_step=seconds_per_step,
+        world_start_second_of_day=world_start_second_of_day,
+    )
+
+
+def own_arrival_mark(
+    *, now_step: int, arrived_step: int, seconds_per_step: int, world_start_second_of_day: int = 0,
+) -> str:
+    """One's own arrival where one stands, e.g. "昨日抵达"; "" for step 0, which is no arrival
+    (world start, or no record): "since the beginning" would be made up for an old snapshot."""
+    if arrived_step <= 0:
+        return ""
+    return _arrived_label(
+        now_step=now_step, arrived_step=arrived_step, seconds_per_step=seconds_per_step,
+        world_start_second_of_day=world_start_second_of_day,
+    )
+
+
+def _arrived_label(
+    *, now_step: int, arrived_step: int, seconds_per_step: int, world_start_second_of_day: int,
+) -> str:
+    """Timed from the step after the arrival's beat: see ``arrival_mark``."""
+    label = recency_label(
+        now_step=now_step, ref_step=arrived_step + 1, seconds_per_step=seconds_per_step,
+        world_start_second_of_day=world_start_second_of_day,
+    )
+    return f"{label}抵达"
 
 
 # Ordering contract: memories arrive ordered by relevance, so every path that injects a memory list
@@ -711,11 +780,17 @@ def vitality_line(
     return f"{lead}{_VITALITY_PREFIX[voice]}：{vitality_label(vitality)}"
 
 
-def render_situation_header(situation, *, voice: SituationVoice) -> str:
-    """Situation header: one line saying when and where it is, injected at the start of cognition and judge prompts.
+def render_situation_header(situation, *, voice: SituationVoice, who: str = "") -> str:
+    """Situation header: one line saying when and where it is, and since when one has been
+    there, injected at the start of cognition and judge prompts.
 
     Goes first in the user content, not in system: it changes every step and would break the
-    cacheable prefix. Either part may be missing and is then left out, never invented.
+    cacheable prefix. Any part may be missing and is then left out, never invented.
+
+    The arrival closes the line (a place renders with its description) and belongs to whoever
+    the situation is: "我" in FIRST voice, ``who`` (that person's name) in THIRD, where a judge's
+    scene holds several people. THIRD voice without ``who`` leaves the arrival out: it would name
+    no one.
     """
     time_label = situation.time_label
     if situation.location_view is None:
@@ -724,8 +799,12 @@ def render_situation_header(situation, *, voice: SituationVoice) -> str:
         return f"此刻是{time_label}。" if voice == SituationVoice.FIRST else f"当前时间：{time_label}。"
     place = render_location(situation.location_view)
     if voice == SituationVoice.FIRST:
-        return f"我此刻在{place}，当前时间为{time_label}。" if time_label else f"我此刻在{place}。"
-    return f"当前时间：{time_label}；当前地点：{place}。" if time_label else f"当前地点：{place}。"
+        head = f"我此刻在{place}，当前时间为{time_label}" if time_label else f"我此刻在{place}"
+        arrival = f"；{situation.arrival}此处" if situation.arrival else ""
+    else:
+        head = f"当前时间：{time_label}；当前地点：{place}" if time_label else f"当前地点：{place}"
+        arrival = f"；{who}{situation.arrival}此处" if situation.arrival and who else ""
+    return f"{head}{arrival}。"
 
 
 def situation_location(situation) -> str:
@@ -747,9 +826,11 @@ def render_perceived_signals(*, spatial, inbox, broadcasts) -> list[str]:
         for aid in spatial.visible_agent_ids[:SIGNAL_CAPS["visible"]]:
             presence = spatial.visible_agents.get(aid)
             who = presence.identity if presence else None
-            # Without the condition, someone bound and kneeling reads as an ordinary bystander.
+            # Without the condition, someone bound and kneeling reads as an ordinary bystander;
+            # without the arrival, someone who just walked in reads like someone who never left.
             people.append(person_referent(
                 getattr(who, "name", ""), getattr(who, "gender", ""),
+                presence.arrival if presence else "",
                 presence.condition if presence else "",
             ))
         lines.append(f"同处一地的人：{', '.join(people)}")

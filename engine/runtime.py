@@ -471,9 +471,9 @@ class NarrativeRuntime:
             )
             for agent in agents
         }
-        for spatial in agent_spatials.values():
+        for viewer_id, spatial in agent_spatials.items():
             attach_presence(
-                spatial, directory=self._directory, agents=agents_dict,
+                spatial, viewer_id=viewer_id, directory=self._directory, agents=agents_dict,
                 environment=self._environment,
             )
 

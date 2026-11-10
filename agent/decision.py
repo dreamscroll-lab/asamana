@@ -1586,11 +1586,14 @@ def _render_candidate_lists(
         lines.append(f"我能触及的人（默认都是有生命值的人，除非明确标识{DECEASED_MARK}）：")
         for idx, (aid, who) in enumerate(roster, 1):
             here = "在场" if aid in spatial.visible_agent_ids else "不在场"
-            # Condition shares the parentheses with gender and presence (person_referent's
-            # marks). Only present people carry one: for the absent it could only be a belief
-            # in memory, not a live field (information asymmetry).
-            cond = (p.condition if (p := spatial.visible_agents.get(aid)) else "")
-            referent = person_referent(who.name, who.gender, here, cond)
+            # Arrival and condition share the parentheses with gender and presence
+            # (person_referent's marks). Only present people carry them: for the absent they
+            # could only be a belief in memory, not a live field (information asymmetry).
+            p = spatial.visible_agents.get(aid)
+            referent = person_referent(
+                who.name, who.gender, here,
+                p.arrival if p else "", p.condition if p else "",
+            )
             lines.append(f"  #{idx} {referent}")
             # The roster isn't just the hard frame to pick from; it is itself fact: who exists,
             # who is here, who isn't. Undeclared, the judge can't catch an invented person or

@@ -66,8 +66,8 @@ def test_it_never_enters_the_roster_the_whole_cognition_loop_runs_on() -> None:
 
     agents: dict[str, object] = {"a1": object()}
     assert npc_id not in agents
-    # The location table is shared (a body is a body), but "who is an Npc" has its own lookup table.
-    assert npc_id in env._locations                       # noqa: SLF001
+    # The body table is shared (a body is a body), but "who is an Npc" has its own lookup table.
+    assert npc_id in env._bodies                          # noqa: SLF001
     assert env.get_npc("a1") is None
 
 
@@ -420,14 +420,10 @@ def test_every_read_of_a_body_kind_is_a_positive_one() -> None:
     _ast, _, functions = _environment_functions()
 
     def _reads_kind(node) -> bool:
-        # self._bodies.get(x) / self._bodies[x]
-        target = node.func.value if isinstance(node, _ast.Call) and isinstance(
-            node.func, _ast.Attribute
-        ) else getattr(node, "value", None)
-        return (
-            isinstance(target, _ast.Attribute) and target.attr == "_bodies"
-            and isinstance(target.value, _ast.Name) and target.value.id == "self"
-        )
+        # self._kind_of(x) / <body>.kind
+        if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Attribute):
+            return node.func.attr == "_kind_of"
+        return isinstance(node, _ast.Attribute) and node.attr == "kind"
 
     offenders = [
         func.name
@@ -478,7 +474,7 @@ def test_the_npc_roster_holds_exactly_the_bodies_registered_as_npcs() -> None:
 
     def _invariant() -> None:
         from core.interfaces.entity import BodyKind
-        kinded = {bid for bid, kind in env._bodies.items() if kind is BodyKind.NPC}
+        kinded = {bid for bid, body in env._bodies.items() if body.kind is BodyKind.NPC}
         assert set(env._npcs) == kinded, (set(env._npcs), kinded)
 
     _invariant()
@@ -486,7 +482,7 @@ def test_the_npc_roster_holds_exactly_the_bodies_registered_as_npcs() -> None:
     restored = _env()
     restore(restored, saved(env))
     from core.interfaces.entity import BodyKind
-    assert {bid for bid, k in restored._bodies.items() if k is BodyKind.NPC} == set(restored._npcs)
+    assert {bid for bid, b in restored._bodies.items() if b.kind is BodyKind.NPC} == set(restored._npcs)
     assert set(restored._npcs) == set(env._npcs), "还原过来的名册要一样"
 
 

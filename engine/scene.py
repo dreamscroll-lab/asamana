@@ -40,6 +40,7 @@ def situation_for(environment: "EnvironmentSystem", agent_id: str) -> Situation:
     return Situation(
         location_view=environment.space.view_of(loc_id),
         time_label=environment.current_world_time_label,
+        arrival=environment.own_arrival(agent_id),
     )
 
 
@@ -158,7 +159,10 @@ def assemble_scene_context(
     lines: list[str] = []
 
     header = (
-        render_situation_header(situation_for(environment, agent_id), voice=SituationVoice.THIRD)
+        render_situation_header(
+            situation_for(environment, agent_id), voice=SituationVoice.THIRD,
+            who=directory.agent_name(agent_id),
+        )
         if include_header else ""
     )
     if header:
