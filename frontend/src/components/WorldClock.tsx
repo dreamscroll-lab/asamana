@@ -1,4 +1,5 @@
 import type { StepView } from "../types";
+import { durationLabel } from "../lib/duration";
 
 /**
  * The world's clock and, separately, the engine's counter. Never run them together in one
@@ -8,6 +9,8 @@ import type { StepView } from "../types";
  *     is the theme's to choose, so it is shown whole — splitting it on commas would nail this
  *     to one theme's calendar (CLAUDE.md Rule 7).
  *   · `step` is a code-layer ordinal for scheduling and replay; it gets a small, cold badge.
+ *     The step duration rides in the same badge: it is the scale between the two layers (how
+ *     much world time one step spans), a world fact shown alike to the director and the actor.
  *
  * One shared component so every surface keeps the amber-plate / cold-badge distinction;
  * `size` is the only thing that legitimately differs.
@@ -30,9 +33,12 @@ const SIZES = {
 export default function WorldClock({
   step,
   size = "lg",
+  stepSeconds = 0,
   className = "",
 }: {
   step: StepView;
+  // The world's seconds_per_step; 0 when unknown, and then the badge shows the step alone.
+  stepSeconds?: number;
   size?: keyof typeof SIZES;
   className?: string;
 }) {
@@ -43,8 +49,15 @@ export default function WorldClock({
         <span className={s.glyph}>◷</span>
         <span className={s.label}>{step.world_time.label}</span>
       </div>
-      <span className="rounded-md border border-slate-800 bg-slate-950/60 px-1.5 py-1 text-[10px] tabular-nums text-slate-500">
+      <span className="flex items-center rounded-md border border-slate-800 bg-slate-950/60 px-1.5 py-1 text-[10px] tabular-nums text-slate-500">
         第 {step.step} 步
+        {/* Its own segment and hue: the step count moves every step, the duration is a fixed
+            setting; one run of grey reads them as one figure. */}
+        {stepSeconds > 0 && (
+          <span className="ml-1.5 border-l border-slate-800 pl-1.5 text-indigo-300/70">
+            ⏳ 每步时长 {durationLabel(stepSeconds)}
+          </span>
+        )}
       </span>
     </div>
   );

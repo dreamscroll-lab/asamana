@@ -632,9 +632,10 @@ def recency_prefix(
     ) + "）"
 
 
-# Someone present who was here before the viewer came. Says only "before me", never how long:
-# the viewer didn't see them arrive (information asymmetry). No "我" in any mark: the same roster
-# also reaches third-person prompts (pressure assessment).
+# Here before anything said when: before the viewer came (``arrival_mark``), or since the world
+# began (step 0, both marks). Says never how long: a viewer didn't see them arrive (information
+# asymmetry), and nobody arrived at world start. No "我" in any mark: the same roster also
+# reaches third-person prompts (pressure assessment).
 ALREADY_HERE_MARK = "早已在此"
 
 
@@ -670,10 +671,10 @@ def arrival_mark(
 def own_arrival_mark(
     *, now_step: int, arrived_step: int, seconds_per_step: int, world_start_second_of_day: int = 0,
 ) -> str:
-    """One's own arrival where one stands, e.g. "昨日抵达"; "" for step 0, which is no arrival
-    (world start, or no record): "since the beginning" would be made up for an old snapshot."""
+    """One's own arrival where one stands, counted to now with no viewer: e.g. "昨日抵达", or
+    ``ALREADY_HERE_MARK`` for step 0, a body placed at world start."""
     if arrived_step <= 0:
-        return ""
+        return ALREADY_HERE_MARK
     return _arrived_label(
         now_step=now_step, arrived_step=arrived_step, seconds_per_step=seconds_per_step,
         world_start_second_of_day=world_start_second_of_day,
@@ -798,12 +799,16 @@ def render_situation_header(situation, *, voice: SituationVoice, who: str = "") 
             return ""
         return f"此刻是{time_label}。" if voice == SituationVoice.FIRST else f"当前时间：{time_label}。"
     place = render_location(situation.location_view)
+    # A timed mark needs its place ("昨日抵达此处"); ALREADY_HERE_MARK already has one ("早已在此").
+    mark = situation.arrival
+    if mark and mark != ALREADY_HERE_MARK:
+        mark += "此处"
     if voice == SituationVoice.FIRST:
         head = f"我此刻在{place}，当前时间为{time_label}" if time_label else f"我此刻在{place}"
-        arrival = f"；{situation.arrival}此处" if situation.arrival else ""
+        arrival = f"；{mark}" if mark else ""
     else:
         head = f"当前时间：{time_label}；当前地点：{place}" if time_label else f"当前地点：{place}"
-        arrival = f"；{who}{situation.arrival}此处" if situation.arrival and who else ""
+        arrival = f"；{who}{mark}" if mark and who else ""
     return f"{head}{arrival}。"
 
 

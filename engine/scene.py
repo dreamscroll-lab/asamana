@@ -95,6 +95,9 @@ class SceneVisibility(str, Enum):
     - ``GOD`` judge view: everything in the room, hidden things included.
     - ``OWN_EYES`` its own things (even if hidden) plus public ones; same rule as
       ``EnvironmentSystem.spatial_for``.
+
+    It also sets the frame of arrival marks: relative to the reader with ``OWN_EYES``, each
+    person's own with ``GOD``.
     """
 
     GOD = "god"
@@ -156,6 +159,7 @@ def assemble_scene_context(
     than something seen: for callers that relay the scene as someone's report (an errand).
     """
     loc_id = environment.get_body_location(agent_id)
+    own_eyes = visibility is SceneVisibility.OWN_EYES
     lines: list[str] = []
 
     header = (
@@ -184,12 +188,21 @@ def assemble_scene_context(
                 render_condition(bystander.personality.state.condition)
                 if bystander is not None else ""
             )
+            # Arrival follows whose eyes these are. Through one person's eyes, as that person
+            # knows it (the perception roster's mark). The god view has no viewer: each arrival
+            # is that person's own, counted to now like the header's, so the judge reads one
+            # frame for everyone instead of one side's.
+            arrival = (
+                environment.arrival_seen_by(agent_id, aid) if own_eyes
+                else environment.own_arrival(aid)
+            )
             # Gender: the judge writes third-person prose about present people and would
             # otherwise guess pronouns.
             people.append(person_referent(
                 directory.agent_name(aid),
                 entry.gender if entry is not None else "",
                 *((entry.role,) if entry is not None and entry.role else ()),
+                arrival,
                 *((condition,) if condition else ()),
             ))
         lines.append("- 在场的其他人：" + "、".join(people))
@@ -227,7 +240,6 @@ def assemble_scene_context(
     # items_present_at includes things in present people's hands; owner_name marks the holder.
     # Stated even when empty.
     first_person = voice is SituationVoice.FIRST
-    own_eyes = visibility is SceneVisibility.OWN_EYES
     # Ordering and truncation share ``reachable_in_order`` with the perception layer, or the judge
     # could rule on something the doer never saw. Filtering stays separate on purpose.
     present = environment.items_present_at(loc_id)

@@ -64,7 +64,6 @@ export default function ActorConsole({
   step,
   pace: initialPace,
   immersive,
-  stepSeconds,
 }: {
   worldId: string;
   // The performed character.
@@ -77,8 +76,6 @@ export default function ActorConsole({
   step: number;
   pace: ActorPace;
   immersive: boolean;
-  // World time per step, so the actor can size an act to it as the characters do; 0 when unknown.
-  stepSeconds: number;
 }) {
   const [collapsedOverride, setCollapsed] = useState<boolean | null>(null);
   const collapsed = collapsedOverride ?? !immersive;
@@ -298,7 +295,6 @@ export default function ActorConsole({
           />
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-slate-600">{SEND_HINT}</span>
-            {stepSeconds > 0 && <span className="text-[10px] text-slate-500">每步 {durationLabel(stepSeconds)}</span>}
             <span className="ml-auto text-[10px] text-slate-600 tabular-nums">
               {[...text].length}/{MAX_WORDS}
             </span>

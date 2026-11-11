@@ -157,13 +157,16 @@ def test_the_mark_shares_the_roster_bracket() -> None:
 # ── my own arrival, in the situation header ─────────────────────────────────
 
 
-def test_my_own_arrival_is_timed_like_anyone_elses_but_step_zero_says_nothing() -> None:
-    """Step 0 is no arrival (world start, or a snapshot without the record): say nothing rather
-    than claim "here since the beginning"."""
+def test_my_own_arrival_is_timed_like_anyone_elses_and_step_zero_is_already_here() -> None:
+    """Step 0 is a body placed at world start: here before anything, as a viewer at step 0 would
+    also see it."""
     kw = dict(seconds_per_step=3600, world_start_second_of_day=8 * 3600)
     assert own_arrival_mark(now_step=11, arrived_step=10, **kw) == "刚刚抵达"
     assert own_arrival_mark(now_step=35, arrived_step=10, **kw) == "昨日抵达"
-    assert own_arrival_mark(now_step=35, arrived_step=0, **kw) == ""
+    assert own_arrival_mark(now_step=35, arrived_step=0, **kw) == ALREADY_HERE_MARK
+    assert own_arrival_mark(now_step=35, arrived_step=0, **kw) == arrival_mark(
+        now_step=35, viewer_arrived=0, other_arrived=0, **kw,
+    )
 
 
 def test_my_arrival_reaches_every_situation_source() -> None:
@@ -198,6 +201,13 @@ def test_the_header_arrival_always_names_whose_it_is() -> None:
     assert render_situation_header(here, voice=SituationVoice.THIRD) == (
         "当前时间：三月初四 午时；当前地点：大殿。"
     )
+    always = Situation(location_view=hall, time_label="三月初四 午时", arrival=ALREADY_HERE_MARK)
+    assert render_situation_header(always, voice=SituationVoice.FIRST) == (
+        f"我此刻在大殿，当前时间为三月初四 午时；{ALREADY_HERE_MARK}。"
+    )
+    assert render_situation_header(always, voice=SituationVoice.THIRD, who="尉迟恭") == (
+        f"当前时间：三月初四 午时；当前地点：大殿；尉迟恭{ALREADY_HERE_MARK}。"
+    )
     unknown = Situation(location_view=hall, time_label="三月初四 午时")
     assert render_situation_header(unknown, voice=SituationVoice.FIRST) == (
         "我此刻在大殿，当前时间为三月初四 午时。"
@@ -219,6 +229,50 @@ def test_a_judges_scene_names_whose_arrival_it_is() -> None:
         "doer", environment=env, directory=directory, visibility=SceneVisibility.GOD,
     )
     assert "；尉迟恭刚刚抵达此处。" in scene.text
+
+
+def test_scene_roster_marks_follow_whose_eyes() -> None:
+    """Through one person's eyes the roster reads as perception does; the god view has no viewer,
+    so each person carries their own arrival counted to now, the same for every reader, and one
+    here since world start is already here in both."""
+    env = _env()
+    for aid in ("doer", "early", "late"):
+        env.place_agent(agent_id=aid, location_id="gate")
+    env.place_agent(agent_id="keeper", location_id="hall")
+    _at(env, 1)
+    env.move_body(body_id="early", location_id="hall")
+    _at(env, 2)
+    env.move_body(body_id="doer", location_id="hall")
+    _at(env, 6)
+    env.move_body(body_id="late", location_id="hall")
+    _at(env, 7)
+    names = {"doer": "尉迟恭", "early": "长孙无忌", "late": "李世民", "keeper": "王德"}
+    directory = LiveWorldDirectory.from_agents({
+        aid: SimpleNamespace(personality=SimpleNamespace(soul=SimpleNamespace(name=n, gender="男", role="")))
+        for aid, n in names.items()
+    }, env)
+
+    def roster(viewer: str, visibility: SceneVisibility) -> str:
+        text = assemble_scene_context(
+            viewer, environment=env, directory=directory, visibility=visibility,
+        ).text
+        return next(line for line in text.splitlines() if line.startswith("- 在场的其他人"))
+
+    seen = roster("doer", SceneVisibility.OWN_EYES)
+    assert f"长孙无忌（男，{ALREADY_HERE_MARK}）" in seen
+    assert "李世民（男，刚刚抵达）" in seen
+
+    early = env.own_arrival("early")
+    assert early and early != ALREADY_HERE_MARK
+    god_from_doer = roster("doer", SceneVisibility.GOD)
+    assert f"长孙无忌（男，{early}）" in god_from_doer
+    assert "李世民（男，刚刚抵达）" in god_from_doer
+    # Built around another person, the god view gives the same marks.
+    god_from_late = roster("late", SceneVisibility.GOD)
+    assert f"长孙无忌（男，{early}）" in god_from_late
+    assert f"尉迟恭（男，{env.own_arrival('doer')}）" in god_from_late
+    assert f"王德（男，{ALREADY_HERE_MARK}）" in seen
+    assert f"王德（男，{ALREADY_HERE_MARK}）" in god_from_doer
 
 
 # ── a trip over several steps ───────────────────────────────────────────────

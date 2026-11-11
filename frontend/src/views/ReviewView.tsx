@@ -370,7 +370,7 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
           : loreHeader(meta.seconds_per_step ? (
             <div className="flex items-center gap-2 text-xs bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 text-slate-400">
               <span>⏳</span>
-              <span>叙事节奏 · 每步 {durationLabel(meta.seconds_per_step)}</span>
+              <span>每步时长 {durationLabel(meta.seconds_per_step)}</span>
             </div>
           ) : null)}
       </div>

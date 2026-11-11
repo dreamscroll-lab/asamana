@@ -28,6 +28,8 @@ interface Props {
   // included) goes immersive together; the map only reflects the flag in its button.
   immersive: boolean;
   onToggleImmersive: () => void;
+  // The world's seconds_per_step, for the clock shown here in immersive; 0 when unknown.
+  stepSeconds?: number;
   // Whose view the steps are filtered to; null for the director.
   viewer?: Viewer;
   // What floats over the map (the director's or the actor's console), kept inside the map
@@ -51,6 +53,7 @@ export default function LiveWorldMap({
   onFocusChange,
   immersive,
   onToggleImmersive,
+  stepSeconds = 0,
   viewer = null,
   children,
 }: Props) {
@@ -232,7 +235,7 @@ export default function LiveWorldMap({
       </div>
       <div className="shrink-0 flex items-center justify-end gap-1 px-3 py-2 border-t border-slate-800/70 bg-slate-950/50">
         {/* The clock shows here only in immersive, when the header that carries it is collapsed. */}
-        {immersive && step && <WorldClock step={step} size="sm" className="mr-auto" />}
+        {immersive && step && <WorldClock step={step} stepSeconds={stepSeconds} size="sm" className="mr-auto" />}
         <span className="text-[10px] text-slate-500 mr-1">动画速度</span>
         {[0.25, 0.5, 1, 2].map((mult) => (
           <button

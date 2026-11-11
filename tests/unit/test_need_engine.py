@@ -674,6 +674,64 @@ async def test_evaluate_goal_progress_annotates_goal_texts_for_audit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_evaluate_goal_progress_shows_failed_goals_for_residue_only() -> None:
+    """FAILED goals reach the judge as a reference block, so residue can't put a goal failed a
+    step ago straight back; they are not numbered, so verdicts still bind to ACTIVE."""
+    from core.context import get_call_annotations
+    from core.interfaces.llm import LLMResponse
+
+    captured: dict = {}
+
+    class _CapturingJudge:
+        async def complete(self, scene, messages, temperature=0.7, max_tokens=1000, **kwargs):
+            captured["user"] = messages[-1].content
+            captured.update(get_call_annotations())
+            return LLMResponse(
+                content='{"goals": [{"reason": "达成", "index": 1, "status": "completed"}], "residue": []}',
+                input_tokens=0, output_tokens=0, model="test")
+
+    engine = NeedEngine(llm_router=_CapturingJudge())  # type: ignore[arg-type]
+    personality = _make_personality(short_term_entities=[
+        GoalEntity(id="stg-1-0", text="仍在推进的目标", goal_type="short_term", created_step=1),
+        GoalEntity(id="stg-1-1", text="问大哥要个准日子", goal_type="short_term", created_step=1,
+                   status=GoalStatus.FAILED, last_evaluated_step=2),
+    ])
+    updated = await engine.evaluate_goal_progress(
+        step=3, action_description="做了一件事", action_result="结果如此", personality=personality,
+    )
+
+    user = captured["user"]
+    failed_block = user.split("近来没做成的目标", 1)[1]
+    assert "问大哥要个准日子" in failed_block
+    assert "1. 仍在推进的目标" in user and "2. " not in user
+    assert captured["goal_texts"] == {"1": captured["goal_texts"]["1"]}
+    assert any("问大哥要个准日子" in fact for fact in captured["given_facts"])
+    by_id = {g.id: g.status for g in updated}
+    assert by_id == {"stg-1-0": GoalStatus.COMPLETED, "stg-1-1": GoalStatus.FAILED}
+
+
+@pytest.mark.asyncio
+async def test_evaluate_goal_progress_omits_failed_block_without_failed_goals() -> None:
+    captured: dict = {}
+
+    class _CapturingJudge:
+        async def complete(self, scene, messages, temperature=0.7, max_tokens=1000, **kwargs):
+            from core.interfaces.llm import LLMResponse
+            captured["user"] = messages[-1].content
+            return LLMResponse(content='{"goals": [], "residue": []}',
+                               input_tokens=0, output_tokens=0, model="test")
+
+    engine = NeedEngine(llm_router=_CapturingJudge())  # type: ignore[arg-type]
+    personality = _make_personality(short_term_entities=[
+        GoalEntity(id="stg-1-0", text="仍在推进的目标", goal_type="short_term", created_step=1),
+    ])
+    await engine.evaluate_goal_progress(
+        step=3, action_description="做了一件事", action_result="结果如此", personality=personality,
+    )
+    assert "近来没做成的目标" not in captured["user"]
+
+
+@pytest.mark.asyncio
 async def test_run_preserves_existing_goals_when_dominant_need_unchanged() -> None:
     """Goals are preserved when the dominant need hasn't changed.
 

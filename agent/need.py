@@ -45,6 +45,10 @@ _logger = get_logger(__name__)
 # Said when the hands are empty: left out, a goal or a verdict assumes the thing it needs is there.
 _NOTHING_HELD = "无"
 
+# How many of the most recently closed goals a goal prompt lists: "不必重复" and "别原样重来"
+# weigh differently for yesterday vs just now.
+_RECENT_CLOSED_GOAL_LIMIT: int = 5
+
 
 def _held_lines(held: "Sequence[VisibleEntity]") -> List[str]:
     """What the agent has in hand, one rendered item per line; content stays out, since where a
@@ -72,7 +76,7 @@ _GOAL_EVALUATION_SYSTEM = """\
 - 一次成功的行动**未必**使目标 completed——多数目标要多步推进，没真正达成就保持 active。
 - **警惕「永远 active」**：目标文本后可能标着它「已历约多久仍未了结」。若一个目标已历时明显偏久、且轨迹显示反复推进却始终停在原地（结果一再未达预期、状态毫无实质变化），说明当前手段对它无效——判 failed（搁置），不要无限 active。一个推进不动的目标会锁死后续认知。判 failed（搁置）时，reason 必须点明「反复无进展」的具体依据，落在已记录的轨迹 / 时长上，不臆测。
 - 但别矫枉过正：真正在**逐步推进**（每步能看到可见进展、只是尚未跨过完成线）的多步目标保持 active——搁置只针对「原地打转」，不是「还没做完」；拿不准是「有进展但慢」还是「原地打转」时，倾向保留 active。
-- 判断之前先明确好当前时间和当前地点，避免在结果中涉及到时间问题时出现错乱的情况。
+- 判断之前先明确好当前时间和当前地点，避免在结果中涉及到时间问题时出现错乱，或目标明显过期却还判为活跃的情况。比如当前时间是6月3号，但是目标中说6月2号之前一定要做某事，这个目标明显是完不成了，因为已经过期了。
 - 涉及某样东西的目标，要结合所给「被评判者此刻手上的东西」来判，比如要靠手上的东西才能成立的事，就看提前那东西在不在他手上；这里只列他手上的，没列出的东西不等于不存在。比如目标是已经把某样东西交给某人，那东西还在他手上，就是还没交出去。
 - **每个目标必须把判断依据(reason)写在最前面，再给序号(index)与状态(status)——先分析后定状态，不要凭空直接给状态。**
 - 只输出 JSON，不要任何多余内容。
@@ -81,20 +85,28 @@ _GOAL_EVALUATION_SYSTEM = """\
 除了上面既有目标的进退，这次行动本身可能产生被评判者**没有了结的事项**。先分析、再指出。
 
 算 residue 的（只要落在本轮行动与结果上、有据可依）：
-- 行动结果里明确表示、或由结果直接通过常理推得的下一步将要做的事项
-- 本轮行动只做了部分事项，还有未完成事项需要继续做
+- 行动结果里明确表示、或由结果直接通过常理推得的被评判者自己下一步将要做的事项
+- 本轮行动只做了部分事项，还有未完成事项需要被评判者继续做
 
 不算 residue 的（写了就是错）：
 - 复述已经发生的事
 - 泛泛的心情、决心、表态（「我要更谨慎些」「我得振作」这类不是没有了结的事项）
 - 没有任何依据或者通过推理也得不到的你自己臆想的事项
 - 与上面待判定目标里已有的那些意思相近或相同的事项
+- 与所给「近来没做成的目标」意思相近的事项：那件事已经试过没做成，换个说法再挂上去还是同一件事。
+  除非本轮结果带来了让它重新走得通的新条件（比如对方新答应了、新给了时间，改变了决定等等），那就是新的事项，照常写
 - **指向所给材料里根本不存在的人、地方或东西的事项**
 - 要用到他手上没有的东西、却没把「先去得到它」算进去的事项
-- 不属于被评判者的事项
+- 不属于被评判者的事项：事项归**需要动手去做的人**。别人应下要做的事——哪怕是被评判者吩咐的——
+  是那个人的，不是被评判者的；既不要把它写成「我去做」，也不要改写成「我须让他做」「我盯着他做」之类。
+  比如被评判者吩咐小甲明早把信送到乙家：送信是小甲的事，不写「我明早送信」，也不写「我得督促小甲送信」。
+- 单纯的等待（等回复、等回报、等某人把事办完）：等待本身什么都不做，不是要了结的事项。
 
 约束：
 """ + CLOSED_WORLD_FACT_RULE + """
+- 每条写的是被评判者**自己要动手做**的一件事，看这件事由谁来做：不是被评判者的事项不写；被评判者只需要
+  等待的，比如在等别人回来、回话、办完之类的也不写，等待本来就相当于什么都不做；被评判者自己还得
+  去做的事项照常写
 - 用**被评判者本人的口吻、第一人称**写（「我……」），每条不超过 28 字，最多 2 条；里头若提到
   时间，写具体时间点，不写「明日 / 今夜」等等相对时间
 - due_in_hours：**这件事说定了截止时间，就填从此刻到截止时间还有几小时；没说定时间就填null或者都不填写。**
@@ -114,7 +126,7 @@ index 为所给待判定目标的序号（整数，从 1 开始）；status 只�
 residue 那两项放在最后——要先判完上面每个目标的去留，才知道这次行动真正**新**留下的是什么。
 两项之间同样是先想后判：
 - residue_reason（≤60字）：先在这里逐一审视本轮行动与结果，说清**哪一句话**让你认为留下了没了结的
-  事项、它为什么不属于上面已有的目标；**若认为什么都没留下，也要在这里说明为什么**（多数行动本
+  事项、它为什么不属于上面已有的或近来没做成的目标；**若认为什么都没留下，也要在这里说明为什么**（多数行动本
   就如此，这是正常答案，不必勉强找出点什么）。
 - residue：由上面的分析推出的条目；没有则给 []。**不得出现分析里没有依据的条目。**
 """ + ABSOLUTE_TIME_RULE + """"""
@@ -133,7 +145,7 @@ _GOAL_EVALUATION_USER = """\
 {held_items}
 {recent_experience}待判定的目标（按序号）：
 {goals_numbered}
-
+{failed_short_term}
 依上面说定的两项任务、约束与 JSON 格式给出裁定（先逐个目标判状态，再给 residue），
 只输出 JSON、不写任何多余内容。"""
 
@@ -749,6 +761,18 @@ class NeedEngine:
             + "\n"
             if any(recent_factuals) else ""
         )
+        # Without the failed goals, one failed a step ago comes straight back as residue the next
+        # time the agent says he'll try again. FAILED also holds goals evicted for capacity, which
+        # weren't tried; they can't be told apart, and the prompt's "new condition" exception
+        # keeps such an intent writable.
+        failed_lines = self._closed_goal_lines(
+            [g for g in entities if g.status == GoalStatus.FAILED],
+            now_step=step, limit=_RECENT_CLOSED_GOAL_LIMIT,
+        )
+        failed_short_term = (
+            "近来没做成的目标（只作对照参考，不在待判定之列）：\n" + "\n".join(failed_lines) + "\n"
+            if failed_lines else ""
+        )
         situation_header = render_situation_header(situation, voice=SituationVoice.THIRD, who=agent_name)
         system_prompt = _GOAL_EVALUATION_SYSTEM
         user_prompt = _GOAL_EVALUATION_USER.format(
@@ -760,6 +784,7 @@ class NeedEngine:
             held_items="\n".join(f"- {line}" for line in _held_lines(held)),
             recent_experience=recent_block,
             goals_numbered=goals_numbered,
+            failed_short_term=failed_short_term,
         )
         residue_goals: List[tuple[str, int | None]] = []
         try:
@@ -771,7 +796,8 @@ class NeedEngine:
                 .add("我原本期望", expected_outcome or "（无）")
                 .add("实际结果", action_result)
                 .add("此刻手上的东西", _held_lines(held))
-                .add("近来的经历", recent_block.splitlines()),
+                .add("近来的经历", recent_block.splitlines())
+                .add("近来没做成的目标", [line.strip() for line in failed_lines]),
                 goal_texts=goal_texts_by_index,
                 location=situation_location(situation),
             ):
@@ -1106,8 +1132,9 @@ class NeedEngine:
             ):
                 if items:
                     history_lines.append(f"- {label}：")
-                    # Five most recent: "不必重复" weighs differently for yesterday vs just now.
-                    history_lines.extend(self._closed_goal_lines(items, now_step=now_step, limit=5))
+                    history_lines.extend(self._closed_goal_lines(
+                        items, now_step=now_step, limit=_RECENT_CLOSED_GOAL_LIMIT,
+                    ))
             recently_completed_section = (
                 f"我的近况（{MEMORY_ORDER_HINT}）：\n" + "\n".join(history_lines) if history_lines else ""
             )

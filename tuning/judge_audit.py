@@ -540,16 +540,18 @@ def init_block(view: WorldAuditView) -> str:
     # Without this block the judge sees half the world and can't judge what this opening allows besides
     # talking. Placement (where) must be included: whether things and people sit where the conflict is
     # is something this audit can judge.
-    # Sub-places: the theme's named spots, each hung under one map place. Shown with the place's
-    # own description so the judge can tell whether a spot belongs there; placement above (who
-    # starts where) is read against them.
-    sub_places = [p for p in init.get("sub_places") or [] if isinstance(p, dict)]
-    if sub_places:
-        lines.append(_sub_sep("地点与子地点（判子地点是否确属所在地点、粒度是否恰当、是否服务核心张力）"))
-    for p in sub_places:
+    # The whole map: every place, with its own description and the theme's sub-places hung under
+    # it. The judge reads placement (above and below) against it and judges whether each sub-place
+    # belongs where it was put. A place without sub-places is still listed: the judge treats this
+    # list as every place there is.
+    places = [p for p in init.get("places") or [] if isinstance(p, dict)]
+    if places:
+        lines.append(_sub_sep("地图上的全部地点及其子地点（开局落位以此为准；判子地点是否确属所在地点、粒度是否恰当、是否服务核心张力）"))
+    for p in places:
         desc = f"：{p.get('description')}" if p.get("description") else ""
         lines.append(f"- {p.get('name')}{desc}")
-        lines.append(f"    子地点：{_join(p.get('sub_places'))}")
+        if p.get("sub_places"):
+            lines.append(f"    子地点：{_join(p['sub_places'])}")
 
     entities = init.get("world_entity_seeds") or []
     npcs = init.get("npcs") or []

@@ -40,11 +40,10 @@ function elements(node: ReactNode): Element[] {
   });
 }
 
-function consoleTree(entries: ActorEntry[] = [], stepSeconds = 14400) {
+function consoleTree(entries: ActorEntry[] = []) {
   state.values.push(null, "every_step", "唉", null, null, null);
   return ActorConsole({
     worldId: "world", selfId: "self", entries, turn, runState: "running", step: 1, pace: "every_step", immersive: true,
-    stepSeconds,
   });
 }
 
@@ -52,16 +51,6 @@ beforeEach(() => {
   state.values.length = 0;
   submission.run.mockClear();
   vi.restoreAllMocks();
-});
-
-describe("the step's length", () => {
-  it("shows the world time per step where the actor writes", () => {
-    expect(renderToStaticMarkup(consoleTree())).toContain("每步 约 4 小时");
-  });
-
-  it("shows nothing when the length is unknown", () => {
-    expect(renderToStaticMarkup(consoleTree([], 0))).not.toContain("每步");
-  });
 });
 
 describe("a reading of words awaiting confirmation", () => {

@@ -85,7 +85,8 @@ _SETUP = {
          "location": "north_camp", "description": "守营门，认符不认人"}],
     "sub_places": [{"location_id": "north_camp", "name": "辕门"}],
 }
-_WORLD_CONFIG = {"places": {"north_camp": {"place_id": "north_camp", "name": "北营"}}}
+_WORLD_CONFIG = {"places": {"north_camp": {"place_id": "north_camp", "name": "北营"},
+                            "west_field": {"place_id": "west_field", "name": "城西空地"}}}
 
 
 def _view(trace_dir: str, steps: list[int] | None = None, setup: dict | None = None) -> WorldAuditView:
@@ -206,6 +207,14 @@ def test_init_is_the_confirmed_world_not_the_build_s_raw_output(trace_dir: str) 
     assert "（主角）长　30岁　男　在 北营" in block
     assert "north_camp" not in block and "agent-x" not in block
     assert view.init["seconds_per_step"] == 7200
+
+
+def test_init_lists_every_place_on_the_map_not_only_those_with_sub_places(trace_dir: str) -> None:
+    """The judge reads the place list as every place there is. A place without sub-places left out
+    of it makes whatever starts there look placed somewhere invented."""
+    block = init_block(_view(trace_dir))
+    assert "- 北营" in block and "子地点：辕门" in block
+    assert "- 城西空地" in block
 
 
 def test_init_prompt_lists_history_oldest_first_and_shows_only_the_opening_s_scales(

@@ -18,7 +18,7 @@ from world.builder import (
     _world_config_locations,
 )
 from world.builders.sub_place_generator import SubPlaceGenerator
-from world.models import SUB_PLACE_LIMIT, ThemeAnalysis, WorldEntitySeed
+from world.models import SUB_PLACE_LIMIT, NpcSeed, ThemeAnalysis, WorldEntitySeed
 from worlds.tiled import TiledWorldConfig
 
 
@@ -133,6 +133,19 @@ def test_a_seed_named_like_a_sub_place_is_dropped() -> None:
         (SubPlace(location_id="buzheng_fang", name="秦王府"),),
     )
     assert [s.name for s in analysis.world_entity_seeds] == ["秦府密令"]
+
+
+def test_an_npc_named_like_a_sub_place_is_dropped() -> None:
+    analysis = _analysis()
+    analysis.npc_seeds = [
+        NpcSeed(name="旅馆前台", gender="女", description="前台接待", location="buzheng_fang"),
+        NpcSeed(name="老周", gender="男", description="门房", location="buzheng_fang"),
+    ]
+    _drop_seeds_shadowing_locations(
+        analysis, TiledWorldConfig(template="changan_iso"),
+        (SubPlace(location_id="buzheng_fang", name="旅馆前台"),),
+    )
+    assert [n.name for n in analysis.npc_seeds] == ["老周"]
 
 
 def test_build_prompts_list_each_places_sub_places() -> None:

@@ -546,12 +546,13 @@ def _build_init(setup: WorldSetup, world_config: WorldConfig) -> tuple[dict[str,
     config_places = world_config.get_places()
     init = {
         "world_name": lore.world_name,
-        # The places the theme hung sub-places under, with the map's own description of each: what
-        # the audit needs to judge whether a sub-place belongs where it was put and fits the story.
-        "sub_places": [
-            {"name": config_places[pid].name, "description": config_places[pid].description,
+        # Every place on the map, with its own description and its sub-places. It must be the whole
+        # map: the judge reads it as the closed set of places, so a place left out (one without
+        # sub-places) makes every placement there look invented.
+        "places": [
+            {"name": place.name, "description": place.description,
              "sub_places": [s.name for s in setup.sub_places if s.location_id == pid]}
-            for pid in dict.fromkeys(s.location_id for s in setup.sub_places) if pid in config_places
+            for pid, place in config_places.items()
         ],
         # Opening things and errand-runners: like personas, they're the initial world fixed at build time
         # for the whole run. The audit needs to see them to judge whether the opening has anything to fight

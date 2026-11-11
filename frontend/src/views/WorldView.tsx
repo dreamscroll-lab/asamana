@@ -378,7 +378,7 @@ function WorldObservation({ id, initialMeta, onReload }: { id: string; initialMe
             </div>
             {/* Both layers of "when", side by side — see WorldClock for why they are two
                 things and not one sentence. */}
-            {displayStep && <WorldClock step={displayStep} />}
+            {displayStep && <WorldClock step={displayStep} stepSeconds={meta?.seconds_per_step ?? 0} />}
           </div>
 
           {/* Run controls + source + panel toggles — one row. */}
@@ -556,6 +556,7 @@ function WorldObservation({ id, initialMeta, onReload }: { id: string; initialMe
               onFocusChange={setFocus}
               immersive={immersive}
               onToggleImmersive={() => setImmersive((o) => !o)}
+              stepSeconds={meta?.seconds_per_step ?? 0}
             >
               {/* The director's console over the map's top-right, live mode only (playback is
                   history, with no next step to land on). Inside the map, so it survives immersive
@@ -579,7 +580,6 @@ function WorldObservation({ id, initialMeta, onReload }: { id: string; initialMe
                   step={feed[0]?.step ?? 0}
                   pace={meta?.actor_pace ?? "every_step"}
                   immersive={immersive}
-                  stepSeconds={meta?.seconds_per_step ?? 0}
                 />
               )}
               {viewer && mode === "live" && turn?.kind === "decide" && turn.briefing && operationTarget?.turnId === turn.turn_id && (

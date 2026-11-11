@@ -203,20 +203,24 @@ def _drop_seeds_shadowing_locations(
     world_config: WorldConfig,
     sub_places: Sequence[SubPlace] = (),
 ) -> None:
-    """Drop world_entity_seeds whose name is already a location or a sub-place.
+    """Drop thing seeds named like a location or a sub-place, and NPC seeds named like a sub-place.
 
     The map is the single source of truth for locations, the sub-places for the spots inside them.
-    The LLM sometimes generates an entity seed for one of them (usually a landmark, e.g. "玄武门"),
-    so the same name appears twice in the directory (a place you go to and a thing you act on),
-    ambiguous for both narrative and addressing.
+    The LLM sometimes names a thing after one of them (usually a landmark, e.g. "玄武门"), or an NPC
+    after the spot they work at (a clerk called "旅馆前台" beside the sub-place "旅馆前台"), so one
+    name answers to two referents in the directory, ambiguous for both narrative and addressing.
+    The place stands: people and things are already placed by its name.
 
-    Match on exact identity only (location id / display name / alias / sub-place name, by
-    ``name_key``), the same rule ``WorldSetup.validate`` holds a revised thing to. Don't use
-    ``resolve_location_id``: its substring fallback would also kill legitimate landmarks like
-    "玄武门前的石狮". No type filter: any seed sharing a location's name is the same ambiguity,
-    whether it calls itself an item or a landmark.
+    Each kind is held to the rule ``WorldSetup.validate`` holds a revised one to, so a build never
+    reaches validation with a collision it could have repaired: things clash with places and
+    sub-places, NPCs with sub-places. Match on exact identity only (location id / display name /
+    alias / sub-place name, by ``name_key``). Don't use ``resolve_location_id``: its substring
+    fallback would also kill legitimate landmarks like "玄武门前的石狮". No type filter on things:
+    any seed sharing a location's name is the same ambiguity, whether it calls itself an item or
+    a landmark.
     """
-    taken = MapPlaces.of(world_config).names | {name_key(s.name) for s in sub_places}
+    sub_place_names = {name_key(s.name) for s in sub_places}
+    taken = MapPlaces.of(world_config).names | sub_place_names
     kept: list[WorldEntitySeed] = []
     for seed in analysis.world_entity_seeds:
         if name_key(seed.name) in taken:
@@ -231,6 +235,16 @@ def _drop_seeds_shadowing_locations(
             continue
         kept.append(seed)
     analysis.world_entity_seeds = kept
+    kept_npcs: list[NpcSeed] = []
+    for npc in analysis.npc_seeds:
+        if name_key(npc.name) in sub_place_names:
+            logger.warning(
+                "npc_seed_shadows_sub_place",
+                extra={"seed_name": npc.name, "location": npc.location},
+            )
+            continue
+        kept_npcs.append(npc)
+    analysis.npc_seeds = kept_npcs
 
 
 def _location_id(

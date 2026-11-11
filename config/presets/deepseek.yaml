@@ -32,6 +32,12 @@ llm:
       params:
         thinking:
           type: disabled
+    dashscope:
+      base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+      model: qwen3.7-max
+      api_key_env: DASHSCOPE_API_KEY
+      params:
+        enable_thinking: true
 
   default_provider: deepseek
 
@@ -51,7 +57,7 @@ llm:
   # Judge for offline review (python -m tuning). Deliberately not flash: a model grading its own
   # output grades too leniently.
   judge:
-    provider: deepseek_pro
+    provider: dashscope
 
 embedding:
   # This dashscope is an implementation name in the embedding registry, a separate namespace from
