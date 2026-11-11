@@ -20,7 +20,9 @@ from agent.memory_types import Memory, MemoryImportance, MemoryStream
 from agent.reflection import INSIGHT_BASE_IMPORTANCE, ReflectionEngine
 from agent.relation_evolution import RelationEvolution
 from agent.state_codec import decode_agent_state, encode_agent_state
-from agent.goals import GoalEntity, GoalStatus, is_live_goal, amend_short_term_goals
+from agent.goals import (
+    FAILED_GOALS_PER_REVISION, GoalEntity, GoalStatus, amend_short_term_goals, is_live_goal,
+)
 from agent.need import NeedEngine, NeedEvaluation, NeedType
 from agent.perception import InternalContext, PerceptionPacket, RetrievalQuery
 from agent.perception_emotion import (
@@ -1255,6 +1257,20 @@ class Agent:
             return
         await self.reflection_engine.reflect(step)
 
+    def long_term_revision_due(self, step: int, *, interval: int) -> bool:
+        """Whether long-term goals are due for revision: ``interval`` steps since the last one, or
+        FAILED_GOALS_PER_REVISION short-term goals failed since then.
+
+        Both count from the same last revision, so a failure-driven revision also restarts the
+        period and the two never run back to back. Without the failure condition the long-term
+        goal behind a blocked pursuit keeps spawning it until the period comes round.
+        """
+        state = self.personality.state
+        return (
+            step - state.long_term_revised_step >= interval
+            or state.failed_goals_since_revision >= FAILED_GOALS_PER_REVISION
+        )
+
     async def revise_long_term_goals(self, *, step: int) -> None:
         """Re-examine long-term goals from the agent's own recent memories (both streams) and sync
         the result to personality. Skips with no recent memories: no change for its own sake.
@@ -1262,6 +1278,8 @@ class Agent:
         NeedEngine doesn't touch personality and MemorySystem doesn't enter NeedEngine; Agent
         assembles the memory text and owns need → personality consistency.
         """
+        # Whatever comes of it, this was the revision that fell due; the next counts from here.
+        self.personality.mark_long_term_revised(step)
         if self.actor is not None:
             # The actor owns this character's motivation.
             return
@@ -1275,6 +1293,7 @@ class Agent:
                 world_start_second_of_day=self.world_start_second_of_day,
             ),
             is_main_character=self.is_main_character,
+            now_step=step,
             situation=self._situation,
         )
         # Record what was actually adopted: otherwise an audit reads goals the engine discarded
@@ -2071,7 +2090,18 @@ class Agent:
             for goal in self.personality.state.short_term_goal_entities
             if goal.status == GoalStatus.INTERRUPTED
         }
+        already_failed = {
+            goal.id
+            for goal in self.personality.state.short_term_goal_entities
+            if goal.status == GoalStatus.FAILED
+        }
         self.personality.set_short_term_goal_entities(updated)
+        # Counts the judge's verdict and the time-allowance reaping, plus the rare goal pushed out
+        # by residue enqueued in this same judgment. Eviction at motivation time never lands here:
+        # a new plan displacing an old one is no sign a direction is blocked.
+        self.personality.count_failed_goals(sum(
+            1 for g in updated if g.status == GoalStatus.FAILED and g.id not in already_failed
+        ))
         # The returned table still holds terminal goals from the FIFO.
         for goal in updated:
             if goal.status == GoalStatus.INTERRUPTED and goal.id not in already_interrupted:

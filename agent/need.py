@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from agent.relation import PerceivedRelation
 
 from agent.goals import (
-    GoalEntity, GoalOrigin, GoalStatus, active_goals, enqueue_goals,
+    GoalEntity, GoalOrigin, GoalStatus, active_goals, closed_step, enqueue_goals,
     goal_age_hint, goal_due_hint, is_active_goal, is_due,
     is_past_allowance, live_goals, order_goals_for_prompt, parse_goal_evaluation,
     parse_goal_item, parse_residue, trim_goal_history,
@@ -214,13 +214,14 @@ _LONG_TERM_GOAL_UPDATE_SYSTEM = """\
 就着这些事，回头看我那几条长期目标还对吗？衡量的根子只有一条：这段经历有没有真的改变我要走的方向——真变了才动，没变就守住。
 什么样的经历才算"真的改变了方向"？常见的有这么几种（但绝不止这些；归根到底还是回到上面那条根子去判断，别只盯着这几条对号入座，也别因为某件事不在其列就轻易放过）：
 - 某条目标已经被我做成了——它实现了，该从我往后要奔赴的方向里退场
-- 某条目标已经再无可能——路被堵死、它赖以成立的前提没了，再死守也是空耗
+- 某条目标已经再无可能——路被堵死、它赖以成立的前提没了，再死守也是空耗。为它使的力一再落空、没做成的总是同一件事（哪怕换了说法、换了走法），往往就是这个信号
 - 我看清了什么、心气变了——同一桩处境，今日的我和往日的我，要走的路已经不同
 - 这些事逼出了一个新方向，且它分量够重，够得上我从此把它当成长期的奔头
 真要动，手法不外乎：改写某条、放下一条（已做成的、再无可能的、或不再属于我的）、或添一条新的——其中"放下"和"添"同样要紧，别只惦着添新的，却把早该退场的旧目标一直攥在手里。
 
 【我要避开的】
 - 为变而变：方向没真变，就别动那几条长期目标
+- 把一两次没做成、或只是被别的事挤开没顾上，当成再无可能
 - 背弃或改写我的人生目标：北极星只用来校准长期目标，不能被推翻
 - 把长期目标缩成手头的事：眼下的小事、一时的情绪、或几步就能了结的某桩具体事，都不是长期目标——它是要走很长一段路的奔头
 - 把长期目标锁成一桩具体的事或一次具体行动：那就成了计划——它该是个能长出很多种走法、容得下变化的【方向】
@@ -247,6 +248,9 @@ _LONG_TERM_GOAL_UPDATE_USER = """\
 {current_long_term}
 - 我眼下手头在忙的小事（只作参照，别当长期目标）：
 {short_term}
+
+【我近来没做成的事】（{memory_order_hint}）
+{failed_short_term}
 
 【这段日子发生的事情】（{memory_order_hint}）
 {recent_memories}
@@ -842,12 +846,18 @@ class NeedEngine:
         personality: PersonalityLayer,
         recent_memory_texts: List[str],
         is_main_character: bool,
+        now_step: int,
         situation: Situation = Situation(),
     ) -> List[str] | None:
         """Revisit long-term goals in first person; ``life_goal`` (the north star) never changes.
 
         ``recent_memory_texts`` covers both factual and experiential streams: a goal achieved or
         invalidated is an objective fact, so this doesn't depend on reflection insight.
+
+        Recently FAILED short-term goals are listed too. Memory holds each attempt but not that
+        the goal behind them was given up, so without this list a direction the world never lets
+        through (someone who can't be found) looks merely unfinished, and the goal keeps feeding
+        new short-term goals for the same thing.
 
         Returns None for no update (``[]``, unchanged, or error), else the new goal texts
         for the caller to write via ``personality.set_long_term_goals``. Writes nothing.
@@ -864,6 +874,10 @@ class NeedEngine:
             )
             or "  · （暂无）"
         )
+        failed_short_term = "\n".join(self._closed_goal_lines(
+            [g for g in state.short_term_goal_entities if g.status == GoalStatus.FAILED],
+            now_step=now_step,
+        )) or "  - （没有）"
         recent = (
             "\n".join(f"- {t}" for t in recent_memory_texts if t)
             or "- （没有特别值得一提的事）"
@@ -875,6 +889,7 @@ class NeedEngine:
             persona=personality.to_prompt_context(include_goals=False, include_emotion=True),
             current_long_term=current_long_term,
             short_term=short_term,
+            failed_short_term=failed_short_term,
             recent_memories=recent,
             memory_order_hint=MEMORY_ORDER_HINT,
         )
@@ -918,6 +933,26 @@ class NeedEngine:
             )
         return None
 
+    def _closed_goal_lines(
+        self, goals: Sequence[GoalEntity], *, now_step: int, limit: int | None = None,
+    ) -> List[str]:
+        """Closed goals as ``  - <when><text>`` lines, oldest first, the latest ``limit`` of them.
+
+        Closed goals are past events: they take memory's recency_prefix wording (not
+        goal_due_hint) so the LLM places them on one timeline with recalled memories.
+        """
+        ordered = sorted(goals, key=closed_step)
+        if limit is not None:
+            ordered = ordered[-limit:]
+        return [
+            "  - " + recency_prefix(
+                now_step=now_step, ref_step=closed_step(g),
+                seconds_per_step=self._seconds_per_step,
+                world_start_second_of_day=self._world_start_second_of_day,
+            ) + g.text
+            for g in ordered
+        ]
+
     def to_prompt_context(
         self,
         personality: PersonalityLayer,
@@ -951,16 +986,8 @@ class NeedEngine:
             top_rival = max(rivals, key=lambda n: n.intensity)
             lines.append(f"同时也在意（仍在牵扯注意力）：{_prompt_label(top_rival.type)}")
         if recently_completed:
-            # Closed goals are past events: use memory's recency_prefix wording (not goal_due_hint)
-            # so the LLM can place them on one timeline with recalled memories.
             lines.append(f"我近期已经完成的事项（{MEMORY_ORDER_HINT}）：")
-            for g in sorted(recently_completed, key=lambda g: g.last_evaluated_step):
-                when = recency_prefix(
-                    now_step=now_step, ref_step=g.last_evaluated_step,
-                    seconds_per_step=self._seconds_per_step,
-                    world_start_second_of_day=self._world_start_second_of_day,
-                )
-                lines.append(f"  - {when}{g.text}")
+            lines.extend(self._closed_goal_lines(recently_completed, now_step=now_step))
         def _render(goals: Sequence[GoalEntity]) -> List[str]:
             return [
                 f"  {i}. {g.text}{goal_due_hint(g, now_step, self._seconds_per_step)}"
@@ -1072,20 +1099,15 @@ class NeedEngine:
             history_lines: List[str] = []
             for label, items in (
                 ("我已经做完（不必重复）", recently_completed),
-                ("我试过但失败了（换个方向，别原样重来）", recently_failed),
+                # Giving up is named beside a new route: "换个方向" alone sends the agent down
+                # another road to the same unreachable end.
+                ("我试过但没做成（别原样重来：是换个走法，还是认清它眼下走不通、就此放下，想清楚再定）",
+                 recently_failed),
             ):
                 if items:
                     history_lines.append(f"- {label}：")
-                    # Five most recent, oldest first. The time point matters: "不必重复" weighs
-                    # differently for yesterday vs just now.
-                    recent_last = sorted(items, key=lambda g: g.last_evaluated_step)[-5:]
-                    for g in recent_last:
-                        when = recency_prefix(
-                            now_step=now_step, ref_step=g.last_evaluated_step,
-                            seconds_per_step=self._seconds_per_step,
-                            world_start_second_of_day=self._world_start_second_of_day,
-                        )
-                        history_lines.append(f"  - {when}{g.text}")
+                    # Five most recent: "不必重复" weighs differently for yesterday vs just now.
+                    history_lines.extend(self._closed_goal_lines(items, now_step=now_step, limit=5))
             recently_completed_section = (
                 f"我的近况（{MEMORY_ORDER_HINT}）：\n" + "\n".join(history_lines) if history_lines else ""
             )

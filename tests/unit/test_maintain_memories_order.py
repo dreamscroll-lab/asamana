@@ -12,11 +12,12 @@ These tests record the call sequence through mocks.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from agent.agent import Agent
 from engine.cognition_maintenance import CognitionMaintenance
 
 
@@ -73,7 +74,11 @@ def _stub_agent(*, agent_id: str, is_main: bool, call_log: list[tuple[str, str]]
         relation_evolution=relation_evolution,
         is_main_character=is_main,
         is_active=is_active,
+        personality=SimpleNamespace(state=SimpleNamespace(
+            long_term_revised_step=0, failed_goals_since_revision=0,
+        )),
     )
+    agent.long_term_revision_due = MethodType(Agent.long_term_revision_due, agent)
 
     async def _revise(*, step):
         call_log.append((agent_id, "revise"))

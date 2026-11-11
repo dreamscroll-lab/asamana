@@ -180,7 +180,8 @@ class EngineConfig(AsamanaConfigModel):
     # (in-flight tokens ≤ max_concurrent_llm × max_tokens, see core.rate_gate). Not embedding.
     max_concurrent_llm: int = Field(default=16, gt=0)
     decay_interval: int = Field(default=5, gt=0)
-    # Long-term goal revision period (steps), independent of reflection.
+    # Steps from an agent's last long-term goal revision to its next periodic one, independent of
+    # reflection; enough failed short-term goals bring it forward (Agent.long_term_revision_due).
     long_term_goal_revision_interval: int = Field(default=30, gt=0)
     # Maintenance-phase switches for ablations, ANDed with each interval. decay has none (it's a
     # base mechanism).

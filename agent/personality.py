@@ -284,6 +284,10 @@ class StateLayer:
     # Others' acts that landed on him since he last perceived, as he remembers each (first
     # person); they reach him with his next perception (PerceivedSignals.acted_upon).
     acted_upon: list[str] = field(default_factory=list)
+    # When long-term goals were last revised and how many short-term goals have failed since:
+    # together they decide when the next revision is due (Agent.long_term_revision_due).
+    long_term_revised_step: int = 0
+    failed_goals_since_revision: int = 0
 
 
 class PersonalityLayer:
@@ -420,6 +424,15 @@ class PersonalityLayer:
         starved, so write it for exactly the agents admitted to planning, not those that merely
         got a stub plan."""
         self._state.last_decision_step = step
+
+    def count_failed_goals(self, count: int) -> None:
+        """Add short-term goals that just failed to the count since the last long-term revision."""
+        self._state.failed_goals_since_revision += count
+
+    def mark_long_term_revised(self, step: int) -> None:
+        """Record a long-term revision; the period and the failure count both restart from it."""
+        self._state.long_term_revised_step = step
+        self._state.failed_goals_since_revision = 0
 
     def set_short_term_goal_entities(self, entities: "Sequence[GoalEntity]", *, step: int | None = None) -> None:
         """Replace the short-term goal queue, the single source of truth. The ``short_term_goals``
@@ -695,6 +708,8 @@ def _copy_state(state: StateLayer) -> StateLayer:
         condition=state.condition,
         last_decision_step=state.last_decision_step,
         acted_upon=list(state.acted_upon),
+        long_term_revised_step=state.long_term_revised_step,
+        failed_goals_since_revision=state.failed_goals_since_revision,
     )
 
 

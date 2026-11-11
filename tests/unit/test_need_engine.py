@@ -719,7 +719,7 @@ async def test_revise_long_term_goals_none_without_llm_router() -> None:
 
     result = await engine.revise_long_term_goals(
         personality=personality, recent_memory_texts=["something happened"],
-        is_main_character=True,
+        is_main_character=True, now_step=10,
     )
 
     assert result is None
@@ -745,7 +745,7 @@ async def test_revise_long_term_goals_applies_revised_json() -> None:
     personality = _personality_with_long_term("旧志向")
     result = await engine.revise_long_term_goals(
         personality=personality, recent_memory_texts=["背叛让我看清了一切"],
-        is_main_character=False,
+        is_main_character=False, now_step=10,
     )
 
     assert result == ["守护新的同盟", "为枉死者讨回公道"]
@@ -767,7 +767,7 @@ async def test_revise_long_term_goals_none_on_empty_array() -> None:
     engine = NeedEngine(llm_router=_NoChangeLLM())  # type: ignore[arg-type]
     result = await engine.revise_long_term_goals(
         personality=_personality_with_long_term("守护家国"), recent_memory_texts=["寻常的一天"],
-        is_main_character=False,
+        is_main_character=False, now_step=10,
     )
 
     assert result is None
@@ -787,10 +787,89 @@ async def test_revise_long_term_goals_none_when_identical_to_current() -> None:
     engine = NeedEngine(llm_router=_SameLLM())  # type: ignore[arg-type]
     result = await engine.revise_long_term_goals(
         personality=_personality_with_long_term("守护家国"), recent_memory_texts=["寻常的一天"],
-        is_main_character=False,
+        is_main_character=False, now_step=10,
     )
 
     assert result is None
+
+
+def test_goal_history_is_capped_per_status() -> None:
+    """Completions don't push failures out of the history: the long-term revision a run of
+    failures brings forward must still see them all."""
+    from agent.goals import _COMPLETED_GOAL_HISTORY_CAP, FAILED_GOALS_PER_REVISION, trim_goal_history
+
+    completed = [
+        GoalEntity(id=f"c{i}", text=f"做成的事{i}", goal_type="short_term",
+                   status=GoalStatus.COMPLETED, created_step=i, last_evaluated_step=10 + i)
+        for i in range(_COMPLETED_GOAL_HISTORY_CAP + 3)
+    ]
+    failed = [
+        GoalEntity(id=f"f{i}", text=f"没做成的事{i}", goal_type="short_term",
+                   status=GoalStatus.FAILED, created_step=i, last_evaluated_step=i)
+        for i in range(FAILED_GOALS_PER_REVISION)
+    ]
+    entities = failed + completed
+    trim_goal_history(entities)
+
+    assert [g.id for g in entities if g.status == GoalStatus.FAILED] == [g.id for g in failed]
+    kept_completed = [g.id for g in entities if g.status == GoalStatus.COMPLETED]
+    assert kept_completed == [g.id for g in completed[-_COMPLETED_GOAL_HISTORY_CAP:]]
+
+
+def test_goal_history_drops_the_earliest_closed_not_the_earliest_created() -> None:
+    """A long-lived goal that has only just failed sits first in the queue (creation order); it
+    must outlive goals that failed before it, or the revision it counts toward never sees it."""
+    from agent.goals import _FAILED_GOAL_HISTORY_CAP, trim_goal_history
+
+    long_lived = GoalEntity(id="old", text="早立下、刚落空的事", goal_type="short_term",
+                            status=GoalStatus.FAILED, created_step=1, last_evaluated_step=20)
+    earlier = [
+        GoalEntity(id=f"f{i}", text=f"先落空的事{i}", goal_type="short_term",
+                   status=GoalStatus.FAILED, created_step=5 + i, last_evaluated_step=10 + i)
+        for i in range(_FAILED_GOAL_HISTORY_CAP)
+    ]
+    entities = [long_lived, *earlier]
+    trim_goal_history(entities)
+
+    kept = [g.id for g in entities]
+    assert "old" in kept
+    assert "f0" not in kept  # the earliest closed goes
+    assert len(kept) == _FAILED_GOAL_HISTORY_CAP
+
+
+@pytest.mark.asyncio
+async def test_revise_long_term_goals_lists_failed_short_term_goals() -> None:
+    """The revision sees which short-term goals ended FAILED, the evidence that a direction is
+    blocked; memory alone holds the attempts but not that they were given up. Live and completed
+    goals stay out of that block."""
+    from core.interfaces.llm import LLMResponse
+
+    class _CaptureLLM:
+        def __init__(self) -> None:
+            self.user = ""
+
+        async def complete(self, scene, messages, temperature=0.7, max_tokens=1000, **kwargs):
+            self.user = messages[-1].content
+            return LLMResponse(content='{"goals": []}', input_tokens=0, output_tokens=0, model="test")
+
+    personality = _make_personality(long_term=["与失散的兄长团聚"], short_term_entities=[
+        GoalEntity(id="stg-1-0", text="去渡口打听兄长下落", goal_type="short_term",
+                   status=GoalStatus.FAILED, created_step=1, last_evaluated_step=7),
+        GoalEntity(id="stg-2-0", text="去集市寻兄长", goal_type="short_term",
+                   status=GoalStatus.COMPLETED, created_step=2, last_evaluated_step=8),
+        GoalEntity(id="stg-3-0", text="托人四处打听", goal_type="short_term", created_step=8),
+    ])
+    llm = _CaptureLLM()
+    engine = NeedEngine(llm_router=llm)  # type: ignore[arg-type]
+    await engine.revise_long_term_goals(
+        personality=personality, recent_memory_texts=["我又去了渡口"],
+        is_main_character=False, now_step=10,
+    )
+
+    failed_block = llm.user.split("【我近来没做成的事】", 1)[1].split("【这段日子发生的事情】", 1)[0]
+    assert "去渡口打听兄长下落" in failed_block
+    assert "去集市寻兄长" not in failed_block
+    assert "托人四处打听" not in failed_block
 
 
 @pytest.mark.asyncio
@@ -810,7 +889,7 @@ async def test_revise_long_term_goals_main_character_uses_retry() -> None:
     engine = NeedEngine(llm_router=router)  # type: ignore[arg-type]
     result = await engine.revise_long_term_goals(
         personality=_personality_with_long_term("旧志向"), recent_memory_texts=["重大转折"],
-        is_main_character=True,
+        is_main_character=True, now_step=10,
     )
 
     assert router.retry_called is True
@@ -831,7 +910,7 @@ async def test_revise_long_term_goals_none_on_malformed_json() -> None:
     engine = NeedEngine(llm_router=_GarbageLLM())  # type: ignore[arg-type]
     result = await engine.revise_long_term_goals(
         personality=_personality_with_long_term("守护家国"), recent_memory_texts=["平静的一天"],
-        is_main_character=False,
+        is_main_character=False, now_step=10,
     )
 
     assert result is None
@@ -849,7 +928,7 @@ async def test_revise_long_term_goals_none_on_exception() -> None:
     engine = NeedEngine(llm_router=_BoomLLM())  # type: ignore[arg-type]
     result = await engine.revise_long_term_goals(
         personality=_personality_with_long_term("一统天下"), recent_memory_texts=["噩耗传来"],
-        is_main_character=False,
+        is_main_character=False, now_step=10,
     )
 
     assert result is None
@@ -877,7 +956,7 @@ async def test_set_long_term_goals_preserves_unchanged_goal_entity_status() -> N
     engine = NeedEngine(llm_router=_JsonLLM())  # type: ignore[arg-type]
     result = await engine.revise_long_term_goals(
         personality=personality, recent_memory_texts=["新仇"],
-        is_main_character=False,
+        is_main_character=False, now_step=10,
     )
 
     assert result == ["守护家国", "肃清奸佞"]
@@ -2086,6 +2165,7 @@ async def test_long_term_goal_update_prompt_includes_situation_header() -> None:
         personality=personality,
         recent_memory_texts=["发生了一些事。"],
         is_main_character=True,
+        now_step=10,
         situation=Situation(location_view=LocationView(name="书房", description="僻静的内书房"), time_label="子时"),
     )
     assert provider.call_history, "长期目标 prompt 应被调用"

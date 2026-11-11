@@ -71,6 +71,7 @@ async def test_long_term_goal_review_adoption(traced, payload, expected, adopted
 
     result = await NeedEngine(llm_router=container.llm_router).revise_long_term_goals(
         personality=personality, recent_memory_texts=["寻常的一天"], is_main_character=False,
+        now_step=10,
     )
 
     assert result == expected

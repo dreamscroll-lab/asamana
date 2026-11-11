@@ -56,6 +56,7 @@ def _scene_block(inputs: dict[str, Any], outputs: dict[str, Any]) -> str:
                if emo else "—")
     before = inputs.get("before_long_term") or []
     short = inputs.get("short_term") or []
+    failed = inputs.get("failed_short_term") or []
     recent = inputs.get("recent") or []
     revised = outputs.get("revised")
     after = outputs.get("after_long_term") or []
@@ -71,6 +72,8 @@ def _scene_block(inputs: dict[str, Any], outputs: dict[str, Any]) -> str:
     lines.append("  重审前的长期目标：" + ("；".join(before) or "（无）"))
     if short:
         lines.append("  手头短期小事（仅参照）：" + "；".join(short))
+    if failed:
+        lines.append("  近来没做成的短期目标（按先后）：" + "；".join(failed))
     lines.append("  这段日子的经历：")
     lines += [f"    - {t}" for t in recent] or ["    -（无）"]
     if revised:

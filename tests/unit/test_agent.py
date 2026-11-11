@@ -435,6 +435,35 @@ async def test_interrupted_goal_memory_written_once_within_one_step(container: o
     ) == 1
 
 
+_FAILED_VERDICT = '{"goals": [{"reason": "反复寻访始终无果", "index": 1, "status": "failed"}]}'
+
+
+@pytest.mark.asyncio
+async def test_failed_goals_counted_once_and_reset_by_revision(container: object) -> None:
+    """The count that brings a long-term revision forward: a goal adds one on the step it fails,
+    not again on later steps where the table only still carries it; a revision restarts it."""
+    agent = _make_llm_cognition_agent(container, goal_eval_response=_FAILED_VERDICT)
+
+    from agent.goals import GoalEntity, GoalStatus
+    from agent.need import NeedType
+    agent.personality._state.short_term_goal_entities = [  # noqa: SLF001
+        GoalEntity(id="stg-1-0", text="找到失散的兄长", goal_type="short_term",
+                   related_need=NeedType.SOCIAL, created_step=1)
+    ]
+    result = _make_action_result(succeeded=True)
+
+    await _judge_and_land_goals(agent, step=2, result=result)
+    assert agent.personality.state.short_term_goal_entities[0].status == GoalStatus.FAILED
+    assert agent.personality.state.failed_goals_since_revision == 1
+
+    await _judge_and_land_goals(agent, step=3, result=result)
+    assert agent.personality.state.failed_goals_since_revision == 1
+
+    await agent.revise_long_term_goals(step=4)
+    assert agent.personality.state.failed_goals_since_revision == 0
+    assert agent.personality.state.long_term_revised_step == 4
+
+
 _RESIDUE_VERDICT = (
     '{"goals": [{"reason": "仍在推进", "index": 1, "status": "active"}], '
     '"residue": ["我答应了要去查此事"]}'
