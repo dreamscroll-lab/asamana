@@ -665,11 +665,13 @@ def _index_gloss(c: StageCall) -> list[str]:
         for idx in (raw if isinstance(raw, list) else ([] if raw is None else [raw])):
             if name := _menu_lookup(c.extra.get(menu_key), idx):
                 pairs.append(f"{slot} #{idx} = {name}")
-    # WORK's updated_index points to which of the things in hand (0 = none of them); the list is declared by that adjudication point.
-    if (ui := out.get("updated_index")) is not None and "updated_index" in str(out):
-        name = _menu_lookup(c.extra.get("item_candidates"), ui)
-        pairs.append(f"updated_index #{ui} = {name or '（一件也没动到）'}"
-                     if c.extra.get("item_candidates") is not None else "")
+    # A change's entity (WORK, a conversation's things) points into the things that call declared;
+    # 0 is a thing made on the spot.
+    if c.extra.get("item_candidates") is not None:
+        for ch in out.get("changes") or []:
+            if isinstance(ch, dict) and (ei := ch.get("entity")) is not None:
+                name = _menu_lookup(c.extra.get("item_candidates"), ei)
+                pairs.append(f"changes.entity #{ei} = {name or '（当场新做出来的）'}")
     for g in out.get("goals") or []:
         if isinstance(g, dict) and (txt := _menu_lookup(c.extra.get("goal_texts"), g.get("index"))):
             pairs.append(f"目标 #{g['index']} = {txt}")

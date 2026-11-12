@@ -1185,7 +1185,7 @@ def test_empty_hands_are_stated_not_omitted() -> None:
         return assemble_scene_context(
             "me", environment=env, directory=LiveWorldDirectory.from_agents({}, env),
             include_header=False, voice=SituationVoice.FIRST,
-            visibility=SceneVisibility.OWN_EYES, split_own_entities=split,
+            visibility=SceneVisibility.OWN_EYES, split_in_reach=split,
         ).text
 
     assert "- 我手上的东西：无" in scene(True)
@@ -1212,7 +1212,7 @@ def test_first_person_scene_marks_his_own_things_as_his_to_hand_over() -> None:
         ).text
 
     first = dict(voice=SituationVoice.FIRST, visibility=SceneVisibility.OWN_EYES)
-    for text in (scene(**first), scene(**first, split_own_entities=True)):
+    for text in (scene(**first), scene(**first, split_in_reach=True)):
         assert "印信（可交出）" in text or "印信（由我持有；可交出）" in text
         assert "可取" not in text
     god = scene(voice=SituationVoice.THIRD, visibility=SceneVisibility.GOD)

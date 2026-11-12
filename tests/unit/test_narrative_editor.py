@@ -1533,6 +1533,49 @@ async def test_entity_menu_lists_unheld_things_here_and_elsewhere(container) -> 
 
 
 @pytest.mark.asyncio
+async def test_the_gate_reads_the_plans_map_and_aims(container) -> None:
+    """Whether anything elsewhere could be pulled in bears on whether to act now: the gate reads the
+    plan's places and unheld entities, as plain rows since it selects nothing. Both calls read one
+    text of aims, so the gate can't wave through a stall the plan is told to break."""
+    from engine.narrative_editor import _INJECTION_AIMS
+
+    env, agents, directory = _ground_world(container)
+    router = _EventRouter([_gate(), _plan_json(broadcast={"content": "x", "severity": "low"})])
+    system = _narrative_editor(container, router=router, directory=directory, environment=env,
+                           check_interval=1)
+
+    await _run_check(system, current_step=1, world_time=_world_time(1), world_id="world-1",
+                     all_agents=agents, space=env.space,
+                     entities=env.all_live_entities())
+
+    (_, gate), (_, plan) = router.calls
+    gate_places, gate_entities = gate[-1].content.split("各地点:")[1].split("地上的东西:")
+    plan_places = plan[-1].content.split("可选地点")[1].split("可选人物")[0]
+    assert "- 太极殿（此刻1人）" in gate_places and "#" not in gate_places
+    assert "#2 太极殿（此刻1人）" in plan_places      # same rows, numbered in map order
+    assert "- 短刀（此刻状态：intact，现于西市）" in gate_entities and "密信" not in gate_entities
+    assert "上面写着：明日辰时开城门。" in gate_entities
+    assert "约定、答应、「到时候再说」本身不是推进" in _INJECTION_AIMS
+    assert _INJECTION_AIMS in gate[0].content and _INJECTION_AIMS in plan[0].content
+
+
+@pytest.mark.asyncio
+async def test_the_plan_is_warned_off_a_needless_new_thing(container) -> None:
+    """A thing already lying around can be used instead of making a look-alike."""
+    env, agents, directory = _ground_world(container)
+    router = _EventRouter([_gate(), _plan_json(broadcast={"content": "x", "severity": "low"})])
+    system = _narrative_editor(container, router=router, directory=directory, environment=env,
+                           check_interval=1)
+
+    await _run_check(system, current_step=1, world_time=_world_time(1), world_id="world-1",
+                     all_agents=agents, space=env.space,
+                     entities=env.all_live_entities())
+
+    avoid = router.calls[-1][1][0].content.split("【避免】")[1].split("【输出】")[0]
+    assert "却另造一件相似的新东西" in avoid
+
+
+@pytest.mark.asyncio
 async def test_place_menu_shows_who_is_where(container) -> None:
     from core.interfaces.place import Place
 
@@ -1609,14 +1652,14 @@ def test_menu_places_keeps_occupied_caps_stocked_and_draws_bare() -> None:
     stocked_count = _MAX_STOCKED_PLACES + 2
     places = [Place(place_id=f"p{i}", name=f"地{i}") for i in range(1 + stocked_count + 10)]
     headcount = Counter({"p0": 2})
-    # p0 is occupied with nothing on the ground; p1..p7 have i things; the rest are bare.
-    things = Counter({f"p{i}": i for i in range(1, 1 + stocked_count)})
+    # p0 is occupied with nothing on the ground; p1..p7 have i entities; the rest are bare.
+    entity_counts = Counter({f"p{i}": i for i in range(1, 1 + stocked_count)})
     bare = {p.place_id for p in places[1 + stocked_count:]}
 
-    chosen = [p.place_id for p in _menu_places(places, headcount, things, random.Random(0))]
+    chosen = [p.place_id for p in _menu_places(places, headcount, entity_counts, random.Random(0))]
 
     assert chosen[0] == "p0"                                    # occupied, kept regardless
-    assert "p1" not in chosen and "p2" not in chosen           # fewest things, cut first
+    assert "p1" not in chosen and "p2" not in chosen           # fewest entities, cut first
     assert len([c for c in chosen if c in bare]) == _MAX_BARE_PLACES
     assert len(chosen) == 1 + _MAX_STOCKED_PLACES + _MAX_BARE_PLACES
     assert chosen == sorted(chosen, key=lambda pid: int(pid[1:]))   # input order kept

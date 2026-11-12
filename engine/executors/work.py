@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, Any, List
 
 from core.action_duration import action_duration_steps
+from core.coerce import coerce_mapping_list, coerce_str
 from core.context import GivenFacts, annotate_call
 from core.interfaces.action import (
     ActionResult, ActionType, AgentAction, EntitySpawn, EntityStateChange,
@@ -14,6 +15,7 @@ from core.interfaces.directory import WorldDirectory
 from core.interfaces.llm import (
     IndexedRef, LLMRouter, coerce_bool, output_budget,
 )
+from core.interfaces.perception import DEFAULT_ENTITY_STATE
 from core.logging import get_logger
 from core.prompts import (
     ABSOLUTE_TIME_RULE_FIRST_PERSON,
@@ -63,13 +65,12 @@ class _WorkVerdict:
     ``observation`` is not a copy of ``outcome``: outcome includes the product, which onlookers
     must not see.
 
-    A product is stated explicitly, never inferred from ``succeeded``: thinking something through
-    succeeds with nothing made, and a half-made thing still exists. Repeated polishing changes
-    the thing in hand via ``updated_*`` instead of piling up near-duplicates; both may be given
-    (a chair carved from a block).
-
-    ``product_carried`` is a bool, not separate slots: a free-text product has no candidate list
-    to bind to.
+    What the session left in the world is stated explicitly, never inferred from ``succeeded``:
+    thinking something through succeeds with nothing made, and a half-made thing still exists.
+    ``changes`` has one entry per thing, in the same shape as a conversation's
+    (``talk_entities``): an entry naming a thing in hand alters or sets it down, one naming
+    nothing is made on the spot. Repeated polishing alters the thing in hand instead of piling
+    up near-duplicates; both may be given (a chair carved from a block).
     """
 
     succeeded: bool
@@ -77,15 +78,24 @@ class _WorkVerdict:
     outcome: str
     observation: str
     failure_reason: str
-    updated_id: str = ""        # the item in hand this session changed; empty = none
-    updated_name: str = ""      # its current name; empty = not renamed
-    updated_state: str = ""     # its current state; empty = unchanged
-    updated_desc: str = ""      # how it looks now; empty = unchanged
-    updated_content: str = ""   # everything it now contains; empty = unchanged
-    product_name: str = ""
-    product_desc: str = ""
-    product_content: str = ""
-    product_carried: bool = True
+    changes: tuple["_WorkChange", ...] = ()
+
+
+@dataclass(frozen=True)
+class _WorkChange:
+    """How one thing stands after the session. Empty text fields are unchanged.
+
+    ``carried`` is where the doer's ``holder`` would be in a conversation's entry
+    (``talk_entities``): there two speakers can end up holding it, so a number picks one; here
+    only the doer can, so it is a yes or no. For a thing that was lying here, yes is picking it up.
+    """
+
+    entity: "WorldEntity | None"   # a thing in reach (in hand or lying here); None = made this session
+    name: str = ""
+    state: str = ""
+    description: str = ""
+    content: str = ""
+    carried: bool = True
 
 
 class WorkExecutor(ActionExecutor):
@@ -196,16 +206,16 @@ class WorkExecutor(ActionExecutor):
             include_header=False,
             voice=SituationVoice.FIRST,
             visibility=SceneVisibility.OWN_EYES,
-            # Numbered for updated_index. Only things in hand: altering something on the ground
-            # takes PHYSICAL first (half of the WORK/PHYSICAL boundary).
-            split_own_entities=True,
+            # Numbered for the changes' entity: his own things and what lies here. Others' things
+            # stay out: taking one from someone is PHYSICAL.
+            split_in_reach=True,
         )
         doer = agents.get(state.initiator_id)
         gen_result = await self._generate_outcome(
             agent=doer,
             purpose=state.purpose,
             recalled=await self._recall(doer, state.purpose, step),
-            in_hand=scene.own_entities,
+            in_reach=scene.in_reach,
             now_step=step,
             duration_label=describe_duration(state.estimated_steps, self._seconds_per_step),
             situation_header=situation_header,
@@ -236,37 +246,10 @@ class WorkExecutor(ActionExecutor):
             scene_line(location, ensure_doer_named(gen_result.observation, doer_name))
             if gen_result.observation else fallback_3p
         )
-        # Carried products are private (public would leak them via others' reachable lists);
-        # left behind, they're public. Always the default "item": WORK makes no landmarks.
-        spawns: list[EntitySpawn] = []
-        changes: list[EntityStateChange] = []
-        touched = (
-            gen_result.updated_name or gen_result.updated_state or gen_result.updated_desc
-            or gen_result.updated_content
+        changes, spawns = _world_changes(
+            gen_result.changes, doer_id=state.initiator_id, doer_name=doer_name,
+            here=environment.get_body_location(state.initiator_id), location=location, step=step,
         )
-        if gen_result.updated_id and touched:
-            changes.append(EntityStateChange(
-                entity_id=gen_result.updated_id,
-                new_name=gen_result.updated_name,
-                new_state=gen_result.updated_state,
-                new_description=gen_result.updated_desc,
-                new_content=gen_result.updated_content,
-                # No perception: others see him at the desk, not what's new on the page.
-            ))
-        if gen_result.product_name:
-            carried = gen_result.product_carried
-            spawns.append(EntitySpawn(
-                name=gen_result.product_name,
-                description=gen_result.product_desc,
-                content=gen_result.product_content,
-                holder_id=state.initiator_id if carried else None,
-                is_public=not carried,
-                # Announce something set down, so others learn it just appeared.
-                perception=(
-                    "" if carried
-                    else scene_line(location, f"{doer_name}把{gen_result.product_name}留在了此处。")
-                ),
-            ))
         return [ActionResult(
             action=stub,
             expected_outcome=state.expected_outcome or state.purpose,
@@ -417,7 +400,7 @@ class WorkExecutor(ActionExecutor):
         situation_header: str = "",
         scene: str = "",
         expected_outcome: str = "",
-        in_hand: "tuple[WorldEntity, ...]" = (),  # index → item, same list as the scene line
+        in_reach: "tuple[WorldEntity, ...]" = (),  # index → item, same list as the scene lines
     ) -> "_WorkVerdict | None":
         """Adjudicate a finished WORK (1p fact, 3p outcome, why) in one call. Returns ``None``
         when adjudication can't happen, so the caller fabricates nothing.
@@ -467,36 +450,34 @@ class WorkExecutor(ActionExecutor):
   实质的内容(哪怕没有东西成形)也要在这里写清楚;若有没了结的部分或压根没做成的,一并说清缘由。
   fact 只有我自己看得到,别人看不到也听不到,所以不会有内容泄漏的风险。
 - success:上面第 2 步的判断。
-- updated_index / updated_name / updated_state / updated_desc / updated_content:这一场我
-  **动到了手上哪一件东西**,它又变成了什么样。先在所给现场「我手上的东西」那一行里指出是哪一件
-  (填它的序号),再写它经这一场之后的名字、所属状态、现在的样子
-  与现在的内容（如果有）;哪一样没变就留空哪一栏。
+- changes:这一场里**改变了或被我留下**的东西,一件一条,最多 3 条;什么都没变、也没留下什么,就给空数组。
+  · entity:是所给现场「我手上的东西」或「此处地上的东西」里的哪一件,填它的序号;这一场**新做出来**的有形之物填 0。
+  · name / state / description / content:它经这一场之后的名字、状态、样子、内容（如果有就写，没有就不写）。新做出来的
+    name 必填,其余有则填;原有的那件东西,哪一栏变了才填哪一栏,没变留空。
+  · carried:它此刻在哪儿:我带在身上 true,留在此处 false。地上没标「可取」的东西拿不走,只能填 false。
+  原有的东西只是使用一下，比如比对了一遍、翻看了一遍之类,没有改变东西本身、也没挪动,就不写它;只是挪动了
+  (把手上的放下、把地上的拿走之类的),也写一条:各栏留空,carried 照实填。
   **改名是换了身份,不是变了样**:它已经不再是原来那样东西了才改名;变旧、变短、变脏、
   写满了字,名字照旧——那个词是别人记忆里认得它的凭据,换掉它,那些记忆就指向了一件不
   存在的东西。
-  **手上的东西一件也没动到,updated_index 就填 0**,后面几栏一并留空——我只是拿着它比对了
-  一遍、翻看了一遍,它还是原样;手上空无一物时同样填 0。
-- product_name / product_desc / product_content / product_carried:这一场**新做出来的**
-  东西——有形体、摸得着的,写它叫什么、是个什么样子、承载着什么内容（如果有）;product_carried 说它此刻
-  在哪儿:我带在身上 true,搁下没带走 false。
-  **它与上面那件是两回事,可以同时有**:拿一块料削出一把椅子,料变短了(上面那几栏),
-  椅子出现了(这几栏)。
-  以下情形一律**留空**:
+  **新做出来的和改了的是两回事,可以同时有**:拿一块料削出一把椅子,料变短了是一条,椅子
+  出现了是另一条。
+  以下情形**不写新做出来的东西**:
   · 这段工夫只在心里过了一遍,没有任何东西成形;
   · 我只是拿起来看看、核对一遍,什么也没添;
-  · 我动的就是手上已有的那一件——它变了样该填上面那几栏,不是在这里另报一件出来;
+  · 我动的就是所给的那一件(手上的或地上的)——它变了样就写它那一条,不是另报一件新的出来;
   · 如果想要东西已经在世界中存在，那就不要再重复生成了，也不要生成一个相似的东西，这样没有意义；
   「进展」「头绪」「决心」「把握」这类**没有形体的东西一概不算**,写进来就是错。
   如果实在没有新东西产生那就留空，留空比捏造更好。
   **东西有没有留下,和事情成没成是两回事**:一件做到一半、离我期望的还差得远的东西,
   是没达成的意图,却是实实在在的一件东西——第一次做出它时照写不误。
-- 内容(updated_content / product_content)是那件东西**上面写着、记着的东西本身**，比如纸上写了
+- content 是那件东西**上面写着、记着的东西本身**，比如纸上写了
   什么、账上记了哪几笔、图上标了哪几处。拿到它的人读到的就是这一栏,所以要有具体、实质内容、写实写全,不写「写了一
-  封信，一张图纸」这种概括或者介绍。
-  · 它长什么样归 desc,不归这里;desc 是旁人一眼看得到的,上面写了什么不能在 desc 里写、
-    也不能概括——那等于把内容亮给了所有人。
-    没有写字记事的东西(一把刀、一张椅子)内容一律留空。所以这两个字段可以选择填写，并不是必填。
-  · 改写手上那件的内容时,给出它此刻的**全部**内容,不是只写新添的那一笔。
+  封信，一张图纸」「按时间地点逐条记下所见，但没有实质信息」这种说明概括或者介绍。
+  · 它长什么样归 description,不归这里;description 是旁人一眼看得到的,上面写了什么不能在
+    description 里写、也不能概括——那等于把内容亮给了所有人。
+    没有写字记事的东西(一把刀、一张椅子)内容一律留空。所以这一栏可以选择填写，并不是必填。
+  · 改写原有那件的内容时,给出它此刻的**全部**内容,不是只写新添的那一笔。
   · 如果内容涉及到时间，那时间尽量给具体的时间点，比如6月1日，六月初六等等，不要给相对时间，比如明日，三日后。注意时间不能乱填，需要结合当前时间确定，同时，格式与当前时间一致。
 - outcome:把 fact 用第三人称说出来,点名我的名字;只说我做了什么、做出了什么,不复述其中的具体内容。
 - observation:换一个站在旁边的人来看,他看得见的是什么。他看得见我在忙什么、忙成没忙成,
@@ -507,8 +488,8 @@ class WorkExecutor(ActionExecutor):
 【输出】
 严格输出以下 JSON,不要任何多余内容。**先写 fact**——成败与留下的东西都要从我实际做出来的
 里头读,不是先拍板再补一句话去圆;后面三句叙述又要把那件东西说进去。
-**success 与 product_carried 写裸布尔 true / false,updated_index 写裸整数,都不要加引号。**
-{"fact": "第一人称、≤150字", "success": true或false, "updated_index": 整数（0=手上的东西一件也没动到）, "updated_name": "≤14字；不改名则空字符串", "updated_state": "≤12字；没变则空字符串", "updated_desc": "≤24字；没变则空字符串", "updated_content": "≤80字；没变或没有内容则空字符串", "product_name": "≤14字；没有则空字符串", "product_desc": "≤24字；没有则空字符串", "product_content": "≤80字；没有内容则空字符串", "product_carried": true或false, "outcome": "第三人称、点名我的名字、≤40字、**单行不换行**", "observation": "第三人称、点名我的名字、≤30字、**单行不换行**", "why": "第三人称、≤20字；做成了给空字符串"}
+**success 与 carried 写裸布尔 true / false,entity 写裸整数,都不要加引号。**
+{"fact": "第一人称、≤150字", "success": true或false, "changes": [{"entity": 序号或0, "name": "≤14字；不改名则空字符串", "state": "≤12字；没变则空字符串", "description": "≤24字；没变则空字符串", "content": "≤80字；没变或没有内容则空字符串", "carried": true或false}], "outcome": "第三人称、点名我的名字、≤40字、**单行不换行**", "observation": "第三人称、点名我的名字、≤30字、**单行不换行**", "why": "第三人称、≤20字；做成了给空字符串"}
 """
         # §3: the thing to judge and the yardstick go last, right before the output instructions.
         scene_part = f"\n【我此刻所处的现场】\n{scene}\n" if scene else ""
@@ -555,22 +536,22 @@ class WorkExecutor(ActionExecutor):
             .add("我动手前打算做的", purpose)
             .add("花掉的时间", duration_label)
             .add("我动手前期望的", expected_outcome),
-            # So review can tell what updated_index pointed at.
+            # So review can tell what each change's entity pointed at.
             item_candidates={
-                str(i): (item.name or "某物") for i, item in enumerate(in_hand, 1)
+                str(i): (item.name or "某物") for i, item in enumerate(in_reach, 1)
             },
             action_owner=agent.personality.soul.name,
         ):
             data = await complete_json(
                 self._llm.complete, system, user,
                 temperature=0.7,
-                # fact (≤150 chars ≈ 225 tok) + success (~3) + updated_index (~3)
-                # + updated_name (≤14 ≈ 21) + updated_state (≤12 ≈ 18) + updated_desc (≤24 ≈ 36)
-                # + updated_content (≤80 ≈ 120) + product_name (≤14 ≈ 21)
-                # + product_desc (≤24 ≈ 36) + product_content (≤80 ≈ 120)
-                # + product_carried (~3) + outcome (≤40 ≈ 60) + observation (≤30 ≈ 45)
-                # + why (≤20 ≈ 30) + structure for 14 fields (~70); est. ~811 tok.
-                max_tokens=output_budget(811),
+                # fact (≤150 chars ≈ 225 tok) + success (~3)
+                # + changes ≤3 × (entity ~3 + name ≤14 ≈21 + state ≤12 ≈18 + description ≤24 ≈36
+                #   + content ≤80 ≈120 + carried ~3 + structure for 6 fields ~30) ≈ 3 × 231 = 693
+                #   + the array's ~10
+                # + outcome (≤40 ≈ 60) + observation (≤30 ≈ 45) + why (≤20 ≈ 30)
+                # + structure for 6 fields (~30); est. ~1096 tok.
+                max_tokens=output_budget(1096),
                 failure_event="work_outcome_failed",
                 log_extra={"agent_id": agent.agent_id, "step": now_step},
                 # The verdict and the doer's own record of it; outcome and observation have
@@ -591,17 +572,118 @@ class WorkExecutor(ActionExecutor):
             # Unsliced: the prompt caps it.
             observation=observation, failure_reason=why,
             # Independent of succeeded (see _WorkVerdict).
-            product_name=str(data.get("product_name", "")).strip(),
-            product_desc=str(data.get("product_desc", "")).strip(),
-            product_content=str(data.get("product_content", "")).strip(),
-            # Default carried: the private tier.
-            product_carried=coerce_bool(data.get("product_carried"), True),
-            # The only place the index is mapped back to an id.
-            updated_id=next(iter(IndexedRef(
-                [item.entity_id for item in in_hand]
-            ).resolve([data.get("updated_index")])), ""),
-            updated_name=str(data.get("updated_name", "")).strip(),
-            updated_state=str(data.get("updated_state", "")).strip(),
-            updated_desc=str(data.get("updated_desc", "")).strip(),
-            updated_content=str(data.get("updated_content", "")).strip(),
+            changes=_parsed_changes(data.get("changes"), in_reach, doer_id=agent.agent_id, step=now_step),
         )
+
+
+def _parsed_changes(
+    raw: Any, in_reach: "tuple[WorldEntity, ...]", *, doer_id: str, step: int,
+) -> tuple[_WorkChange, ...]:
+    """The answer's entries, each bound to the thing in reach it names. The only place an index
+    is mapped back to a thing; an index naming nothing in reach drops its entry whole."""
+    by_id = {item.entity_id: item for item in in_reach}
+    ref = IndexedRef(item.entity_id for item in in_reach)
+    parsed: list[_WorkChange] = []
+    for entry in coerce_mapping_list(raw):
+        index = coerce_str(entry.get("entity")).strip()
+        if index == "0":
+            entity = None
+        else:
+            resolved = ref.resolve([entry.get("entity")])
+            if not resolved:
+                logger.warning("work_change_rejected", extra={"reason": "entity_not_in_reach", "step": step})
+                continue
+            entity = by_id[resolved[0]]
+        parsed.append(_WorkChange(
+            entity=entity,
+            name=coerce_str(entry.get("name")).strip(),
+            state=coerce_str(entry.get("state")).strip(),
+            description=coerce_str(entry.get("description")).strip(),
+            content=coerce_str(entry.get("content")).strip(),
+            # Left out, a thing stays where it was; a thing made defaults to the private tier.
+            carried=coerce_bool(
+                entry.get("carried"), entity is None or entity.owner_id == doer_id,
+            ),
+        ))
+    return tuple(parsed)
+
+
+def _world_changes(
+    entries: tuple[_WorkChange, ...],
+    *,
+    doer_id: str,
+    doer_name: str,
+    here: str,
+    location: str,
+    step: int,
+) -> tuple[list[EntityStateChange], list[EntitySpawn]]:
+    """Turn the session's entries into the changes the world takes.
+
+    A thing in reach takes its new fields; one in hand, set down, lands ``here`` in sight, and one
+    lying here, carried, is picked up (a fixture can't be: it keeps its changes and stays). One
+    thing settles once. A value copied back unchanged is no change, and an entry left with nothing to
+    change is dropped. A thing made is private while carried (public would leak it through
+    others' reachable lists) and public once left; always the default "item": WORK makes no
+    landmarks.
+    """
+    changes: list[EntityStateChange] = []
+    spawns: list[EntitySpawn] = []
+    settled: set[str] = set()
+
+    def _reject(reason: str) -> None:
+        logger.warning("work_change_rejected", extra={"reason": reason, "step": step})
+
+    for entry in entries:
+        entity = entry.entity
+        if entity is None:
+            if not entry.name:
+                _reject("made_without_a_name")
+                continue
+            spawns.append(EntitySpawn(
+                name=entry.name,
+                description=entry.description,
+                content=entry.content,
+                state=entry.state or DEFAULT_ENTITY_STATE,
+                holder_id=doer_id if entry.carried else None,
+                is_public=not entry.carried,
+                # Announce something set down, so others learn it just appeared.
+                perception=(
+                    "" if entry.carried
+                    else scene_line(location, f"{doer_name}把{entry.name}留在了此处。")
+                ),
+            ))
+            continue
+        if entity.entity_id in settled:
+            _reject("entity_already_settled")
+            continue
+        name = "" if entry.name == entity.name else entry.name
+        state = "" if entry.state == entity.state else entry.state
+        description = "" if entry.description == entity.description else entry.description
+        content = "" if entry.content == entity.content else entry.content
+        held = entity.owner_id == doer_id
+        set_down = held and not entry.carried
+        picked_up = not held and entry.carried and entity.is_takeable
+        if not held and entry.carried and not entity.is_takeable:
+            # Only the carry is dropped; its other changes still land.
+            logger.warning("work_carry_ignored", extra={"reason": "entity_not_takeable", "step": step})
+        if not (name or state or description or content or set_down or picked_up):
+            _reject("nothing_changed")
+            continue
+        settled.add(entity.entity_id)
+        # Others see him put it down or take it, not what's new on the page.
+        moved = (
+            f"{doer_name}把{entity.name}放在了此处。" if set_down
+            else f"{doer_name}拿起了{entity.name}。" if picked_up
+            else ""
+        )
+        changes.append(EntityStateChange(
+            entity_id=entity.entity_id,
+            new_name=name,
+            new_state=state,
+            new_description=description,
+            new_content=content,
+            owner_id=doer_id if picked_up else None,
+            location_id=here if set_down else None,
+            perception=scene_line(location, moved) if moved else "",
+        ))
+    return changes, spawns

@@ -300,8 +300,7 @@ class ThemeAnalysis:
       "what it is about" (the latter is ``narrative_theme``). Predates step 0.
       May take the form of opposition, longing, ambiguity, irreconcilability,
       becoming, inevitability, information asymmetry, or combinations thereof.
-      Shapes agent identity (background, traits, values, hard_constraints,
-      life_goal).
+      Shapes agent identity (background, traits, values, life_goal).
     - ``narrative_theme`` (thematic / pervasive): one plain sentence summarizing
       what kind of story this is — what it is *about*. Shapes the meaning and
       texture of generation (value orientation, trait color, emotion register,

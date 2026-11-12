@@ -22,6 +22,7 @@ import re
 import pytest
 
 from agent.personality import PersonalityLayer, SoulLayer
+from engine.executors.talk_entities import NO_ENTITY_CHANGE
 from core.prompts import (
     ABSOLUTE_TIME_RULE,
     ABSOLUTE_TIME_RULE_FIRST_PERSON,
@@ -384,7 +385,7 @@ async def test_social_memory_summary_carries_the_rule_and_the_clock() -> None:
     llm = _Capture('{"fact":"f","success":true,"relation":"neutral","why":""}')
     ex = SocialExecutor(llm, _directory(), seconds_per_step=3600)
     await ex._memory_summary(  # noqa: SLF001
-        agent=_agent(), other_id="a3", other_name="李世民", transcript="……",
+        agent=_agent(), other_id="a3", other_name="李世民", transcript="……", entity_changes=NO_ENTITY_CHANGE,
         purpose="约定面谈", is_initiator=True, now_step=0,
         environment=_environment_at(agent_ids=("a2", "a3")),
     )

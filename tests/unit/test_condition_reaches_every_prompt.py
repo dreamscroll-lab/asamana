@@ -16,6 +16,7 @@ import pytest
 from agent.personality import PersonalityLayer, SoulLayer
 from core.interfaces.condition import BodyCondition
 from engine.environment import EnvironmentSystem
+from engine.executors.talk_entities import NO_ENTITY_CHANGE
 
 BOUND = BodyCondition(description="双手被反绑", source_agent_id="a1", since_step=0)
 MARK = "双手被反绑"
@@ -123,7 +124,7 @@ async def test_social_memory_summary_knows_the_speaker_is_bound() -> None:
     llm = _Capture('{"fact":"f","success":true,"relation":"neutral","why":""}')
     ex = SocialExecutor(llm, _directory(), seconds_per_step=3600)
     await ex._memory_summary(  # noqa: SLF001
-        agent=_agent(), other_id="a1", other_name="李世民", transcript="……",
+        agent=_agent(), other_id="a1", other_name="李世民", transcript="……", entity_changes=NO_ENTITY_CHANGE,
         purpose="求他放我一条生路", is_initiator=False, now_step=24,
         environment=EnvironmentSystem(),
     )

@@ -323,7 +323,17 @@ class ExecutionProcessor:
     def _execution_item_keys(self, execution: ActionExecutionState) -> set[str]:
         keys: set[str] = set()
         if execution.action_type is ActionType.WORK:
+            # What its judge numbers: the doer's own things and what lies where he is. WORK is
+            # rare enough that queueing two at one place costs little, unlike TALK below.
             keys.update(item.entity_id for item in self._environment.get_items_of(execution.initiator_id))
+            here = self._environment.get_body_location(execution.initiator_id)
+            if here is not None:
+                keys.update(item.entity_id for item in self._environment.get_items_at(here))
+        elif execution.action_type is ActionType.TALK:
+            # The things in its speakers' hands. Not the ground it may also touch: that key would
+            # queue every conversation at a place behind one another (see talk_entities).
+            for pid in execution.participant_ids:
+                keys.update(item.entity_id for item in self._environment.get_items_of(pid))
         elif execution.action_type is ActionType.PHYSICAL:
             target = execution.target
             # The same lookup PhysicalExecutor judges by: its first ref, resolved once at start.

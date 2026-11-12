@@ -19,6 +19,7 @@ from core.context import get_log_context, note_active_call_adoption, set_active_
 from core.interfaces.llm import LLMScene, extract_json
 from core.interfaces.trace import Stage
 from interaction.application import NarrativeApplication
+from engine.space import SpaceManager
 from engine.world_pressure import WorldPressureEvaluator
 from providers.trace import BufferedJsonlTraceSink, InMemoryTraceSink
 from tests.unit.test_decision_m4_gaps import _make_personality, _mem
@@ -246,7 +247,8 @@ async def test_editor_gate_records_no_injection_as_a_valid_answer(traced, payloa
     container, sink = traced
     _reply(container, LLMScene.NARRATIVE_EDITOR, payload)
     editor = _narrative_editor(container, router=container.llm_router)
-    await editor._passes_llm_check(_world_time(), "Recent events")  # noqa: SLF001
+    menu = editor._menu(1, {}, {}, SpaceManager(), ())  # noqa: SLF001
+    await editor._passes_llm_check(_world_time(), "Recent events", menu)  # noqa: SLF001
     assert sink.llm_calls[-1].adopted is adopted
 
 

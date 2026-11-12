@@ -112,10 +112,12 @@ class ExecutionArbiter:
         3. Stakes (``consumed_external_goals`` ≥ ``URGENCY_PREEMPT_THRESHOLD``). Must be the
            third-party signal, not self-reported ``AgentAction.urgency``, which clusters high
            and would let everyone jump the queue.
-        4. Constraint (``ActionExecutor.conscription``, not the action type): two-body actions
-           first, or TALK keeps missing; a displaced solo action is deferred
-           (``Agent.defer_decided_intent``). A MOVE leaving alone sits after COMPEL and before
-           INVITE: enlisting someone who decided to leave would make INVITE a soft COMPEL.
+        4. Constraint (``ActionExecutor.conscription``): two-body actions before solo ones, or
+           TALK keeps missing; a displaced solo action is deferred
+           (``Agent.defer_decided_intent``). Two solo acts (``_keeps_own_body``) sit after
+           COMPEL and before INVITE, since enlisting their doer would make INVITE a soft COMPEL:
+           a MOVE leaving alone, and PHYSICAL, a deed of force a conversation would otherwise
+           keep erasing.
 
         Full ties keep the scheduler's seeded shuffle (stable sort). Re-queued agents go to the
         back in ``_resolve``. Picking first isn't getting what you pick, and tier 1 can't free a
@@ -137,7 +139,7 @@ class ExecutionArbiter:
             mode = self._conscription_of(plan.action)
             if mode is Conscription.COMPEL:
                 claim_rank = 0
-            elif self._leaves(plan.action):
+            elif self._keeps_own_body(plan.action):
                 claim_rank = 1
             elif mode is Conscription.INVITE:
                 claim_rank = 2
@@ -172,6 +174,13 @@ class ExecutionArbiter:
             },
         )
         return ordered
+
+    def _keeps_own_body(self, action: "AgentAction | None") -> bool:
+        """A solo act an invitation must not take its doer from (tier 4 of
+        ``_initiative_order``): leaving alone, or a PHYSICAL deed."""
+        return self._leaves(action) or (
+            action is not None and action.action_type is ActionType.PHYSICAL
+        )
 
     def _leaves(self, action: "AgentAction | None") -> bool:
         """Leaving alone: a MOVE carrying nobody."""

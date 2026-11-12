@@ -1750,7 +1750,7 @@ def test_no_bare_index_is_left_for_the_judge_to_decode() -> None:
     gloss = "".join(_index_gloss(StageCall(
         stage="decision", scene="s", prompt=[], parse_ok=True, ok=True,
         output={"selected_index": 2, "person_indices": [1, 2], "destination_index": 3,
-                "errand_npc_index": 1, "physical_entity_index": 1, "updated_index": 1,
+                "errand_npc_index": 1, "physical_entity_index": 1, "changes": [{"entity": 1}, {"entity": 0}],
                 "goals": [{"index": 1, "status": "completed"}],
                 "dialogue": [{"speaker": 1, "line": "…"}]},
         extra={"action_menu": {"2": "MOVE"},
@@ -1762,7 +1762,8 @@ def test_no_bare_index_is_left_for_the_judge_to_decode() -> None:
                "action_participants": ["甲", "乙"]})))
     for expect in ("selected_index #2 = MOVE", "person_indices #1 = 甲", "person_indices #2 = 乙",
                    "destination_index #3 = 玄武门", "errand_npc_index #1 = 马夫",
-                   "physical_entity_index #1 = 兵符", "updated_index #1 = 兵符",
+                   "physical_entity_index #1 = 兵符", "changes.entity #1 = 兵符",
+                   "changes.entity #0 = （当场新做出来的）",
                    "目标 #1 = 取兵符", "对白 speaker 1 = 甲、2 = 乙"):
         assert expect in gloss, f"序号没译出来：{expect}"
 

@@ -412,6 +412,26 @@ async def test_experiential_prompt_has_negative_constraint_and_relations(contain
 
 
 @pytest.mark.asyncio
+async def test_experiential_prompt_leaves_out_a_bottom_line_it_has_none_of(container: object) -> None:
+    """「底线：无」 would read as a person with no bottom line at all: no line when empty."""
+    import dataclasses
+
+    for constraints, expect in (((), False), (("绝不背弃旧主",), True)):
+        provider = SequentialMockLLM(["一段内心独白。"])
+        system = _make_memory_system(container, provider=provider, is_main_character=True)
+        personality = _make_personality()
+        personality = PersonalityLayer(
+            soul=dataclasses.replace(personality.soul, hard_constraints=constraints),
+            state=personality.state,
+        )
+        await system._write_experiential(raw_content="一件事。", personality=personality)
+        prompt = _user_message(provider.call_history[0])
+        assert ("底线：" in prompt) is expect
+        if expect:
+            assert "底线：绝不背弃旧主" in prompt
+
+
+@pytest.mark.asyncio
 async def test_experiential_prompt_includes_situation_header(container: object) -> None:
     """The experiential prompt opens with the first-person situation line "我此刻在...,时间为...".
     Agent passes location_view/world_time_label from _last_perception_spatial into record_event."""

@@ -1610,6 +1610,8 @@ class MemorySystem:
         # life_goal, not state.long_term_goals: planning detail doesn't help "what did this touch in me".
         life_goal = soul.life_goal or "无"
         secret_line = f"\n我的{SECRET_LABEL}：{soul.secret}" if soul.secret else ""
+        # Left out when empty, as the decision prompt does: 「底线：无」 reads as a person with none.
+        constraints_line = f"\n底线：{soul.constraints_text()}" if soul.hard_constraints else ""
 
         people_block = ""
         if related_agent_directory:
@@ -1667,8 +1669,7 @@ class MemorySystem:
 【我是谁】
 我是{soul.name}。
 性格特点：{soul.traits_text()}
-价值观：{soul.values_text()}
-底线：{soul.constraints_text()}{secret_line}
+价值观：{soul.values_text()}{constraints_line}{secret_line}
 自我认知：{soul.self_image or '无'}
 人生目标：{life_goal}
 

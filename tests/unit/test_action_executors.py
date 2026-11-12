@@ -2128,7 +2128,7 @@ class TestWorkExecutor:
         env = _make_environment()
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我把换防部署令写完了。", "success": true,'
-            ' "product_name": "换防部署令", "product_desc": "圈定亲信的名单", "product_carried": true,'
+            ' "changes": [{"entity": 0, "name": "换防部署令", "description": "圈定亲信的名单", "carried": true}],'
             ' "outcome": "常何写完了换防部署令。", "observation": "常何伏案写了半日。", "why": ""}'
         )
         action = _make_action(
@@ -2163,7 +2163,7 @@ class TestWorkExecutor:
         env = _make_environment()
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我把栅栏筑起来了。", "success": true,'
-            ' "product_name": "一道栅栏", "product_desc": "拦住了侧门", "product_carried": false,'
+            ' "changes": [{"entity": 0, "name": "一道栅栏", "description": "拦住了侧门", "carried": false}],'
             ' "outcome": "常何筑起了一道栅栏。", "observation": "常何忙了半日。", "why": ""}'
         )
         action = _make_action(
@@ -2194,7 +2194,7 @@ class TestWorkExecutor:
         env = _make_environment()
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我把明日各步在心里走了一遍。", "success": true,'
-            ' "product_name": "", "product_desc": "",'
+            ' "changes": [],'
             ' "outcome": "常何默坐推演了半日。", "observation": "常何闭目默坐。", "why": ""}'
         )
         action = _make_action(
@@ -2221,7 +2221,7 @@ class TestWorkExecutor:
         env = _make_environment()
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "终究没能写完。", "success": false,'
-            ' "product_name": "换防部署令", "product_desc": "还差一半",'
+            ' "changes": [{"entity": 0, "name": "换防部署令", "description": "还差一半", "carried": true}],'
             ' "outcome": "常何没能写完。", "observation": "常何伏案半日。", "why": "时候不够"}'
         )
         action = _make_action(
@@ -2250,8 +2250,7 @@ class TestWorkExecutor:
         ))
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我添了几处转圜的余地。", "success": true,'
-            ' "updated_index": 1, "updated_state": "已添转圜", "updated_desc": "三页，边角添了小字",'
-            ' "product_name": "", "product_desc": "",'
+            ' "changes": [{"entity": 1, "state": "已添转圜", "description": "三页，边角添了小字", "carried": true}],'
             ' "outcome": "李建成添了几处转圜。", "observation": "李建成伏案半日。", "why": ""}'
         )
         action = AgentAction(
@@ -2282,8 +2281,8 @@ class TestWorkExecutor:
         env = _make_environment()
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我写好了给秦王的信。", "success": true,'
-            ' "product_name": "密信", "product_desc": "火漆封口", "product_content": "明晨卯时，玄武门换防",'
-            ' "product_carried": true,'
+            ' "changes": [{"entity": 0, "name": "密信", "description": "火漆封口", "content": "明晨卯时，玄武门换防",'
+            ' "carried": true}],'
             ' "outcome": "常何写好了一封信。", "observation": "常何伏案写了半日。", "why": ""}'
         )
         action = _make_action(
@@ -2312,9 +2311,7 @@ class TestWorkExecutor:
         llm = container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION)
         llm.fixed_response = (
             '{"fact": "我在奏章后头添了一句。", "success": true,'
-            ' "updated_index": 1, "updated_state": "", "updated_desc": "",'
-            ' "updated_content": "臣请削秦王兵权，并调尉迟恭出京",'
-            ' "product_name": "", "product_desc": "", "product_content": "",'
+            ' "changes": [{"entity": 1, "content": "臣请削秦王兵权，并调尉迟恭出京", "carried": true}],'
             ' "outcome": "李建成改了奏章。", "observation": "李建成伏案。", "why": ""}'
         )
         action = AgentAction(
@@ -2347,9 +2344,8 @@ class TestWorkExecutor:
         ))
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我把木料削成了一把椅子。", "success": true,'
-            ' "updated_index": 1, "updated_name": "半截木料", "updated_state": "只剩半截",'
-            ' "updated_desc": "", "product_name": "一把矮凳", "product_desc": "四条腿，未上漆",'
-            ' "product_carried": true,'
+            ' "changes": [{"entity": 1, "name": "半截木料", "state": "只剩半截", "carried": true},'
+            ' {"entity": 0, "name": "一把矮凳", "description": "四条腿，未上漆", "carried": true}],'
             ' "outcome": "甲削出了一把矮凳。", "observation": "甲忙了半日。", "why": ""}'
         )
         action = AgentAction(
@@ -2380,8 +2376,7 @@ class TestWorkExecutor:
         ))
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我翻看了一遍,什么也没改。", "success": true,'
-            ' "updated_index": 0, "updated_state": "", "updated_desc": "",'
-            ' "product_name": "", "product_desc": "",'
+            ' "changes": [],'
             ' "outcome": "甲翻看了一遍。", "observation": "甲翻看了一遍。", "why": ""}'
         )
         action = AgentAction(
@@ -2397,8 +2392,8 @@ class TestWorkExecutor:
 
     @pytest.mark.asyncio
     async def test_a_thing_in_hand_is_listed_once(self, container, monkeypatch) -> None:
-        """The scene list and the roster divide the room between them: the item in my hands is
-        listed only in the roster, not again among the scene's items."""
+        """The scene lines divide the room between them: the item in my hands is listed only on
+        its numbered line, the one lying here only on its own, numbered on from the first."""
         from core.interfaces.llm import LLMScene
         agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="甲")
         agents = {"agent-a": agent_a}
@@ -2413,7 +2408,7 @@ class TestWorkExecutor:
             presence_ref="hall",
         ))
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
-            '{"fact": "我读了一阵。", "success": true, "updated_index": 0,'
+            '{"fact": "我读了一阵。", "success": true, "changes": [],'
             ' "outcome": "甲读了一阵。", "observation": "甲读了一阵。", "why": ""}'
         )
         captured: list[str] = []
@@ -2434,44 +2429,136 @@ class TestWorkExecutor:
         prompt = captured[0]
         assert prompt.count("一卷旧册") == 1, "手上那件只该出现在「我手上的东西」那行里"
         assert "- 我手上的东西：#1 一卷旧册" in prompt
-        assert "一盏灯" in prompt, "地上那件仍是现场证据"
-        assert "现场物件：一盏灯" in prompt, "地上那件不进名单——动它得先夺过来"
+        assert prompt.count("一盏灯") == 1
+        assert "- 此处地上的东西：#2 一盏灯（可取）" in prompt
+        assert "- 现场物件：无" in prompt
 
     @pytest.mark.asyncio
-    async def test_a_thing_on_the_floor_is_out_of_reach_of_a_solo_stint(self, container) -> None:
-        """Editing an item requires holding it. Anyone can use the one on the floor, and one person
-        working alone must not quietly change it.
-
-        It isn't on the judge's menu, and if the judge makes up an index for it anyway, out-of-range
-        indices are treated as no reference.
-        """
+    async def test_a_thing_lying_here_is_worked_on_where_it_lies_or_taken(self, container) -> None:
+        """What lies where the doer works is in reach: changed where it lies, or picked up when
+        carried. A fixture keeps its changes and stays put; an index past the list names nothing."""
         from core.interfaces.llm import LLMScene
         agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="李建成")
         agents = {"agent-a": agent_a}
         executor = WorkExecutor(container.llm_router, _directory(agents))
         env = _make_environment()
         env.register_entity(WorldEntity(
-            entity_id="onfloor", name="案上的旧稿", entity_type=WorldEntityType.ITEM,
-            presence_ref="hall",
+            entity_id="draft", name="案上的旧稿", entity_type=WorldEntityType.ITEM, presence_ref="hall",
         ))
+        env.register_entity(WorldEntity(
+            entity_id="wall", name="照壁", entity_type=WorldEntityType.LANDMARK, presence_ref="hall",
+        ))
+        order = [e.entity_id for e in env.reachable_in_order(env.get_items_at("hall"), viewer_id="agent-a")]
+        draft, wall = order.index("draft") + 1, order.index("wall") + 1
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
-            '{"fact": "我另写了一份。", "success": true,'
-            ' "updated_index": 1, "updated_state": "已改定", "updated_desc": "",'
-            ' "product_name": "新的说辞", "product_desc": "三页", "product_carried": true,'
-            ' "outcome": "李建成另写了一份。", "observation": "李建成伏案半日。", "why": ""}'
+            '{"fact": "我改定了旧稿收好，又在照壁上题了字。", "success": true, "changes": ['
+            f'{{"entity": {draft}, "state": "已改定", "carried": true}},'
+            f'{{"entity": {wall}, "state": "题了字", "carried": true}},'
+            '{"entity": 3, "state": "破了", "carried": false}],'
+            ' "outcome": "李建成改稿题字。", "observation": "李建成伏案半日。", "why": ""}'
         )
         action = AgentAction(
-            agent_id="agent-a", step=1, action_type=ActionType.WORK,
-            action_description="另写一份",
+            agent_id="agent-a", step=1, action_type=ActionType.WORK, action_description="改稿题字",
         )
         state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
         result = (await executor.complete(
             state, 1, agents=agents, environment=env, message_system=None,
         ))[0]
 
-        assert result.entity_state_changes == []
-        assert [s.name for s in result.entity_spawns] == ["新的说辞"]
-        assert env.get_entity("onfloor").state == "intact"
+        by_id = {c.entity_id: c for c in result.entity_state_changes}
+        assert set(by_id) == {"draft", "wall"}
+        assert by_id["draft"].owner_id == "agent-a" and "李建成拿起了案上的旧稿" in by_id["draft"].perception
+        assert by_id["wall"].owner_id is None and by_id["wall"].perception == ""
+        assert by_id["wall"].new_state == "题了字"
+
+    @pytest.mark.asyncio
+    async def test_a_thing_lying_here_stays_put_when_carried_is_left_out(self, container) -> None:
+        """A missing carried keeps a thing where it was: lying here, it isn't picked up."""
+        from core.interfaces.llm import LLMScene
+        agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="甲")
+        agents = {"agent-a": agent_a}
+        executor = WorkExecutor(container.llm_router, _directory(agents))
+        env = _make_environment()
+        env.register_entity(WorldEntity(
+            entity_id="board", name="木牌", entity_type=WorldEntityType.ITEM, presence_ref="hall",
+        ))
+        container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
+            '{"fact": "我在木牌上刻了字。", "success": true,'
+            ' "changes": [{"entity": 1, "state": "刻了字"}],'
+            ' "outcome": "甲刻字。", "observation": "甲刻字。", "why": ""}'
+        )
+        action = AgentAction(
+            agent_id="agent-a", step=1, action_type=ActionType.WORK, action_description="刻字",
+        )
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        [change] = (await executor.complete(
+            state, 1, agents=agents, environment=env, message_system=None,
+        ))[0].entity_state_changes
+
+        assert change.owner_id is None and change.location_id is None and change.new_state == "刻了字"
+
+    @pytest.mark.asyncio
+    async def test_a_thing_in_hand_can_be_set_down(self, container) -> None:
+        """Reading a list out and leaving it on the table: an entry with nothing changed but
+        carried false lands it here, in sight."""
+        from core.interfaces.llm import LLMScene
+        agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="甲")
+        agents = {"agent-a": agent_a}
+        executor = WorkExecutor(container.llm_router, _directory(agents))
+        env = _make_environment()
+        env.register_entity(WorldEntity(
+            entity_id="list", name="核对清单", entity_type=WorldEntityType.ITEM,
+            presence=EntityPresence.HELD, presence_ref="agent-a", content="三点，北门",
+        ))
+        container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
+            '{"fact": "我把清单念完，留在了桌上。", "success": true,'
+            ' "changes": [{"entity": 1, "name": "核对清单", "content": "三点，北门", "carried": false}],'
+            ' "outcome": "甲念完了清单。", "observation": "甲念完把纸搁下。", "why": ""}'
+        )
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.WORK, description="当众念清单", estimated_steps=1,
+        )
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        result = (await executor.complete(
+            state, 1, agents=agents, environment=env, message_system=None,
+        ))[0]
+
+        [change] = result.entity_state_changes
+        # Name and content copied back unchanged are no change.
+        assert (change.new_name, change.new_content) == ("", "")
+        assert change.location_id == "hall" and change.owner_id is None
+        assert "甲把核对清单放在了此处" in change.perception
+        env.change_entity_state(change)
+        assert env.get_entity("list").location_id == "hall"
+
+    @pytest.mark.asyncio
+    async def test_a_work_entry_that_changes_nothing_or_names_nothing_is_dropped(self, container) -> None:
+        from core.interfaces.llm import LLMScene
+        agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="甲")
+        agents = {"agent-a": agent_a}
+        executor = WorkExecutor(container.llm_router, _directory(agents))
+        env = _make_environment()
+        env.register_entity(WorldEntity(
+            entity_id="scroll", name="一卷旧册", entity_type=WorldEntityType.ITEM,
+            presence=EntityPresence.HELD, presence_ref="agent-a", state="完好",
+        ))
+        container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
+            '{"fact": "我翻了一遍。", "success": true,'
+            ' "changes": [{"entity": 1, "state": "完好", "carried": true},'
+            ' {"entity": 2, "state": "破了", "carried": true},'
+            ' {"entity": 0, "name": "", "description": "一张纸", "carried": true}],'
+            ' "outcome": "甲翻了一遍。", "observation": "甲翻了一遍。", "why": ""}'
+        )
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.WORK, description="翻旧册", estimated_steps=1,
+        )
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        result = (await executor.complete(
+            state, 1, agents=agents, environment=env, message_system=None,
+        ))[0]
+
+        # Same state copied back, an index naming nothing in hand, a made thing with no name.
+        assert result.entity_state_changes == [] and result.entity_spawns == []
 
     @pytest.mark.asyncio
     async def test_work_product_never_reaches_bystanders(self, container) -> None:
@@ -2484,7 +2571,7 @@ class TestWorkExecutor:
         env = _make_environment()
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我把换防部署令写完了。", "success": true,'
-            ' "product_name": "换防部署令", "product_desc": "圈定亲信的名单", "product_carried": true,'
+            ' "changes": [{"entity": 0, "name": "换防部署令", "description": "圈定亲信的名单", "carried": true}],'
             ' "outcome": "常何写完了换防部署令。", "observation": "常何伏案写了半日。", "why": ""}'
         )
         action = _make_action(
@@ -2510,7 +2597,7 @@ class TestWorkExecutor:
 
         async def _fail_outcome(
             self_inner, *, agent, purpose, duration_label, recalled=None, now_step=0, location="",
-            situation_header="", scene="", expected_outcome="", in_hand=None,
+            situation_header="", scene="", expected_outcome="", in_reach=None,
         ):
             from engine.executors.work import _WorkVerdict
             return _WorkVerdict(
@@ -5519,10 +5606,10 @@ class TestCovertExecutor:
                 "agent-a", environment=env, directory=directory, agents=agents, **kw,
             )
 
-        empty = render(visibility=SceneVisibility.OWN_EYES, split_own_entities=True)
+        empty = render(visibility=SceneVisibility.OWN_EYES, split_in_reach=True)
         assert empty.text.count(_ORDINARY_FIXTURES_LINE) == 1
         assert "- 现场物件：无" in empty.text                  # the tracked list stays truthful
-        assert empty.own_entities == ()
+        assert empty.in_reach == ()
 
         env.register_entity(WorldEntity(
             entity_id="lamp", name="灯笼", entity_type=WorldEntityType.ITEM,

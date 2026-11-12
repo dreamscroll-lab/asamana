@@ -9,8 +9,6 @@ production intrusion: a standalone NarrativeEditor + InMemory snapshot; baseline
 
 from __future__ import annotations
 
-import random
-from collections import Counter
 from datetime import datetime
 from typing import Any
 
@@ -22,7 +20,7 @@ from core.interfaces.snapshot import EngineState, WorldSnapshot, WorldState
 from providers.snapshot.in_memory import InMemorySnapshotProvider
 from engine.broadcast import BroadcastChannel
 from engine.clock import GlobalClock
-from engine.narrative_editor import NarrativeEditorSettings, NarrativeEditor, _menu_places
+from engine.narrative_editor import NarrativeEditorSettings, NarrativeEditor
 from engine.execution_processor import ExecutionProcessor
 from engine.executors.registry import ActionExecutorRegistry
 from engine.injection import Author, InjectionDispatcher, InjectionRecord
@@ -252,20 +250,22 @@ async def run_narrative_editor(
     agent_locations = world.environment.body_locations(world.agents)
     brief = await narrative_editor._build_narrative_summary(  # noqa: SLF001
         world_id, current_step, world.agents, agent_locations)
+    menu = narrative_editor._menu(  # noqa: SLF001
+        current_step, world.agents, agent_locations,
+        world.environment.space, world.environment.all_live_entities())
 
     error = None
     inject = None
     plan_view = None
     try:
         if kind == "gate":
-            inject = await narrative_editor._passes_llm_check(world_time, brief)  # noqa: SLF001
+            inject = await narrative_editor._passes_llm_check(world_time, brief, menu)  # noqa: SLF001
         else:
             plan = await narrative_editor._generate_injection_plan(  # noqa: SLF001
                 current_step=current_step, world_time=world_time,
                 narrative_summary=brief, all_agents=world.agents,
                 agent_locations=agent_locations,
-                space=world.environment.space,
-                entities=world.environment.all_live_entities())
+                menu=menu)
             plan_view = _injection_plan_view(plan, world.directory)
     except Exception as exc:  # noqa: BLE001 — capture, never abort the suite
         error = str(exc)
@@ -273,12 +273,7 @@ async def run_narrative_editor(
 
     # The plan's candidate lists (for deterministic checks that recipients/location indices resolve, and for the web view).
     candidate_agents = [name_by_id.get(aid, aid) for aid in world.agents.keys()]
-    candidate_location_names = [loc.name for loc in _menu_places(
-        world.environment.space.all_places(),
-        Counter(a.personality.state.current_location for a in world.agents.values() if a.is_active),
-        Counter(e.location_id for e in world.environment.all_live_entities() if e.location_id is not None),
-        random.Random(current_step),
-    )]
+    candidate_location_names = [loc.name for loc in menu.places]
 
     outputs = {
         "kind": kind,

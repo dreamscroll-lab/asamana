@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from agent.personality import PersonalityLayer, SoulLayer
+from engine.executors.talk_entities import NO_ENTITY_CHANGE
 
 
 class _Capture:
@@ -78,7 +79,7 @@ async def test_the_addressee_s_record_knows_who_came_to_talk() -> None:
     llm = _Capture('{"fact":"f","success":true,"relation":"neutral","why":""}')
     sun, zhao = _agent("a1", "孙七", "女"), _agent("a2", "赵六", "女")
     await _executor(llm, sun, zhao)._memory_summary(  # noqa: SLF001
-        agent=sun, other_id="a2", other_name="赵六", transcript="赵六：孙姐。",
+        agent=sun, other_id="a2", other_name="赵六", transcript="赵六：孙姐。", entity_changes=NO_ENTITY_CHANGE,
         purpose="问分工", is_initiator=False, environment=_env(),
     )
     assert "赵六（女）来找我谈" in llm.user()
@@ -105,7 +106,7 @@ async def test_the_addressee_knows_the_topic_stated_up_front_and_nothing_more() 
     sun, zhao = _agent("a1", "孙七", "女"), _agent("a2", "赵六", "女")
     llm = _Capture('{"fact":"f","success":true,"relation":"neutral","why":""}')
     await _executor(llm, sun, zhao)._memory_summary(  # noqa: SLF001
-        agent=sun, other_id="a2", other_name="赵六", transcript="赵六：孙姐。",
+        agent=sun, other_id="a2", other_name="赵六", transcript="赵六：孙姐。", entity_changes=NO_ENTITY_CHANGE,
         purpose="套她的话", talk_topic="问分工", is_initiator=False, environment=_env(),
     )
     assert "来意是「问分工」" in llm.user() and "套她的话" not in llm.user()
@@ -137,7 +138,7 @@ async def test_a_listener_s_record_knows_both_speakers() -> None:
     llm = _Capture('{"fact":"f"}')
     wang, sun, zhao = _agent("a3", "王五", "男"), _agent("a1", "孙七", "女"), _agent("a2", "赵六", "女")
     await _executor(llm, wang, sun, zhao)._listener_memory(  # noqa: SLF001
-        agent=wang, initiator_id="a2", target_id="a1", transcript="赵六：孙姐。", environment=_env(),
+        agent=wang, initiator_id="a2", target_id="a1", transcript="赵六：孙姐。", entity_changes=NO_ENTITY_CHANGE, environment=_env(),
     )
     assert "说话的是赵六（女）与孙七（女）" in llm.user()
     assert "来意" not in llm.user()
@@ -148,7 +149,7 @@ async def test_a_listener_knows_the_topic_stated_up_front() -> None:
     llm = _Capture('{"fact":"f"}')
     wang, sun, zhao = _agent("a3", "王五", "男"), _agent("a1", "孙七", "女"), _agent("a2", "赵六", "女")
     await _executor(llm, wang, sun, zhao)._listener_memory(  # noqa: SLF001
-        agent=wang, initiator_id="a2", target_id="a1", transcript="赵六：孙姐。", talk_topic="问分工",
+        agent=wang, initiator_id="a2", target_id="a1", transcript="赵六：孙姐。", entity_changes=NO_ENTITY_CHANGE, talk_topic="问分工",
         environment=_env(),
     )
     assert "赵六（女）发起的对话，来意是「问分工」" in llm.user()
@@ -193,7 +194,7 @@ async def test_the_relation_legend_comes_before_the_rows_it_explains() -> None:
         ex = _executor(llm, sun, zhao)
         if record == "summary":
             await ex._memory_summary(  # noqa: SLF001
-                agent=sun, other_id="a2", other_name="赵六", transcript="赵六：孙姐。",
+                agent=sun, other_id="a2", other_name="赵六", transcript="赵六：孙姐。", entity_changes=NO_ENTITY_CHANGE,
                 purpose="问分工", is_initiator=False, environment=env,
             )
         else:
@@ -216,7 +217,7 @@ async def test_a_record_without_its_verdict_claims_no_success() -> None:
     sun, zhao = _agent("a1", "孙七", "女"), _agent("a2", "赵六", "女")
     llm = _Capture('{"fact":"我和赵六谈了一场。","relation":"neutral"}')
     summary = await _executor(llm, sun, zhao)._memory_summary(  # noqa: SLF001
-        agent=sun, other_id="a2", other_name="赵六", transcript="赵六：孙姐。",
+        agent=sun, other_id="a2", other_name="赵六", transcript="赵六：孙姐。", entity_changes=NO_ENTITY_CHANGE,
         purpose="问分工", is_initiator=True, environment=_env(),
     )
     assert summary is not None
@@ -231,7 +232,7 @@ async def test_a_record_without_its_fact_is_a_null_step() -> None:
     sun, zhao = _agent("a1", "孙七", "女"), _agent("a2", "赵六", "女")
     llm = _Capture('{"success":true,"relation":"neutral"}')
     summary = await _executor(llm, sun, zhao)._memory_summary(  # noqa: SLF001
-        agent=sun, other_id="a2", other_name="赵六", transcript="赵六：孙姐。",
+        agent=sun, other_id="a2", other_name="赵六", transcript="赵六：孙姐。", entity_changes=NO_ENTITY_CHANGE,
         purpose="问分工", is_initiator=True, environment=_env(),
     )
     assert summary is None

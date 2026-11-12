@@ -231,9 +231,9 @@ class SoulLayer:
         return "、".join(self.core_values) or "无"
 
     def constraints_text(self) -> str:
-        """Render hard constraints as canonical prompt text. ``无`` when empty."""
+        """Render hard constraints as canonical prompt text; callers leave the line out when empty."""
 
-        return "、".join(self.hard_constraints) or "无"
+        return "、".join(self.hard_constraints)
 
     def identity_text(self) -> str:
         """The one renderer for an identity header: ``名字，N岁，性别`` (empty fields omitted).

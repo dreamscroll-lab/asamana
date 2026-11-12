@@ -42,6 +42,7 @@ from engine.executors.base import (
 from engine.narration import (
     format_interrupt_reason_3p, format_interrupt_thought, observed_here, scene_line,
 )
+from engine.executors.talk_entities import TalkEntityChanges, judge_talk_entity_changes
 from engine.scene import SceneVisibility, assemble_scene_context, observe_location, situation_for
 
 if TYPE_CHECKING:
@@ -223,7 +224,7 @@ _DIALOGUE_SYSTEM: str = f"""\
 - 注意人物生死信息的一致性：若材料同时描述某人已经死亡和此刻仍然在场，应结合给定上下文处理这一矛盾，不凭空补充解释。比如某人已经死亡了，但是现在看到他就在眼前。
 - 注意不要让经历和认识张冠李戴：比如材料里写的是“A偷走了某件东西”，对话中不能把它嫁接成B的经历，说成“B偷走了某件东西”。
 - 注意物品归属不要张冠李戴，对话前需先阅读清楚物品归属以及状态。比如明明“物品a由A持有”，但是对话中说成“物品a由B持有”，这是明显错误的。
-- 对话本身改变不了物品的归属：可以谈、可以许诺，但不能写成归属已经变了。比如可以答应把某物交给对方，但不能写成东西已经到了对方手上。
+- 交谈只是说话：交出、打开、毁掉东西要另外去做，对白里只写成说了、答应了；万一当场动了手，也只能是说话人自己手上或此处地上摆着的东西，旁人手上的不行。比如【现场】里写着某物由A持有，B就递不出它。
 - 语言简练口语，长短随情境，不必每句等长。
 - 对话中涉及他人时，应符合逻辑、常识和地理空间限制，不能把不在场的人写成当场参与交谈或执行行动。比如不能命令一个不在场的人攻击对方。
 - 谈完即止；轮数上限由输入给出。
@@ -323,6 +324,10 @@ class SocialExecutor(ActionExecutor):
     - With the performed character the conversation is live instead, spoken turn by turn
       (``_live_dialogue``): its actor types its dialogue turns, the AI side speaks in character from its
       own column only. Either way the result is the same transcript.
+    - A conversation isn't how things change hands (PHYSICAL and WORK are); should a transcript
+      show one done anyway, it is read off after the talk ends (``judge_talk_entity_changes``) and
+      lands with the initiator's result. Every record of the conversation is written after that
+      and told what really changed.
     - Each side's memory_summary is its own first-person record.
     """
 
@@ -558,8 +563,20 @@ class SocialExecutor(ActionExecutor):
         listener_facts: list[Any] = []
         summary_i: "tuple[str, bool, str, str] | None" = None
         summary_t: "tuple[str, bool, str, str] | None" = None
+        entity_changes = TalkEntityChanges()
         if dialogue:
-            # All first-person memories depend only on the transcript: one batch.
+            # Before the records, which are told what really changed: written in parallel with
+            # this ruling, they would take a "给您" that changed nothing as done.
+            # A live talk is ruled the same way, unconfirmed by the actor: this is only a safety
+            # net; the actor acts on things through PHYSICAL and WORK (see talk_entities).
+            if target is not None:
+                entity_changes = await judge_talk_entity_changes(
+                    self._llm, self._directory, environment,
+                    speaker_ids=(initiator_id, target_id), transcript=transcript,
+                    location=location, step=step,
+                )
+            changed = entity_changes.record_text()
+            # All first-person memories depend only on the transcript and what it changed: one batch.
             listener_ids = _present_listeners(
                 state.listener_ids, environment=environment, agents=agents,
                 anchor_id=initiator_id, exclude={initiator_id, target_id},
@@ -570,19 +587,20 @@ class SocialExecutor(ActionExecutor):
                 summary_i_r, summary_t_r, *listener_facts = await asyncio.gather(
                     self._memory_summary(
                         agent=initiator, other_id=target_id, other_name=target_name, transcript=transcript,
-                        purpose=state.purpose, is_initiator=True,
+                        entity_changes=changed, purpose=state.purpose, is_initiator=True,
                         now_step=step, environment=environment, expected_outcome=state.expected_outcome,
                     ),
                     self._memory_summary(
                         agent=target, other_id=initiator_id, other_name=initiator_name, transcript=transcript,
-                        purpose=state.purpose, talk_topic=state.talk_topic, is_initiator=False,
-                        now_step=step, environment=environment, expected_outcome=state.expected_outcome,
+                        entity_changes=changed, purpose=state.purpose, talk_topic=state.talk_topic,
+                        is_initiator=False, now_step=step, environment=environment,
+                        expected_outcome=state.expected_outcome,
                     ),
                     *(
                         self._listener_memory(
                             agent=agents.get(pid), initiator_id=initiator_id,
-                            target_id=target_id, transcript=transcript, talk_topic=state.talk_topic,
-                            now_step=step, environment=environment,
+                            target_id=target_id, transcript=transcript, entity_changes=changed,
+                            talk_topic=state.talk_topic, now_step=step, environment=environment,
                         )
                         for pid in listener_ids
                     ),
@@ -621,8 +639,10 @@ class SocialExecutor(ActionExecutor):
             dialogue=dialogue,
             # Don't fall back to purpose: it's intent, not expectation.
             summary=summary_i, expected_outcome=state.expected_outcome,
-            # Attached to the initiator's result only (attaching to both → listeners get it twice).
+            # Attached to the initiator's result only (attaching to both → listeners get it twice,
+            # items change twice).
             target_effects=listener_effects,
+            entity_changes=entity_changes,
         ))
         if target is not None:
             results.append(self._talk_result(
@@ -653,13 +673,15 @@ class SocialExecutor(ActionExecutor):
         summary: "tuple[str, bool, str, str] | None",
         expected_outcome: str,
         target_effects: "list[TargetAgentEffect] | None" = None,
+        entity_changes: TalkEntityChanges = TalkEntityChanges(),
     ) -> ActionResult:
         """Build one participant's TALK result.
 
         ``action_description`` is this person's own act (``participant_action_desc``).
         ``summary=None`` is a null step: no memory, no
-        relation delta. Listeners' ``target_effects`` still go out then: what they heard
-        doesn't depend on this summary.
+        relation delta. Listeners' ``target_effects`` and ``entity_changes`` still go out then:
+        neither depends on this summary, and the other side's record already says the thing
+        changed hands.
         """
         stub = AgentAction(
             agent_id=agent_id, step=step, action_type=ActionType.TALK,
@@ -680,6 +702,8 @@ class SocialExecutor(ActionExecutor):
                 relation_updates=[],
                 adjudication_failed=True,
                 target_effects=list(target_effects or []),
+                entity_state_changes=list(entity_changes.state_changes),
+                entity_spawns=list(entity_changes.spawns),
             )
         fact, succeeded, direction, why = summary
         td, ad = _DIRECTION_TALK_DELTAS.get(direction, _DIRECTION_TALK_DELTAS["neutral"])
@@ -697,6 +721,8 @@ class SocialExecutor(ActionExecutor):
             dialogue=dialogue,
             relation_updates=[(rel_other_id, td, ad)] if rel_other_id else [],
             target_effects=list(target_effects or []),
+            entity_state_changes=list(entity_changes.state_changes),
+            entity_spawns=list(entity_changes.spawns),
         )
 
     async def interrupt(
@@ -1318,6 +1344,7 @@ class SocialExecutor(ActionExecutor):
         other_id: str,
         other_name: str,
         transcript: str,
+        entity_changes: str,
         purpose: str,
         is_initiator: bool,
         environment: "EnvironmentSystem",
@@ -1362,6 +1389,7 @@ class SocialExecutor(ActionExecutor):
 【约束】
  - fact 里提到我认识的人时,不妨带上其名字,便于日后回想;若我惯以称谓相称,可把名字附在称谓后(形如「称谓（名字）」)。这只是便于回想的建议,不必生硬套用、更不必每处都加括号;陌生人用描述,不臆造名字。
  - 要区分已经发生、正在发生、将要发生的事情：把“我现在要去超市”写成“我去了超市”、把“我命令他帮我收拾行李”写成“他已经帮我收拾行李”，都是禁止的。
+ - 东西有没有易手、改变或做出来，以所给【东西的实际变化】为准，对白里怎么说都不作数;比如对白里说了「给你」,而那里没写东西交出去,那就只是说了,东西还在原处。
  - 先理解此刻的时间和我此刻所在地点。
 """ + CLOSED_WORLD_FACT_RULE_FIRST_PERSON + """
 
@@ -1385,6 +1413,9 @@ class SocialExecutor(ActionExecutor):
 对话记录：
 {transcript}
 
+【东西的实际变化】
+{entity_changes}
+
 依上面说定的 JSON 格式记下这一场（relation 反映我对{other_name}的观感变化），只输出 JSON、不写任何多余内容。"""
         # Attribute to this participant; the addressee also gets conscripted_input for review.
         call_annotations = {
@@ -1396,7 +1427,8 @@ class SocialExecutor(ActionExecutor):
             # The addressee never saw the initiator's expectation; declaring it would blind
             # the leak review.
             .add("发起者的期望", expected_outcome if is_initiator else "")
-            .add("对话记录", transcript),
+            .add("对话记录", transcript)
+            .add("东西的实际变化", entity_changes),
             "talk_role": "initiator" if is_initiator else "addressee",
             "action_owner": agent.personality.soul.name,
         }
@@ -1432,6 +1464,7 @@ class SocialExecutor(ActionExecutor):
         initiator_id: str,
         target_id: str,
         transcript: str,
+        entity_changes: str,
         environment: "EnvironmentSystem",
         talk_topic: str = "",
         now_step: int = 0,
@@ -1466,7 +1499,8 @@ class SocialExecutor(ActionExecutor):
  2.不复述流水账:不逐句转写他们的对白,只记下落到我心里的那一点。
  3.不添他们没说过的话,也不替他们补上没挑明的意思。
  4.不混淆时态:将要发生的事不能写成已经发生。
- 5.提到我认识的人时,不妨带上其名字,便于日后回想;惯以称谓相称的,可把名字附在称谓后
+ 5.不把嘴上说的交接当成真的:东西有没有易手、改变或做出来,以所给【东西的实际变化】为准;比如听见一句「给你」,而那里没写东西交出去,东西就还在原处。
+ 6.提到我认识的人时,不妨带上其名字,便于日后回想;惯以称谓相称的,可把名字附在称谓后
    (形如「称谓（名字）」)。这只是便于回想的建议,不必生硬套用、更不必每处都加括号;
    陌生人用描述,不臆造名字。
 """ + CLOSED_WORLD_FACT_RULE_FIRST_PERSON + """
@@ -1486,6 +1520,9 @@ class SocialExecutor(ActionExecutor):
 对话记录：
 {transcript}
 
+【东西的实际变化】
+{entity_changes}
+
 依上面说定的 JSON 格式记下我听到了什么，只输出 JSON、不写任何多余内容。"""
         # Attribute to the listener, not the initiator.
         with observe_stage(Stage.ACTION, agent_id=agent.agent_id), annotate_call(
@@ -1494,7 +1531,8 @@ class SocialExecutor(ActionExecutor):
             .add("我的处境", doer_condition)
             .add("我在旁边听到的", speakers)
             .add("说话人点明的来意", talk_topic)
-            .add("对话记录", transcript),
+            .add("对话记录", transcript)
+            .add("东西的实际变化", entity_changes),
             talk_role="listener", action_owner=agent.personality.soul.name,
         ):
             data = await complete_json(

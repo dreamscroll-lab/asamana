@@ -83,7 +83,7 @@ class SceneContext:
     """
 
     text: str
-    own_entities: tuple["WorldEntity", ...] = ()
+    in_reach: tuple["WorldEntity", ...] = ()
 
 
 class SceneVisibility(str, Enum):
@@ -114,7 +114,7 @@ def assemble_scene_context(
     include_header: bool = True,
     voice: SituationVoice = SituationVoice.THIRD,
     visibility: SceneVisibility,
-    split_own_entities: bool = False,
+    split_in_reach: bool = False,
     reveal_all_content: bool = False,
     reveal_intents: bool = True,
     with_ordinary_fixtures: bool = True,
@@ -142,9 +142,11 @@ def assemble_scene_context(
     ``visibility`` (whose eyes) is required at every call site rather than derived: a
     first-person prompt fed the god view silently hands the reader what he cannot know.
 
-    ``split_own_entities`` moves the reader's own things into a numbered line and returns the same
-    list on ``SceneContext.own_entities``, for a caller that has the LLM pick one by number (WORK).
-    FIRST voice only: the line says 「我手上的」.
+    ``split_in_reach`` moves what the reader can work on, his own things and the things lying here
+    in sight, into two lines numbered as one list, and returns that list on
+    ``SceneContext.in_reach``, for a caller that has the LLM pick one by number (WORK). FIRST
+    voice only: the lines say 「我手上的」 and 「此处地上的」. What others hold stays in the plain
+    item line: it is theirs, not his to work on.
 
     ``reveal_intents=False`` keeps only what each present person is visibly doing. The judge needs
     intents only to rule whether people would notice; the content otherwise gets written up as if
@@ -243,18 +245,21 @@ def assemble_scene_context(
     # Ordering and truncation share ``reachable_in_order`` with the perception layer, or the judge
     # could rule on something the doer never saw. Filtering stays separate on purpose.
     present = environment.items_present_at(loc_id)
-    own_entities = (
-        environment.reachable_in_order(
+    seen = [item for item in present if not own_eyes or item.owner_id == agent_id or item.is_public]
+    own_entities: list["WorldEntity"] = []
+    on_ground: list["WorldEntity"] = []
+    if split_in_reach:
+        own_entities = environment.reachable_in_order(
             [item for item in present if item.owner_id == agent_id], viewer_id=agent_id,
-        ) if split_own_entities else []
-    )
+        )
+        on_ground = environment.reachable_in_order(
+            [item for item in seen if item.owner_id is None],
+            viewer_id=agent_id, limit=MAX_SCENE_ENTITIES,
+        )
+    split_ids = {item.entity_id for item in (*own_entities, *on_ground)}
     items = environment.reachable_in_order(
-        [
-            item for item in present
-            if (not own_eyes or item.owner_id == agent_id or item.is_public)
-            # Listed separately below: don't render twice.
-            and not (split_own_entities and item.owner_id == agent_id)
-        ],
+        # Listed separately below: don't render twice.
+        [item for item in seen if item.entity_id not in split_ids],
         viewer_id=agent_id,
         limit=MAX_SCENE_ENTITIES,
     )
@@ -271,17 +276,22 @@ def assemble_scene_context(
     else:
         lines.append("- 现场物件：无")
 
-    if split_own_entities:
-        # IndexedRef contract: number even a single item. No holder mark: all are in his hands.
+    if split_in_reach:
+        # IndexedRef contract: number even a single item, and number both lines as one list.
         held = "；".join(
             f"#{i} {render_entity(item, content=item.content, held_by_viewer=True)}"
             for i, item in enumerate(own_entities, 1)
         )
+        lying = "；".join(
+            f"#{i} {render_entity(item, content=item.content if item.readable_by(agent_id) else '')}"
+            for i, item in enumerate(on_ground, len(own_entities) + 1)
+        )
         lines.append(f"- 我手上的东西：{held or '无'}")
+        lines.append(f"- 此处地上的东西：{lying or '无'}")
     if with_ordinary_fixtures:
         lines.append(_ORDINARY_FIXTURES_LINE)
 
-    return SceneContext(text="\n".join(lines), own_entities=tuple(own_entities))
+    return SceneContext(text="\n".join(lines), in_reach=(*own_entities, *on_ground))
 
 
 def _person_background(agent: "Agent | None", name: str) -> str:

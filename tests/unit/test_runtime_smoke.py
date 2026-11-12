@@ -1499,6 +1499,28 @@ async def test_an_invitation_cannot_hold_a_body_that_means_to_leave(container) -
 
 
 @pytest.mark.asyncio
+async def test_an_invitation_cannot_take_a_body_set_on_a_physical_deed(container) -> None:
+    """Within a tier, PHYSICAL goes before TALK like a solo leaving MOVE: even with TALK earlier
+    in input order, the deed stands and the invitation fails."""
+    env, agents, rt = _two_rooms_with(container, "world-physical-beats-invite", {"agent-a": "李世民", "agent-b": "常何"})
+    deed = AgentAction(agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL, action_description="撬开箱子",
+                       estimated_steps=1)
+    talk = AgentAction(agent_id="agent-b", step=1, action_type=ActionType.TALK, action_description="拦下他说话",
+                       estimated_steps=2, target=ActionTarget(acts_on=[Ref.agent("agent-a")], claims=[Ref.agent("agent-a")]))
+    planned = [
+        ("main", agents["agent-b"], _plan_for(agents["agent-b"], talk, env)),
+        ("main", agents["agent-a"], _plan_for(agents["agent-a"], deed, env)),
+    ]
+
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+
+    assert arb["agent-a"].is_passive_join is False
+    assert arb["agent-a"].action_result.action.action_type is ActionType.PHYSICAL
+    rejection = rt._executor_registry.get_active_for_agent("agent-b").extra["completed_result"]  # noqa: SLF001
+    assert "李世民正忙着手上的事" in rejection.outcome
+
+
+@pytest.mark.asyncio
 async def test_a_carry_still_takes_a_body_that_means_to_leave(container) -> None:
     """Leaving only beats invitation: carrying someone off (COMPEL) still goes first and takes the
     leaver along."""
