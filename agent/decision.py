@@ -726,13 +726,16 @@ class DecisionEngine:
         *,
         personality: PersonalityLayer,
         packet: PerceptionPacket,
+        held_back: frozenset[ActionType] = frozenset(),
     ) -> DecisionResult:
         """Produce one decision (ACTED / NO_ACTION / FAILED, see ``DecisionStatus``).
 
         Every agent takes the same path: one in-character prompt + AGENT_DECISION_MAIN + retry.
+        ``held_back``: types under cooldown (``agent.action_cooldown``), ruled out like an
+        unreachable type.
         """
 
-        return await self._llm_select(personality, packet, _ACTION_SPACE)
+        return await self._llm_select(personality, packet, _ACTION_SPACE, held_back)
 
     def _build_action(
         self,
@@ -781,6 +784,7 @@ class DecisionEngine:
         personality: PersonalityLayer,
         packet: PerceptionPacket,
         candidates: Sequence[ActionCandidate],
+        held_back: frozenset[ActionType] = frozenset(),
     ) -> DecisionResult:
         """Unified decision path: full in-character context + structured choice.
 
@@ -794,9 +798,9 @@ class DecisionEngine:
         """
 
         system_prompt, user_prompt, given_facts = self._build_decision_prompt(
-            personality, packet, candidates)
+            personality, packet, candidates, held_back=held_back)
         result = await self._attempt_selection(
-            personality, packet, candidates, system_prompt, user_prompt, given_facts)
+            personality, packet, candidates, system_prompt, user_prompt, given_facts, held_back)
         if result.status is DecisionStatus.FAILED:
             logger.info(
                 "decision_retry_after_unusable_output",
@@ -806,7 +810,7 @@ class DecisionEngine:
                 },
             )
             result = await self._attempt_selection(
-                personality, packet, candidates, system_prompt, user_prompt, given_facts
+                personality, packet, candidates, system_prompt, user_prompt, given_facts, held_back
             )
         return result
 
@@ -818,6 +822,7 @@ class DecisionEngine:
         system_prompt: str,
         user_prompt: str,
         given_facts: Sequence[str],
+        held_back: frozenset[ActionType] = frozenset(),
     ) -> DecisionResult:
         """One decision LLM call + parse. ``FAILED`` here is retryable by the caller."""
 
@@ -917,7 +922,7 @@ class DecisionEngine:
             logger.info("decision_no_action", extra={"agent_id": agent_id, "step": step})
             return DecisionResult.no_action()
 
-        selection = self._parse_llm_selection(payload, candidates, packet)
+        selection = self._parse_llm_selection(payload, candidates, packet, held_back=held_back)
         if selection is None:  # _parse_llm_selection already recorded the reason on the trace
             logger.warning("decision_unparseable", extra={"agent_id": agent_id, "step": step})
             return DecisionResult.failed()
@@ -1181,6 +1186,8 @@ class DecisionEngine:
         personality: PersonalityLayer,
         packet: PerceptionPacket,
         candidates: Sequence[ActionCandidate],
+        *,
+        held_back: frozenset[ActionType] = frozenset(),
     ) -> tuple[str, str, List[str]]:
         """(system, user, given_facts).
 
@@ -1344,6 +1351,13 @@ class DecisionEngine:
                 "**别改用发送消息去联系他** —— 他不在「我能触及的人」名单上，消息到不了他；"
                 "硬填他的序号，这一动就作废。要么等他回来，要么我自己去找他。"
             )
+        # Cooldown (agent.action_cooldown): said as the character's own sense that this way has run
+        # dry, never as a mechanism. Listed by the menu's own label so it can't name another type.
+        for action_type in sorted(held_back, key=lambda t: t.value):
+            label = action_type.value.upper()
+            restrictions.append(
+                f"这阵子我接连选了好几回 {label}，同样的路子再走也难有新进展：此刻不可选 {label}，换一种做法往前推进。"
+            )
         if restrictions:
             lines.append("【此刻够不着的行动】（硬规则：先据此排除，再在剩下的里挑；若都够不着，就 act:false 什么都不做）")
             for r in restrictions:
@@ -1392,7 +1406,7 @@ class DecisionEngine:
 - 我不臆造我没感知到的人、事、动向。同时，注意区分已经发生，正在发生，将要发生的客观事实，不能混为一谈，比如“我要去超市”，“我正在去超市的路上”，“我已经到了超市”，这三个是不一样的客观事实。
 - 在行动前，需要先判断该事之前是不是做过，如果做过现在又重复做，需要先清楚为什么要重复做。宁可什么都不做也不要做一些无意义的重复的事情。
 - 行动前需要分析清楚此刻的自身处境，做出的行动选择需要符合常理，比如我正在被别人攻击，行动选择却是我现在要偷偷观察别人怎么打我，这是明显的不符合常理的。
-- 如果近期经历连续的行动失败，可以考虑换一种行动方式，不要过于一直执着于一种行动方式。比如如果交谈持续失败，可以采用物理方式等等。改变策略的建议：换行动方式，换地点，换目标等等。
+- 如果近期经历连续的行动失败或事情反复做但没有取得实质进展时，可以考虑换一种行动方式，不要过于一直执着于一种行动方式。比如如果交谈持续失败，可以采用物理方式等等。改变策略的建议：换行动方式，换地点，换目标等等。
 - 选person_indices的时候要注意谁会知道什么：SEND_MESSAGE的收件人会读到message_content；TALK的对象和旁听的人会知道talk_topic。不想让谁知道的，就别选他、也别写进去，否则会造成信息泄漏，比如我现在想与A讨论关于B的坏事，那person_indices应该选择是A，而不是B。
 - 只传一句话就用 SEND_MESSAGE：一拍即达、不占人手、对方在哪儿都收得到。指派任务值得占用一个人，是因为它能做 SEND_MESSAGE 做不到的事——把东西送到某人手上、把那边的情形看回来。只为传一句话就指派任务，是白费一个人和一个来回；而要打听消息、要人回答我、要说服或引开谁，指派任务办不到，他只会走到、说出、看见。
 - 行动前我先认准此刻是什么时候（下面会说明此刻是何年何月何日、几时）：当前时刻决定这一行动合不合时宜。如果出现时间错乱，需要先思考为什么会出现时间错乱，同时也会有可能付出必要的行动。
@@ -1455,6 +1469,8 @@ class DecisionEngine:
         content: "str | dict",
         candidates: Sequence[ActionCandidate],
         packet: PerceptionPacket | None = None,
+        *,
+        held_back: frozenset[ActionType] = frozenset(),
     ) -> LLMSelection | None:
         # Accepts a parsed dict (from _llm_select) or a raw string (tests pass JSON text directly).
         payload = content if isinstance(content, dict) else extract_json_object(content)
@@ -1467,6 +1483,8 @@ class DecisionEngine:
         if not 0 <= raw_index < len(candidates):
             return _reject("selected_index_out_of_range")
         chosen = candidates[raw_index]
+        if chosen.action_type in held_back:
+            return _reject("action_type_cooling_down")
         applicable = _action_fields(chosen.action_type) | _DECISION_FIELDS
         payload = {key: value for key, value in payload.items() if key in applicable}
         return _select(payload, chosen.action_type, _slots_for(payload, packet))

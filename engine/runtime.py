@@ -1531,6 +1531,7 @@ class NarrativeRuntime:
             await agent.begin_ongoing_step(
                 plan=plan, estimated_steps=remaining,
                 total_steps=exec_state.estimated_steps if exec_state else record_action.estimated_steps,
+                executed=self._executed(resolved),
             )
 
         # Invariant guard: arbitration gave him an execution the registry lacks. Landing
@@ -1644,6 +1645,17 @@ class NarrativeRuntime:
         ]
         return [*momentary, *due]
 
+    def _executed(self, resolved: ArbitratedAction) -> bool:
+        """The act really began in the world: the invitee didn't refuse, and it wasn't ruled
+        infeasible (``create_failed``, the funnel for arbitration vetoes and precondition
+        failures, marks its result ``not_executed``). Either way it settles as a failure without
+        having happened."""
+        if resolved.refused:
+            return False
+        exec_state = self._execution_of(resolved)
+        carried = exec_state.extra.get("completed_result") if exec_state is not None else None
+        return not (carried is not None and carried.not_executed)
+
     def _execution_of(self, resolved: ArbitratedAction) -> ActionExecutionState | None:
         """The execution an arbitration verdict names. By id, never by agent: one agent may stand
         in two this step, a momentary act and his body's."""
@@ -1657,7 +1669,7 @@ class NarrativeRuntime:
         """Commit one agent's momentary acts: the decision's motivation lands, the body stays free
         for whatever his body's verdict brings. Returns one opening-beat record per act; each is
         settled in this step's sweep."""
-        agent.begin_momentary_act(plan=plan)
+        agent.begin_momentary_act(plan=plan, executed=any(self._executed(r) for r in issued))
         records: List[Dict[str, Any]] = []
         for resolved in issued:
             exec_state = self._execution_of(resolved)

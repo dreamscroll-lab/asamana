@@ -225,7 +225,7 @@ async def _run_check(
     plan = await system._generate_plan(
         current_step, world_time, world_id, all_agents,
         _locations_of(all_agents) if agent_locations is None else agent_locations,
-        space if space is not None else SpaceManager(), entities,
+        space if space is not None else SpaceManager(), entities, guide=None,
     )
     if plan is None:
         return None
@@ -1783,10 +1783,252 @@ async def test_a_thing_picked_up_before_commit_is_spared_but_the_broadcast_still
 
     plan = await system._generate_plan(
         1, _world_time(1), "world-1", agents, _locations_of(agents),
-        env.space, env.all_live_entities())
+        env.space, env.all_live_entities(), guide=None)
     env.change_entity_state(EntityStateChange(entity_id="seal", owner_id="a1"))
     fired = await system._commit_plan(plan, 1, agents)
 
     assert fired is not None and fired.record.dispatched_to == ["broadcast"]
     assert not env.get_entity("seal").is_destroyed
     assert len(bc.peek_pending()) == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Neglected places: the rule path that skips the gate and draws characters there
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _watch(system: NarrativeEditor, agents: dict, steps: range, *, at: dict[int, str] | None = None) -> None:
+    """One presence count per step; ``at`` moves the one agent somewhere else on the given steps."""
+    for step in steps:
+        locations = _locations_of(agents)
+        if at and step in at:
+            locations = {aid: at[step] for aid in locations}
+        system._note_presence(step, agents, locations)
+
+
+def test_a_place_with_something_there_is_cold_once_a_whole_window_is_watched(container) -> None:
+    from engine.narrative_editor import _HEAT_WINDOW_STEPS
+
+    env, agents, directory = _ground_world(container)
+    system = _narrative_editor(container, directory=directory, environment=env)
+    entities = env.all_live_entities()
+    _watch(system, agents, range(1, _HEAT_WINDOW_STEPS))
+    assert system._cold_places(_HEAT_WINDOW_STEPS - 1, env.space, entities) is None
+    _watch(system, agents, range(_HEAT_WINDOW_STEPS, _HEAT_WINDOW_STEPS + 1))
+    guide = system._cold_places(_HEAT_WINDOW_STEPS, env.space, entities)
+    assert guide is not None and guide.place_ids == ("market",)   # the palace is where he stands
+
+
+def test_a_place_visited_a_little_is_still_cold_but_not_one_visited_more(container) -> None:
+    from engine.narrative_editor import _HEAT_WINDOW_STEPS, _MAX_COLD_HEAT
+
+    env, agents, directory = _ground_world(container)
+    entities = env.all_live_entities()
+    for visits, cold in ((_MAX_COLD_HEAT, True), (_MAX_COLD_HEAT + 1, False)):
+        system = _narrative_editor(container, directory=directory, environment=env)
+        _watch(system, agents, range(1, _HEAT_WINDOW_STEPS + 1),
+               at={step: "market" for step in range(1, visits + 1)})
+        guide = system._cold_places(_HEAT_WINDOW_STEPS, env.space, entities)
+        assert (guide is not None and "market" in guide.place_ids) is cold
+
+
+def test_a_cold_place_someone_stands_in_right_now_is_not_guided_to(container) -> None:
+    """He arrived last step, so the market is still cold; but he already sees what lies there."""
+    from engine.narrative_editor import _HEAT_WINDOW_STEPS
+
+    env, agents, directory = _ground_world(container)
+    system = _narrative_editor(container, directory=directory, environment=env)
+    _watch(system, agents, range(1, _HEAT_WINDOW_STEPS + 1), at={_HEAT_WINDOW_STEPS: "market"})
+    assert system._cold_places(_HEAT_WINDOW_STEPS, env.space, env.all_live_entities()) is None
+
+
+def test_a_place_with_nothing_on_the_ground_is_never_cold_enough_to_guide_to(container) -> None:
+    from engine.narrative_editor import _HEAT_WINDOW_STEPS
+
+    env, agents, directory = _ground_world(container)
+    system = _narrative_editor(container, directory=directory, environment=env)
+    _watch(system, agents, range(1, _HEAT_WINDOW_STEPS + 1))
+    no_knife = [e for e in env.all_live_entities() if e.entity_id != "knife"]
+    assert system._cold_places(_HEAT_WINDOW_STEPS, env.space, no_knife) is None
+
+
+def test_cold_places_of_equal_worth_go_coldest_first(container) -> None:
+    from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
+    from core.interfaces.place import Place
+    from engine.narrative_editor import _HEAT_WINDOW_STEPS
+
+    env, agents, directory = _ground_world(container)
+    env.space.register_place(Place(place_id="inn", name="客栈"))
+    env.register_entity(WorldEntity(
+        entity_id="lamp", name="油灯", entity_type=WorldEntityType.LANDMARK,
+        presence=EntityPresence.AT_LOCATION, presence_ref="inn",
+    ))
+    system = _narrative_editor(container, directory=directory, environment=env)
+    _watch(system, agents, range(1, _HEAT_WINDOW_STEPS + 1), at={1: "inn"})
+    guide = system._cold_places(_HEAT_WINDOW_STEPS, env.space, env.all_live_entities())
+    assert guide is not None and guide.place_ids == ("market", "inn")   # a fixed thing counts too
+
+
+@pytest.mark.asyncio
+async def test_a_guide_skips_the_gate_and_tells_the_plan_where_and_what(container) -> None:
+    from engine.narrative_editor import _Guide
+
+    env, agents, directory = _ground_world(container)
+    router = _EventRouter([_plan_json(message={"recipients": [1], "content": "西市地上有把短刀，去看看。"})])
+    system = _narrative_editor(container, router=router, directory=directory, environment=env)
+    guide = _Guide(place_ids=("market",))
+
+    plan = await system._generate_plan(
+        1, _world_time(1), "world-1", agents, _locations_of(agents), env.space, env.all_live_entities(),
+        guide=guide,
+    )
+
+    assert plan is not None and plan.guided_place_ids == ("market",)
+    assert len(router.calls) == 1                      # the plan only: no gate call
+    user = router.calls[0][1][1].content
+    block = user[user.index("这一拍要引导人物前往的地方"):]
+    assert "西市" in block and "短刀" in block
+    assert "告示" not in block                          # the palace's notice belongs elsewhere
+    fired = await system._commit_plan(plan, 1, agents)
+    assert fired is not None and system._guided_at == {"market": 1}
+
+
+@pytest.mark.asyncio
+async def test_the_gate_path_names_no_place_to_draw_to(container) -> None:
+    env, agents, directory = _ground_world(container)
+    router = _EventRouter([_gate(), _plan_json(
+        broadcast={"content": "殿外起风", "severity": "low", "location_scope": None})])
+    system = _narrative_editor(container, router=router, directory=directory, environment=env)
+
+    plan = await system._generate_plan(
+        1, _world_time(1), "world-1", agents, _locations_of(agents), env.space, env.all_live_entities(),
+        guide=None,
+    )
+
+    assert plan is not None and plan.guided_place_ids == ()
+    assert "这一拍要引导人物前往的地方" not in router.calls[1][1][1].content
+
+
+@pytest.mark.asyncio
+async def test_a_guide_nobody_perceives_is_dropped(container) -> None:
+    """A broadcast sited at the neglected place reaches no one: there's nobody there."""
+    from engine.narrative_editor import _Guide
+
+    env, agents, directory = _ground_world(container)
+    router = _EventRouter([_plan_json(
+        broadcast={"content": "西市地上有把短刀", "severity": "low", "location_scope": 1})])  # #1 西市
+    system = _narrative_editor(container, router=router, directory=directory, environment=env)
+
+    plan = await system._generate_plan(
+        1, _world_time(1), "world-1", agents, _locations_of(agents), env.space, env.all_live_entities(),
+        guide=_Guide(place_ids=("market",)),
+    )
+
+    assert plan is None
+
+
+@pytest.mark.asyncio
+async def test_a_guided_place_is_left_alone_for_a_while_through_poll(container) -> None:
+    """End to end through the runtime entry: the first check with a whole window watched guides
+    without a gate; once committed, the place is out of the pick until the repeat window passes."""
+    from engine.narrative_editor import _GUIDE_REPEAT_STEPS, _HEAT_WINDOW_STEPS
+
+    env, agents, directory = _ground_world(container)
+    first_check = _HEAT_WINDOW_STEPS
+    router = _EventRouter([_plan_json(message={"recipients": [1], "content": "西市地上有一把短刀。"})])
+    system = _narrative_editor(container, router=router, directory=directory, environment=env,
+                               check_interval=first_check, max_injections_per_window=10)
+
+    async def poll(step: int):
+        return await system.poll_injection(
+            current_step=step, world_time=_world_time(step), world_id="world-1", all_agents=agents,
+            agent_locations=_locations_of(agents), space=env.space, entities=env.all_live_entities(),
+        )
+
+    for step in range(1, first_check + 1):
+        assert await poll(step) is None
+    await system._inflight
+    fired = await poll(first_check + 1)
+    assert fired is not None and len(router.calls) == 1
+    entities = env.all_live_entities()
+    last = first_check + 1 + _GUIDE_REPEAT_STEPS
+    _watch(system, agents, range(first_check + 2, last + 1))
+    assert system._cold_places(last - 1, env.space, entities) is None
+    again = system._cold_places(last, env.space, entities)
+    assert again is not None and again.place_ids == ("market",)
+
+
+def test_a_guide_names_several_cold_places_most_worth_going_first(container) -> None:
+    from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
+    from core.interfaces.place import Place
+    from engine.narrative_editor import _HEAT_WINDOW_STEPS, _MAX_GUIDED_PLACES
+
+    env, agents, directory = _ground_world(container)
+    extra = [f"p{i}" for i in range(_MAX_GUIDED_PLACES)]
+    for place_id in extra:
+        env.space.register_place(Place(place_id=place_id, name=place_id))
+        for n in range(2):   # two things each: worth more than the market's one knife
+            env.register_entity(WorldEntity(
+                entity_id=f"{place_id}-{n}", name="木箱", entity_type=WorldEntityType.ITEM,
+                presence=EntityPresence.AT_LOCATION, presence_ref=place_id,
+            ))
+    system = _narrative_editor(container, directory=directory, environment=env)
+    _watch(system, agents, range(1, _HEAT_WINDOW_STEPS + 1))
+
+    guide = system._cold_places(_HEAT_WINDOW_STEPS, env.space, env.all_live_entities())
+
+    assert guide is not None and len(guide.place_ids) == _MAX_GUIDED_PLACES
+    assert "market" not in guide.place_ids and set(guide.place_ids) == set(extra)
+
+
+@pytest.mark.asyncio
+async def test_a_guide_only_tells_so_world_changes_in_its_plan_are_ignored(container) -> None:
+    """A guide reports what is there; a thing it would put down, change or destroy isn't part of
+    that beat."""
+    from engine.narrative_editor import _Guide
+
+    env, agents, directory = _ground_world(container)
+    router = _EventRouter([_plan_json(
+        message={"recipients": [1], "content": "西市地上有一把短刀。"},
+        spawn={"location": 1, "entity_type": "item", "name": "血书", "description": "一封血书",
+               "content": "", "observation": "地上多了一封血书"},
+        destroy={"entity": _ground_index(env, "knife"), "observation": "短刀碎了"},
+    )])
+    system = _narrative_editor(container, router=router, directory=directory, environment=env)
+
+    plan = await system._generate_plan(
+        1, _world_time(1), "world-1", agents, _locations_of(agents), env.space, env.all_live_entities(),
+        guide=_Guide(place_ids=("market",)),
+    )
+
+    assert plan is not None and plan.message is not None
+    assert plan.mutations == []
+
+
+@pytest.mark.asyncio
+async def test_only_the_places_a_guide_actually_names_are_recorded_as_guided(container) -> None:
+    """A place left out of what was said stays in the pick; a guide that names none is dropped."""
+    from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
+    from core.interfaces.place import Place
+    from engine.narrative_editor import _Guide
+
+    env, agents, directory = _ground_world(container)
+    env.space.register_place(Place(place_id="inn", name="客栈"))
+    env.register_entity(WorldEntity(
+        entity_id="lamp", name="油灯", entity_type=WorldEntityType.LANDMARK,
+        presence=EntityPresence.AT_LOCATION, presence_ref="inn",
+    ))
+    directory = LiveWorldDirectory.from_agents(agents, env)
+    guide = _Guide(place_ids=("market", "inn"))
+
+    async def plan_for(content: str):
+        router = _EventRouter([_plan_json(message={"recipients": [1], "content": content})])
+        system = _narrative_editor(container, router=router, directory=directory, environment=env)
+        return await system._generate_plan(
+            1, _world_time(1), "world-1", agents, _locations_of(agents), env.space,
+            env.all_live_entities(), guide=guide,
+        )
+
+    partly = await plan_for("西市地上有一把短刀。")
+    assert partly is not None and partly.guided_place_ids == ("market",)
+    assert await plan_for("城外有一把短刀。") is None

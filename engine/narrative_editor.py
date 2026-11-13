@@ -12,6 +12,9 @@ Design charter:
   follows what the editor's broadcasts say appeared or vanished.
 - Delivery goes through the ``InjectionDispatcher`` shared with the director
   (``engine/injection.py``); a new communication pattern needs its own channel module first.
+- One rule path besides the LLM gate: cold places (``_MAX_COLD_HEAT``) skip the gate and the
+  plan guides characters there. How often characters have been somewhere is an objective
+  threshold; whom to tell and how stays the LLM's.
 - Ledgers are separate from the director's, so the quota only constrains the editor and the
   editor's briefing never learns someone reached in from outside the world.
 """
@@ -20,9 +23,9 @@ from __future__ import annotations
 
 import asyncio
 import random
-from collections import Counter
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
+from collections import Counter, deque
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any, Collection, Iterable, Mapping, Sequence
 
 from agent.personality import SECRET_LABEL
 from core.context import note_active_call_adoption
@@ -96,6 +99,20 @@ _INJECTION_AIMS = """\
 _MAX_STOCKED_PLACES = 5          # with unheld entities on the ground, most first
 _MAX_BARE_PLACES = 3             # with nothing on them, a different draw each step
 
+# A place's heat is how many characters stood there, summed over the last _HEAT_WINDOW_STEPS
+# steps. A place with unheld entities on the ground and heat at most _MAX_COLD_HEAT is cold: the
+# next check skips the pacing gate and the plan guides characters there. Without the threshold the
+# quietest place would always be picked and guides would take the whole quota. Npcs count for
+# neither heat nor worth, as everywhere in the editor: only characters perceive what it injects.
+_HEAT_WINDOW_STEPS = 10
+_MAX_COLD_HEAT = 2
+# One guide names at most this many places, so different characters can be sent different ways;
+# more won't fit the length limits of one broadcast and one message.
+_MAX_GUIDED_PLACES = 3
+# A place guided to stays out of the pick this long, so it isn't pressed again while people are on
+# their way or have chosen not to go.
+_GUIDE_REPEAT_STEPS = 20
+
 
 # Not shared with the director's DirectivePlan: composing a beat and translating a sentence
 # are different products, even if they look alike.
@@ -110,6 +127,8 @@ class _InjectionPlan:
     spawn: SpawnMutation | None = None
     alter: EntityMutation | None = None
     destroy: EntityMutation | None = None
+    # The cold places this plan guides characters to; empty on the gate's path.
+    guided_place_ids: tuple[str, ...] = ()
 
     @property
     def mutations(self) -> list[Mutation]:
@@ -127,6 +146,13 @@ class _Menu:
     entities: list["WorldEntity"]
     place_rows: list[str]
     entity_rows: list[str]
+
+
+@dataclass(frozen=True)
+class _Guide:
+    """The cold places the next plan must guide characters to, most worth going first."""
+
+    place_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -166,6 +192,21 @@ def _step_deeds(snapshot: WorldSnapshot) -> list[Mapping[str, Any]]:
     ]
 
 
+def _reaches_someone(
+    plan: "_InjectionPlan", living: Mapping[str, "Agent"], agent_locations: Mapping[str, str],
+) -> bool:
+    """Whether some living character perceives the plan: a message, a world-wide broadcast, or
+    one sited where someone stands."""
+    if plan.message is not None:
+        return True
+    broadcast = plan.broadcast
+    if broadcast is None:
+        return False
+    if broadcast.location_scope is None:
+        return True
+    return any(agent_locations.get(aid) == broadcast.location_scope for aid in living)
+
+
 def _numbered(rows: Sequence[str]) -> str:
     """Menu rows numbered (``#1 …``), for a call that selects from them."""
     return "\n".join(f"#{i + 1} {row}" for i, row in enumerate(rows)) or "（无）"
@@ -181,12 +222,13 @@ def _menu_places(
     headcount: Mapping[str, int],
     entity_counts: Mapping[str, int],
     rng: random.Random,
+    must_include: Collection[str] = (),
 ) -> list["Place"]:
     """Places the plan may name, in ``locations`` order: every occupied place (the only ones a
-    broadcast reaches), the unoccupied places with the most unheld entities on the ground, and a few
-    bare ones drawn by ``rng``. Don't pick the bare ones by a fixed rule such as nearness: while
-    people stay put the same few would always win, and the rest of the map could never host
-    an injection."""
+    broadcast reaches), the unoccupied places with the most unheld entities on the ground, a few
+    bare ones drawn by ``rng``, and ``must_include`` (the places a guide names). Don't pick the
+    bare ones by a fixed rule such as nearness: while people stay put the same few would always
+    win, and the rest of the map could never host an injection."""
     unoccupied = [loc for loc in locations if not headcount.get(loc.place_id)]
     stocked = sorted(
         (loc for loc in unoccupied if entity_counts.get(loc.place_id)),
@@ -194,7 +236,7 @@ def _menu_places(
     )[:_MAX_STOCKED_PLACES]
     bare = [loc for loc in unoccupied if not entity_counts.get(loc.place_id)]
     drawn = rng.sample(bare, min(len(bare), _MAX_BARE_PLACES))
-    chosen = {loc.place_id for loc in (*stocked, *drawn)}
+    chosen = {loc.place_id for loc in (*stocked, *drawn)} | set(must_include)
     return [loc for loc in locations if headcount.get(loc.place_id) or loc.place_id in chosen]
 
 
@@ -221,6 +263,12 @@ class NarrativeEditor:
         # At most one background generation at a time: bounds cost and prevents quota races
         # (the ledger is written only at commit).
         self._inflight: "asyncio.Task[_InjectionPlan | None] | None" = None
+        # Heat bookkeeping, not committed to the snapshot: a restore starts the window again,
+        # which only delays the next guide by up to _HEAT_WINDOW_STEPS (and may name a place
+        # guided to just before the restore).
+        # How many characters stood in each place, one entry per step, oldest first.
+        self._presence: deque[Counter[str]] = deque(maxlen=_HEAT_WINDOW_STEPS)
+        self._guided_at: dict[str, int] = {}      # place id → step a guide to it was committed
 
     def list_injections(self) -> list[InjectionRecord]:
         return self._ledger.all()
@@ -261,6 +309,7 @@ class NarrativeEditor:
         ``personality.state.current_location``: that is the agent's own record, which lags while
         he travels.
         """
+        self._note_presence(current_step, all_agents, agent_locations)
         ready = await self._consume_ready(current_step, all_agents)
         if ready is not None:
             return ready
@@ -268,6 +317,53 @@ class NarrativeEditor:
             current_step, world_time, world_id, all_agents, agent_locations, space, entities,
         )
         return None
+
+    def _note_presence(
+        self, current_step: int, all_agents: Mapping[str, "Agent"], agent_locations: Mapping[str, str],
+    ) -> None:
+        """Count this step's characters by place. Called once per step."""
+        self._presence.append(Counter(
+            location for aid, agent in all_agents.items()
+            if agent.is_active and (location := agent_locations.get(aid))
+        ))
+
+    def _cold_places(
+        self,
+        current_step: int,
+        space: "SpaceManager",
+        entities: Sequence["WorldEntity"],
+    ) -> _Guide | None:
+        """The cold places to guide characters to, or None: at most _MAX_GUIDED_PLACES, the ones
+        with the most on the ground first, then the coldest. None until a whole window has been
+        watched: heat over a shorter one would call every place cold at the start."""
+        if len(self._presence) < _HEAT_WINDOW_STEPS:
+            return None
+        worth = Counter(e.location_id for e in entities if e.location_id is not None)
+        heat = sum(self._presence, Counter())
+        # Someone standing there already perceives what is on the ground, however cold the place.
+        here_now = self._presence[-1]
+        candidates: list[tuple[int, int, str]] = []
+        for place_id in space.all_place_ids():
+            if not worth[place_id] or here_now[place_id] or heat[place_id] > _MAX_COLD_HEAT:
+                continue
+            guided = self._guided_at.get(place_id)
+            if guided is not None and current_step - guided < _GUIDE_REPEAT_STEPS:
+                continue
+            candidates.append((-worth[place_id], heat[place_id], place_id))
+        if not candidates:
+            return None
+        picked = sorted(candidates)[:_MAX_GUIDED_PLACES]
+        place_ids = tuple(place_id for _worth, _heat, place_id in picked)
+        logger.info(
+            "narrative_editor_guide",
+            extra={
+                "step": current_step,
+                "location_ids": list(place_ids),
+                "worth": [worth[place_id] for place_id in place_ids],
+                "heat": [heat[place_id] for place_id in place_ids],
+            },
+        )
+        return _Guide(place_ids=place_ids)
 
     def _ensure_generation(
         self,
@@ -285,9 +381,11 @@ class NarrativeEditor:
             return
         if not self._passes_rule_check(current_step):
             return
+        guide = self._cold_places(current_step, space, entities)
         self._inflight = asyncio.create_task(
             self._generate_plan(
                 current_step, world_time, world_id, all_agents, agent_locations, space, entities,
+                guide=guide,
             )
         )
 
@@ -322,15 +420,20 @@ class NarrativeEditor:
         agent_locations: Mapping[str, str],
         space: "SpaceManager",
         entities: Sequence["WorldEntity"],
+        *,
+        guide: _Guide | None,
     ) -> "_InjectionPlan | None":
         """Gate + generation, returning a plan or None. No side effects: committing lives in
-        _commit_plan, keeping background execution apart from deterministic consumption."""
+        _commit_plan, keeping background execution apart from deterministic consumption.
+        A ``guide`` skips the gate: the heat rule has already decided this beat happens."""
         narrative_summary = await self._build_narrative_summary(
             world_id, current_step, all_agents, agent_locations,
         )
-        menu = self._menu(current_step, all_agents, agent_locations, space, entities)
-        should_inject = await self._passes_llm_check(world_time, narrative_summary, menu)
-        if not should_inject:
+        menu = self._menu(
+            current_step, all_agents, agent_locations, space, entities,
+            must_include=guide.place_ids if guide is not None else (),
+        )
+        if guide is None and not await self._passes_llm_check(world_time, narrative_summary, menu):
             return None
         return await self._generate_injection_plan(
             current_step=current_step,
@@ -339,6 +442,7 @@ class NarrativeEditor:
             all_agents=all_agents,
             agent_locations=agent_locations,
             menu=menu,
+            guide=guide,
         )
 
     async def _commit_plan(
@@ -361,6 +465,8 @@ class NarrativeEditor:
         )
         if committed is not None:
             self._ledger.record(committed.record)
+            for place_id in plan.guided_place_ids:
+                self._guided_at[place_id] = current_step
         return committed
 
     async def aclose(self) -> None:
@@ -645,9 +751,12 @@ class NarrativeEditor:
         all_agents: Mapping[str, "Agent"],
         agent_locations: Mapping[str, str],
         menu: _Menu,
+        guide: _Guide | None,
     ) -> _InjectionPlan | None:
         """The LLM generates an injection and declares its channels (spawn / alter / destroy /
-        broadcast / message).
+        broadcast / message). With a ``guide`` the beat only tells characters what is at those
+        places: spawn / alter / destroy don't apply and are ignored, and a plan no character
+        perceives is dropped.
 
         The editor sees beyond where people stand: the menu is every occupied place plus some
         places elsewhere (``_menu_places``), and the unheld entities on them. The gate reads the
@@ -707,6 +816,19 @@ spawn / alter / destroy 每拍各至多一件。你投出去的话里若有一�
 新东西只能落在某个地点上,不会凭空到谁手里:要让某人得到它,就放在他所在的地方,
 别写成「送到他手中」。
 
+【引导前往】输入末尾若给出「这一拍要引导人物前往的地方」(一处或几处),说明那些地方地上有东西,
+最近却很少有人物去过。这一拍不设计事件,只把这些地方的情形告诉你判断合适的人物;告诉谁、怎么告知
+由你定,听到之后去不去、在不在意,由他们自己决定。
+- 投给谁:依据人物的处境、目标与关系,判断这些地方对谁可能有用,用 message 告诉那一个或几个人物;
+  也可以用全域 broadcast(location_scope 留空)让所有人知道。几处地方可以分在两个通道里说,
+  告诉不同的人。不要把 broadcast 限在这些没有人物的地方，因为即使 broadcast 谁也感知不到。
+- 说什么:每一处都说到,并用上面给出的地点名称呼它 —— 是哪个地方，那里有什么，是什么情况。
+  东西的样子和上面写的字照给出的原话转述，不要补上没有的内容和描述等等;不添、不改、不编,
+  也不替人物判断值不值得去。
+- 怎么说:像平常告知一件事情一样,不故弄玄虚,不制造悬念,不用「似乎」「据说」这类含糊的说法。
+- 这一拍 spawn / alter / destroy 一律填 null;开头「带来重大改变」的要求和下面避免清单里「不痛不痒」
+  那一条不适用于这一拍。
+
 【避免】(失败模式,逐条规避)
 - 笼统抽象、等于没说的事件，必须给出具体的事情、人物，事件，变化等等。
 - 与故事前提 / 人物身份脱钩、凭空降下的通用桥段
@@ -753,7 +875,7 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
 {entity_lines}
 
 {narrative_summary}
-
+{self._guide_block(guide, menu)}
 依上面说定的 JSON 格式设计事件（reason 在前），只输出 JSON、不写任何多余内容。"""
 
         try:
@@ -804,7 +926,66 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
             note_active_call_adoption(False, "no_dispatchable_channel")
             logger.warning("injection_plan_no_valid_channel", extra={"step": current_step})
             return None
-        return plan
+        if guide is None:
+            return plan
+        plan = replace(plan, spawn=None, alter=None, destroy=None)
+        if not _reaches_someone(plan, living, agent_locations):
+            note_active_call_adoption(False, "guide_unperceived")
+            logger.warning(
+                "injection_guide_unperceived",
+                extra={"step": current_step, "location_ids": list(guide.place_ids)},
+            )
+            return None
+        told = self._told_places(plan, guide)
+        if not told:
+            note_active_call_adoption(False, "guide_untold")
+            logger.warning(
+                "injection_guide_untold", extra={"step": current_step, "location_ids": list(guide.place_ids)},
+            )
+            return None
+        if len(told) < len(guide.place_ids):
+            logger.info(
+                "injection_guide_partly_told",
+                extra={
+                    "step": current_step,
+                    "told": list(told),
+                    "untold": [p for p in guide.place_ids if p not in told],
+                },
+            )
+        return replace(plan, guided_place_ids=told)
+
+    def _told_places(self, plan: "_InjectionPlan", guide: _Guide) -> tuple[str, ...]:
+        """The guide's places whose name appears in what the plan says.
+
+        Only these are recorded as guided: an untold place stays in the pick, rather than being
+        kept out for _GUIDE_REPEAT_STEPS though nobody heard of it. Matching is on the exact name,
+        the one the plan was shown and asked to use, so it errs toward untold: an alias or
+        shortening reads as untold, and the place may be named again at the next check, which
+        costs one beat at most. It reads a place as told by mistake only when its name sits inside
+        another place's name that was said; an LLM judge would catch both, but not worth a call
+        for bookkeeping.
+        """
+        said = " ".join(c.content for c in (plan.message, plan.broadcast) if c is not None)
+        return tuple(p for p in guide.place_ids if self.directory.location_name(p) in said)
+
+    def _guide_block(self, guide: _Guide | None, menu: _Menu) -> str:
+        """The places a guide names and what is on the ground there, for the end of the plan's
+        user message; "" without a guide."""
+        if guide is None:
+            return ""
+        index = {loc.place_id: i for i, loc in enumerate(menu.places, 1)}
+        sections = []
+        for place_id in guide.place_ids:
+            things = [row for e, row in zip(menu.entities, menu.entity_rows) if e.location_id == place_id]
+            sections.append(
+                f"可选地点 #{index[place_id]} {self.directory.location_name(place_id)},地上的东西:\n"
+                f"{_bulleted(things)}"
+            )
+        joined = "\n".join(sections)
+        return f"""
+这一拍要引导人物前往的地方:
+{joined}
+"""
 
     def _parse_plan(
         self,
@@ -846,6 +1027,8 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
         agent_locations: Mapping[str, str],
         space: "SpaceManager",
         entities: Sequence["WorldEntity"],
+        *,
+        must_include: Collection[str] = (),
     ) -> _Menu:
         """The menu one check's gate and plan both read (see ``_Menu``)."""
         living = [aid for aid, a in agents.items() if a.is_active]
@@ -853,7 +1036,7 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
         on_ground = [e for e in entities if e.location_id is not None]
         places = _menu_places(
             space.all_places(), headcount, Counter(e.location_id for e in on_ground),
-            random.Random(current_step),
+            random.Random(current_step), must_include,
         )
         listed = {loc.place_id for loc in places}
         grounded = [e for e in on_ground if e.location_id in listed]

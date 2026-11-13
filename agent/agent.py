@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Sequence
 
 _PERCEPTION_MEMORY_TOP_K = 5  # memories per stream (factual + experiential) entering LLM context
 
+from agent.action_cooldown import ActionCooldown
 from agent.actor import Actor
 from agent.actor_briefing import build_actor_briefing
 from agent.actor_mind import build_actor_mind
@@ -268,6 +269,7 @@ class Agent:
         # decidable N. Not committed, like that buffer: a restore restarts the count, and the
         # window is a few steps.
         self._foiled_misses: Dict[tuple[str, str], tuple[int, int]] = {}
+        self._cooldown = ActionCooldown()
 
     def remember_agent(self, agent_id: str, identity: PerceivedIdentity) -> None:
         """Cache an agent's perceived name + gender.
@@ -444,7 +446,9 @@ class Agent:
             decision = await self.decision_engine.decide(
                 personality=self.personality,
                 packet=packet,
+                held_back=self._cooldown.held_back(),
             )
+        self._cooldown.note_decided()
         decide_ms = round((time.perf_counter() - decide_start) * 1000.0, 2)
         action = decision.action
         if action is not None:
@@ -1617,15 +1621,19 @@ class Agent:
         )
 
     async def begin_ongoing_step(
-        self, *, plan: AgentStepPlan, estimated_steps: int | None = None, total_steps: int | None = None,
+        self, *, plan: AgentStepPlan, executed: bool,
+        estimated_steps: int | None = None, total_steps: int | None = None,
     ) -> None:
         """Begin half of the begin→finalize path: mark the action started, writing no memory.
 
         ``estimated_steps`` overrides the LLM's estimate with the executor-authoritative duration
         (e.g. MOVE distance); ``total_steps`` is that whole duration, the start step included,
-        for the actor's record of the act.
+        for the actor's record of the act. ``executed``: the act really began, rather than being
+        refused or ruled infeasible; only such a start counts toward a cooldown.
         """
         self._land_motivation(plan)
+        if executed:
+            self._cooldown.record_start(plan.action.action_type, step=plan.step, agent_id=self.agent_id)
         self.personality.begin_action(
             step=plan.step,
             description=plan.action.action_description,
@@ -1640,11 +1648,14 @@ class Agent:
                 total_steps=total_steps if total_steps is not None else plan.action.estimated_steps,
             )
 
-    def begin_momentary_act(self, *, plan: AgentStepPlan) -> None:
+    def begin_momentary_act(self, *, plan: AgentStepPlan, executed: bool) -> None:
         """Begin half of a momentary act (begin → ``finalize_momentary_act``): the decision's
         motivation lands, the body is left free. It may still be drawn into someone else's act
-        this step, which then begins through ``join_ongoing_action``."""
+        this step, which then begins through ``join_ongoing_action``. ``executed`` as for
+        ``begin_ongoing_step``."""
         self._land_motivation(plan)
+        if executed:
+            self._cooldown.record_start(plan.action.action_type, step=plan.step, agent_id=self.agent_id)
 
     def void_momentary_act(self, *, step: int, description: str) -> None:
         """The momentary act started and came to nothing adjudicated (a null step): nothing is

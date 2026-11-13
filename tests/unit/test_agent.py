@@ -306,7 +306,7 @@ async def test_completing_goal_writes_no_separate_completed_memory(container: ob
     result = _make_action_result(succeeded=True)
 
     # Born-zero (duration-1): begin marks IN_PROGRESS with 0 remaining, finalize completes same step.
-    await agent.begin_ongoing_step(plan=plan, estimated_steps=0)
+    await agent.begin_ongoing_step(plan=plan, executed=True, estimated_steps=0)
     # Seed AFTER commit (commit writes the plan's empty goal queue): the short-term goal whose
     # progress the finalize will evaluate. Goals live on personality (single source of truth).
     agent.personality.set_short_term_goal_entities([
@@ -701,7 +701,7 @@ async def test_finalize_adjudication_failed_is_null_step(container: object) -> N
     )
 
     # Begin marks IN_PROGRESS; the adjudication-failed finalize must reset to idle (null step).
-    await agent.begin_ongoing_step(plan=plan, estimated_steps=0)
+    await agent.begin_ongoing_step(plan=plan, executed=True, estimated_steps=0)
     # Seed AFTER commit (commit writes the plan's empty goal queue).
     agent.personality.set_short_term_goal_entities([
         GoalEntity(id="stg-1-0", text="与X建立信任", goal_type="short_term",
