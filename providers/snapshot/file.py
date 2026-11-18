@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 from core.factory import ComponentKind, ProviderFactory
-from core.interfaces.message import Message
+from core.interfaces.message import message_from_dict
 from core.interfaces.perception import Broadcast, BroadcastType
 from core.interfaces.snapshot import EngineState, SnapshotProvider, WorldSnapshot, WorldState
 from core.logging import get_logger
@@ -82,7 +82,7 @@ class FileSnapshotProvider(SnapshotProvider):
         data["state"] = WorldState(**{k: v for k, v in state.items() if k in _STATE_FIELDS})
         engine = dict(data.get("engine")) if isinstance(data.get("engine"), dict) else {}
         engine["pending_messages"] = [
-            _message_from_dict(item)
+            message_from_dict(item)
             for item in engine.get("pending_messages", [])
             if isinstance(item, dict)
         ]
@@ -235,40 +235,6 @@ class FileSnapshotProvider(SnapshotProvider):
         if target is None or not target.is_file():
             return None
         return await asyncio.to_thread(target.read_bytes)
-
-
-def _message_from_dict(data: dict) -> Message:
-    """Deserialize a Message from snapshot JSON.
-
-    Delivery is determined by recipients + location_scope + deliver_step; urgency is parsed
-    leniently via parse_urgency.
-    """
-    from core.interfaces.urgency import parse_urgency
-    raw_urgency = data.get("urgency")
-    return Message(
-        id=str(data["id"]),
-        world_id=str(data["world_id"]),
-        sender_id=str(data["sender_id"]),
-        content=str(data["content"]),
-        recipients=list(data["recipients"]) if data.get("recipients") is not None else None,
-        location_scope=(
-            str(data["location_scope"])
-            if data.get("location_scope") is not None
-            else None
-        ),
-        deliver_step=int(data["deliver_step"]),
-        created_step=int(data["created_step"]),
-        sender_name=str(data.get("sender_name", "")),
-        anonymous=bool(data["anonymous"]),
-        intent=str(data.get("intent", "")),
-        urgency=parse_urgency(raw_urgency),
-        # Dropping either field changes delivery after a restore: a mindless body would be
-        # treated as a person who forms relations, and execution members would receive their own
-        # act again.
-        sender_is_agent=bool(data.get("sender_is_agent", True)),
-        doer_ids=tuple(data.get("doer_ids") or ()),
-        metadata=dict(data.get("metadata", {})),
-    )
 
 
 def _broadcast_from_dict(data: dict) -> Broadcast:

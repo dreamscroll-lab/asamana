@@ -102,6 +102,8 @@ _SYSTEM_PROMPT = f"""\
  - 用该角色近来的经历判断信号的来龙去脉：它是否在回应该角色自己先前做过的事、该角色是否已在应对、是否是该角色先前没理会的事再次逼近等等但不限于只有这些场景。
  - 该角色已在应对的事（正在做、或刚做过），或者压力和【正在做的事】内容或者方向一样，不要再给出同样的压力；先前没理会、如今再次到来的，可视为加码。
  - 经历里的旧事（早先接到的安排、该角色原本的打算）若这一步没有信号牵动，不构成压力；不得凭经历推断信号里没有的内容。
+ - 所给「近来没做成的目标」是该角色已经试过、没能做成的事。信号指向的若是同一件事，不要换个说法再把它给出来；
+   除非信号带来了让它重新走得通的新条件（比如对方新答应了、新给出了门路），那才是新的压力。单是有人再催一遍、再提一次，不算新条件。
 
 【默认无压力，不要凑数】
  - 外部压力是例外而非常态。只有当信号**确实**对该角色构成可行动的外部推力时，才输出目标；
@@ -236,6 +238,7 @@ class WorldPressureEvaluator:
         recent_past = await agent.pressure_recent_past(
             step, cues=[s.cue for s in numbered], present=[c["id"] for c in co_located],
         )
+        failed_goals = agent.recently_failed_goal_lines(step)
         situation_header = render_situation_header(
             Situation(
                 location_view=spatial.location_view if spatial is not None else None,
@@ -249,6 +252,7 @@ class WorldPressureEvaluator:
             signals=numbered,
             co_located=co_located,
             recent_past=recent_past,
+            failed_goals=failed_goals,
             doing=doing,
             situation_header=situation_header,
         )
@@ -261,6 +265,7 @@ class WorldPressureEvaluator:
             GivenFacts()
             .add("此刻感知到的信号", [s.line for s in numbered])
             .add("近来的经历", recent_past)
+            .add("近来没做成的目标", [line.strip().removeprefix("- ") for line in failed_goals])
             .add("同处一地的人", [self._co_located_line(c) for c in co_located])
             .add("正在做的事", doing)
         )
@@ -402,6 +407,7 @@ class WorldPressureEvaluator:
         signals: Sequence[_Signal],
         co_located: "Sequence[dict[str, Any]]" = (),
         recent_past: "Sequence[str]" = (),
+        failed_goals: "Sequence[str]" = (),
         doing: str = "",
         situation_header: str,
     ) -> str:
@@ -434,6 +440,10 @@ class WorldPressureEvaluator:
         if co_located:
             lines.append("【同处一地的人（该角色眼中的他们、该角色对其的关系与过往；仅供读懂信号，在场本身不是压力来源）】")
             lines.extend(f"- {self._co_located_line(c)}" for c in co_located)
+            lines.append("")
+        if failed_goals:
+            lines.append(f"【该角色近来没做成的目标（{MEMORY_ORDER_HINT}；仅供对照，不是压力来源）】")
+            lines.extend(failed_goals)
             lines.append("")
 
         lines.append("【此刻感知到的信号（外部压力的唯一来源）】")

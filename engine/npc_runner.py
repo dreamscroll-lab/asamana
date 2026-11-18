@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 
 from core.interfaces.action import EntityStateChange, ErrandOrder
 from core.interfaces.directory import WorldDirectory
-from core.interfaces.message import Message
+from core.interfaces.message import ERRAND_REPORT_SOURCE, Message
 from core.interfaces.urgency import Urgency
 from core.logging import get_logger
 from core.prompts import SituationVoice, render_location
@@ -433,5 +433,5 @@ class NpcRunner:
             created_step=step,
             urgency=Urgency.NORMAL,
             sender_is_agent=False,
-            metadata={"source": "errand_report", "spoken": spoken},
+            metadata={"source": ERRAND_REPORT_SOURCE, "spoken": spoken},
         ))

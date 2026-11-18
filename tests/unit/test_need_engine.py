@@ -912,7 +912,8 @@ async def test_revise_long_term_goals_lists_failed_short_term_goals() -> None:
 
     personality = _make_personality(long_term=["与失散的兄长团聚"], short_term_entities=[
         GoalEntity(id="stg-1-0", text="去渡口打听兄长下落", goal_type="short_term",
-                   status=GoalStatus.FAILED, created_step=1, last_evaluated_step=7),
+                   status=GoalStatus.FAILED, created_step=1, last_evaluated_step=7,
+                   progress_summary="船家都说没见过这个人"),
         GoalEntity(id="stg-2-0", text="去集市寻兄长", goal_type="short_term",
                    status=GoalStatus.COMPLETED, created_step=2, last_evaluated_step=8),
         GoalEntity(id="stg-3-0", text="托人四处打听", goal_type="short_term", created_step=8),
@@ -925,7 +926,7 @@ async def test_revise_long_term_goals_lists_failed_short_term_goals() -> None:
     )
 
     failed_block = llm.user.split("【我近来没做成的事】", 1)[1].split("【这段日子发生的事情】", 1)[0]
-    assert "去渡口打听兄长下落" in failed_block
+    assert "去渡口打听兄长下落（失败原因：船家都说没见过这个人）" in failed_block
     assert "去集市寻兄长" not in failed_block
     assert "托人四处打听" not in failed_block
 
@@ -3081,3 +3082,28 @@ async def test_goal_judge_knows_what_is_in_hand_after_the_action(held, expected)
     )
     assert expected in llm.prompts[-1]
     assert "ent-ledger" not in llm.prompts[-1]
+
+
+def test_a_failed_goal_line_carries_why_it_failed() -> None:
+    """Without the why, a failed goal reads as a matter merely not yet done and comes back
+    reworded. Only a failed goal carries it; a completed one's summary is no cause."""
+    engine = NeedEngine(llm_router=None)  # type: ignore[arg-type]
+    failed = GoalEntity(id="f", text="问出那个名字", goal_type="short_term", created_step=1,
+                        status=GoalStatus.FAILED, last_evaluated_step=3,
+                        progress_summary="乙一再推说不知道，问了三回都没有下文。")
+    done = GoalEntity(id="c", text="去渡口", goal_type="short_term", created_step=1,
+                      status=GoalStatus.COMPLETED, last_evaluated_step=3, progress_summary="到了渡口。")
+    unexplained = GoalEntity(id="u", text="见丙", goal_type="short_term", created_step=1,
+                             status=GoalStatus.FAILED, last_evaluated_step=3)
+
+    lines = engine._closed_goal_lines([failed, done, unexplained], now_step=4)  # noqa: SLF001
+
+    assert lines[0].endswith("问出那个名字（失败原因：乙一再推说不知道，问了三回都没有下文）")
+    assert lines[1].endswith("去渡口")
+    assert lines[2].endswith("见丙")
+
+
+def test_the_goal_judge_asks_a_failed_reason_for_why_it_cannot_be_done() -> None:
+    from agent.need import _GOAL_EVALUATION_SYSTEM
+
+    assert "判 failed 时，reason 要说清这件事为什么失败、卡在哪里" in _GOAL_EVALUATION_SYSTEM

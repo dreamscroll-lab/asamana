@@ -248,11 +248,13 @@ async def run_narrative_editor(
     world_time = GlobalClock(world.clock_config, start_step=current_step).current
     set_log_context(world_id=world_id, agent_id=None, step=str(current_step))
     agent_locations = world.environment.body_locations(world.agents)
-    brief = await narrative_editor._build_narrative_summary(  # noqa: SLF001
-        world_id, current_step, world.agents, agent_locations)
     menu = narrative_editor._menu(  # noqa: SLF001
         current_step, world.agents, agent_locations,
         world.environment.space, world.environment.all_live_entities())
+    brief = await narrative_editor._build_narrative_summary(  # noqa: SLF001
+        world_id, current_step, world.agents, agent_locations,
+        world.environment.space, world.environment.all_live_entities(),
+        world.environment.body_locations(npc.npc_id for npc in world.environment.all_npcs()), menu)
 
     error = None
     inject = None

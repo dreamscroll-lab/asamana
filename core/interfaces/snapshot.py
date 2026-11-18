@@ -54,6 +54,9 @@ class AgentState:
     failed_goals_since_revision: int = 0
     # The memory id counter. Restarted, it would hand out ids already in use and overwrite memories.
     memory_seq: int = 0
+    # Errand reports that reached him while he wasn't deciding, as ``dataclasses.asdict``
+    # Messages (Agent.pending_errand_reports). Lost, he would never see what the runner brought back.
+    pending_errand_reports: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass

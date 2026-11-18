@@ -90,9 +90,18 @@ _INJECTION_AIMS = """\
 - 升华或加深叙事:把已经达到临界点的内容进一步升华或点燃。
 - 重大转折叙事:注入可能引起叙事的内容或方向发生重大转折、反转的事件。
 - 打破僵局:打破当下叙事原地打转、反复循环，无实质进展的局面。比如某些角色一直在反复做一类事情并且没有有效推进的情况。
+- 校正与实情不符的认定:有人认定了一件与世界实情不符的事,据此一再去找、去问、去等,怎么做都不会有结果,
+  只会让叙事原地打转。让相关的人物得知实情,他们才能放下或改道。比如有人一直在找一个这个世界里并不存在的人。
+  但是需要注意的是，如果这个错误是因为叙事需要或者角色为了达到某种目的故意设计的，那不必校正。
 以上只是几种典型情况,不限于此。
 推进指事情真的变了:有人得到或失去了东西、知道了新的事、关系或处境变了。约定、答应、「到时候再说」本身不是推进;
 同一件事被一再约到下一次,一直没有履行,就是原地打转。比如一方一再把说清楚的时间往后推、另一方一再追问，无实质进展,这就是打转。"""
+
+# Read by the gate and the plan alike, beside the briefing block it explains.
+_INVENTORY_LEGEND = (
+    "简报【角色】列出这个世界的全部人物;地点和地上的东西两份名单,加上简报【此外还有的】,"
+    "就是这个世界全部的地方和专门设下的东西。此外再没有别的人、地方和东西;寻常物件(桌椅、门窗之类)不在此列。"
+)
 
 # Unoccupied places the plan menu may list on top of the occupied ones. A few elsewhere are
 # enough to pull the story out of one spot; more only dilutes the menu.
@@ -298,12 +307,13 @@ class NarrativeEditor:
         agent_locations: Mapping[str, str],
         space: "SpaceManager",
         entities: Sequence["WorldEntity"],
+        npc_locations: Mapping[str, str],
     ) -> CommittedInjection | None:
         """The step loop's single injection entry point: commit a finished background generation
         and return it, or start one and return None. Never blocks on the LLM.
 
-        ``agent_locations`` (agent id → where his body is; no entry when unplaced), ``space``
-        and ``entities`` are read-only views from ``EnvironmentSystem`` (the author layer doesn't
+        ``agent_locations`` / ``npc_locations`` (body id → where it is; no entry when unplaced),
+        ``space`` and ``entities`` are read-only views from ``EnvironmentSystem`` (the author layer doesn't
         hold it). Places render from ``space``'s views, sub-places included, as characters see them. Where people
         are comes from ``agent_locations``, the table broadcasts are delivered by; don't read
         ``personality.state.current_location``: that is the agent's own record, which lags while
@@ -315,6 +325,7 @@ class NarrativeEditor:
             return ready
         self._ensure_generation(
             current_step, world_time, world_id, all_agents, agent_locations, space, entities,
+            npc_locations,
         )
         return None
 
@@ -374,6 +385,7 @@ class NarrativeEditor:
         agent_locations: Mapping[str, str],
         space: "SpaceManager",
         entities: Sequence["WorldEntity"],
+        npc_locations: Mapping[str, str],
     ) -> None:
         """If eligible and nothing is in flight, start "gate + plan generation" in the
         background, off the step loop's critical path."""
@@ -385,7 +397,7 @@ class NarrativeEditor:
         self._inflight = asyncio.create_task(
             self._generate_plan(
                 current_step, world_time, world_id, all_agents, agent_locations, space, entities,
-                guide=guide,
+                npc_locations, guide=guide,
             )
         )
 
@@ -420,18 +432,20 @@ class NarrativeEditor:
         agent_locations: Mapping[str, str],
         space: "SpaceManager",
         entities: Sequence["WorldEntity"],
+        npc_locations: Mapping[str, str],
         *,
         guide: _Guide | None,
     ) -> "_InjectionPlan | None":
         """Gate + generation, returning a plan or None. No side effects: committing lives in
         _commit_plan, keeping background execution apart from deterministic consumption.
         A ``guide`` skips the gate: the heat rule has already decided this beat happens."""
-        narrative_summary = await self._build_narrative_summary(
-            world_id, current_step, all_agents, agent_locations,
-        )
         menu = self._menu(
             current_step, all_agents, agent_locations, space, entities,
             must_include=guide.place_ids if guide is not None else (),
+        )
+        narrative_summary = await self._build_narrative_summary(
+            world_id, current_step, all_agents, agent_locations, space, entities, npc_locations,
+            menu,
         )
         if guide is None and not await self._passes_llm_check(world_time, narrative_summary, menu):
             return None
@@ -499,6 +513,7 @@ class NarrativeEditor:
 
 【输入说明】
 - {_RELATIONS_LEGEND}
+- {_INVENTORY_LEGEND}
 - 「各地点」是此刻有人的地方和别处的几个地方,「地上的东西」是不在任何人手里、放在这些地方的东西。
 
 【任务】
@@ -561,6 +576,10 @@ class NarrativeEditor:
         current_step: int,
         all_agents: Mapping[str, "Agent"],
         agent_locations: Mapping[str, str],
+        space: "SpaceManager",
+        entities: Sequence["WorldEntity"],
+        npc_locations: Mapping[str, str],
+        menu: _Menu,
     ) -> str:
         """The narrative briefing the editor decides from. Characters and relations use the
         latest frame; recent events and injections are a step sequence, because pacing momentum
@@ -575,7 +594,8 @@ class NarrativeEditor:
         latest = recent_snapshots[-1] if recent_snapshots else None
         blocks = [
             self._brief_premise(),
-            self._brief_characters(all_agents, agent_locations),
+            self._brief_characters(all_agents, agent_locations, npc_locations),
+            self._brief_beyond_menu(space, entities, menu),
             self._brief_relations(latest, main_ids),
             self._brief_recent(recent_snapshots, main_ids),
             self._brief_prior_injections(),
@@ -591,14 +611,17 @@ class NarrativeEditor:
         return "【故事前提】\n" + "\n".join(lines)
 
     def _brief_characters(
-        self, all_agents: Mapping[str, "Agent"], agent_locations: Mapping[str, str],
+        self,
+        all_agents: Mapping[str, "Agent"],
+        agent_locations: Mapping[str, str],
+        npc_locations: Mapping[str, str],
     ) -> str:
-        """Main-character profiles: externally observable identity and situation only. No
-        emotion / needs / goals: the editor applies pressure from outside without reading
-        anyone's inner life."""
+        """Everyone in the world: main-character profiles, then background characters and NPCs by
+        name. Profiles carry externally observable identity and situation only. No emotion /
+        needs / goals: the editor applies pressure from outside without reading anyone's inner
+        life."""
         main_lines: list[str] = []
-        bg_locations: list[str] = []
-        bg_count = 0
+        background: list[str] = []
         for aid, agent in all_agents.items():
             soul = agent.personality.soul
             state = agent.personality.state
@@ -633,20 +656,54 @@ class NarrativeEditor:
                 profile = f"{'；'.join(strip_end_punct(a) for a in attrs)}。" if attrs else ""
                 main_lines.append(f"- {head}：{'；'.join(now)}。{profile}")
             elif agent.is_active:
-                bg_count += 1
-                # Counted but not placed when unplaced: he is alive, only nowhere to name.
-                if where := agent_locations.get(aid):
-                    bg_locations.append(self.directory.location_name(where))
+                background.append(self._person_line(agent, agent_locations.get(aid)))
+            else:
+                background.append(person_referent(soul.name, soul.gender, DECEASED_MARK))
+        identities = self.directory.npc_identity_map(npc_locations)
+        others = [
+            person_referent(identity.name, identity.gender, f"在{self.directory.location_name(location_id)}")
+            for npc_id, location_id in sorted(npc_locations.items())
+            if (identity := identities.get(npc_id)) is not None
+        ]
 
         parts: list[str] = []
         if main_lines:
             parts.append("主角:\n" + "\n".join(main_lines))
-        if bg_count:
-            dist = "、".join(f"{loc}{n}人" for loc, n in Counter(bg_locations).items())
-            parts.append(f"背景角色:共{bg_count}人" + (f"，分布于 {dist}" if dist else ""))
+        if background:
+            parts.append(f"背景角色:{'、'.join(background)}")
+        if others:
+            parts.append(f"其他人:{'、'.join(others)}")
         if not parts:
             return ""
         return "【角色】\n" + "\n".join(parts)
+
+    def _brief_beyond_menu(
+        self, space: "SpaceManager", entities: Sequence["WorldEntity"], menu: _Menu,
+    ) -> str:
+        """The places and things the menu leaves out: the menu is a selection, and whether a
+        matter someone keeps pursuing has anything to find turns on the whole world. Together
+        they name every place and thing exactly once."""
+        listed_places = {loc.place_id for loc in menu.places}
+        listed_things = {e.entity_id for e in menu.entities}
+        places = [
+            self.directory.location_name(loc.place_id)
+            for loc in space.all_places() if loc.place_id not in listed_places
+        ]
+        things = [
+            f"{e.name}（{self._whereabouts(e)}）" for e in entities if e.entity_id not in listed_things
+        ]
+        rows = [
+            *([f"地方:{'、'.join(places)}"] if places else []),
+            *([f"东西:{'、'.join(things)}"] if things else []),
+        ]
+        return "【此外还有的】\n" + "\n".join(rows) if rows else ""
+
+    def _whereabouts(self, entity: "WorldEntity") -> str:
+        """Where a live entity is: a live one is either held or at a location."""
+        if entity.owner_id is not None:
+            holder = self.directory.describe(entity.owner_id)
+            return f"在{holder.name if holder is not None else '某人'}手上"
+        return f"在{self.directory.location_name(entity.location_id or '')}"
 
     def _brief_relations(
         self,
@@ -769,9 +826,8 @@ class NarrativeEditor:
             return None
 
         agent_id_list = list(living.keys())
-        # Gender: background characters appear only here, and messages address the recipient.
-        # Location: the plan must keep who-is-where straight, and the briefing has it only for
-        # main characters.
+        # The briefing's 【角色】 names the same people; this is the index list recipients
+        # select from, so it keeps the roster form (CLAUDE.md "Referring to people").
         agent_lines = "\n".join(
             f"#{i + 1} {self._person_line(a, agent_locations.get(aid))}"
             for i, (aid, a) in enumerate(living.items())
@@ -786,7 +842,9 @@ class NarrativeEditor:
 故事前提、人物与近况里长出来,并给这个世界带来**重大改变**:
 {_INJECTION_AIMS}
 
-【输入说明】{_RELATIONS_LEGEND}
+【输入说明】
+- {_RELATIONS_LEGEND}
+- {_INVENTORY_LEGEND}
 
 【硬约束】(必守)
 1. 你能直接改变的只有地上的东西:在某个地点放下一件新东西,或改变 / 毁掉「地上的东西」
@@ -815,6 +873,16 @@ spawn / alter / destroy 每拍各至多一件。你投出去的话里若有一�
 就用对应的一项让它真的发生 —— 否则人们会去找一件根本不存在的东西。
 新东西只能落在某个地点上,不会凭空到谁手里:要让某人得到它,就放在他所在的地方,
 别写成「送到他手中」。
+
+【校正与实情不符的认定】这一拍若是在校正一件与实情不符的认定（不仅限于此）:
+- 实情只看下方简报:输入说明里那几份名单中没有、近况里也推不出来的,才算世界里没有。但是需要注意的是，如果这个错误是因为叙事需要或者角色为了达到某种目的故意设计的，那不必校正。
+- 世界里有、只是在别人手上或在别处的,告诉他它在哪里,不要否认它。
+- 人物自己说手上有、心里知道的东西,不由你来否认。
+- 人物的秘密、人物之间正在进行的欺瞒是故事的张力,不由你来揭穿。
+- 让人物得知的,得是他在这个世界里能得到的结论(比如问遍了、查过了,并没有这么一回事),
+  不出现「这个世界」「故事」「设定」这类跳出世界的说法。
+- 这是清掉一条死路,不是了结故事的张力,下面避免清单里「一锤定音」那一条管不到它;只让他得知实情,
+  不替他决定接下来怎么做。
 
 【引导前往】输入末尾若给出「这一拍要引导人物前往的地方」(一处或几处),说明那些地方地上有东西,
 最近却很少有人物去过。这一拍不设计事件,只把这些地方的情形告诉你判断合适的人物;告诉谁、怎么告知

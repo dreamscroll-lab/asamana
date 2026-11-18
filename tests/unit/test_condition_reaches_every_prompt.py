@@ -196,7 +196,7 @@ def test_event_brief_lists_condition_beside_vitality() -> None:
     main = _agent("a2", "李元吉")
     main.is_main_character = True
     brief = NarrativeEditor._brief_characters(  # noqa: SLF001
-        type("S", (), {"directory": _directory()})(), {"a2": main}, {},
+        type("S", (), {"directory": _directory()})(), {"a2": main}, {}, {},
     )
     assert MARK in brief
     assert "生命值" in brief  # alongside it, same granularity
@@ -208,7 +208,7 @@ def test_event_brief_omits_condition_when_unencumbered() -> None:
     main = _agent("a2", "李元吉", condition=None)
     main.is_main_character = True
     brief = NarrativeEditor._brief_characters(  # noqa: SLF001
-        type("S", (), {"directory": _directory()})(), {"a2": main}, {},
+        type("S", (), {"directory": _directory()})(), {"a2": main}, {}, {},
     )
     assert "处境" not in brief
 

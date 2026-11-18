@@ -426,6 +426,9 @@ class NarrativeRuntime:
                 agent_locations=self._environment.body_locations(agents_dict),
                 space=self._environment.space,
                 entities=self._environment.all_live_entities(),
+                npc_locations=self._environment.body_locations(
+                    npc.npc_id for npc in self._environment.all_npcs()
+                ),
             )
         # Injections land without an LLM call of their own: each goes into the trace as a beat
         # of the step it lands in, under its author's stage.

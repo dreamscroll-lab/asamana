@@ -1467,6 +1467,30 @@ def test_a_handover_needs_both_the_thing_and_the_hand(container: object) -> None
     assert ok.target.claims == []
 
 
+def test_a_handover_naming_the_person_too_is_retried_with_why(container: object) -> None:
+    """A hand-over that also fills the person slot acts on the person, so there is nothing to hand
+    over. The retry note has to name that slot: a note saying only "name the thing" reads as wrong
+    to a model that did name it, and it answers the same again."""
+    from agent.decision import _REJECTION_NOTES
+
+    engine = _make_engine(container)
+    packet = _make_packet(
+        visible_agent_ids=["agent-2"],
+        visible_entities=[VisibleEntity(
+            entity_id="seal", name="印玺", entity_type="item", holder_id="agent-1",
+        )],
+    )
+    body = {"action_description": "把印玺交到他手上", "inner_monologue": "…", "selected_index": 0,
+            "physical_person_index": 1, "physical_entity_index": 1, "physical_recipient_index": 1}
+    selection, rejection = engine._parse_selection(  # noqa: SLF001
+        json.dumps(body, ensure_ascii=False),
+        [ActionCandidate(action_type=ActionType.PHYSICAL, description="x")],
+        packet,
+    )
+
+    assert selection is None and rejection == "physical_recipient_without_entity"
+    assert "physical_person_index" in _REJECTION_NOTES[rejection]
+
 def test_only_what_i_hold_can_be_handed_over(container: object) -> None:
     """A recipient named for a thing lying here or in someone else's hands rejects the step: there
     is nothing of mine to hand over, and the executor reads reaches by whose hands it is in."""

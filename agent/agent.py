@@ -67,7 +67,7 @@ from core.interfaces.actor import (
     PerceivedEntry,
 )
 from core.interfaces.relation import AgentRelation
-from core.interfaces.message import Message
+from core.interfaces.message import ERRAND_REPORT_SOURCE, Message, message_from_dict
 from core.interfaces.snapshot import AgentState
 from core.interfaces.perception import (
     Broadcast, PerceivedIdentity, PerceivedSignals, Situation, SpatialPerception, VisibleEntity,
@@ -219,6 +219,11 @@ class Agent:
     # the subsystems receive, injected directly rather than borrowed from a subordinate component.
     llm_router: LLMRouter
     pending_external_goals: List[ExternalGoal] = field(default_factory=list)
+    # Errand reports that reached him since his last decision. Memory keeps only what the runner
+    # said, not the scene he brought back, so a report arriving while he is busy would otherwise
+    # never reach a decision. The next decision shows them once with its own inbox; external
+    # pressure already weighed them the step they arrived and doesn't see them again.
+    pending_errand_reports: List[Message] = field(default_factory=list)
     # Narrative tier, not a cognition-mode switch: every agent's cognition gates use the LLM
     # (CLAUDE.md §5).
     is_main_character: bool = False
@@ -365,6 +370,9 @@ class Agent:
         """
         if self.actor is not None:
             self.actor.perceived(self, step=step, inbox=inbox, broadcasts=broadcasts)
+        self.pending_errand_reports.extend(
+            msg for msg in inbox if msg.metadata.get("source") == ERRAND_REPORT_SOURCE
+        )
         # What landed on him reached him now, with this step's signals.
         self.personality.clear_acted_upon()
         for vid, presence in spatial.visible_agents.items():
@@ -416,12 +424,20 @@ class Agent:
         """
 
         if self.actor is not None:
+            # An actor sees every message in its thread as it arrives; nothing is left to carry.
+            self.pending_errand_reports.clear()
             return await self._plan_with_actor(
                 self.actor, step=step, spatial=spatial, inbox=inbox, broadcasts=broadcasts,
             )
         plan_start = time.perf_counter()
         current_step = step
         inbox_list = list(inbox)
+        # Only the decision sees the carried reports: the plan's inbox stays this step's real one,
+        # which arbitration records as the step's message ids.
+        arrived = {msg.id for msg in inbox_list}
+        decision_inbox = [
+            msg for msg in self.pending_errand_reports if msg.id not in arrived
+        ] + inbox_list
         broadcasts_list = list(broadcasts)
         consumed_external_goals = list(self.pending_external_goals)
         awareness_start = time.perf_counter()
@@ -437,7 +453,7 @@ class Agent:
             agent_id=self.agent_id,
             step=current_step,
             spatial=spatial,
-            inbox=inbox_list,
+            inbox=decision_inbox,
             broadcasts=broadcasts_list,
             internal_context=internal_context,
         )
@@ -449,6 +465,8 @@ class Agent:
                 held_back=self._cooldown.held_back(),
             )
         self._cooldown.note_decided()
+        if decision.status is not DecisionStatus.FAILED:
+            self.pending_errand_reports.clear()
         decide_ms = round((time.perf_counter() - decide_start) * 1000.0, 2)
         action = decision.action
         if action is not None:
@@ -834,6 +852,12 @@ class Agent:
                 *recent, *(m for m in recalled if m.stored_content not in landed),
             ])
         ]
+
+    def recently_failed_goal_lines(self, step: int) -> list[str]:
+        """His latest failed short-term goals as dated lines, oldest first."""
+        return self.need_engine.recently_failed_goal_lines(
+            self.personality.state.short_term_goal_entities, now_step=step,
+        )
 
     def _render_recent_event(
         self, fact: "Memory | None", exp: "Memory | None", *, current_step: int
@@ -2129,10 +2153,12 @@ class Agent:
 
     def committed_state(self) -> AgentState:
         """What a restore needs to bring this agent back, for the step's snapshot: its
-        ``StateLayer`` through the codec plus its memory's id counter."""
+        ``StateLayer`` through the codec plus its memory's id counter and the errand reports it
+        hasn't yet decided with."""
         return replace(
             encode_agent_state(self.world_id, self.agent_id, self.personality.state),
             memory_seq=self.memory_system.id_seq,
+            pending_errand_reports=[asdict(msg) for msg in self.pending_errand_reports],
         )
 
     def apply_stored_state(self, stored: AgentState, *, in_resumed_execution: bool) -> None:
@@ -2141,6 +2167,7 @@ class Agent:
         orphaned = stored.action_status == ActionStatus.IN_PROGRESS.value and not in_resumed_execution
         self.personality.restore_state(decode_agent_state(self.agent_id, stored, orphaned=orphaned))
         self.memory_system.restore_id_seq(stored.memory_seq)
+        self.pending_errand_reports = [message_from_dict(m) for m in stored.pending_errand_reports]
         # vitality is the single source of truth for alive/dead and is_active isn't persisted: a
         # dead character left active (the default) would die again next step, announced twice.
         self.set_active(stored.vitality > 0.0)

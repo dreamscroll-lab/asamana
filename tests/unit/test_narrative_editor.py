@@ -35,7 +35,7 @@ from engine.clock import GlobalClock, WorldTime, WorldTimeConfig
 from engine.directory import LiveWorldDirectory
 from engine.environment import EnvironmentSystem
 from engine.space import SpaceManager
-from engine.narrative_editor import NarrativeEditorSettings, NarrativeEditor
+from engine.narrative_editor import NarrativeEditorSettings, NarrativeEditor, _Menu
 from engine.execution_processor import ExecutionProcessor
 from engine.executors.registry import ActionExecutorRegistry
 from engine.injection import Author, InjectionDispatcher, InjectionRecord, serialize_injection
@@ -43,6 +43,9 @@ from engine.message_system import MessageSystem
 from engine.world_mutation import WorldMutationChannel
 from providers.message.in_memory import InMemoryMessageProvider
 from core.interfaces.urgency import Urgency
+
+# A brief built outside a check has no menu, so every place and thing falls to 【此外还有的】.
+_EMPTY_MENU = _Menu(places=[], entities=[], place_rows=[], entity_rows=[])
 
 
 def _gate(inject: bool = True, reason: str = "节奏需要") -> str:
@@ -225,7 +228,7 @@ async def _run_check(
     plan = await system._generate_plan(
         current_step, world_time, world_id, all_agents,
         _locations_of(all_agents) if agent_locations is None else agent_locations,
-        space if space is not None else SpaceManager(), entities, guide=None,
+        space if space is not None else SpaceManager(), entities, {}, guide=None,
     )
     if plan is None:
         return None
@@ -314,7 +317,7 @@ async def test_poll_event_empty_returns_none_and_schedules(container) -> None:
 
     fired = await system.poll_injection(current_step=1, world_time=_world_time(1),
                                     world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
-                                    space=SpaceManager(), entities=[])
+                                    space=SpaceManager(), entities=[], npc_locations={})
     assert fired is None
     assert system._inflight is not None          # background generation started
     await system.aclose()
@@ -339,13 +342,13 @@ async def test_poll_event_roundtrip_generates_then_commits(container) -> None:
     # Step 1: nothing ready -> start in background, non-blocking.
     assert await system.poll_injection(current_step=1, world_time=_world_time(1),
                                    world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
-                                    space=SpaceManager(), entities=[]) is None
+                                    space=SpaceManager(), entities=[], npc_locations={}) is None
     await system._inflight  # let background generation finish (awaited explicitly in the test)
 
     # Step 2: ready -> commit. deliver_step=2, perceivable this step.
     fired = await system.poll_injection(current_step=2, world_time=_world_time(2),
                                     world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
-                                    space=SpaceManager(), entities=[])
+                                    space=SpaceManager(), entities=[], npc_locations={})
     assert fired is not None
     assert fired.record.dispatched_to == ["broadcast"]
     assert fired.record.triggered_step == 2       # commit step, not trigger step
@@ -367,11 +370,11 @@ async def test_poll_event_single_in_flight(container) -> None:
 
     await system.poll_injection(current_step=1, world_time=_world_time(1),
                             world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
-                                    space=SpaceManager(), entities=[])
+                                    space=SpaceManager(), entities=[], npc_locations={})
     first = system._inflight
     await system.poll_injection(current_step=1, world_time=_world_time(1),
                             world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
-                                    space=SpaceManager(), entities=[])
+                                    space=SpaceManager(), entities=[], npc_locations={})
     assert system._inflight is first  # not replaced
     await system.aclose()
 
@@ -388,11 +391,11 @@ async def test_poll_event_gate_no_fires_nothing(container) -> None:
 
     await system.poll_injection(current_step=1, world_time=_world_time(1),
                             world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
-                                    space=SpaceManager(), entities=[])
+                                    space=SpaceManager(), entities=[], npc_locations={})
     await system._inflight
     fired = await system.poll_injection(current_step=2, world_time=_world_time(2),
                                     world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
-                                    space=SpaceManager(), entities=[])
+                                    space=SpaceManager(), entities=[], npc_locations={})
     assert fired is None
     assert system.list_injections() == []            # not counted
     assert bc.peek_pending() == []
@@ -411,7 +414,7 @@ async def test_aclose_cancels_in_flight_generation(container) -> None:
 
     await system.poll_injection(current_step=1, world_time=_world_time(1),
                             world_id=world_id, all_agents=agents, agent_locations=_locations_of(agents),
-                                    space=SpaceManager(), entities=[])
+                                    space=SpaceManager(), entities=[], npc_locations={})
     assert system._inflight is not None
     await system.aclose()
     assert system._inflight is None
@@ -970,7 +973,7 @@ async def test_characters_block_excludes_first_person_state(container) -> None:
     system = _narrative_editor(container, world_id=world_id, agents=agents,
                             narrative_theme="忠义抉择")
 
-    brief = await system._build_narrative_summary(world_id, 5, agents, _locations_of(agents))
+    brief = await system._build_narrative_summary(world_id, 5, agents, _locations_of(agents), SpaceManager(), [], {}, _EMPTY_MENU)
 
     assert "【角色】" in brief
     assert "李世民" in brief
@@ -1001,20 +1004,20 @@ async def test_characters_block_marks_the_dead_and_drops_their_living_attrs(cont
     agents = {"a1": dead, "a2": alive, "a3": dead_bg}
     system = _narrative_editor(container, world_id=world_id, agents=agents)
 
-    brief = await system._build_narrative_summary(world_id, 5, agents, {**_locations_of(agents), "a2": "东宫"})
+    brief = await system._build_narrative_summary(world_id, 5, agents, {**_locations_of(agents), "a2": "东宫"}, SpaceManager(), [], {}, _EMPTY_MENU)
 
     dead_line = next(line for line in brief.splitlines() if "李建成" in line)
     assert "已死亡" in dead_line
     assert "现位于" not in dead_line and "生命值" not in dead_line and "生命垂危" not in dead_line
     alive_line = next(line for line in brief.splitlines() if "李世民" in line)
     assert "已死亡" not in alive_line and "现位于" in alive_line
-    assert "背景角色" not in brief
+    assert "背景角色:侍卫（已死亡）" in brief
 
 
 @pytest.mark.asyncio
 async def test_an_unplaced_body_names_no_place(container) -> None:
-    """A body not on the map has no place, so the brief, the background distribution and the
-    injection roster leave the place out instead of naming a fallback. He is still counted."""
+    """A body not on the map has no place, so the brief and the injection roster leave the place
+    out instead of naming a fallback. He is still listed."""
     world_id = "world-1"
     main = _build_agent(container, world_id=world_id, agent_id="a1", name="李建成")
     main.is_main_character = True
@@ -1023,12 +1026,12 @@ async def test_an_unplaced_body_names_no_place(container) -> None:
     system = _narrative_editor(container, world_id=world_id, agents=agents)
     unplaced: dict[str, str] = {}   # as EnvironmentSystem.body_locations leaves them out
 
-    brief = await system._build_narrative_summary(world_id, 5, agents, unplaced)  # noqa: SLF001
+    brief = await system._build_narrative_summary(world_id, 5, agents, unplaced, SpaceManager(), [], {}, _EMPTY_MENU)  # noqa: SLF001
 
     line = next(line for line in brief.splitlines() if "李建成" in line)
     assert "现位于" not in line and "生命值" in line
     assert "某地" not in brief and "此处" not in brief
-    assert "背景角色:共1人" in brief and "分布于" not in brief
+    assert "背景角色:侍卫" in brief
     roster_line = system._person_line(main, None)  # noqa: SLF001
     assert roster_line.startswith("李建成") and "在" not in roster_line
 
@@ -1048,7 +1051,7 @@ async def test_characters_block_puts_where_and_how_they_are_before_the_profile(c
     agents = {"a1": bound}
     system = _narrative_editor(container, world_id=world_id, agents=agents)
 
-    brief = await system._build_narrative_summary(world_id, 5, agents, {"a1": "东宫"})
+    brief = await system._build_narrative_summary(world_id, 5, agents, {"a1": "东宫"}, SpaceManager(), [], {}, _EMPTY_MENU)
 
     line = next(line for line in brief.splitlines() if "李建成" in line)
     for now in ("现位于", "生命值", "处境双手被反绑"):
@@ -1526,7 +1529,8 @@ async def test_entity_menu_lists_unheld_things_here_and_elsewhere(container) -> 
                      entities=env.all_live_entities())
 
     user = router.calls[-1][1][-1].content
-    menu = user.split("地上的东西")[1]
+    # The menu ends where the briefing begins; the briefing's inventory names held things too.
+    menu = user.split("地上的东西")[1].split("【故事前提】")[0]
     assert "告示" in menu and "上面写着：明日辰时开城门。" in menu
     assert "密信" not in menu      # in someone's hand
     assert "现于西市" in menu.split("短刀")[1].split("\n")[0]      # nobody there, but the editor can reach it
@@ -1550,6 +1554,7 @@ async def test_the_gate_reads_the_plans_map_and_aims(container) -> None:
 
     (_, gate), (_, plan) = router.calls
     gate_places, gate_entities = gate[-1].content.split("各地点:")[1].split("地上的东西:")
+    gate_entities = gate_entities.split("【故事前提】")[0]
     plan_places = plan[-1].content.split("可选地点")[1].split("可选人物")[0]
     assert "- 太极殿（此刻1人）" in gate_places and "#" not in gate_places
     assert "#2 太极殿（此刻1人）" in plan_places      # same rows, numbered in map order
@@ -1783,7 +1788,7 @@ async def test_a_thing_picked_up_before_commit_is_spared_but_the_broadcast_still
 
     plan = await system._generate_plan(
         1, _world_time(1), "world-1", agents, _locations_of(agents),
-        env.space, env.all_live_entities(), guide=None)
+        env.space, env.all_live_entities(), {}, guide=None)
     env.change_entity_state(EntityStateChange(entity_id="seal", owner_id="a1"))
     fired = await system._commit_plan(plan, 1, agents)
 
@@ -1879,7 +1884,7 @@ async def test_a_guide_skips_the_gate_and_tells_the_plan_where_and_what(containe
     guide = _Guide(place_ids=("market",))
 
     plan = await system._generate_plan(
-        1, _world_time(1), "world-1", agents, _locations_of(agents), env.space, env.all_live_entities(),
+        1, _world_time(1), "world-1", agents, _locations_of(agents), env.space, env.all_live_entities(), {},
         guide=guide,
     )
 
@@ -1901,7 +1906,7 @@ async def test_the_gate_path_names_no_place_to_draw_to(container) -> None:
     system = _narrative_editor(container, router=router, directory=directory, environment=env)
 
     plan = await system._generate_plan(
-        1, _world_time(1), "world-1", agents, _locations_of(agents), env.space, env.all_live_entities(),
+        1, _world_time(1), "world-1", agents, _locations_of(agents), env.space, env.all_live_entities(), {},
         guide=None,
     )
 
@@ -1920,7 +1925,7 @@ async def test_a_guide_nobody_perceives_is_dropped(container) -> None:
     system = _narrative_editor(container, router=router, directory=directory, environment=env)
 
     plan = await system._generate_plan(
-        1, _world_time(1), "world-1", agents, _locations_of(agents), env.space, env.all_live_entities(),
+        1, _world_time(1), "world-1", agents, _locations_of(agents), env.space, env.all_live_entities(), {},
         guide=_Guide(place_ids=("market",)),
     )
 
@@ -1942,7 +1947,7 @@ async def test_a_guided_place_is_left_alone_for_a_while_through_poll(container) 
     async def poll(step: int):
         return await system.poll_injection(
             current_step=step, world_time=_world_time(step), world_id="world-1", all_agents=agents,
-            agent_locations=_locations_of(agents), space=env.space, entities=env.all_live_entities(),
+            agent_locations=_locations_of(agents), space=env.space, entities=env.all_live_entities(), npc_locations={},
         )
 
     for step in range(1, first_check + 1):
@@ -1997,7 +2002,7 @@ async def test_a_guide_only_tells_so_world_changes_in_its_plan_are_ignored(conta
     system = _narrative_editor(container, router=router, directory=directory, environment=env)
 
     plan = await system._generate_plan(
-        1, _world_time(1), "world-1", agents, _locations_of(agents), env.space, env.all_live_entities(),
+        1, _world_time(1), "world-1", agents, _locations_of(agents), env.space, env.all_live_entities(), {},
         guide=_Guide(place_ids=("market",)),
     )
 
@@ -2026,9 +2031,85 @@ async def test_only_the_places_a_guide_actually_names_are_recorded_as_guided(con
         system = _narrative_editor(container, router=router, directory=directory, environment=env)
         return await system._generate_plan(
             1, _world_time(1), "world-1", agents, _locations_of(agents), env.space,
-            env.all_live_entities(), guide=guide,
+            env.all_live_entities(), {}, guide=guide,
         )
 
     partly = await plan_for("西市地上有一把短刀。")
     assert partly is not None and partly.guided_place_ids == ("market",)
     assert await plan_for("城外有一把短刀。") is None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# What the world has, and matters bound to come to nothing
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_the_briefing_names_every_person_place_and_thing_once(container) -> None:
+    """Whether a matter someone keeps pursuing has anything to find turns on the whole world, so
+    background characters, the dead, NPCs, places nobody stands in and things in someone's hand
+    all count. 【角色】 holds every person; 【此外还有的】 holds only the places and things the
+    menu leaves out, so nothing is listed twice."""
+    from tests.unit.world_setups import make_npc
+
+    env, agents, _ = _ground_world(container)
+    gatekeeper = make_npc("王二", gender="男")
+    env.spawn_npc(gatekeeper, location_id="market")
+    dead = _build_agent(container, world_id="world-1", agent_id="a2", name="李元吉")
+    dead.set_active(False)
+    agents = {**agents, "a2": dead}
+    directory = LiveWorldDirectory.from_agents(agents, env)
+    system = _narrative_editor(container, directory=directory, environment=env, agents=agents)
+    market = next(loc for loc in env.space.all_places() if loc.place_id == "market")
+    knife = next(e for e in env.all_live_entities() if e.name == "短刀")
+    menu = _Menu(places=[market], entities=[knife], place_rows=["西市"], entity_rows=["短刀"])
+
+    brief = await system._build_narrative_summary(  # noqa: SLF001
+        "world-1", 5, agents, {"a1": "palace"}, env.space, env.all_live_entities(),
+        env.body_locations([gatekeeper.npc_id]), menu,
+    )
+
+    characters = brief.split("【角色】\n")[1].split("\n\n")[0]
+    assert "背景角色:李世民（在太极殿）、李元吉（已死亡）" in characters
+    assert "其他人:王二（男，在西市）" in characters
+    beyond = brief.split("【此外还有的】\n")[1].split("\n\n")[0].splitlines()
+    assert beyond == ["地方:太极殿", "东西:密信（在李世民手上）、告示（在太极殿）"]
+
+
+@pytest.mark.asyncio
+async def test_the_briefing_drops_the_beyond_block_when_the_menu_lists_everything(container) -> None:
+    env, agents, directory = _ground_world(container)
+    system = _narrative_editor(container, directory=directory, environment=env, agents=agents)
+    menu = _Menu(places=list(env.space.all_places()), entities=list(env.all_live_entities()),
+                 place_rows=[], entity_rows=[])
+
+    brief = await system._build_narrative_summary(  # noqa: SLF001
+        "world-1", 5, agents, {"a1": "palace"}, env.space, env.all_live_entities(), {}, menu,
+    )
+    assert "【此外还有的】" not in brief
+
+
+@pytest.mark.asyncio
+async def test_correcting_a_belief_at_odds_with_the_world_is_an_aim_with_its_bounds(container) -> None:
+    """The aim is a principle with one example; the plan bounds it: judged only against the
+    briefing, what exists elsewhere is located rather than denied, characters' own claims and
+    secrets stand, and the character learns it in the world's own terms. Gate and plan both read
+    the inventory's legend."""
+    from engine.narrative_editor import _INJECTION_AIMS, _INVENTORY_LEGEND
+
+    env, agents, directory = _ground_world(container)
+    router = _EventRouter([_gate(), _plan_json(broadcast={"content": "x", "severity": "low"})])
+    system = _narrative_editor(container, router=router, directory=directory, environment=env,
+                               check_interval=1)
+    await _run_check(system, current_step=1, world_time=_world_time(1), world_id="world-1",
+                     all_agents=agents, space=env.space, entities=env.all_live_entities())
+
+    (_, gate), (_, plan) = router.calls
+    assert "校正与实情不符的认定" in _INJECTION_AIMS
+    assert _INVENTORY_LEGEND in gate[0].content and _INVENTORY_LEGEND in plan[0].content
+    section = plan[0].content.split("【校正与实情不符的认定】")[1].split("【引导前往】")[0]
+    assert "名单中没有、近况里也推不出来的,才算世界里没有" in section
+    assert "不要否认它" in section
+    assert "不由你来揭穿" in section
+    assert "人物自己说手上有、心里知道的东西,不由你来否认" in section
+    assert "不出现「这个世界」「故事」「设定」这类跳出世界的说法" in section

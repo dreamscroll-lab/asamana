@@ -604,9 +604,10 @@ async def test_decide_returns_no_action_when_act_false(container, act_value) -> 
 # ---------------------------------------------------------------------------
 # Semantic retry: an HTTP-200 JSON reply missing fields shouldn't burn the beat.
 # complete_with_retry only retries transport failures, so the decision path's "retry once before
-# falling back" covers the semantic level too. The retry resends the same request (no prompt
-# changes, no filling fields in for the LLM); only when both attempts are unusable does it return
-# FAILED (tier-1 no-op).
+# falling back" covers the semantic level too. The retry keeps the same prompt and, when the first
+# answer was rejected for a known reason, adds that answer and the constraint it broke; it never
+# fills fields in for the LLM. Only when both attempts are unusable does it return FAILED (tier-1
+# no-op).
 # ---------------------------------------------------------------------------
 
 
@@ -669,6 +670,76 @@ async def test_decide_retries_once_and_recovers_the_beat(container) -> None:
     assert result.action.action_type is ActionType.REST
     assert result.action.estimated_steps == 3
     assert "僻静" in result.action.action_description
+
+
+def _capture_calls(engine, payloads: List[str]) -> List[list]:
+    """Like ``_stub_responses``, keeping each call's messages."""
+    from core.interfaces.llm import LLMResponse
+
+    seen: List[list] = []
+
+    async def _sequenced(scene, messages, *args, **kwargs):
+        seen.append(list(messages))
+        content = payloads[min(len(seen) - 1, len(payloads) - 1)]
+        return LLMResponse(content=content, input_tokens=1, output_tokens=1, model="stub")
+
+    engine._llm_router.complete_with_retry = _sequenced  # type: ignore[method-assign]
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_answer_is_retried_with_the_constraint_it_broke(container) -> None:
+    """Resent unchanged, the model makes the same rejected choice again and the beat is lost.
+    The retry keeps the first prompt as its prefix (so it stays cached), then the first answer,
+    then the broken constraint in the prompt's own terms."""
+    engine = DecisionEngine(container.llm_router)
+    seen = _capture_calls(
+        engine, [_OBJECTLESS_REST_MISSING_DESCRIPTION, _OBJECTLESS_REST_COMPLETE]
+    )
+
+    result = await engine.decide(personality=_make_personality(), packet=_make_packet())
+
+    assert result.status is DecisionStatus.ACTED
+    first, retry = seen
+    assert [m.role for m in retry] == ["system", "user", "assistant", "user"]
+    assert [m.content for m in retry[:2]] == [m.content for m in first]
+    assert retry[2].content == _OBJECTLESS_REST_MISSING_DESCRIPTION
+    assert "我没有写 action_description" in retry[3].content
+    assert "missing_action_description" not in retry[3].content
+
+
+@pytest.mark.asyncio
+async def test_a_failure_with_no_known_reason_is_resent_unchanged(container) -> None:
+    """A reply with no JSON at all has a note; a failed call has no reply and nothing to say."""
+    engine = DecisionEngine(container.llm_router)
+    calls = [0]
+    seen: List[list] = []
+
+    async def _fail_then_answer(scene, messages, *args, **kwargs):
+        from core.interfaces.llm import LLMResponse
+        calls[0] += 1
+        seen.append(list(messages))
+        if calls[0] == 1:
+            raise RuntimeError("upstream down")
+        return LLMResponse(content=_OBJECTLESS_REST_COMPLETE, input_tokens=1, output_tokens=1, model="stub")
+
+    engine._llm_router.complete_with_retry = _fail_then_answer  # type: ignore[method-assign]
+    result = await engine.decide(personality=_make_personality(), packet=_make_packet())
+
+    assert result.status is DecisionStatus.ACTED
+    assert [m.content for m in seen[1]] == [m.content for m in seen[0]]
+
+
+def test_every_rejection_reason_has_a_retry_note() -> None:
+    """A reason left out here makes that rejection retry blind, which is how a whole step is lost
+    to the same choice twice."""
+    import inspect
+    import re as _re
+
+    import agent.decision as decision
+
+    reasons = set(_re.findall(r'reject\("([a-z_]+)"\)', inspect.getsource(decision)))
+    assert reasons and reasons <= set(decision._REJECTION_NOTES)
 
 
 @pytest.mark.asyncio

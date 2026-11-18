@@ -158,6 +158,51 @@ def _reject(reason: str) -> None:
     return None
 
 
+# What the retry tells the model about a rejected answer, keyed by the rejection reason. Each names
+# the broken constraint in the prompt's own list and field names and stops there: suggesting
+# another act would make the choice for the character. A reason missing here retries unchanged.
+_REJECTION_NOTES: dict[str, str] = {
+    "no_json_object": "我没有按上面的格式给出 JSON",
+    "missing_selected_index": "我没有给出 selected_index，没说选哪一种行动",
+    "selected_index_out_of_range": "我给的 selected_index 不是【我能做的】里的序号",
+    "action_type_cooling_down": "我选的那种行动列在【此刻够不着的行动】里，此刻不可选",
+    "missing_action_description": "我没有写 action_description，没说这一步做什么",
+    "talk_without_target": (
+        "TALK 的交谈对象要填「我能触及的人」里的序号，我没填，或填的序号不在这份名单上"
+        "（「此处可接受任务指派的人」不在这份名单上）"
+    ),
+    "talk_target_not_present": "TALK 的交谈对象此刻不在场，当面交谈只能找「我能触及的人」里标(在场)的人",
+    "send_recipients_unresolvable": "SEND_MESSAGE 的收件人序号不在「我能触及的人」名单上",
+    "send_without_channel": "SEND_MESSAGE 既没指名收件人，也没选向此处众人发送（message_announce）",
+    "message_required": "SEND_MESSAGE 没有写 message_content，没有要送出的原话",
+    "move_without_destination": "MOVE 的去处要填「我可前往」里的序号，我没填，或填的序号不在这份名单上",
+    "errand_without_bearer": "ERRAND 要填「此处可接受任务指派的人」里替我完成任务的人，我没填，或填的序号不在这份名单上",
+    "errand_without_destination": "ERRAND 的去处要填「我可前往」里的序号，我没填，或填的序号不在这份名单上",
+    "errand_item_not_in_hand": "ERRAND 让他带上的东西不在「我手上的东西」里",
+    "physical_recipient_unresolvable": "要接东西的人必须是「我能触及的人」里标(在场)的人，我填的不是",
+    "physical_recipient_not_held": "要交出去的东西不在「我手上的东西」里",
+    "physical_recipient_without_entity": (
+        "填了 physical_recipient_index 把东西交给谁，就要用 physical_entity_index 指出交的那件东西，"
+        "且不能同时填 physical_person_index 或 physical_npc_index：填了它们，我下手的就成了那个人，没有东西可交"
+    ),
+    "physical_without_target": "PHYSICAL 没有指认出下手的对象，或填的序号不在对应的名单上",
+}
+
+_RETRY_AFTER_REJECTION = """\
+我刚才的选择落不成行动：{note}。
+我依上面说定的规矩与 JSON 格式，重新说出这一拍的选择，只输出 JSON、不写任何多余内容。"""
+
+
+@dataclass(frozen=True)
+class _Attempt:
+    """One decision call: its result, the raw reply, and why the reply was rejected ("" if it
+    wasn't, or no reason is known)."""
+
+    result: "DecisionResult"
+    reply: str = ""
+    rejection: str = ""
+
+
 @dataclass
 class LLMSelection:
     """Result of LLM choosing one ``ActionCandidate`` from the action space."""
@@ -792,39 +837,54 @@ class DecisionEngine:
         default action); otherwise ACTED.
 
         Retries once at the semantic level: ``complete_with_retry`` only retries transport
-        failures, so an HTTP-200 JSON missing a field would otherwise burn the beat. The retry
-        resends unchanged — no relaxed requirements, no fields filled in for the LLM; fabricated
-        cognition is far worse than a lost beat. Transport retry stays in the provider.
+        failures, so an HTTP-200 JSON missing a field would otherwise burn the beat. When the first
+        answer was rejected for a known reason, the retry keeps the same prompt, adds that answer
+        and says which constraint it broke (``_REJECTION_NOTES``); resent unchanged, the model
+        tends to make the same choice again. Nothing is relaxed and no field is filled in for the
+        LLM: fabricated cognition is far worse than a lost beat. Transport retry stays in the
+        provider.
         """
 
         system_prompt, user_prompt, given_facts = self._build_decision_prompt(
             personality, packet, candidates, held_back=held_back)
-        result = await self._attempt_selection(
-            personality, packet, candidates, system_prompt, user_prompt, given_facts, held_back)
-        if result.status is DecisionStatus.FAILED:
-            logger.info(
-                "decision_retry_after_unusable_output",
-                extra={
-                    "agent_id": personality.soul.agent_id,
-                    "step": packet.spatial.current_step,
-                },
-            )
-            result = await self._attempt_selection(
-                personality, packet, candidates, system_prompt, user_prompt, given_facts, held_back
-            )
-        return result
+        messages = [
+            LLMMessage(role="system", content=system_prompt),
+            LLMMessage(role="user", content=user_prompt),
+        ]
+        first = await self._attempt_selection(
+            personality, packet, candidates, messages, given_facts, held_back)
+        if first.result.status is not DecisionStatus.FAILED:
+            return first.result
+        logger.info(
+            "decision_retry_after_unusable_output",
+            extra={
+                "agent_id": personality.soul.agent_id,
+                "step": packet.spatial.current_step,
+                "rejection": first.rejection,
+            },
+        )
+        # The note goes after the first answer, so the prompt prefix stays the cached one.
+        note = _REJECTION_NOTES.get(first.rejection)
+        if note is not None:
+            messages = [
+                *messages,
+                LLMMessage(role="assistant", content=first.reply),
+                LLMMessage(role="user", content=_RETRY_AFTER_REJECTION.format(note=note)),
+            ]
+        retried = await self._attempt_selection(
+            personality, packet, candidates, messages, given_facts, held_back)
+        return retried.result
 
     async def _attempt_selection(
         self,
         personality: PersonalityLayer,
         packet: PerceptionPacket,
         candidates: Sequence[ActionCandidate],
-        system_prompt: str,
-        user_prompt: str,
+        messages: Sequence[LLMMessage],
         given_facts: Sequence[str],
         held_back: frozenset[ActionType] = frozenset(),
-    ) -> DecisionResult:
-        """One decision LLM call + parse. ``FAILED`` here is retryable by the caller."""
+    ) -> _Attempt:
+        """One decision LLM call + parse. A ``FAILED`` result is retryable by the caller."""
 
         agent_id = personality.soul.agent_id
         step = packet.spatial.current_step
@@ -883,10 +943,7 @@ class DecisionEngine:
             ):
                 response = await self._llm_router.complete_with_retry(
                     LLMScene.AGENT_DECISION_MAIN,
-                    [
-                        LLMMessage(role="system", content=system_prompt),
-                        LLMMessage(role="user", content=user_prompt),
-                    ],
+                    list(messages),
                     temperature=0.7,
                     # inner_monologue≤60 chars + action_description≤40 + message_content≤60 (SEND)
                     # + expected_outcome≤30 + several index/enum fields; est. ~380 tok. The last three
@@ -904,13 +961,14 @@ class DecisionEngine:
                 "decision_llm_failed",
                 extra={"agent_id": agent_id, "step": step, "error": str(exc)},
             )
-            return DecisionResult.failed()
+            return _Attempt(DecisionResult.failed())
 
-        payload = extract_json_object(response.content)
+        reply = response.content
+        payload = extract_json_object(reply)
         if not isinstance(payload, dict):
             note_active_call_adoption(False, "no_json_object")
             logger.warning("decision_unparseable", extra={"agent_id": agent_id, "step": step})
-            return DecisionResult.failed()
+            return _Attempt(DecisionResult.failed(), reply, "no_json_object")
 
         # Declining (act:false) is a successful decision not to act, kept apart from parse failure
         # at the source: no executor, memory or state change, info log only. Only an explicit
@@ -920,12 +978,12 @@ class DecisionEngine:
             # Adopted: the output was used and says "do nothing"; marking it discarded would log
             # deliberate restraint as failure.
             logger.info("decision_no_action", extra={"agent_id": agent_id, "step": step})
-            return DecisionResult.no_action()
+            return _Attempt(DecisionResult.no_action(), reply)
 
-        selection = self._parse_llm_selection(payload, candidates, packet, held_back=held_back)
-        if selection is None:  # _parse_llm_selection already recorded the reason on the trace
+        selection, rejection = self._parse_selection(payload, candidates, packet, held_back=held_back)
+        if selection is None:  # _parse_selection already recorded the reason on the trace
             logger.warning("decision_unparseable", extra={"agent_id": agent_id, "step": step})
-            return DecisionResult.failed()
+            return _Attempt(DecisionResult.failed(), reply, rejection)
         action = self._build_action(selection, personality, packet)
         target = action.target
         target_ref = ",".join(target.acted_on_ids)
@@ -941,7 +999,7 @@ class DecisionEngine:
                 "estimated_steps": action.estimated_steps,
             },
         )
-        return DecisionResult.acted(action)
+        return _Attempt(DecisionResult.acted(action), reply)
 
 
     # ------------------------------------------------------------------
@@ -1472,22 +1530,36 @@ class DecisionEngine:
         *,
         held_back: frozenset[ActionType] = frozenset(),
     ) -> LLMSelection | None:
+        return self._parse_selection(content, candidates, packet, held_back=held_back)[0]
+
+    def _parse_selection(
+        self,
+        content: "str | dict",
+        candidates: Sequence[ActionCandidate],
+        packet: PerceptionPacket | None = None,
+        *,
+        held_back: frozenset[ActionType] = frozenset(),
+    ) -> tuple[LLMSelection | None, str]:
+        """The selection, and why it was rejected ("" when it wasn't, or no reason was given)."""
         # Accepts a parsed dict (from _llm_select) or a raw string (tests pass JSON text directly).
         payload = content if isinstance(content, dict) else extract_json_object(content)
         if not isinstance(payload, dict):
-            return _reject("no_json_object")
+            return _reject("no_json_object"), "no_json_object"
         payload = _with_estimated_steps(payload, self._seconds_per_step)
         raw_index = payload.get("selected_index")
         if not isinstance(raw_index, int) or isinstance(raw_index, bool):
-            return _reject("missing_selected_index")
+            return _reject("missing_selected_index"), "missing_selected_index"
         if not 0 <= raw_index < len(candidates):
-            return _reject("selected_index_out_of_range")
+            return _reject("selected_index_out_of_range"), "selected_index_out_of_range"
         chosen = candidates[raw_index]
         if chosen.action_type in held_back:
-            return _reject("action_type_cooling_down")
+            return _reject("action_type_cooling_down"), "action_type_cooling_down"
         applicable = _action_fields(chosen.action_type) | _DECISION_FIELDS
         payload = {key: value for key, value in payload.items() if key in applicable}
-        return _select(payload, chosen.action_type, _slots_for(payload, packet))
+        slots = _slots_for(payload, packet)
+        selection = _select(payload, chosen.action_type, slots)
+        rejection = slots.rejections[-1] if selection is None and slots.rejections else ""
+        return selection, rejection
 
 
 # ----------------------------------------------------------------------

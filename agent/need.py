@@ -36,6 +36,7 @@ from core.prompts import (
     render_entity,
     render_situation_header,
     situation_location,
+    strip_end_punct,
     urgency_label,
     vitality_line,
 )
@@ -76,6 +77,7 @@ _GOAL_EVALUATION_SYSTEM = """\
 - 一次成功的行动**未必**使目标 completed——多数目标要多步推进，没真正达成就保持 active。
 - **警惕「永远 active」**：目标文本后可能标着它「已历约多久仍未了结」。若一个目标已历时明显偏久、且轨迹显示反复推进却始终停在原地（结果一再未达预期、状态毫无实质变化），说明当前手段对它无效——判 failed（搁置），不要无限 active。一个推进不动的目标会锁死后续认知。判 failed（搁置）时，reason 必须点明「反复无进展」的具体依据，落在已记录的轨迹 / 时长上，不臆测。
 - 但别矫枉过正：真正在**逐步推进**（每步能看到可见进展、只是尚未跨过完成线）的多步目标保持 active——搁置只针对「原地打转」，不是「还没做完」；拿不准是「有进展但慢」还是「原地打转」时，倾向保留 active。
+- 判 failed 时，reason 要说清这件事为什么失败、卡在哪里，具体因为什么，比如对方一再拒绝开口；只说「本轮没有推进」过于笼统，因为这样完全不知道失败原因。
 - 判断之前先明确好当前时间和当前地点，避免在结果中涉及到时间问题时出现错乱，或目标明显过期却还判为活跃的情况。比如当前时间是6月3号，但是目标中说6月2号之前一定要做某事，这个目标明显是完不成了，因为已经过期了。
 - 涉及某样东西的目标，要结合所给「被评判者此刻手上的东西」来判，比如要靠手上的东西才能成立的事，就看提前那东西在不在他手上；这里只列他手上的，没列出的东西不等于不存在。比如目标是已经把某样东西交给某人，那东西还在他手上，就是还没交出去。
 - **每个目标必须把判断依据(reason)写在最前面，再给序号(index)与状态(status)——先分析后定状态，不要凭空直接给状态。**
@@ -489,6 +491,12 @@ def build_innate_needs(
     return tuple(list(active) + list(hidden))
 
 
+def _failure_cause(goal: GoalEntity) -> str:
+    if goal.status != GoalStatus.FAILED or not goal.progress_summary:
+        return ""
+    return f"（失败原因：{strip_end_punct(goal.progress_summary)}）"
+
+
 class NeedEngine:
     """Stateless need/goal compute service.
 
@@ -765,10 +773,7 @@ class NeedEngine:
         # time the agent says he'll try again. FAILED also holds goals evicted for capacity, which
         # weren't tried; they can't be told apart, and the prompt's "new condition" exception
         # keeps such an intent writable.
-        failed_lines = self._closed_goal_lines(
-            [g for g in entities if g.status == GoalStatus.FAILED],
-            now_step=step, limit=_RECENT_CLOSED_GOAL_LIMIT,
-        )
+        failed_lines = self.recently_failed_goal_lines(entities, now_step=step)
         failed_short_term = (
             "近来没做成的目标（只作对照参考，不在待判定之列）：\n" + "\n".join(failed_lines) + "\n"
             if failed_lines else ""
@@ -959,13 +964,25 @@ class NeedEngine:
             )
         return None
 
+    def recently_failed_goal_lines(
+        self, entities: Sequence[GoalEntity], *, now_step: int,
+    ) -> List[str]:
+        """The latest failed short-term goals as dated lines, for prompts that must not turn one
+        straight back into a goal (residue, external pressure)."""
+        return self._closed_goal_lines(
+            [g for g in entities if g.status == GoalStatus.FAILED],
+            now_step=now_step, limit=_RECENT_CLOSED_GOAL_LIMIT,
+        )
+
     def _closed_goal_lines(
         self, goals: Sequence[GoalEntity], *, now_step: int, limit: int | None = None,
     ) -> List[str]:
-        """Closed goals as ``  - <when><text>`` lines, oldest first, the latest ``limit`` of them.
+        """Closed goals as ``  - <when><text>`` lines, oldest first, the latest ``limit`` of them;
+        a failed one also carries why it failed (its progress_summary).
 
         Closed goals are past events: they take memory's recency_prefix wording (not
-        goal_due_hint) so the LLM places them on one timeline with recalled memories.
+        goal_due_hint) so the LLM places them on one timeline with recalled memories. Without the
+        why, a failed goal reads as a matter merely not yet done, and comes back reworded.
         """
         ordered = sorted(goals, key=closed_step)
         if limit is not None:
@@ -975,7 +992,7 @@ class NeedEngine:
                 now_step=now_step, ref_step=closed_step(g),
                 seconds_per_step=self._seconds_per_step,
                 world_start_second_of_day=self._world_start_second_of_day,
-            ) + g.text
+            ) + g.text + _failure_cause(g)
             for g in ordered
         ]
 
