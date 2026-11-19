@@ -9,7 +9,7 @@ import pytest
 
 from agent.agent import Agent
 from agent.decision import ActionType, AgentAction, DecisionEngine
-from core.interfaces.action import ActionTarget, Deed, Observed, Ref
+from core.interfaces.action import ActionResult, ActionTarget, Deed, Observed, Ref
 from core.interfaces.llm import LLMScene
 from agent.memory import MemorySystem
 from agent.need import NeedEngine
@@ -5012,6 +5012,54 @@ class TestCovertExecutor:
         assert result.detected is detected
         assert result.factual_memory == "我看清密信上写着三日后动手"
 
+    @staticmethod
+    async def _complete_covert(container, verdict: dict) -> ActionResult:
+        import json
+
+        from core.interfaces.llm import LLMScene
+        from engine.executors.covert import CovertExecutor
+
+        container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = json.dumps(
+            verdict, ensure_ascii=False,
+        )
+        env = _make_environment()
+        agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
+        agents = {"agent-a": agent_a}
+        executor = CovertExecutor(container.llm_router, _directory(agents))
+        action = _make_action(agent_id="agent-a", action_type=ActionType.COVERT, description="翻看密信")
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        [result] = await executor.complete(state, 1, agents=agents, environment=env, message_system=None)
+        return result
+
+    @pytest.mark.asyncio
+    async def test_covert_outcome_records_what_he_caught_and_exposure_shows_only_traces(
+        self, container,
+    ) -> None:
+        """The outcome is the complete record, so it carries what he caught; onlookers who catch
+        him see only his traces."""
+        result = await self._complete_covert(container, {
+            "detected": True, "observation": "甲在案边停留了片刻。",
+            "fact": "我看清密信上写着三日后动手", "achieved": True, "why": "",
+            "outcome": "甲在案边停留片刻，看清密信上写着三日后动手。",
+        })
+        assert "三日后动手" in result.outcome
+        assert "停留了片刻" in _obs_text(result)
+        assert "三日后" not in _obs_text(result)
+
+    @pytest.mark.asyncio
+    async def test_covert_exposure_without_observation_never_borrows_the_outcome(
+        self, container,
+    ) -> None:
+        """A judge that omits the observation leaves exposure to a bare template; the outcome
+        would hand onlookers what he caught."""
+        result = await self._complete_covert(container, {
+            "detected": True, "fact": "我看清密信上写着三日后动手", "achieved": True, "why": "",
+            "outcome": "甲在案边停留片刻，看清密信上写着三日后动手。",
+        })
+        exposure = _obs_text(result)
+        assert "甲" in exposure
+        assert "三日后" not in exposure and "密信" not in exposure
+
     @pytest.mark.asyncio
     async def test_covert_judge_is_told_this_action_moves_nobody(self, container) -> None:
         """Covert actions don't change location either (SAME_PLACE_VERDICT_RULE). Sneaking somewhere
@@ -5689,8 +5737,8 @@ class TestCovertExecutor:
         from engine.executors.covert import CovertExecutor
 
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
-            '{"achieved": true, "detected": true, "fact": "仓促间撞翻烛台，被人看见了",'
-            ' "outcome": "甲撞翻了烛台。"}'
+            '{"achieved": true, "detected": true, "observation": "甲撞翻了烛台。",'
+            ' "fact": "仓促间撞翻烛台，被人看见了", "outcome": "甲撞翻烛台，被人看见。"}'
         )
         env = _make_environment()  # agent-a and agent-b are both in hall
         agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="A", is_main=True)
@@ -5712,6 +5760,8 @@ class TestCovertExecutor:
         assert result.succeeded is False
         assert result.detected is True
         assert "撞翻烛台" in result.factual_memory
+        # Caught lurking is seen whether or not he got to finish.
+        assert "撞翻了烛台" in _obs_text(result)
 
 
 # ---------------------------------------------------------------------------
@@ -6342,6 +6392,7 @@ class TestDoerAlwaysNamedIn3p:
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = json.dumps({
             "success": True, "achieved": True, "detected": True,
             "outcome": "那桩事悄没声地办妥了。",     # no subject
+            "observation": "在一旁悄没声地忙着。",   # no subject either
             "fact": "我把事办妥了。", "why": "",
         }, ensure_ascii=False)
         env = _make_environment()
@@ -6359,7 +6410,7 @@ class TestDoerAlwaysNamedIn3p:
 
         assert "李世民" in res.outcome, f"3p 通道必须点名行动者,实际:{res.outcome}"
         assert "那桩事悄没声地办妥了" in res.outcome, "判官的叙述本身应当保留"
-        if _obs_text(res):             # a COVERT exposure shows bystanders the same string, so adding the name once fixes both channels
+        if _obs_text(res):             # what onlookers see names him too
             assert "李世民" in _obs_text(res)
 
 

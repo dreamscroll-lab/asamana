@@ -1239,6 +1239,20 @@ def test_the_decision_sees_the_step_before_it_plans_and_sizes_before_it_writes(c
     assert schema.index('"selected_index"') < schema.index('"estimated_hours"') < schema.index('"action_description"')
 
 
+def test_the_pacing_rule_holds_up_no_kind_of_act_as_the_way_to_fill_a_step(container: object) -> None:
+    """Filling a long step is a question of how long, not of what kind. An example that fills it
+    with a face-to-face talk reads as the answer, and the decision leans to TALK."""
+    from agent.decision import _ACTION_SPACE
+
+    engine = DecisionEngine(container.llm_router, seconds_per_step=21600)  # type: ignore[attr-defined]
+    system, _user, _facts = engine._build_decision_prompt(  # noqa: SLF001
+        _make_personality(), _make_packet(), _ACTION_SPACE,
+    )
+    pacing = next(line for line in system.splitlines() if line.startswith("- 时间每推进一步是"))
+    assert "我选持续做下去" in pacing
+    assert not any(word in pacing for word in ("交谈", "谈透", "问他"))
+
+
 # ---------------------------------------------------------------------------
 # MOVE forcibly takes people present along (separate field move_carry_indices)
 # ---------------------------------------------------------------------------

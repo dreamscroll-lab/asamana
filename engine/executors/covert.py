@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, List
 
 from core.action_duration import action_duration_steps
@@ -37,6 +38,21 @@ if TYPE_CHECKING:
     from engine.message_system import MessageSystem
 
 logger = get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class _Verdict:
+    """One covert adjudication. ``observation`` is the onlookers' view on exposure, traces only;
+    ``outcome`` the complete third-person record, traces plus what he caught; ``fact`` his own
+    first-person memory of it."""
+
+    achieved: bool
+    detected: bool
+    observation: str
+    fact: str
+    outcome: str
+    why: str
+
 
 class CovertExecutor(ActionExecutor):
     """Executor for COVERT actions.
@@ -87,7 +103,7 @@ class CovertExecutor(ActionExecutor):
             opening_outcome=scene_line(
                 location, f"{self._directory.agent_name(action.agent_id)}悄悄着手做「{description}」。"
             ),
-            # Onlookers perceive something only on complete()'s detection verdict.
+            # Onlookers perceive something only on a detection verdict, at the close or an interrupt.
             opening_observations=[],
             target=action.target,
             expected_outcome=action.expected_outcome,
@@ -109,7 +125,7 @@ class CovertExecutor(ActionExecutor):
         doer_name = self._directory.agent_name(state.initiator_id)
         location = observe_location(environment, state.initiator_id)
         outcome = scene_line(location, f"{doer_name}正秘密进行「{state.purpose}」{duration_part}。")
-        # No observation: exposure is decided only by complete()'s detection verdict.
+        # No observation: exposure is decided only by a detection verdict, at the close or an interrupt.
         return [TickResult(agent_id=state.initiator_id, outcome=outcome, observations=[])]
 
     async def complete(
@@ -146,9 +162,7 @@ class CovertExecutor(ActionExecutor):
                 f"{self._directory.agent_name(state.initiator_id)}悄悄着手做「{state.purpose}」，"
                 "一时未能确知是否办成、有无被人察觉。"
             )))]
-        achieved, detected, outcome, fact, why = verdict
-        # Also the exposure observation's text, so one fix covers both channels.
-        named_outcome = ensure_doer_named(outcome, self._directory.agent_name(state.initiator_id))
+        doer_name = self._directory.agent_name(state.initiator_id)
         stub = AgentAction(
             agent_id=state.initiator_id,
             step=step,
@@ -160,12 +174,16 @@ class CovertExecutor(ActionExecutor):
         return [ActionResult(
             action=stub,
             expected_outcome=state.expected_outcome or state.purpose,
-            outcome=scene_line(location, named_outcome),  # 3p full (god-view web/snapshot + doer's ledger)
-            observations=self._exposure_observations(environment, state.initiator_id, named_outcome, detected),
-            succeeded=achieved,
-            failure_reason=why,         # 3p authoritative "why it didn't work"
-            factual_memory=fact,        # 1p → the doer's own memory channel
-            detected=detected,          # structured exposure signal (runtime propagation reads it)
+            # 3p complete, with what he caught (god-view web/snapshot, the doer's ledger, goal judge)
+            outcome=scene_line(location, ensure_doer_named(verdict.outcome, doer_name)),
+            observations=self._exposure_observations(
+                environment, state.initiator_id, doer_name,
+                observation=verdict.observation, detected=verdict.detected,
+            ),
+            succeeded=verdict.achieved,
+            failure_reason=verdict.why,  # 3p authoritative "why it didn't work"
+            factual_memory=verdict.fact,  # 1p → the doer's own memory channel
+            detected=verdict.detected,   # structured exposure signal (runtime propagation reads it)
         )]
 
     async def interrupt(
@@ -188,6 +206,7 @@ class CovertExecutor(ActionExecutor):
 
         fact = ""
         outcome = ""
+        observation = ""
         detected = False
         detection_known = False
         doer_name = self._directory.agent_name(state.initiator_id)
@@ -207,7 +226,7 @@ class CovertExecutor(ActionExecutor):
                 reveal_intents=False,
                 reveal_all_content=True,
             ).text
-            # achieved is fixed to False by code; only detected/fact are used. Still pass the
+            # achieved is fixed to False by code; why isn't used. Still pass the
             # material: what he caught before being pulled away is real.
             verdict = await self._judge(
                 agent,
@@ -220,7 +239,8 @@ class CovertExecutor(ActionExecutor):
                 interrupt_part=interrupt_part,
             )
             if verdict is not None:
-                _achieved, detected, outcome, fact, _why = verdict
+                detected, observation, fact = verdict.detected, verdict.observation, verdict.fact
+                outcome = ensure_doer_named(verdict.outcome, doer_name)
                 detection_known = True
             # No verdict: still record the interruption (a real event), but claim no detection.
         # Same if the agent can't be found.
@@ -258,6 +278,11 @@ class CovertExecutor(ActionExecutor):
             expected_outcome=state.expected_outcome or state.purpose,
             outcome=scene_line(location, outcome + format_interrupt_reason_3p(doer_name, thought)),
             gist=scene_line(location, outcome),
+            # Being caught lurking is seen whether or not he got to finish.
+            observations=self._exposure_observations(
+                environment, state.initiator_id, doer_name,
+                observation=observation, detected=detected,
+            ),
             succeeded=False,
             # No failure_reason: phase="interrupt" already says it.
             factual_memory=fact,        # 1p → the doer's own memory channel
@@ -284,12 +309,20 @@ class CovertExecutor(ActionExecutor):
 
     @staticmethod
     def _exposure_observations(
-        environment: "EnvironmentSystem", doer_id: str, body: str, detected: bool,
+        environment: "EnvironmentSystem", doer_id: str, doer_name: str, *,
+        observation: str, detected: bool,
     ) -> list[Observed]:
         """What onlookers see on exposure (prefixed, social-signal strength); nothing if
-        undetected. Authored here, not added downstream by the runtime."""
-        if not detected or not body:
+        undetected. Authored here, not added downstream by the runtime.
+
+        Without the judge's observation it falls back to a bare template, never to the outcome:
+        the outcome carries what he caught."""
+        if not detected:
             return []
+        body = (
+            ensure_doer_named(observation, doer_name) if observation
+            else f"{doer_name}在暗处探查，被人察觉。"
+        )
         return observed_here(
             environment, doer_id, f"[暗中探查暴露] {scene_line(observe_location(environment, doer_id), body)}",
             strength=SALIENT_AMBIENT_STRENGTH,
@@ -306,13 +339,9 @@ class CovertExecutor(ActionExecutor):
         happenings: "list[tuple[int, str]] | None" = None,
         now_step: int = 0,
         interrupt_part: str = "",
-    ) -> "tuple[bool, bool, str, str, str] | None":
-        """Neutral third-party adjudication. Returns (achieved, detected, outcome, fact, why).
-
-        ``outcome`` is third person (also the exposure string); ``fact`` is first person, for
-        the doer's memory. Returns ``None`` when adjudication can't happen (LLM failure,
-        missing doer), so the caller fabricates nothing.
-        """
+    ) -> _Verdict | None:
+        """Neutral third-party adjudication. Returns ``None`` when adjudication can't happen
+        (LLM failure, missing doer), so the caller fabricates nothing."""
         if agent is None:
             logger.warning("covert_judge_no_doer", extra={"purpose": purpose})
             return None
@@ -335,17 +364,18 @@ class CovertExecutor(ActionExecutor):
         )
 
         # Field order (§5b): achieved is read off fact, so it comes after it; before, the model
-        # would commit to a boolean and invent intelligence to justify it. outcome before fact
-        # keeps the findings out of context while the traces are written.
+        # would commit to a boolean and invent intelligence to justify it. observation before
+        # fact keeps the findings out of context while the onlookers' view is written; outcome
+        # last, since it retells observation and fact in the third person.
         system = """\
 【裁决任务】
 你是中立的世界裁决者。裁定一次暗中探查的两件事：他探到了什么（achieved），行迹是否被察觉（detected）。
-下面会给你「此处先后发生的事」。**你的活是判断他这一趟接住了其中哪些**，不是替他编一份情报——那里面没有的，一个字都不许添。
+下面会给你「此处先后发生的事」。**你的任务是判断他这一趟从中探到了哪些**，不是替他编一份情报——那里面没有的，一个字都不许添。
 
 【裁决原则】
 - 在场不等于看见：判暴露必须存在可信的感知通道（视线、声响、留下的痕迹）。
 - 对于能拿到什么信息需要符合物理常识和空间常识，比如在吵杂的环境或者说话声音本来就很小，那就有可能听不到内容，或者听到部分内容。
-- 下面那些事**都发生在他暗中探查的这段时间里，落到他眼里耳里**，他当时就在场。**不要因为某条标着「几小时前」就判他够不着**——那只说明它落在这段时间的较早处，不是说他当时不在。他接没接住，取决于上一条说的物理与空间条件，不取决于时间远近。
+- 下面那些事**都发生在他暗中探查的这段时间里，落到他眼里耳里**，他当时就在场。**不要因为某条标着「几小时前」就判他够不着**——那只说明它落在这段时间的较早处，不是说他当时不在。他探没探到，取决于上一条说的物理与空间条件，不取决于时间远近。
 - 不得因为现场有人就一律判暴露，也不得因为四下无人就一律判他探到了东西。
 - 是否被发觉和这一趟探到了什么需要分别裁定，不要混为一谈。
 - 不得因为行动者身份强势或性格果决就一律判成功，现场条件与行动难度同样起作用。
@@ -355,12 +385,12 @@ class CovertExecutor(ActionExecutor):
   即便察觉，立场不同的人是否会声张大不相同——这与「物理上看没看见」一并影响 detected。
 - 在场者标注的「此刻……」是旁人一眼看得到的外观，说的是他此刻**同时**在做什么；「此刻没有任何动作」是看不出他在做什么：
   休息的人（歇着或睡着）最难留意到暗处，交谈、忙着手上事的人注意力在别处，闲着、无所事事的人最容易撞见——据此权衡 detected。
-- 外观不是内容：他们谈了什么、手上做出了什么、交代了什么，只有出现在「此处先后发生的事」里才算他接住了；
+- 外观不是内容：他们谈了什么、手上做出了什么、交代了什么，只有出现在「此处先后发生的事」里才算他探到了；
   那里没有的，不许凭「正在交谈」「正忙着手上的事」补写。至于他们心里打算做什么，你看不到，也不必知道。
 - achieved 与 detected 相互独立，四种组合都有可能。
 
 【他能知道什么】
-- 能：「此处先后发生的事」里他接得住的部分；物件上写着的字（这一趟真读到了才算）；在场者外在可见的举止与神色。
+- 能：「此处先后发生的事」里他探得到的部分；物件上写着的字（这一趟真读到了才算）；在场者外在可见的举止与神色。
 - 不能：任何人的内心——性情来历、动机盘算、打算做什么。他起身往哪去可以写，他心里图什么不能写。
 - 他是从暗处看和听的人，不会读心。
 - 别把满屋子物件的内容都算作他读到了——他这一趟够得着、又真去看的才算。
@@ -371,10 +401,14 @@ class CovertExecutor(ActionExecutor):
 【输出】
 严格输出以下 JSON，不要任何多余内容。**字段顺序照抄，不要调换**——后面的字段要用到前面的结论。
 - reason：裁断依据——他藏在哪、有无可信的感知通道、此处这段时间有没有事发生（≤100字）。
-- outcome：第三人称、点名行动者，只写**行迹**，即旁人会看到的那一幕（≤40字）。**不写他探到的内容**——那是他一个人知道的。
-- fact：第一人称「我」，写**我看见、听见、读到了什么**（≤120字）。要写具体内容，别用「我暗中观察了一番」充数；没接住就说没接住。
-- outcome 与 fact 都不要带时间或地点前缀（如「在密室，…」）——地点由系统统一标注。
-{"reason": "一两句裁断依据（≤100字）", "detected": true或false, "outcome": "第三人称、点名行动者、只写行迹（≤40字）", "fact": "第一人称、我看见/听见/读到了什么（≤120字）", "achieved": true或false, "why": "什么都没探到的缘由（≤20字）；探到了给空字符串"}
+- detected：他的行迹有没有被在场的人察觉。
+- observation：第三人称、点名行动者，只写**行迹**，即旁人会看到的那一幕（≤40字）。**不写他探到的内容**——被人察觉时，旁人看到的就是这一句。
+- fact：第一人称「我」，写**我看见、听见、读到了什么**（≤120字）。要写具体内容，别用「我暗中观察了一番」充数；没探到就说没探到。
+- achieved：照 fact 判他有没有探到本来拿不到的东西。
+- why：什么都没探到的缘由（≤20字）；探到了给空字符串。
+- outcome：第三人称、点名行动者，把这一趟完整记下来：他的行迹，加上 fact 里他探到的内容（≤120字）。同 fact 一样只写看到、听到、读到的，没探到就照实写没探到。
+- observation、fact、outcome 都不要带时间或地点前缀（如「在密室，…」）
+{"reason": "一两句裁断依据（≤100字）", "detected": true或false, "observation": "第三人称、点名行动者、只写行迹（≤40字）", "fact": "第一人称、我看见/听见/读到了什么（≤120字）", "achieved": true或false, "why": "什么都没探到的缘由（≤20字）；探到了给空字符串", "outcome": "第三人称、点名行动者、行迹加他探到的内容（≤120字）"}
 """
         user = f"""\
 【行动者】（裁决输入：行动者的性格，人设与状态等信息影响行动水准，但你不站在他的立场）
@@ -387,7 +421,7 @@ class CovertExecutor(ActionExecutor):
 【现场】
 {scene if scene else "（现场情况不明）"}
 
-【他暗中探查的这段时间里，落到他眼里耳里的事】（{MEMORY_ORDER_HINT}；他接住了其中哪些由你裁断）
+【他暗中探查的这段时间里，落到他眼里耳里的事】（{MEMORY_ORDER_HINT}；他探到了其中哪些由你裁断）
 {happenings_block}
 
 依上面说定的 JSON 格式与字段先后给出裁决，只输出 JSON、不写任何多余内容。"""
@@ -406,14 +440,16 @@ class CovertExecutor(ActionExecutor):
         with annotate_call(given_facts=facts):
             data = await complete_json(
                 self._llm.complete, system, user,
-                # reason ≤100 chars ≈150 + outcome ≤40 chars ≈60 + fact ≤120 chars ≈180
-                # + why ≤20 chars ≈30 + 2 bools ≈6 + 6-field JSON structure ≈30 → ≈456 tok.
+                # reason ≤100 chars ≈150 + observation ≤40 chars ≈60 + fact ≤120 chars ≈180
+                # + why ≤20 chars ≈30 + outcome ≤120 chars ≈180 + 2 bools ≈6
+                # + 7-field JSON structure ≈35 → ≈641 tok.
                 temperature=0.7,
-                max_tokens=output_budget(456),
+                max_tokens=output_budget(641),
                 failure_event="covert_judge_llm_failed",
                 log_extra={"agent_id": agent.agent_id, "step": now_step},
-                # Without the verdict and both narrations nothing was ruled: a stand-in memory
-                # would contradict a success, and a stand-in outcome would quote the private intent.
+                # Without the verdict and both records nothing was ruled: a stand-in memory would
+                # contradict a success, and a stand-in outcome would quote the private intent.
+                # observation isn't required: exposure has a bare template of its own.
                 required=("achieved", "fact", "outcome"),
             )
         if data is None:
@@ -422,9 +458,13 @@ class CovertExecutor(ActionExecutor):
         achieved = coerce_bool(data.get("achieved"), False)
         # A missing detection claims the least.
         detected = coerce_bool(data.get("detected"), False)
-        fact = str(data["fact"]).strip()
-        # Third person, never first: it leaks to onlookers on exposure.
-        outcome = str(data["outcome"]).strip()
         # The judge sometimes fills why on success too. Unsliced: the prompt caps it.
         why = str(data.get("why", "")).strip() if not achieved else ""
-        return achieved, detected, outcome, fact, why
+        return _Verdict(
+            achieved=achieved,
+            detected=detected,
+            observation=str(data.get("observation") or "").strip(),
+            fact=str(data["fact"]).strip(),
+            outcome=str(data["outcome"]).strip(),
+            why=why,
+        )
