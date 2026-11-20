@@ -71,6 +71,7 @@ from core.prompts import (
     render_situation_header,
     render_sub_places,
     situation_location,
+    strip_end_punct,
     urgency_label,
     vitality_line,
 )
@@ -321,9 +322,9 @@ class _Bound:
     """Binding result: the target plus any payload unique to the action type.
 
     ``description_suffix`` is appended to action_description: by TALK (what I mean to say) and
-    by ERRAND (words with no listener, kept as my instructions to the runner). ``errand`` is
-    used only by ERRAND — the errand's content (where to, what to do there) doesn't fit in
-    target, since it isn't a "who does this point at" relation.
+    by ERRAND (the brief, words with no listener). ``errand`` is used only by ERRAND — the
+    errand's content (where to, what to do there) doesn't fit in target, since it isn't a
+    "who does this point at" relation.
     """
 
     target: ActionTarget
@@ -520,18 +521,21 @@ def _bind_errand(slots: _Slots) -> "_Bound | None":
     recipient_id = slots.one("errand_recipient_index", slots.roster_ids)
     message = _text(slots.payload, "errand_message")
     # Words need a listener: a recipient hears them alone, errand_announce says them aloud. With
-    # neither, they are my instructions to the runner and fold into action_description (as TALK
-    # folds message_content); the errand still runs, nobody recites them.
+    # neither, they are my instructions to the runner and become the order's ``brief``: kept in my
+    # record of the order and repeated in his report, never recited at the destination. They also
+    # fold into action_description (as TALK folds message_content), so every reader of what I did
+    # this step sees what I asked for.
     # Don't read an empty recipient as "announce": the sender can't see who's at the destination,
     # so an empty slot isn't evidence of "shout it to strangers". Gated only here, so
     # ErrandOrder.message always has a real listener.
-    suffix = ""
+    brief = suffix = ""
     if message and not slots.flag("errand_announce") and not recipient_id:
-        suffix, message = f"（我向他指派任务：{message}）", ""
+        brief, message = message, ""
+        suffix = f"（我指派任务时交代：{strip_end_punct(brief)}）"
     order = (
         ErrandOrder(
             npc_id=npc_id, destination_id=destination,
-            item_id=item_id or "", recipient_id=recipient_id or "", message=message,
+            item_id=item_id or "", recipient_id=recipient_id or "", message=message, brief=brief,
         )
         if npc_id and destination else None
     )
@@ -1499,14 +1503,14 @@ class DecisionEngine:
   "errand_npc_index": <若我选 ERRAND：填"此处可接受任务指派的人"里那个人的序号；否则省略。**必填**——这一动就是向他指派任务，没有执行任务的人就不成立>,
   "errand_destination_index": <若我选 ERRAND：填"我可前往"里他要去的那个地方的序号(1起)；否则省略。**必填**——不去别处的任务不成立，那种事我自己伸手就够得到>,
   "errand_item_index": <仅当我要让他带上某样东西：填"眼前的东西"里那一件的序号(1起)，**只能选"我手上的东西"那一组里的**——不能带别人手上、也带不了放在此处的东西，得先拿到手才托得出去。不带东西就省略>,
-  "errand_recipient_index": <仅当这一趟是**只限于对某个人的**：填"我能触及的人"里的序号(1起)。**这一栏决定东西和话落到哪儿**——填了就是交到他手上、只说给他听；不填就是把东西搁在那处、把话在那处当众说出。只是去看看情形则省略>,
-  "errand_announce": <仅当我要他到了那处把 errand_message *当众*广播宣告给在场的所有听时：填 true。我看不见那处有谁，所以公开是我主动选的，不是默认；只说给某个人听、或那只是我对他的交代，就省略此字段>,
+  "errand_recipient_index": <仅当这一趟是**只限于对某个人的**：填"我能触及的人"里的序号(1起)。**这一栏决定东西和话落到哪儿**——填了就是交到那个人手上、只说给那个人听；不填就是把东西搁在那处、把话在那处当众说出。只是去看看情形则省略>,
+  "errand_announce": <仅当我要他到了那处把 errand_message *当众*广播宣告给在场的所有听时：填 true。我看不见那处有谁，所以公开是我主动选的，不是默认；只说给某个人听就省略此字段>,
   "estimated_hours": <数字，单位小时，可带小数；这件事要做多久（完成它的时长，或持续做它的时长）。照上面说的，先看这一步是{step_hint}：持续做下去的事一般占满一步或几步，取一步时长的倍数即可；本来就短促的举动照实写，不足一步按一步算。时长要合乎常理、和这件事本身相称，比如睡一觉一般是几个小时，不会是两天两夜。MOVE 由距离自动决定，填 1 即可；若选 REST，休息时长看两头——身体亏空越深(越接近垮掉)越要久，手头待办越多/越急则越短(只够缓口气)，在两者间权衡取值。>,
   "action_description": "<**act=true 时必填，任何行动都不可省**。第一人称，写我打算做什么，内容要具体完整、配得上上面定下的时长：若上面指认了对象，就落到那个人 / 地点 / 物上；若这一动只关乎我自己(无对象可指认)，就直接写我此刻要做的事。描述具体清晰，简洁明了，15-40字>",
   "talk_topic": "<仅当 TALK：我找对方谈的来意，谈话一开始对方和旁听的人就都知道；不想让他们事先知道我的来意，就省略此字段。≤30字>",
   "message_content": "<仅当 SEND_MESSAGE：我此刻要对**上面 person_indices 指认的那些收件人**(或在场众人)传达的**原话**，第一人称直接对其说，像真的在对他们传话——不是对我自己动作的描述，也不要以第三人称提到对方；20-60字。SEND_MESSAGE 必填：没有原话，这一动就作废。其他行动一律省略此字段>",
   "anonymous": <仅当 SEND_MESSAGE：我要不要隐藏自己的名字，让收到的人不知道这话是我发的；true 为匿名，false 为实名。匿名只管收到的人知不知道是我，跟这话有多机密、多要紧无关：定向消息旁人本来就看不到。比如跟信得过的人说悄悄话、说秘密，一般情况下实名就够了；广播时在场的人都听得到内容，匿名也只是让他们不知道是谁说的。只有我确实不想让收到的人知道是我（比如给不信我的人发送句假话，误导的话，而且不想让他知道是我发的），才填 true。>,
-  "errand_message": "<他到了那头**说出口**的原话。**先定听众**：填了 errand_recipient_index 就只说给那一个人听；填了 errand_announce=true 就是当众宣告。两个都没有，那这句话就不会被他说出口——它会被当成我指派任务时的交代收起来。写成能照着说出口的话：第一人称，对听的人说，20-60字。这次任务是干什么的已经写在 action_description 里，不必在这儿重复。不带话就省略>",
+  "errand_message": "<他到了那头**说出口**的原话。**先定听众**：填了 errand_recipient_index 就只说给那一个人听；填了 errand_announce=true 就是当众宣告。写成能照着说出口的话：第一人称，对听的人说，20-60字。这次任务是干什么的已经写在 action_description 里，不必在这儿重复。不带话就省略>",
   "expected_outcome": "<我期望这一步带来什么，10-30字>",
   "urgency": <"low"|"normal"|"high"|"critical"，仅 SEND_MESSAGE 有效；照我上面写下的原话有多急来定，对方据此判断是否中断手头事>
 }}

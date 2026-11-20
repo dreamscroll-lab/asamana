@@ -31,7 +31,7 @@ from core.interfaces.directory import WorldDirectory
 from core.interfaces.message import ERRAND_REPORT_SOURCE, Message
 from core.interfaces.urgency import Urgency
 from core.logging import get_logger
-from core.prompts import SituationVoice, render_location
+from core.prompts import SituationVoice, render_location, strip_end_punct
 from engine.environment import IN_TRANSIT, UNPLACED
 from engine.narration import scene_line
 from engine.scene import SceneVisibility, assemble_scene_context, situation_for
@@ -412,7 +412,13 @@ class NpcRunner:
         """
         errands_done = "\n".join(f" - {line}" for line in errand.done if line)
         where = self._environment.narrative_location_name(errand.order.destination_id)
-        parts = [f"任务报告：我去了{where}执行任务，回来了。"]
+        # The brief goes in the spoken line: memory keeps only that line, and a reply remembered
+        # without its question can't be recalled by what was asked.
+        brief = strip_end_punct(errand.order.brief)
+        parts = [
+            f"任务报告：交代的是「{brief}」，我去了{where}执行任务，回来了。" if brief
+            else f"任务报告：我去了{where}执行任务，回来了。"
+        ]
         if errands_done:
             parts.append(errands_done)
         # What he says stays true; the scene is a long snapshot, stale by next tick, that would

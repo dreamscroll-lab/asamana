@@ -223,8 +223,8 @@ def check_actor_operation(action: ActorAction, base: ActorAction, intent: ActorI
     if action.action_type is ActionType.ERRAND:
         if action.errand_recipient_id and action.errand_announce:
             raise ActorAnswerRejected("errand_address_conflict")
-        if action.errand_message and not action.errand_recipient_id and not action.errand_announce:
-            raise ActorAnswerRejected("message_requires_recipient_or_announce")
+        # Words with neither a recipient nor an announcement are not refused: decision binding
+        # keeps them as the order's brief, the same rule as for an AI-driven character.
     for field in fields(ActorAction):
         if field.name not in mutable and getattr(action, field.name) != getattr(base, field.name):
             raise ActorAnswerRejected("operation_constraint_conflict")

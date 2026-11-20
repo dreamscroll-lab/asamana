@@ -83,6 +83,7 @@ from core.prompts import (
     order_memories_chrono,
     condition_line,
     person_referent,
+    recency_prefix,
     render_memory,
     render_memory_lines,
     render_perceived_signals,
@@ -219,11 +220,14 @@ class Agent:
     # the subsystems receive, injected directly rather than borrowed from a subordinate component.
     llm_router: LLMRouter
     pending_external_goals: List[ExternalGoal] = field(default_factory=list)
-    # Errand reports that reached him since his last decision. Memory keeps only what the runner
-    # said, not the scene he brought back, so a report arriving while he is busy would otherwise
-    # never reach a decision. The next decision shows them once with its own inbox; external
-    # pressure already weighed them the step they arrived and doesn't see them again.
+    # Errand reports not yet through a decision. Memory keeps only what the runner said, not the
+    # scene he brought back, so without these neither a later decision nor the goal judge would
+    # see it. The next decision shows them once; every goal judgement while they are held sees
+    # them too. External pressure weighed them the step they arrived and doesn't see them again.
+    # A decision only marks them (``_errand_reports_decided``): that step's judgements run after
+    # it, so they are dropped once the step is over, at the next perceive.
     pending_errand_reports: List[Message] = field(default_factory=list)
+    _errand_reports_decided: bool = field(default=False, init=False, repr=False)
     # Narrative tier, not a cognition-mode switch: every agent's cognition gates use the LLM
     # (CLAUDE.md §5).
     is_main_character: bool = False
@@ -370,6 +374,9 @@ class Agent:
         """
         if self.actor is not None:
             self.actor.perceived(self, step=step, inbox=inbox, broadcasts=broadcasts)
+        if self._errand_reports_decided:
+            self.pending_errand_reports.clear()
+            self._errand_reports_decided = False
         self.pending_errand_reports.extend(
             msg for msg in inbox if msg.metadata.get("source") == ERRAND_REPORT_SOURCE
         )
@@ -425,7 +432,7 @@ class Agent:
 
         if self.actor is not None:
             # An actor sees every message in its thread as it arrives; nothing is left to carry.
-            self.pending_errand_reports.clear()
+            self._errand_reports_decided = True
             return await self._plan_with_actor(
                 self.actor, step=step, spatial=spatial, inbox=inbox, broadcasts=broadcasts,
             )
@@ -466,7 +473,7 @@ class Agent:
             )
         self._cooldown.note_decided()
         if decision.status is not DecisionStatus.FAILED:
-            self.pending_errand_reports.clear()
+            self._errand_reports_decided = True
         decide_ms = round((time.perf_counter() - decide_start) * 1000.0, 2)
         action = decision.action
         if action is not None:
@@ -1419,7 +1426,8 @@ class Agent:
  4.禁止揣测没有发生过的客观事实。
  5.我需要结合【我刚刚的经历】的所有内容综合判断，不要仅仅依靠单一局部内容，不要捏造和揣测客观事实。
  6.先在 reason 里把"我是被这件事的哪一点触动、为什么是这种情绪"点清楚，再据此给后面三项——情绪由这个触点推出，不是先挑个戏剧化的情绪再补理由。
- 7.严格输出以下 JSON，不要任何多余内容（reason 必须排在最前）：
+ 7. 行动结果成功并不代表一定符合 “我原本期望”，具体要根据“实际发生判定”。
+ 8.严格输出以下 JSON，不要任何多余内容（reason 必须排在最前）：
 {{"reason": "<第一人称，我是被这件事的哪一点触动、是否与我预期有落差、为什么会是这种情绪，先点清再给下面三项，20-40字>", "emotion": "从以下选一：{emotion_types}", "intensity": 0.0~1.0, "valence": -1.0~1.0}}"""
         user_prompt = f"""\
 {situation_block}【我是谁】（我固有的身份、性格、价值观；这是我这个人）
@@ -2097,6 +2105,15 @@ class Agent:
         # Trajectory evidence for multi-step completion. Read before any await, so this step's
         # action memory isn't in it; the action reaches the judge explicitly.
         recent_factuals = self._recent_factual_lines(step, top_k=_GOAL_EVAL_RECENT_FACTUAL_K)
+        # Dated like memory lines: a report answers an earlier errand and reached him before this
+        # action, so it sits on the trajectory, never in this action's result.
+        errand_reports = [
+            recency_prefix(
+                now_step=step, ref_step=msg.deliver_step, seconds_per_step=self.seconds_per_step,
+                world_start_second_of_day=self.world_start_second_of_day,
+            ) + f"来自{msg.sender_name}：{msg.content}"
+            for msg in self.pending_errand_reports
+        ]
         succeeded_str = "成功" if result.succeeded else "失败"
         action_result = f"{result.outcome}({succeeded_str})"
         with observe_stage(Stage.FEEDBACK, agent_id=self.agent_id):
@@ -2107,6 +2124,7 @@ class Agent:
                 personality=self.personality,
                 situation=self._situation,
                 recent_factuals=recent_factuals,
+                errand_reports=errand_reports,
                 # For a MOVE, the errand at the destination lives here; the description only says he set off.
                 expected_outcome=result.expected_outcome,
                 held=self._held,
@@ -2158,7 +2176,11 @@ class Agent:
         return replace(
             encode_agent_state(self.world_id, self.agent_id, self.personality.state),
             memory_seq=self.memory_system.id_seq,
-            pending_errand_reports=[asdict(msg) for msg in self.pending_errand_reports],
+            # Taken at the step's end: reports a decision already used are dropped, as the next
+            # perceive would drop them.
+            pending_errand_reports=[] if self._errand_reports_decided else [
+                asdict(msg) for msg in self.pending_errand_reports
+            ],
         )
 
     def apply_stored_state(self, stored: AgentState, *, in_resumed_execution: bool) -> None:
@@ -2168,6 +2190,7 @@ class Agent:
         self.personality.restore_state(decode_agent_state(self.agent_id, stored, orphaned=orphaned))
         self.memory_system.restore_id_seq(stored.memory_seq)
         self.pending_errand_reports = [message_from_dict(m) for m in stored.pending_errand_reports]
+        self._errand_reports_decided = False
         # vitality is the single source of truth for alive/dead and is_active isn't persisted: a
         # dead character left active (the default) would die again next step, announced twice.
         self.set_active(stored.vitality > 0.0)

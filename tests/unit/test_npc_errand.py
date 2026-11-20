@@ -732,7 +732,7 @@ async def test_item_lost_after_assignment_does_not_enter_errand(destroyed: bool)
     assert not result.succeeded
     assert not result.entity_state_changes
     assert not result.errand_orders
-    assert "已不在他手上" in result.factual_memory
+    assert "已不在手上" in result.factual_memory
     assert env.get_npc(npc_id).errand is None
     assert env.get_entity("box").owner_id == (None if destroyed else "other")
 
@@ -1400,3 +1400,31 @@ def test_the_report_carries_no_judge_premise() -> None:
         visibility=SceneVisibility.OWN_EYES,
     ).text
     assert _ORDINARY_FIXTURES_LINE in judged
+
+
+@pytest.mark.asyncio
+async def test_the_brief_is_kept_by_the_sender_and_said_back_in_the_report() -> None:
+    """What the sender told the runner is never recited at the destination, but it isn't lost:
+    the sender remembers giving it, someone overhearing the order hears it, and the runner says it
+    back in the spoken line of his report, the only part memory keeps. Onlookers see only that
+    something was said."""
+    env = _world()
+    npc_id = _bearer(env)
+    env.place_agent(agent_id="a1", location_id="hall")
+    env.place_agent(agent_id="a2", location_id="gate")
+    brief = "看清宫门下有几名卫士，回来报我。"
+    order = ErrandOrder(npc_id, "gate", brief=brief)
+
+    result = (await _run_errand(env, order, doer_id="a1"))[0]
+    quoted = "「看清宫门下有几名卫士，回来报我」"   # embedded without its closing mark
+    assert quoted in result.factual_memory
+    assert quoted in result.outcome
+    assert all("卫士" not in obs.text for obs in result.observations)
+
+    runner, messages = _runner(env)
+    await _run_full_errand(runner)
+    delivered = await messages.collect(step=4)
+    [report] = [m for m in delivered if m.recipients == ["a1"]]
+    assert quoted in report.metadata["spoken"]
+    # Nothing is said at the destination: a2 hears nothing.
+    assert all("a2" not in (m.recipients or []) for m in delivered)

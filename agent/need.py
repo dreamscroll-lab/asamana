@@ -74,6 +74,10 @@ _GOAL_EVALUATION_SYSTEM = """\
 【约束】
 - 判定依据是本轮行动与结果、**以及所给"近期客观经历"这条已记录的轨迹**——有些目标跨多步累积达成，最新这一步可能正好把它推过完成线，须结合轨迹判断；但只能依据**已记录的事实**，不得臆测这些记录之外、未给出的信息，**也不得借此重新解读目标本身**。
 - 允许从结果合理倒推：若行动结果在常理上已蕴含某目标达成/过期（即便结果未点名该目标），可据此判 completed / failed——但倒推链必须落在结果上、写进 reason，不能凭空脑补。（例：目标是「去餐厅吃饭」，结果是「我吃饱了」，结果虽未明确表示去了餐厅，但常理上已蕴含吃饭达成，可据此倒推判 completed。 ）
+- 所给「此前收到的任务报告」也属于已记录的轨迹：
+  - 它答复的是被评判者**更早**指派的任务，在本轮行动之前就已收到，不是本轮行动的结果；本轮若又指派了任务，那一趟还没有回来。
+  - 「到达时所见」是执行任务的人到那处时亲眼所见。
+  - 所见只到那一刻为止：没列出的不等于不存在，也不得补出所见里没写的内容。
 - 一次成功的行动**未必**使目标 completed——多数目标要多步推进，没真正达成就保持 active。
 - **警惕「永远 active」**：目标文本后可能标着它「已历约多久仍未了结」。若一个目标已历时明显偏久、且轨迹显示反复推进却始终停在原地（结果一再未达预期、状态毫无实质变化），说明当前手段对它无效——判 failed（搁置），不要无限 active。一个推进不动的目标会锁死后续认知。判 failed（搁置）时，reason 必须点明「反复无进展」的具体依据，落在已记录的轨迹 / 时长上，不臆测。
 - 但别矫枉过正：真正在**逐步推进**（每步能看到可见进展、只是尚未跨过完成线）的多步目标保持 active——搁置只针对「原地打转」，不是「还没做完」；拿不准是「有进展但慢」还是「原地打转」时，倾向保留 active。
@@ -115,6 +119,7 @@ _GOAL_EVALUATION_SYSTEM = """\
   比如当前时间为6月3日上午10点，截止时间为6月6日中午12点，那它们之间相差74小时，due_in_hours就写74。
   **但 text 里若已经写下了一个具体时点，due_in_hours 就不可以为 null**——那个时候是这条事项自己
   带着的，把它折算成小时填上即可，不是另添一个期限。
+- 将行动结果的成功等同于符合“本轮行动期望的结果”，这是不对的，是否符合期望结果要根据实际行动发生内容来定。
 - 每条事项必须具体，明确，不能模糊不清，模糊不清的事项不用生成，比如“我需要立刻质问小A”这个就非常模糊，因为它根本没有说明“需要质问的内容是什么？”
 - **绝大多数行动不留下任何没有了结事项**（休息、赶路、寒暄、独自琢磨都是如此）——这时给空数组
   `[]`，这是正常且被期望的结果。不要为了填满而胡编乱造，宁可给空。
@@ -145,7 +150,7 @@ _GOAL_EVALUATION_USER = """\
 行动结果：{action_result}
 被评判者此刻手上的东西：
 {held_items}
-{recent_experience}待判定的目标（按序号）：
+{recent_experience}{errand_reports}待判定的目标（按序号）：
 {goals_numbered}
 {failed_short_term}
 依上面说定的两项任务、约束与 JSON 格式给出裁定（先逐个目标判状态，再给 residue），
@@ -721,6 +726,7 @@ class NeedEngine:
         personality: PersonalityLayer,
         situation: Situation = Situation(),
         recent_factuals: list[str] = (),
+        errand_reports: Sequence[str] = (),
         expected_outcome: str = "",
         held: "Sequence[VisibleEntity]" = (),
     ) -> List[GoalEntity]:
@@ -730,7 +736,10 @@ class NeedEngine:
         One call, two jobs: (1) judge each ACTIVE goal; (2) name the unfinished business this action
         newly left, enqueued as ``origin=RESIDUE`` goals. Without (2), loose ends never reach the next
         step's motivation. ``expected_outcome`` is the intended result written at decision time (a
-        MOVE's "what to do once there" lives in it).
+        MOVE's "what to do once there" lives in it). ``errand_reports`` are the full errand reports
+        he holds (``Agent.pending_errand_reports``), dated, scene included: memory keeps only
+        their spoken line. They answer earlier errands and reached him before this action:
+        trajectory, not this action's result.
 
         INTERRUPTED goals are not judge candidates (no resume mechanism, a deliberate simplification);
         they leave only via the deadline fallback or capacity eviction.
@@ -778,6 +787,12 @@ class NeedEngine:
             "近来没做成的目标（只作对照参考，不在待判定之列）：\n" + "\n".join(failed_lines) + "\n"
             if failed_lines else ""
         )
+        reports_block = (
+            f"此前收到的任务报告（执行任务的人回来说的话，及其到达那处时所见；{MEMORY_ORDER_HINT}）：\n"
+            + "\n".join(f"- {r}" for r in errand_reports)
+            + "\n"
+            if errand_reports else ""
+        )
         situation_header = render_situation_header(situation, voice=SituationVoice.THIRD, who=agent_name)
         system_prompt = _GOAL_EVALUATION_SYSTEM
         user_prompt = _GOAL_EVALUATION_USER.format(
@@ -786,6 +801,7 @@ class NeedEngine:
             action_description=action_description,
             expected_outcome=expected_outcome or "（无）",
             action_result=action_result,
+            errand_reports=reports_block,
             held_items="\n".join(f"- {line}" for line in _held_lines(held)),
             recent_experience=recent_block,
             goals_numbered=goals_numbered,
@@ -800,6 +816,7 @@ class NeedEngine:
                 .add("我刚做了", action_description)
                 .add("我原本期望", expected_outcome or "（无）")
                 .add("实际结果", action_result)
+                .add("此前收到的任务报告", list(errand_reports))
                 .add("此刻手上的东西", _held_lines(held))
                 .add("近来的经历", recent_block.splitlines())
                 .add("近来没做成的目标", [line.strip() for line in failed_lines]),

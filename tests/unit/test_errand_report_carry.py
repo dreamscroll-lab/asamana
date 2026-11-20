@@ -130,6 +130,7 @@ async def test_a_performed_character_drops_carried_reports_at_its_decision(
     monkeypatch.setattr(agent, "_plan_with_actor", _actor_plan)
     await _perceive(agent, [_report(step=3)], step=3)
     await _plan(agent, [], step=4)
+    await _perceive(agent, [], step=5)
     assert agent.pending_errand_reports == []
 
 
@@ -144,3 +145,66 @@ async def test_an_unseen_report_survives_a_snapshot(container: object) -> None:
 
     [restored] = fresh.pending_errand_reports
     assert restored == _report(step=3)
+
+
+def _capture_judgements(agent: Any, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Each goal judgement's errand reports, as passed to the judge."""
+    seen: list[list[str]] = []
+
+    async def _evaluate(**kwargs: Any) -> list:
+        seen.append(list(kwargs["errand_reports"]))
+        return []
+
+    monkeypatch.setattr(agent.need_engine, "evaluate_goal_progress", _evaluate)
+    return seen
+
+
+def _result(step: int) -> Any:
+    from core.interfaces.action import ActionResult, ActionType, AgentAction
+
+    return ActionResult(
+        action=AgentAction(action_type=ActionType.REST, agent_id="agent-1", step=step),
+        expected_outcome="", outcome="他歇了一阵。", succeeded=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_goal_judge_sees_the_whole_report_once_even_after_the_decision_used_it(
+    container: object, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The decision takes the report first; the action it chooses is judged afterwards in the same
+    step, and the judge must still see the scene, which memory doesn't keep. The report is
+    dropped once that step is over."""
+    agent = _make_agent(container)
+    _capture_decisions(agent, monkeypatch)
+    judged = _capture_judgements(agent, monkeypatch)
+    report = _report(step=3)
+
+    await _perceive(agent, [report], step=3)
+    await _plan(agent, [report], step=3)
+    await agent._judge_goal_progress(step=3, result=_result(3))
+    await _perceive(agent, [], step=4)
+    await agent._judge_goal_progress(step=4, result=_result(4))
+
+    assert len(judged) == 2 and judged[1] == []
+    [line] = judged[0]
+    assert line.startswith("（") and line.endswith(f"来自宫人：{report.content}")
+
+
+@pytest.mark.asyncio
+async def test_a_report_a_decision_used_is_not_carried_into_the_snapshot(
+    container: object, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The snapshot is taken at the step's end, when a decided report is already done with:
+    restored, it must not be shown to a decision again."""
+    agent = _make_agent(container)
+    _capture_decisions(agent, monkeypatch)
+    report = _report(step=3)
+    await _perceive(agent, [report], step=3)
+    await _plan(agent, [report], step=3)
+
+    record = json.loads(dump_json(snapshot_agent_state(agent)))
+    fresh = _make_agent(container)
+    fresh.apply_stored_state(agent_state_from_record(record), in_resumed_execution=False)
+
+    assert fresh.pending_errand_reports == []

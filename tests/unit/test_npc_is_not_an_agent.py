@@ -558,8 +558,8 @@ def test_a_word_with_no_audience_is_not_shouted_but_kept_as_the_briefing() -> No
     """Spoken words need listeners, via the same two channels as SEND_MESSAGE: a named recipient,
     or errand_announce.
 
-    With neither, the words are the instructions given when sending the errand, so they go into
-    action_description, not ``ErrandOrder``. Don't infer a public shout from an empty recipient: the
+    With neither, the words are the instructions given when sending the errand, so they become
+    ``ErrandOrder.brief``, never ``message``. Don't infer a public shout from an empty recipient: the
     sender can't see who's at the destination, and the briefing often must stay private. The flag
     is consumed in decide; downstream, a message always has a real listener.
     """
@@ -574,18 +574,22 @@ def test_a_word_with_no_audience_is_not_shouted_but_kept_as_the_briefing() -> No
             own_item_ids=[],
         ))
 
-    # No listener: the words aren't spoken, but they don't vanish either; they go into the
-    # description
+    # No listener: the words aren't spoken, but they don't vanish either; they become the brief
     briefing = _bind(errand_message="你去东宫外头转一圈，回来报我")
     assert briefing.errand.message == ""
-    assert briefing.description_suffix == "（我向他指派任务：你去东宫外头转一圈，回来报我）"
+    assert briefing.errand.brief == "你去东宫外头转一圈，回来报我"
+    assert briefing.description_suffix == "（我指派任务时交代：你去东宫外头转一圈，回来报我）"
+    # Stored as written; only where it is embedded does its closing mark go
+    ended = _bind(errand_message="你去东宫看看。")
+    assert ended.errand.brief == "你去东宫看看。"
+    assert ended.description_suffix == "（我指派任务时交代：你去东宫看看）"
 
     # A named recipient: said only to him
     direct = _bind(errand_recipient_index=1, errand_message="殿下召见")
     assert (direct.errand.message, direct.errand.recipient_id) == ("殿下召见", "a2")
-    assert direct.description_suffix == ""
+    assert direct.description_suffix == "" and direct.errand.brief == ""
 
     # Declared public: announced aloud, no recipient needed
     public = _bind(errand_announce=True, errand_message="城门今夜不开")
     assert (public.errand.message, public.errand.recipient_id) == ("城门今夜不开", "")
-    assert public.description_suffix == ""
+    assert public.description_suffix == "" and public.errand.brief == ""

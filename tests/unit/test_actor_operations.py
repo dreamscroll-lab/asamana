@@ -956,3 +956,23 @@ def test_operation_targets_use_runtime_world_facts_not_theme_presets(container, 
     bound = DecisionEngine(container.llm_router).bind_actor_action(action, personality=_make_personality(), packet=packet)
     assert bound.target.acts_on == [Ref.place(place_id)]
     assert place_name in action.action_description
+
+
+@pytest.mark.asyncio
+async def test_errand_words_with_no_listener_are_taken_as_for_an_ai_character(container) -> None:
+    """Words with neither a recipient nor an announcement aren't refused for the actor: binding
+    keeps them as the order's brief, as it does for an AI-driven character."""
+    packet = _packet()
+    packet.spatial.visible_npcs["runner"] = PerceivedNpc(NpcIdentity("信使", "男"))
+    message = "看清门口有几个人，回来报我"
+    intent = _intent("errand", Ref.npc("runner"), description="叮嘱一句",
+                     message=message, destination_id="xuanwu_gate")
+    base = build_actor_operation(intent, packet)
+    container.llm_router.get(LLMScene.ACTOR_INTENT).fixed_response = json.dumps({
+        "decision": "act", "action_description": "我派信使去玄武门看看",
+    })
+    result = await DecisionEngine(container.llm_router).interpret_actor_decision(
+        intent.description, personality=_make_personality(), packet=packet, intent=intent, base=base)
+    action = result[0].action
+    assert action.errand_message == message
+    assert action.errand_recipient_id is None and not action.errand_announce

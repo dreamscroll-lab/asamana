@@ -63,7 +63,6 @@ const REASON_TEXT: Record<string, string> = {
   stale_intent: "回合或指令已经变化，请重新提交。",
   operation_constraint_conflict: "补充要求与选定操作或对象冲突，请修改后再试。",
   operation_not_applicable: "这个对象不支持所选操作。",
-  message_requires_recipient_or_announce: "发送消息需要指定接收角色，或选择发送给在场所有角色。",
   errand_address_conflict: "请在指定接收角色与发送给在场所有角色之间选择一种。",
   message_required: "请填写消息内容。",
   description_required: "请先描述具体要做什么。",

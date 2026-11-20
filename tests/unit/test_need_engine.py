@@ -732,6 +732,38 @@ async def test_evaluate_goal_progress_omits_failed_block_without_failed_goals() 
 
 
 @pytest.mark.asyncio
+async def test_evaluate_goal_progress_shows_errand_reports_whole() -> None:
+    """Memory keeps only a report's spoken line, so the judge gets the whole report, scene
+    included, or "go and see whether X is still there" is judged as never answered."""
+    from core.context import get_call_annotations
+
+    captured: dict = {}
+
+    class _CapturingJudge:
+        async def complete(self, scene, messages, temperature=0.7, max_tokens=1000, **kwargs):
+            from core.interfaces.llm import LLMResponse
+            captured["user"] = messages[-1].content
+            captured.update(get_call_annotations())
+            return LLMResponse(content='{"goals": [], "residue": []}',
+                               input_tokens=0, output_tokens=0, model="test")
+
+    engine = NeedEngine(llm_router=_CapturingJudge())  # type: ignore[arg-type]
+    report = "来自宫人：任务报告：我去了城门执行任务，回来了。\n 到达时所见：城门下只有一名卫士。"
+    await engine.evaluate_goal_progress(
+        step=3, action_description="做了一件事", action_result="结果如此",
+        personality=_make_personality(), errand_reports=[report],
+    )
+    assert "城门下只有一名卫士" in captured["user"].split("此前收到的任务报告", 1)[1]
+    assert any("城门下只有一名卫士" in fact for fact in captured["given_facts"])
+
+    await engine.evaluate_goal_progress(
+        step=4, action_description="做了一件事", action_result="结果如此",
+        personality=_make_personality(),
+    )
+    assert "此前收到的任务报告" not in captured["user"]
+
+
+@pytest.mark.asyncio
 async def test_run_preserves_existing_goals_when_dominant_need_unchanged() -> None:
     """Goals are preserved when the dominant need hasn't changed.
 

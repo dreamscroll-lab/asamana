@@ -434,6 +434,10 @@ class ErrandOrder:
       an instruction for your own side ("go scout the guard posts") read out in public is
       permanent contamination (CLAUDE.md Rule 1). It is not the errand's purpose, which is
       ``AgentAction.action_description``.
+    - ``brief`` is not an axis: it is what the sender told the runner when handing the errand
+      over (what to watch for, what to bring back). The runner does nothing differently for it and
+      never says it at the destination; it is part of the sender's own record of the order, and
+      the runner repeats it in the report so the reply is remembered with the question it answers.
 
     Produced by decision binding (``agent.decision``), landed by ``ErrandExecutor.start``. No
     adjudication: an Npc has no will, and whether it's free is a rule (``ErrandExecutor``'s
@@ -445,6 +449,7 @@ class ErrandOrder:
     item_id: str = ""
     recipient_id: str = ""
     message: str = ""
+    brief: str = ""
 
 
 def errand_to_dict(order: "ErrandOrder | None") -> dict[str, object] | None:
