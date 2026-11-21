@@ -172,14 +172,20 @@ class WorldManager:
         return await self._confirmed_table(self._npc_identity_cache, world_id, read)
 
     async def place_identities(self, world_id: str) -> dict[str, PlaceIdentity] | None:
-        """The places' public identities, from the map frozen at build; None for a world with none."""
+        """The places' public identities, from the map frozen at build and the sub-places in the
+        world's setup; None for a world with no map."""
 
         async def read() -> dict[str, PlaceIdentity] | None:
             data = await self._snapshot_provider.load_world_config(world_id)
             if not data:
                 return None
+            setup = await self.world_setup(world_id)
+            sub_places = setup.sub_places if setup is not None else ()
             return {
-                place_id: PlaceIdentity(location_id=place_id, name=place.name, description=place.description)
+                place_id: PlaceIdentity(
+                    location_id=place_id, name=place.name, description=place.description,
+                    sub_places=tuple(s.name for s in sub_places if s.location_id == place_id),
+                )
                 for place_id, place in StoredWorldConfig(data).get_places().items()
             }
 

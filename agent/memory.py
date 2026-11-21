@@ -57,6 +57,10 @@ EMOTIONAL_ANCHOR_VALENCE = 0.7  # experiential at or above this |valence| is nev
 # always covers what is sampled after a cold restart. Far below MIN_AGE_STEPS, so factual memories
 # inside it are never compressed away.
 RECENT_EVENT_LOOKBACK_STEPS = 10
+# Default count of latest events sample_recent_events keeps before the importance fill: ranking
+# alone lets a just-happened mid-importance event drop out in a dense window, and the next step
+# loses what the agent just did. Keep it small: each floor slot is taken from the importance ranking.
+RECENT_EVENT_FLOOR = 2
 # Ring buffer of not_executed attempts (see note_foiled_attempt): never persisted or embedded; only
 # decide reads it, for its "switch approach after repeated failures" instruction. LOOKBACK caps age.
 _FOILED_BUFFER_MAXLEN = 8
@@ -355,7 +359,10 @@ class MemorySystem:
         """
         try:
             pairs = self.sample_recent_events(
-                current_step, top_k=_EXPERIENTIAL_RECENT_FACTUAL_K + 1,
+                current_step,
+                top_k=_EXPERIENTIAL_RECENT_FACTUAL_K,
+                require_factual=True,
+                exclude_group_ids=(exclude_event_group_id,) if exclude_event_group_id else (),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -368,8 +375,6 @@ class MemorySystem:
         for fact, _exp in ordered:
             if fact is None:
                 continue
-            if exclude_event_group_id and fact.event_group_id == exclude_event_group_id:
-                continue
             rendered = render_memory(
                 fact,
                 now_step=current_step,
@@ -378,8 +383,6 @@ class MemorySystem:
             )
             if rendered:
                 lines.append(f"- {rendered}")
-            if len(lines) >= _EXPERIENTIAL_RECENT_FACTUAL_K:
-                break
         return "\n".join(lines)
 
     def _provisional_memory(
@@ -857,16 +860,27 @@ class MemorySystem:
         return out
 
     def sample_recent_events(
-        self, current_step: int, *, lookback: int = RECENT_EVENT_LOOKBACK_STEPS, top_k: int = 10
+        self,
+        current_step: int,
+        *,
+        lookback: int = RECENT_EVENT_LOOKBACK_STEPS,
+        top_k: int = 10,
+        floor: int = RECENT_EVENT_FLOOR,
+        before_step: int | None = None,
+        require_factual: bool = False,
+        exclude_group_ids: Collection[str] = (),
     ) -> list[tuple[Memory | None, Memory | None]]:
         """Top-k recent EVENTS (last ``lookback`` steps), each paired as
-        ``(factual, experiential)`` by ``event_group_id``, ranked by max importance, newer first
-        on a tie: in an event-dense window the cut otherwise drops the latest equal-importance
-        events, the very anchors decide's recent supplement exists for.
+        ``(factual, experiential)`` by ``event_group_id``: the latest ``floor`` events, then the
+        rest by max importance, newer first on a tie. Returned in importance order.
 
         Short-term goals need both what happened and how the agent read it: with only the feeling
         stream they repeat or drift with emotion. Experiential may be None; factual is None only in
         the edge case where just the experiential is in _entries.
+
+        The filters (``before_step`` drops events from that step on, ``require_factual`` drops
+        events without a factual, ``exclude_group_ids`` drops given events) apply before selection,
+        so a caller's filter never removes a floor slot or shrinks the result below ``top_k``.
 
         Scans _entries only (warm_recent_memories fills it after a restart); insights and summaries
         are excluded.
@@ -876,18 +890,36 @@ class MemorySystem:
         for m in self._entries.values():
             if m.kind != MemoryKind.EVENT or m.created_step < threshold:
                 continue
+            if before_step is not None and m.created_step >= before_step:
+                continue
             groups.setdefault(m.event_group_id or m.id, {})[m.stream] = m
+        # Insertion order breaks same-step ties for the floor: it is the order events were written.
+        slots = [
+            (index, slot)
+            for index, (group_id, slot) in enumerate(groups.items())
+            if group_id not in exclude_group_ids
+            and not (require_factual and MemoryStream.FACTUAL not in slot)
+        ]
+        latest = sorted(
+            slots,
+            key=lambda item: (max(m.created_step for m in item[1].values()), item[0]),
+            reverse=True,
+        )[:min(floor, top_k)]
+        floor = {index for index, _slot in latest}
         ranked = sorted(
-            groups.values(),
-            key=lambda slot: (
-                max(float(m.importance) for m in slot.values()),
-                max(m.created_step for m in slot.values()),
+            slots,
+            key=lambda item: (
+                max(float(m.importance) for m in item[1].values()),
+                max(m.created_step for m in item[1].values()),
             ),
             reverse=True,
-        )[:top_k]
+        )
+        fill = [item for item in ranked if item[0] not in floor][:top_k - len(floor)]
+        chosen = {index for index, _slot in fill} | floor
         return [
             (slot.get(MemoryStream.FACTUAL), slot.get(MemoryStream.EXPERIENTIAL))
-            for slot in ranked
+            for index, slot in ranked
+            if index in chosen
         ]
 
     async def sample_recent(
@@ -1578,6 +1610,8 @@ class MemorySystem:
         # life_goal, not state.long_term_goals: planning detail doesn't help "what did this touch in me".
         life_goal = soul.life_goal or "无"
         secret_line = f"\n我的{SECRET_LABEL}：{soul.secret}" if soul.secret else ""
+        # Left out when empty, as the decision prompt does: 「底线：无」 reads as a person with none.
+        constraints_line = f"\n底线：{soul.constraints_text()}" if soul.hard_constraints else ""
 
         people_block = ""
         if related_agent_directory:
@@ -1627,6 +1661,8 @@ class MemorySystem:
  - **这段独白只是关于【刚发生的事】的**：如果给出了【此前近来发生的事】，那只是为了让我
    理解自己此刻的心境不至断裂，是背景衔接；**不要**把它们当作"刚发生"来复述、评论、或
    当作独白的对象——只有【刚发生的事】才是我此刻要在心里落笔的那件事。
+ - **不能把此前的事里的状态、情形当成此刻的状态、情形**：此前的事只记着当时的样子，之后可能已经变了，
+   以更近发生的事为准。比如此前记着某件东西还在我手上，后来我又把它交了出去，此刻就不能再认定它仍在我手上。
 
 【格式】一段，不超过 200 字（宁可更短，不必写满）；只输出独白本身，不要任何说明。"""
         user_prompt = f"""\
@@ -1635,8 +1671,7 @@ class MemorySystem:
 【我是谁】
 我是{soul.name}。
 性格特点：{soul.traits_text()}
-价值观：{soul.values_text()}
-底线：{soul.constraints_text()}{secret_line}
+价值观：{soul.values_text()}{constraints_line}{secret_line}
 自我认知：{soul.self_image or '无'}
 人生目标：{life_goal}
 

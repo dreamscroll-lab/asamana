@@ -78,7 +78,7 @@ def _set_work_decision(container) -> None:
     from core.interfaces.llm import LLMScene
 
     container.llm_router.get(LLMScene.AGENT_DECISION_MAIN).fixed_response = (
-        '{"selected_index": 3, "action_description": "批阅文书", "estimated_steps": 1}'
+        '{"selected_index": 3, "action_description": "批阅文书", "estimated_hours": 1}'
     )
 
 
@@ -463,7 +463,7 @@ def test_scheduler_excludes_step_start_in_progress_regardless_of_live_status(con
     a = _build_agent(container, world_id="w", agent_id="a", name="A", is_main_character=True)
     b = _build_agent(container, world_id="w", agent_id="b", name="B", is_main_character=True)
     # `a` was IN_PROGRESS at step start but completed during the step → live COMPLETED.
-    a.personality.update_action_result(step=1, action="x", result="done", succeeded=True)
+    a.personality.end_action(succeeded=True)
     assert a.personality.state.action_status == ActionStatus.COMPLETED
 
     plan = scheduler.plan([a, b], step=2, in_progress_at_step_start={"a"})
@@ -490,7 +490,7 @@ async def test_multi_step_action_defers_redecision_to_settle_step(container) -> 
     )
     # Pin a 2-step WORK selection (estimated_steps=2).
     container.llm_router.get(LLMScene.AGENT_DECISION_MAIN).fixed_response = (
-        '{"selected_index": 3, "action_description": "批阅文书", "estimated_steps": 2}'
+        '{"selected_index": 3, "action_description": "批阅文书", "estimated_hours": 2}'
     )
 
     s1 = await runtime.run_step([agent])
@@ -528,7 +528,7 @@ async def test_interrupted_agent_re_decides_in_the_same_step(container) -> None:
                          name="Li Jiancheng", is_main_character=False)
 
     container.llm_router.get(LLMScene.AGENT_DECISION_MAIN).fixed_response = (
-        '{"selected_index": 3, "action_description": "批阅文书", "estimated_steps": 6}'
+        '{"selected_index": 3, "action_description": "批阅文书", "estimated_hours": 6}'
     )
     s1 = await runtime.run_step([agent, other])
     assert "agent-1" in s1.scheduled_agent_ids
@@ -581,7 +581,7 @@ async def test_a_multi_step_action_is_marked_at_its_opening_only(container) -> N
     # The decision claims 6 steps; the execution sets the remainder by its own rules, and the mark
     # must use the latter.
     container.llm_router.get(LLMScene.AGENT_DECISION_MAIN).fixed_response = (
-        '{"selected_index": 3, "action_description": "批阅文书", "estimated_steps": 6}'
+        '{"selected_index": 3, "action_description": "批阅文书", "estimated_hours": 6}'
     )
     await runtime.run_step([agent])
 
@@ -736,7 +736,7 @@ async def test_talk_to_active_agent_is_rejected_without_double_booking(container
         "person_indices": [1],
         "action_description": "找B说话。",
         "inner_monologue": "需要和B交流。",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     })
     fixed_llm = SequentialMockLLM([talk_response] * 20)
     agent_a.decision_engine._llm_router = LLMRouter({scene: fixed_llm for scene in LLMScene})  # noqa: SLF001
@@ -843,7 +843,7 @@ async def test_arbitrate_enrollment_pulls_target_into_passive_join(container) ->
                        action_description="批阅文书", estimated_steps=1)
     planned = [("main", a, _plan_for(a, talk, env)), ("bg", b, _plan_for(b, work, env))]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     a_aa, b_aa = arb["agent-a"], arb["agent-b"]
     # Initiator: starts AA
     assert a_aa.ongoing_execution_id is not None and a_aa.is_passive_join is False
@@ -880,9 +880,9 @@ async def test_conscripted_agent_defers_decided_intent_into_foiled_buffer(contai
                        action_description="独自前往城防查探敌情", estimated_steps=1)
     planned = [("main", a, _plan_for(a, talk, env)), ("bg", b, _plan_for(b, work, env))]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     assert arb["agent-b"].is_passive_join is True            # B's WORK is discarded
-    records = await rt._commit_execution(planned, arb, agents)  # noqa: SLF001
+    records = await rt._commit_execution(planned, arb, {}, agents)  # noqa: SLF001
 
     # B's discarded intent is in the foiled buffer, available for the next decision
     foiled = b.memory_system.recent_foiled_attempts(1)
@@ -931,9 +931,9 @@ async def test_conscription_leaves_its_two_marks_on_the_step_traces(container) -
                        action_description="批阅文书", estimated_steps=1)
     planned = [("main", a, _plan_for(a, talk, env)), ("bg", b, _plan_for(b, work, env))]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     assert arb["agent-b"].is_passive_join is True
-    await rt._commit_execution(planned, arb, agents)  # noqa: SLF001
+    await rt._commit_execution(planned, arb, {}, agents)  # noqa: SLF001
 
     marked = {c.agent_id: (c.adopted, c.reject_reason) for c in sink.llm_calls
               if c.stage == Stage.MOTIVATION.value}
@@ -944,7 +944,10 @@ async def test_conscription_leaves_its_two_marks_on_the_step_traces(container) -
     # infer the same thing from side signals (is there an execution_id, an action call, is talk_role
     # addressee); each of those gets some edge case wrong.
     decisions = {c.agent_id: c.extra for c in sink.llm_calls if c.stage == Stage.DECISION.value}
-    assert decisions["agent-b"] == {"verdict": "conscripted"}
+    # And what his body was drawn into, by the same field a momentary decision's body uses.
+    assert decisions["agent-b"] == {"verdict": "conscripted", "joined_execution": {
+        "execution_id": arb["agent-b"].ongoing_execution_id, "initiator": "李世民",
+        "purpose": "商议对策", "spans_steps": 2}}
     # Initiator: this action spans two steps, with the remainder taken from the execution (not
     # the decision's estimated_steps).
     assert decisions["agent-a"] == {"verdict": "executed", "spans_steps": 2}
@@ -974,9 +977,9 @@ async def test_executor_start_crash_is_marked_a_failure_not_a_verdict(container)
         raise RuntimeError("executor exploded")
     rt._executor_registry.get_executor(ActionType.WORK).start = boom  # noqa: SLF001
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     assert "agent-a" not in arb, "崩掉的行动不该留下裁决条目"
-    await rt._commit_execution(planned, arb, agents)  # noqa: SLF001
+    await rt._commit_execution(planned, arb, {}, agents)  # noqa: SLF001
 
     decisions = {c.agent_id: c.extra for c in sink.llm_calls if c.stage == Stage.DECISION.value}
     assert decisions["agent-a"] == {"verdict": "start_failed"}
@@ -1192,7 +1195,7 @@ async def test_arbitrate_acting_doer_cannot_be_enrolled(container) -> None:
     # B is arbitrated before A (acts first this step, its body is used)
     planned = [("bg", b, _plan_for(b, work, env)), ("main", a, _plan_for(a, talk, env))]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     b_aa = arb["agent-b"]
     # B did its own WORK and wasn't pulled into the TALK
     assert b_aa.is_passive_join is False
@@ -1241,7 +1244,7 @@ async def test_enrolling_action_is_arbitrated_before_independent_ones_in_same_ph
     # Same phase; B is earlier in input order (higher initiative), but A's action needs B's body.
     planned = [("main", b, _plan_for(b, covert, env)), ("main", a, _plan_for(a, talk, env))]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     # B is conscripted as a passive participant instead of doing its own COVERT
     assert arb["agent-b"].is_passive_join is True
     assert arb["agent-b"].invited_by == "agent-a"           # TALK invites: B accepted A's invitation
@@ -1275,7 +1278,7 @@ async def test_enrolling_reorder_never_crosses_phases(container) -> None:
                        action_description="上前攀谈", target=ActionTarget(acts_on=[Ref.agent("agent-a")], claims=[Ref.agent("agent-a")]), estimated_steps=2)
     planned = [("main", a, _plan_for(a, work, env)), ("background", b, _plan_for(b, talk, env))]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     # The main character does its own thing and isn't pulled into a background character's
     # conversation
     assert arb["agent-a"].is_passive_join is False
@@ -1315,7 +1318,7 @@ async def test_starved_intent_takes_initiative_across_phases(container) -> None:
                                     foiled_misses=_FOILED_MISS_PRIORITY_THRESHOLD)),
     ]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     # The background character goes first and gets the body; the main character yields this step,
     # and its WORK intent retries via the foiled buffer.
     b_exec = rt._executor_registry.get_active_for_agent("agent-b")  # noqa: SLF001
@@ -1354,7 +1357,7 @@ async def test_deeper_starvation_goes_first_between_two_starved_agents(container
         ("main", c, _plan_for(c, idle, env)),
     ]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     b_exec = rt._executor_registry.get_active_for_agent("agent-b")  # noqa: SLF001
     assert b_exec is not None and "agent-c" in b_exec.participant_ids
     a_exec = rt._executor_registry.get_active_for_agent("agent-a")  # noqa: SLF001
@@ -1487,12 +1490,34 @@ async def test_an_invitation_cannot_hold_a_body_that_means_to_leave(container) -
         ("main", agents["agent-a"], _plan_for(agents["agent-a"], leave, env)),
     ]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
 
     assert arb["agent-a"].is_passive_join is False
     assert rt._executor_registry.get_active_for_agent("agent-a").action_type == ActionType.MOVE  # noqa: SLF001
     rejection = rt._executor_registry.get_active_for_agent("agent-b").extra["completed_result"]  # noqa: SLF001
     assert "李世民正要动身离开" in rejection.outcome
+
+
+@pytest.mark.asyncio
+async def test_an_invitation_cannot_take_a_body_set_on_a_physical_deed(container) -> None:
+    """Within a tier, PHYSICAL goes before TALK like a solo leaving MOVE: even with TALK earlier
+    in input order, the deed stands and the invitation fails."""
+    env, agents, rt = _two_rooms_with(container, "world-physical-beats-invite", {"agent-a": "李世民", "agent-b": "常何"})
+    deed = AgentAction(agent_id="agent-a", step=1, action_type=ActionType.PHYSICAL, action_description="撬开箱子",
+                       estimated_steps=1)
+    talk = AgentAction(agent_id="agent-b", step=1, action_type=ActionType.TALK, action_description="拦下他说话",
+                       estimated_steps=2, target=ActionTarget(acts_on=[Ref.agent("agent-a")], claims=[Ref.agent("agent-a")]))
+    planned = [
+        ("main", agents["agent-b"], _plan_for(agents["agent-b"], talk, env)),
+        ("main", agents["agent-a"], _plan_for(agents["agent-a"], deed, env)),
+    ]
+
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+
+    assert arb["agent-a"].is_passive_join is False
+    assert arb["agent-a"].action_result.action.action_type is ActionType.PHYSICAL
+    rejection = rt._executor_registry.get_active_for_agent("agent-b").extra["completed_result"]  # noqa: SLF001
+    assert "李世民正忙着手上的事" in rejection.outcome
 
 
 @pytest.mark.asyncio
@@ -1509,7 +1534,7 @@ async def test_a_carry_still_takes_a_body_that_means_to_leave(container) -> None
         ("main", agents["agent-b"], _plan_for(agents["agent-b"], carry, env)),
     ]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
 
     assert arb["agent-a"].is_passive_join is True
     assert arb["agent-a"].invited_by == ""                  # carried off, not invited
@@ -1553,7 +1578,7 @@ async def test_critical_pressure_keeps_own_body_against_conscription(container) 
         ("main", b, _plan_for(b, own, env, external_goals=[_pressure(Urgency.CRITICAL)])),
     ]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     assert arb["agent-b"].is_passive_join is False
     b_exec = rt._executor_registry.get_active_for_agent("agent-b")  # noqa: SLF001
     assert b_exec is not None and b_exec.action_type == ActionType.WORK
@@ -1588,7 +1613,7 @@ async def test_high_pressure_alone_does_not_preempt_conscription(container) -> N
         ("main", b, _plan_for(b, own, env, external_goals=[_pressure(Urgency.HIGH)])),
     ]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     assert arb["agent-b"].is_passive_join is True
     a_exec = rt._executor_registry.get_active_for_agent("agent-a")  # noqa: SLF001
     assert a_exec is not None and "agent-b" in a_exec.participant_ids
@@ -1620,7 +1645,7 @@ async def test_pressure_preempt_never_crosses_phases(container) -> None:
         ("background", b, _plan_for(b, own, env, external_goals=[_pressure(Urgency.CRITICAL)])),
     ]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     assert arb["agent-b"].is_passive_join is True
 
 
@@ -1647,7 +1672,7 @@ async def test_step_start_in_progress_body_cannot_be_conscripted(container) -> N
                        action_description="呈递密报并恳请定夺", target=ActionTarget(acts_on=[Ref.agent("agent-a")], claims=[Ref.agent("agent-a")]), estimated_steps=1)
     planned = [("bg", b, _plan_for(b, talk, env))]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, {"agent-a"})  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, {"agent-a"})  # noqa: SLF001
     # A wasn't conscripted: no arbitration entry (no passive join, no second feedback run).
     assert "agent-a" not in arb
     # B's TALK is vetoed as a doer-only failure: A is busy and not a participant.
@@ -1688,7 +1713,7 @@ async def test_denied_doer_stays_invitable_same_step(container) -> None:
     planned = [("main", a, _plan_for(a, a_talk, env)), ("main", b, _plan_for(b, b_talk, env))]
 
     # C is mid-action at step start → A is rejected; that rejection mustn't make B fail too.
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, {"agent-c"})  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, {"agent-c"})  # noqa: SLF001
 
     b_exec = rt._executor_registry.get_active_for_agent("agent-b")  # noqa: SLF001
     assert b_exec is not None and set(b_exec.participant_ids) == {"agent-a", "agent-b"}
@@ -1738,7 +1763,7 @@ async def test_a_body_one_initiator_could_not_take_is_taken_by_the_next(containe
     import logging
 
     caplog.set_level(logging.DEBUG, logger="engine.arbiter")
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
 
     registry = rt._executor_registry  # noqa: SLF001
     first = registry.get_active_for_agent("agent-a")
@@ -1763,7 +1788,7 @@ async def test_a_body_one_initiator_could_not_take_is_taken_by_the_next(containe
     assert (logs["denial_superseded_by_enrollment"].agent_id,
             logs["denial_superseded_by_enrollment"].initiator) == ("agent-b", "agent-d")
 
-    await rt._commit_execution(planned, arb, agents)  # noqa: SLF001
+    await rt._commit_execution(planned, arb, {}, agents)  # noqa: SLF001
     assert any("质问秦王" in t for t in c.memory_system.recent_foiled_attempts(1))
     assert any("陈明元吉谋逆" in t for t in b.memory_system.recent_foiled_attempts(1))
 
@@ -1784,7 +1809,7 @@ async def test_denied_doer_settles_when_nobody_invites_him(container) -> None:
     a_talk = AgentAction(agent_id="agent-a", step=1, action_type=ActionType.TALK,
                          action_description="寻魏徵过目名单",
                          target=ActionTarget(acts_on=[Ref.agent("agent-c")], claims=[Ref.agent("agent-c")]), estimated_steps=2)
-    arb, _ = await rt._arbiter.arbitrate([("main", a, _plan_for(a, a_talk, env))], agents, 1, {"agent-c"})  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate([("main", a, _plan_for(a, a_talk, env))], agents, 1, {"agent-c"})  # noqa: SLF001
 
     a_exec = rt._executor_registry.get_active_for_agent("agent-a")  # noqa: SLF001
     assert a_exec is not None and a_exec.participant_ids == ["agent-a"]
@@ -1819,8 +1844,8 @@ async def test_denied_action_is_stamped_rejected(container) -> None:
                        target=ActionTarget(acts_on=[Ref.agent("agent-c")], claims=[Ref.agent("agent-c")]), estimated_steps=2)
     planned = [("main", a, _plan_for(a, talk, env))]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, {"agent-c"})  # noqa: SLF001
-    await rt._commit_execution(planned, arb, agents)  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, {"agent-c"})  # noqa: SLF001
+    await rt._commit_execution(planned, arb, {}, agents)  # noqa: SLF001
 
     decisions = {c_.agent_id: c_.extra for c_ in sink.llm_calls if c_.stage == Stage.DECISION.value}
     assert decisions["agent-a"] == {"verdict": "rejected"}
@@ -1845,11 +1870,11 @@ async def test_no_decision_agent_is_skipped_and_not_committed(container) -> None
     # agent-b's decision failed → plan carries action=None.
     planned = [("main", a, _plan_for(a, work, env)), ("bg", b, _plan_for(b, None, env))]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     assert "agent-a" in arb          # acted normally
     assert "agent-b" not in arb      # no decision → no arbitration entry
 
-    records = await rt._commit_execution(planned, arb, agents)  # noqa: SLF001
+    records = await rt._commit_execution(planned, arb, {}, agents)  # noqa: SLF001
     committed_ids = {r["agent_id"] for r in records}
     assert "agent-a" in committed_ids
     assert "agent-b" not in committed_ids   # skipped: no commit, no record
@@ -1911,11 +1936,11 @@ async def test_no_action_agent_is_skipped_like_no_decision(container) -> None:
     planned = [("main", a, _plan_for(a, work, env)),
                ("bg", b, _plan_for(b, None, env, decision_status=DecisionStatus.NO_ACTION))]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     assert "agent-a" in arb
     assert "agent-b" not in arb      # NO_ACTION → no arbitration entry (skipped)
 
-    records = await rt._commit_execution(planned, arb, agents)  # noqa: SLF001
+    records = await rt._commit_execution(planned, arb, {}, agents)  # noqa: SLF001
     committed_ids = {r["agent_id"] for r in records}
     assert "agent-a" in committed_ids
     assert "agent-b" not in committed_ids   # no commit, no record, zero state change
@@ -1940,9 +1965,9 @@ async def test_no_decision_agent_can_still_be_conscripted(container) -> None:
     # agent-b's decision failed (action=None) but it is co-located and gets enrolled.
     planned = [("main", a, _plan_for(a, talk, env)), ("bg", b, _plan_for(b, None, env))]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     assert arb["agent-b"].is_passive_join is True          # conscription beats no-decision
-    records = await rt._commit_execution(planned, arb, agents)  # noqa: SLF001
+    records = await rt._commit_execution(planned, arb, {}, agents)  # noqa: SLF001
     b_rec = next(r for r in records if r["agent_id"] == "agent-b")
     assert "李世民" in b_rec["outcome"]                      # joined the initiator's action
     assert b_rec["action_type"] == ActionType.TALK          # record uses the joint action's type
@@ -2238,14 +2263,14 @@ async def test_commit_execution_survives_one_agent_commit_crash(container) -> No
     work_b = AgentAction(agent_id="agent-b", step=1, action_type=ActionType.WORK,
                          action_description="批阅文书", estimated_steps=1)
     planned = [("main", a, _plan_for(a, work_a, env)), ("bg", b, _plan_for(b, work_b, env))]
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
 
     async def _boom(**kwargs):
         raise OSError("disk full")
 
     a.begin_ongoing_step = _boom  # type: ignore[method-assign]
 
-    records = await rt._commit_execution(planned, arb, agents)  # noqa: SLF001
+    records = await rt._commit_execution(planned, arb, {}, agents)  # noqa: SLF001
     assert [r["agent_id"] for r in records] == ["agent-b"]
     assert b.personality.state.action_status == ActionStatus.IN_PROGRESS
 
@@ -2339,6 +2364,7 @@ async def test_executor_complete_failure_releases_participants(container) -> Non
 
     class _FailingExecutor:
         mutates_world_during_complete = False
+        momentary = False
 
         async def complete(self, *args, **kwargs):
             raise RuntimeError("adjudication infra down")
@@ -2406,9 +2432,9 @@ async def test_conscription_joins_target_planned_before_initiator(container) -> 
         ("main", a, _plan_for(a, talk, env)),
     ]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     assert "agent-b" in arb and arb["agent-b"].is_passive_join is True
-    records = await rt._commit_execution(planned, arb, agents)  # noqa: SLF001
+    records = await rt._commit_execution(planned, arb, {}, agents)  # noqa: SLF001
     assert {r["agent_id"] for r in records} == {"agent-a", "agent-b"}
     # The join lands: B and A are both IN_PROGRESS, so B won't be scheduled for a second action next
     # step.
@@ -2452,7 +2478,7 @@ async def test_compel_takes_a_body_whose_own_action_was_admitted_earlier_this_st
         ("bg", carrier, _plan_for(carrier, carry, env)),
     ]
 
-    arb, seized = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, seized, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
 
     assert arb["agent-a"].is_passive_join is True, "他只该有入伙记录"
     move = rt._executor_registry.get_active_for_agent("agent-b")  # noqa: SLF001
@@ -2474,7 +2500,7 @@ async def test_compel_takes_a_body_whose_own_action_was_admitted_earlier_this_st
     assert joined_target.acted_on_place == "garden"
     assert [r.id for r in joined_target.claims] == ["agent-a"]
     # After commit he's IN_PROGRESS alongside the carrier and won't start a second action next step.
-    await rt._commit_execution(planned, arb, agents)  # noqa: SLF001
+    await rt._commit_execution(planned, arb, {}, agents)  # noqa: SLF001
     assert victim.personality.state.action_status == ActionStatus.IN_PROGRESS
     # The discarded intent is backfilled as usual: only the passive-join branch calls
     # defer_decided_intent. If he got his own record he'd go through begin_ongoing_step and the
@@ -2529,7 +2555,7 @@ async def test_a_seizure_tears_the_old_action_down_where_it_happened(container) 
         ("bg", carrier, _plan_for(carrier, carry, env)),
     ]
 
-    _arb, seized = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    _arb, seized, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
 
     assert env.get_body_location("agent-a") == IN_TRANSIT, "拆完之后他才被带上路"
     assert {r["agent_id"] for r in seized} == {"agent-a", "agent-c"}
@@ -2566,7 +2592,7 @@ async def test_a_rejected_move_never_sets_out(container) -> None:
     # rejected before start() runs.
     planned = [("main", carrier, _plan_for(carrier, carry, env))]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
 
     assert env.get_body_location("agent-a") == "palace", "被拒的行程不该把他留在途中"
     assert env.get_body_location("agent-b") == "palace"
@@ -2601,7 +2627,7 @@ async def test_a_conscription_is_narrated_to_bystanders_exactly_once(container) 
         ("bg", b, _plan_for(b, None, env, decision_status=DecisionStatus.NOT_SCHEDULED)),
     ]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
 
     assert arb["agent-b"].is_passive_join is True
     assert arb["agent-b"].action_result.observations == [], "入伙记录不另发旁观叙述"
@@ -2632,7 +2658,7 @@ async def test_conscription_rejects_dead_co_participant(container) -> None:
                        action_description="上前搭话", target=ActionTarget(acts_on=[Ref.agent("agent-b")], claims=[Ref.agent("agent-b")]), estimated_steps=2)
     planned = [("main", a, _plan_for(a, talk, env)), ("bg", b, _plan_for(b, None, env))]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     assert "agent-b" not in arb  # the corpse gets no arbitration entry
     a_exec = rt._executor_registry.get_active_for_agent("agent-a")  # noqa: SLF001
     assert a_exec is not None and a_exec.participant_ids == ["agent-a"]
@@ -2655,6 +2681,8 @@ async def test_executor_start_failure_skips_agent(container) -> None:
     rt = _arb_runtime(container, world_id, agents, env)
 
     class _FailingStart:
+        momentary = False
+
         def claim_bodies(self, *args, **kwargs):
             return []
 
@@ -2668,7 +2696,7 @@ async def test_executor_start_failure_skips_agent(container) -> None:
                          action_description="小憩", estimated_steps=1)
     planned = [("main", a, _plan_for(a, work_a, env)), ("bg", b, _plan_for(b, rest_b, env))]
 
-    arb, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
+    arb, _, _ = await rt._arbiter.arbitrate(planned, agents, 1, set())  # noqa: SLF001
     assert "agent-a" not in arb                      # skipped, no invented execution
     assert a.personality.state.action_status == ActionStatus.IDLE
     assert "agent-b" in arb                          # siblings unaffected
@@ -2686,6 +2714,8 @@ async def test_executor_tick_failure_skips_narrative_only(container) -> None:
     rt = _arb_runtime(container, world_id, agents, env)
 
     class _FailingTick:
+        momentary = False
+
         async def tick(self, *args, **kwargs):
             raise RuntimeError("tick infra down")
 

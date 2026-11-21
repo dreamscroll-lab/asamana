@@ -1,10 +1,10 @@
 """What the actor sees: the observer's read models filtered to one character.
 
 Every split here is one the read model already records (an event's public, shared and private
-tiers, an entity's ``is_public``, a body's public and private views); nothing decides visibility
-a second time. Of a step the character sees its own body and mind, the public side of the place
-it ends the step in, and the shared side of every event whose audience includes it; of an
-action's private parts, only its own.
+tiers, an entity's ``is_public`` and its public and private content, a body's public and private
+views); nothing decides visibility a second time. Of a step the character sees its own body and
+mind, the public side of the place it ends the step in, and the shared side of every event whose
+audience includes it; of an action's private parts, only its own.
 
 The two follow when the character perceives. What happened in the step reaches it as the next
 step begins, where it ended this one, hence the public side of that place. What arrived as this
@@ -55,7 +55,7 @@ def step_view_for(view: StepView, viewer_id: str) -> StepView:
                 scope,
                 agents=[_agent(a, viewer_id) for a in scope.agents],
                 npcs=[_npc(n) for n in scope.npcs],
-                entities=_seen_things({eid: e for eid, e in scope.entities.items() if e.is_public}),
+                entities=_public_side({eid: e for eid, e in scope.entities.items() if e.is_public}),
                 events=_seen_here(scope.events, viewer_id),
             )
             continue
@@ -164,7 +164,7 @@ def _agent(agent: AgentView, viewer_id: str) -> AgentView:
     return replace(
         agent,
         is_main_character=None,
-        public=replace(agent.public, carrying=_seen_things(agent.public.carrying)),
+        public=replace(agent.public, carrying=_public_side(agent.public.carrying)),
         private=AgentPrivateView(emotion=""),
     )
 
@@ -172,11 +172,12 @@ def _agent(agent: AgentView, viewer_id: str) -> AgentView:
 def _npc(npc: NpcView) -> NpcView:
     return replace(
         npc,
-        public=replace(npc.public, carrying=_seen_things(npc.public.carrying)),
+        public=replace(npc.public, carrying=_public_side(npc.public.carrying)),
         private=NpcPrivateView(),
     )
 
 
-def _seen_things(things: dict[str, EntityView]) -> dict[str, EntityView]:
-    """Things someone else has, or that lie about: seeing them is not reading them."""
+def _public_side(things: dict[str, EntityView]) -> dict[str, EntityView]:
+    """Things that aren't the viewer's own, as anyone present sees them: without their private
+    tier (a letter's words). Public content, a stele's inscription, stays."""
     return {eid: replace(e, private=EntityPrivateView()) for eid, e in things.items()}

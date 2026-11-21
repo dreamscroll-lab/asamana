@@ -234,7 +234,7 @@ async def test_apply_feedback_on_success_increases_trust(container: object) -> N
     trust_before = relation_before.trust_objective
 
     result = _make_action_result(succeeded=True, target_agent_id=target)
-    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion())  # noqa: SLF001
+    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion(), releases_body=True)  # noqa: SLF001
 
     relation_after = await agent.relation_system.get_or_create(target)
     assert relation_after.trust_objective > trust_before
@@ -250,12 +250,12 @@ async def test_apply_feedback_on_failure_decreases_trust_more_than_success_incre
     base_trust = relation_base.trust_objective
 
     result_success = _make_action_result(succeeded=True, target_agent_id=target)
-    await agent._apply_feedback(result=result_success, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion())  # noqa: SLF001
+    await agent._apply_feedback(result=result_success, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion(), releases_body=True)  # noqa: SLF001
     after_success = (await agent.relation_system.get_or_create(target)).trust_objective
     gain = after_success - base_trust
 
     result_failure = _make_action_result(succeeded=False, target_agent_id=target)
-    await agent._apply_feedback(result=result_failure, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion())  # noqa: SLF001
+    await agent._apply_feedback(result=result_failure, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion(), releases_body=True)  # noqa: SLF001
     after_failure = (await agent.relation_system.get_or_create(target)).trust_objective
     loss = after_success - after_failure
 
@@ -269,7 +269,7 @@ async def test_apply_feedback_with_none_dominant_need_skips_need_update(containe
     result = _make_action_result(succeeded=True)
 
     # Just assert no exception raised — need engine skips update when dominant_need is None
-    await agent._apply_feedback(result=result, dominant_need=None, emotion=_neutral_emotion())  # noqa: SLF001
+    await agent._apply_feedback(result=result, dominant_need=None, emotion=_neutral_emotion(), releases_body=True)  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -306,7 +306,7 @@ async def test_completing_goal_writes_no_separate_completed_memory(container: ob
     result = _make_action_result(succeeded=True)
 
     # Born-zero (duration-1): begin marks IN_PROGRESS with 0 remaining, finalize completes same step.
-    await agent.begin_ongoing_step(plan=plan, estimated_steps=0)
+    await agent.begin_ongoing_step(plan=plan, executed=True, estimated_steps=0)
     # Seed AFTER commit (commit writes the plan's empty goal queue): the short-term goal whose
     # progress the finalize will evaluate. Goals live on personality (single source of truth).
     agent.personality.set_short_term_goal_entities([
@@ -435,6 +435,35 @@ async def test_interrupted_goal_memory_written_once_within_one_step(container: o
     ) == 1
 
 
+_FAILED_VERDICT = '{"goals": [{"reason": "反复寻访始终无果", "index": 1, "status": "failed"}]}'
+
+
+@pytest.mark.asyncio
+async def test_failed_goals_counted_once_and_reset_by_revision(container: object) -> None:
+    """The count that brings a long-term revision forward: a goal adds one on the step it fails,
+    not again on later steps where the table only still carries it; a revision restarts it."""
+    agent = _make_llm_cognition_agent(container, goal_eval_response=_FAILED_VERDICT)
+
+    from agent.goals import GoalEntity, GoalStatus
+    from agent.need import NeedType
+    agent.personality._state.short_term_goal_entities = [  # noqa: SLF001
+        GoalEntity(id="stg-1-0", text="找到失散的兄长", goal_type="short_term",
+                   related_need=NeedType.SOCIAL, created_step=1)
+    ]
+    result = _make_action_result(succeeded=True)
+
+    await _judge_and_land_goals(agent, step=2, result=result)
+    assert agent.personality.state.short_term_goal_entities[0].status == GoalStatus.FAILED
+    assert agent.personality.state.failed_goals_since_revision == 1
+
+    await _judge_and_land_goals(agent, step=3, result=result)
+    assert agent.personality.state.failed_goals_since_revision == 1
+
+    await agent.revise_long_term_goals(step=4)
+    assert agent.personality.state.failed_goals_since_revision == 0
+    assert agent.personality.state.long_term_revised_step == 4
+
+
 _RESIDUE_VERDICT = (
     '{"goals": [{"reason": "仍在推进", "index": 1, "status": "active"}], '
     '"residue": ["我答应了要去查此事"]}'
@@ -481,7 +510,7 @@ async def test_adjudication_failure_enqueues_no_residue(container: object) -> No
     result = _make_action_result(succeeded=False)
     result.adjudication_failed = True
 
-    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1)
+    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1, releases_body=True)
 
     assert not [
         g for g in agent.personality.state.short_term_goal_entities
@@ -499,7 +528,7 @@ async def test_not_executed_enqueues_no_residue(container: object) -> None:
     result = _make_action_result(succeeded=False)
     result.not_executed = True
 
-    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1)
+    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1, releases_body=True)
 
     assert not [
         g for g in agent.personality.state.short_term_goal_entities
@@ -524,7 +553,7 @@ async def test_record_completion_isolates_slot_failure(
 
     result = _make_action_result(succeeded=True)
     # Must NOT raise despite the goal-eval slot exploding.
-    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1)
+    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1, releases_body=True)
 
     # The other slot (apply_feedback) still fully landed → the lived action memory (provisional
     # factual, synchronously inserted) is present, proving it was not cancelled mid-flight.
@@ -552,7 +581,7 @@ async def test_record_completion_skips_goal_eval_for_not_executed(
 
     result = _make_action_result(succeeded=False, relation_updates=[])
     result.not_executed = True
-    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1)
+    await agent._record_completion(result=result, dominant_need=NeedType.SOCIAL, step=1, releases_body=True)
 
     # goal-eval never ran.
     assert goal_eval_calls == []
@@ -596,6 +625,7 @@ async def test_goal_judge_runs_concurrently_with_outcome_appraisal(
     monkeypatch.setattr(agent, "_judge_goal_progress", _judge)
 
     await agent._record_completion(
+        releases_body=True,
         result=_make_action_result(succeeded=True), dominant_need=NeedType.SOCIAL, step=1,
     )
 
@@ -637,6 +667,7 @@ async def test_feedback_slot_sees_pre_action_goals_even_if_judge_returns_first(
     monkeypatch.setattr(agent, "_apply_feedback", _apply)
 
     await agent._record_completion(
+        releases_body=True,
         result=_make_action_result(succeeded=True), dominant_need=NeedType.SOCIAL, step=1,
     )
 
@@ -670,7 +701,7 @@ async def test_finalize_adjudication_failed_is_null_step(container: object) -> N
     )
 
     # Begin marks IN_PROGRESS; the adjudication-failed finalize must reset to idle (null step).
-    await agent.begin_ongoing_step(plan=plan, estimated_steps=0)
+    await agent.begin_ongoing_step(plan=plan, executed=True, estimated_steps=0)
     # Seed AFTER commit (commit writes the plan's empty goal queue).
     agent.personality.set_short_term_goal_entities([
         GoalEntity(id="stg-1-0", text="与X建立信任", goal_type="short_term",
@@ -712,7 +743,7 @@ async def test_an_act_with_no_fact_is_not_remembered(container: object, caplog) 
         succeeded=False,
         factual_memory=None,
     )
-    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion())  # noqa: SLF001
+    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion(), releases_body=True)  # noqa: SLF001
 
     assert not agent.memory_system._entries  # noqa: SLF001
     assert "action_fact_missing" in caplog.text
@@ -742,7 +773,7 @@ async def test_not_executed_is_not_persisted_but_reaches_decide(container: objec
         factual_memory="想要做：与父亲相谈，但是结果是：对方不在场",
         not_executed=True,
     )
-    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion())  # noqa: SLF001
+    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion(), releases_body=True)  # noqa: SLF001
 
     # Principles 1 + 3: not a single persistent memory was written.
     assert agent.memory_system._entries == {}
@@ -841,6 +872,7 @@ async def test_foiled_misses_counts_misses_and_clears_once_the_intent_happens(
         result.action = _foiled_action(step)
         result.not_executed = True
         await agent._record_completion(
+            releases_body=True,
             result=result, dominant_need=NeedType.SOCIAL, step=step
         )
     assert agent._foiled_misses_for(_foiled_action(3), 3) == 3
@@ -848,6 +880,7 @@ async def test_foiled_misses_counts_misses_and_clears_once_the_intent_happens(
     landed = _make_action_result(succeeded=False)   # it landed; the talk just broke down
     landed.action = _foiled_action(4)
     await agent._record_completion(
+        releases_body=True,
         result=landed, dominant_need=NeedType.SOCIAL, step=4
     )
     assert agent._foiled_misses_for(_foiled_action(4), 4) == 0
@@ -985,7 +1018,7 @@ async def test_apply_feedback_writes_factual_memory_verbatim(container: object) 
         succeeded=True,
         factual_memory="送出了报告",
     )
-    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion())  # noqa: SLF001
+    await agent._apply_feedback(result=result, dominant_need=NeedType.SOCIAL, emotion=_neutral_emotion(), releases_body=True)  # noqa: SLF001
 
     factual = [
         m for m in agent.memory_system._entries.values() if "送出了报告" in m.stored_content
@@ -1232,7 +1265,8 @@ async def test_apply_feedback_with_none_emotion_keeps_current_mood(container: ob
     agent = _make_agent(container)
     agent.personality.update_emotion(primary=EmotionType.ANGER, intensity=0.8, valence=-0.6)
 
-    await agent._apply_feedback(  # noqa: SLF001
+    await agent._apply_feedback( # noqa: SLF001
+        releases_body=True,
         result=_make_action_result(succeeded=False),
         dominant_need=NeedType.SOCIAL,
         emotion=None,
@@ -1397,7 +1431,7 @@ def test_supplement_recent_empty_recent_is_noop() -> None:
 def test_supplement_caps_are_factual_heavy() -> None:
     """Contract: the factual supplement quota exceeds experiential (the feeling stream tends to
     make decide drift)."""
-    assert _DECIDE_RECENT_FACTUAL_SUPPLEMENT_K == 5
+    assert _DECIDE_RECENT_FACTUAL_SUPPLEMENT_K == 7
     assert _DECIDE_RECENT_EXPERIENTIAL_SUPPLEMENT_K < _DECIDE_RECENT_FACTUAL_SUPPLEMENT_K
 
 
@@ -1605,3 +1639,52 @@ async def test_pressure_recent_past_brings_back_his_past_with_each_person_presen
     assert person_id == "a_yuchi" and kw["before_step"] == now and kw["stream"] is MemoryStream.FACTUAL
     assert len(lines) == 1 and lines[0].endswith("尉迟恭当众折辱了我")
     assert len(general_excludes) == 1 and len(general_excludes[0]) == 1
+
+
+@pytest.mark.asyncio
+async def test_decide_recent_supplement_leaves_out_this_steps_perceptions(container) -> None:
+    """This step's perceptions are in memory before planning, but reach decide as signals: the
+    recent supplement takes what came before them, so they never fill its floor slots."""
+    agent = _make_agent(container)
+    await agent.memory_system.record_event(
+        current_step=4, raw_content="我把奏折送到了偏殿", personality=agent.personality, importance=0.3,
+    )
+    await agent.memory_system.record_event(
+        current_step=5, raw_content="[环境观察] 殿外起了风", personality=agent.personality, importance=0.3,
+    )
+    await agent.memory_system.drain_writes()
+    spatial = _make_spatial()
+
+    context = await agent._build_internal_context(  # noqa: SLF001
+        spatial=spatial, inbox=[], broadcasts=[], current_step=5, generate_goals=False,
+    )
+
+    steps = {m.created_step for m in context.factual_memories}
+    assert 5 not in steps
+    assert 4 in steps
+
+
+@pytest.mark.asyncio
+async def test_decide_recent_supplement_keeps_three_latest_in_a_dense_window(container) -> None:
+    """Decide's factual supplement keeps its own floor of 3 latest events, even when the window
+    holds more important ones than its 7 slots."""
+    from agent.agent import _DECIDE_RECENT_FACTUAL_FLOOR
+
+    agent = _make_agent(container)
+    for step in range(1, 9):
+        await agent.memory_system.record_event(
+            current_step=step, raw_content=f"要事{step}", personality=agent.personality, importance=0.9,
+        )
+    for step in (9, 10, 11):
+        await agent.memory_system.record_event(
+            current_step=step, raw_content=f"琐事{step}", personality=agent.personality, importance=0.1,
+        )
+    await agent.memory_system.drain_writes()
+
+    context = await agent._build_internal_context(  # noqa: SLF001
+        spatial=_make_spatial(), inbox=[], broadcasts=[], current_step=12, generate_goals=False,
+    )
+
+    steps = {m.created_step for m in context.factual_memories}
+    assert _DECIDE_RECENT_FACTUAL_FLOOR == 3
+    assert {9, 10, 11} <= steps

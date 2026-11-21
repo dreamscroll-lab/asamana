@@ -17,7 +17,8 @@ from core.interfaces.perception import (
 from core.coerce import coerce_int
 from core.logging import get_logger
 from core.text import slugify
-from engine.clock import WorldTime
+from core.prompts import arrival_mark, own_arrival_mark
+from engine.clock import WorldTime, WorldTimeConfig
 from engine.space import SpaceManager
 from core.interfaces.entity import (
     ActiveErrand,
@@ -156,6 +157,26 @@ class FeasibilityResult:
     travel_seconds: int = 0
 
 
+@dataclass
+class _Body:
+    """One body in the world's space, of any kind: the single record of what it is and where it
+    stands. One record, not a table per field: parallel tables keyed by the same ids drift (a
+    body located but of no kind, or an origin left behind after landing).
+    """
+
+    kind: BodyKind
+    location_id: str
+    # The step it reached ``location_id`` (IN_TRANSIT included), so perception can tell who was
+    # here before a viewer came from who arrived after. Placing with no record (world start,
+    # restore, a snapshot without it) stamps the current step, 0 on a fresh environment: "already
+    # here", never a made-up arrival.
+    arrived_step: int
+    # Where it set out from; set only while IN_TRANSIT. A body caught in transit with no trip to
+    # carry it on after a restore (an Npc, or an agent whose execution was lost) is sent back
+    # here instead of stranded.
+    transit_origin: str | None = None
+
+
 @dataclass(frozen=True)
 class _Happening:
     """The full ``ActionResult.outcome`` of something that surfaced at a place; ``AmbientEvent``
@@ -191,18 +212,23 @@ class EnvironmentSystem:
 
     def __init__(
         self, world_config: object | None = None, *,
+        clock_config: WorldTimeConfig | None = None,
         max_entities_per_place: int = MAX_ENTITIES_PER_PLACE,
         max_npcs: int = DEFAULT_MAX_NPCS,
     ) -> None:
         self.world_config = world_config
+        # For arrival marks: how long a step is, and which step midnight falls on.
+        clock = clock_config or WorldTimeConfig()
+        self._seconds_per_step = clock.seconds_per_step
+        self._world_start_second_of_day = WorldTime.from_step(0, clock).elapsed_seconds
         self._max_entities_per_place = max_entities_per_place
         self._max_npcs = max_npcs
         self.space = SpaceManager()
         # Location is kind-agnostic: walking, transit and co-location work the same for both kinds.
-        self._locations: Dict[str, str] = {}           # body id → location_id
-        # The single source of truth for "is this an agent", written and deleted together with
-        # ``_locations``. Not in snapshots: restore re-registers every body through placement.
-        self._bodies: Dict[str, BodyKind] = {}         # body id → BodyKind
+        # Also the single source of truth for "is this an agent". Kind and location aren't in
+        # snapshots (restore re-registers every body through placement); arrival and transit
+        # origin are, in ``engine_state``.
+        self._bodies: Dict[str, _Body] = {}
         # Npc data only. Ask ``_bodies`` whether something is an Npc; the complement of this
         # table would count a third kind of body as an agent.
         self._npcs: Dict[str, "Npc"] = {}
@@ -227,9 +253,6 @@ class EnvironmentSystem:
         # the former, "what's here" of the latter.
         self._entities: Dict[str, WorldEntity] = {}    # all of them, tombstones included
         self._items: Dict[str, WorldEntity] = {}       # the ones still alive
-        # body_id → origin. A body caught in transit with no trip to carry it on after a restore
-        # (an Npc, or an agent whose execution was lost) is sent back here instead of stranded.
-        self._transit_origins: Dict[str, str] = {}
         self._current_step = 0
         self._current_world_time_label = ""
         self._current_world_time_hour = -1
@@ -241,20 +264,19 @@ class EnvironmentSystem:
         self._place_body(agent_id, location_id, BodyKind.AGENT)
 
     def _place_body(self, body_id: str, location_id: str, kind: BodyKind) -> None:
-        """Registers location and kind together."""
-        self._bodies[body_id] = kind
-        self._locations[body_id] = location_id
-        if location_id != IN_TRANSIT:
-            self._transit_origins.pop(body_id, None)
+        """Registers a body afresh: kind, location and arrival in one record."""
+        self._bodies[body_id] = _Body(kind=kind, location_id=location_id, arrived_step=self._current_step)
 
     def move_body(self, *, body_id: str, location_id: str) -> None:
-        old_location_id = self._locations.get(body_id)
-        self._locations[body_id] = location_id
-        if location_id == IN_TRANSIT:
-            if old_location_id and old_location_id != IN_TRANSIT:
-                self._transit_origins[body_id] = old_location_id
-        else:
-            self._transit_origins.pop(body_id, None)
+        body = self._bodies.get(body_id)
+        if body is None:
+            logger.warning("move_unplaced_body", extra={"body_id": body_id, "location_id": location_id})
+            return
+        if location_id == body.location_id:
+            return
+        body.transit_origin = body.location_id if location_id == IN_TRANSIT else None
+        body.location_id = location_id
+        body.arrived_step = self._current_step
 
     def remove_body(self, body_id: str) -> None:
         """Take a body out of the world's space; it no longer appears in ``spatial_for`` or
@@ -263,16 +285,51 @@ class EnvironmentSystem:
         Location only, not the roster: the dead stay in ``agents_dict`` and Npcs in ``_npcs``.
         Releasing held items is the caller's job.
         """
-        self._locations.pop(body_id, None)
         self._bodies.pop(body_id, None)
-        self._transit_origins.pop(body_id, None)
+
+    def arrived_step(self, body_id: str) -> int:
+        """The step ``body_id`` reached where it now stands; 0 when unknown."""
+        body = self._bodies.get(body_id)
+        return body.arrived_step if body is not None else 0
+
+    def arrival_seen_by(self, viewer_id: str, body_id: str, *, step: int | None = None) -> str:
+        """``body_id``'s arrival where it stands, as ``viewer_id`` standing there knows it
+        (``core.prompts.arrival_mark``)."""
+        return arrival_mark(
+            now_step=step if step is not None else self._current_step,
+            viewer_arrived=self.arrived_step(viewer_id),
+            other_arrived=self.arrived_step(body_id),
+            seconds_per_step=self._seconds_per_step,
+            world_start_second_of_day=self._world_start_second_of_day,
+        )
+
+    def own_arrival(self, body_id: str, *, step: int | None = None) -> str:
+        """``body_id``'s own arrival where it stands (``core.prompts.own_arrival_mark``); "" on
+        the road, which is no place to have arrived at."""
+        if self.get_body_location(body_id) in (IN_TRANSIT, UNPLACED):
+            return ""
+        return own_arrival_mark(
+            now_step=step if step is not None else self._current_step,
+            arrived_step=self.arrived_step(body_id),
+            seconds_per_step=self._seconds_per_step,
+            world_start_second_of_day=self._world_start_second_of_day,
+        )
 
     def transit_origin(self, body_id: str) -> str | None:
         """Return the departure location of an in-transit body, if registered."""
-        return self._transit_origins.get(body_id)
+        body = self._bodies.get(body_id)
+        return body.transit_origin if body is not None else None
+
+    def _location_of(self, body_id: str) -> str | None:
+        body = self._bodies.get(body_id)
+        return body.location_id if body is not None else None
+
+    def _kind_of(self, body_id: str) -> BodyKind | None:
+        body = self._bodies.get(body_id)
+        return body.kind if body is not None else None
 
     def get_body_location(self, body_id: str) -> str:
-        return self._locations.get(body_id, UNPLACED)
+        return self._location_of(body_id) or UNPLACED
 
     def body_locations(self, body_ids: Iterable[str]) -> dict[str, str]:
         """Where each of these bodies is, for an author's read-only view. An unplaced body has no
@@ -338,7 +395,7 @@ class EnvironmentSystem:
         npc = self._npcs.get(order.npc_id)
         if npc is None or npc.errand is not None or npc.condition is not None:
             return False
-        origin = self._locations.get(requester_id, "")
+        origin = self._location_of(requester_id) or ""
         if not origin or origin in (IN_TRANSIT, UNPLACED):
             return False
         npc.errand = ActiveErrand(
@@ -413,7 +470,7 @@ class EnvironmentSystem:
         return [self._npcs[nid] for nid in sorted(self._npcs)]
 
     def bodies_at(self, location_id: str) -> List[str]:
-        """Every body standing here, sorted by id, derived from ``_locations`` (places must not
+        """Every body standing here, sorted by id, derived from ``_bodies`` (places must not
         keep their own presence list). Pseudo-locations are always empty.
 
         Don't use it as "the people present": ask ``agents_at`` / ``npcs_at``. Using it to
@@ -421,7 +478,7 @@ class EnvironmentSystem:
         """
         if location_id in (IN_TRANSIT, UNPLACED):
             return []
-        return sorted(bid for bid, loc in self._locations.items() if loc == location_id)
+        return sorted(bid for bid, body in self._bodies.items() if body.location_id == location_id)
 
     def has_cognition(self, body_id: str) -> bool:
         """The single positive cognition test: ``is AGENT``, not "is not an Npc" (a complement
@@ -430,11 +487,11 @@ class EnvironmentSystem:
         Unrecognized ids (dead, unplaced, not a body) never have cognition: writing one record
         less beats a record pointing at nothing.
         """
-        return self._bodies.get(body_id) is BodyKind.AGENT
+        return self._kind_of(body_id) is BodyKind.AGENT
 
     def is_npc(self, body_id: str) -> bool:
         """Positive ``is NPC`` test; not ``not has_cognition``, for the same reason."""
-        return self._bodies.get(body_id) is BodyKind.NPC
+        return self._kind_of(body_id) is BodyKind.NPC
 
     def agents_at(self, location_id: str) -> List[str]:
         """The ids standing here that have cognition, in presence order. Use this for "can anyone
@@ -593,7 +650,7 @@ class EnvironmentSystem:
         if change.perception:
             scope = (
                 change.perception_scope
-                or (doer_id and self._locations.get(doer_id))
+                or (doer_id and self._location_of(doer_id))
                 or prior_location
                 or ""
             )
@@ -663,7 +720,7 @@ class EnvironmentSystem:
         return [
             e for e in self._items.values()
             if e.location_id == location_id
-            or (e.owner_id is not None and self._locations.get(e.owner_id) == location_id)
+            or (e.owner_id is not None and self._location_of(e.owner_id) == location_id)
         ]
 
     def find_item(self, item_id_or_name: str, location_id: str | None = None) -> WorldEntity | None:
@@ -675,7 +732,7 @@ class EnvironmentSystem:
             if entity.name == item_id_or_name:
                 if location_id is None or entity.location_id == location_id or (
                     entity.owner_id is not None
-                    and self._locations.get(entity.owner_id) == location_id
+                    and self._location_of(entity.owner_id) == location_id
                 ):
                     return entity
         return None
@@ -718,7 +775,7 @@ class EnvironmentSystem:
         if entity.owner_id == agent_id:
             return FeasibilityResult(ok=True, reason="", resolved_id=entity.entity_id)
         here = (
-            self._locations.get(entity.owner_id) == agent_loc and agent_loc != IN_TRANSIT
+            self._location_of(entity.owner_id) == agent_loc and agent_loc != IN_TRANSIT
             if entity.owner_id is not None
             else entity.location_id == agent_loc
         )
@@ -888,7 +945,7 @@ class EnvironmentSystem:
         the bare id. ``IN_TRANSIT`` is handled here, not by callers, so the wording lives in
         one place."""
         if location_id == IN_TRANSIT:
-            return LocationView(name="赶路途中", description="正在两地之间的路途上。")
+            return LocationView(name="赶路途中", description="正在两地之间的路途上")
         # Unknown places fall back to True: "not open to the public" is a claim about a real
         # place, and saying an unknown place has restricted access would invent a fact.
         return self.space.view_of(location_id) or LocationView(name="某地", is_public=True)
@@ -901,7 +958,7 @@ class EnvironmentSystem:
         world_time: str | None = None,
     ) -> SpatialPerception:
         """Build location-based perception for one agent."""
-        location_id = self._locations.get(agent_id, UNPLACED)
+        location_id = self.get_body_location(agent_id)
 
         # Travelers don't share a room: they can't see each other or hear location ambient.
         if location_id == IN_TRANSIT:
@@ -966,6 +1023,7 @@ class EnvironmentSystem:
             world_time_label=world_time or self._current_world_time_label,
             current_step=step if step is not None else self._current_step,
             world_time_hour=self._current_world_time_hour,
+            arrival=self.own_arrival(agent_id, step=step),
             visible_agents=visible_agents,
             visible_npcs=visible_npcs,
             visible_entities=visible_entities,
@@ -982,7 +1040,7 @@ class EnvironmentSystem:
             "npcs": {
                 nid: {
                     **_npc_payload(npc),
-                    "location_id": self._locations.get(nid, ""),
+                    "location_id": self._location_of(nid) or "",
                     "displaced": nid in self._npc_displaced,
                     # This beat's one line, written by its runner; None when nothing happened.
                     "outcome": (
@@ -1013,9 +1071,14 @@ class EnvironmentSystem:
         }
 
     def engine_state(self) -> dict[str, object]:
-        """What only resuming needs: where travelers set out from, and the ambient annotations."""
+        """What only resuming needs: where travelers set out from, when each body arrived
+        where it stands, and the ambient annotations."""
         return {
-            "transit_origins": dict(sorted(self._transit_origins.items())),
+            "transit_origins": {
+                bid: body.transit_origin for bid, body in sorted(self._bodies.items())
+                if body.transit_origin
+            },
+            "arrived_steps": {bid: body.arrived_step for bid, body in sorted(self._bodies.items())},
             # What was perceived at each place this step.
             "step_annotations": {
                 scope: list(entries) for scope, entries in sorted(self._step_annotations.items())
@@ -1047,7 +1110,8 @@ class EnvironmentSystem:
 
         The caller rebuilds places and agent placement; this restores entity state (re-registering
         runtime-made ones, re-killing tombstoned seeds), ``transit_origins`` (so the caller can
-        send back a body left in transit with no trip), next step's carried observations, the
+        send back a body left in transit with no trip), each placed body's ``arrived_step``,
+        next step's carried observations, the
         happenings a lurker may still catch, and Npcs whole, position included.
         """
         carry = engine.get("carry_annotations")
@@ -1068,11 +1132,11 @@ class EnvironmentSystem:
                 ]
                 for location_id, bucket in happenings.items() if isinstance(bucket, list)
             }
-        transit_origins = engine.get("transit_origins")
-        if isinstance(transit_origins, Mapping):
-            self._transit_origins = {
-                str(agent_id): str(origin) for agent_id, origin in transit_origins.items()
-            }
+        raw_origins = engine.get("transit_origins")
+        transit_origins = (
+            {str(bid): str(origin) for bid, origin in raw_origins.items() if origin}
+            if isinstance(raw_origins, Mapping) else {}
+        )
         for npc_id, payload in (npcs.items() if isinstance(npcs, Mapping) else ()):
             if not isinstance(payload, Mapping):
                 continue
@@ -1083,9 +1147,17 @@ class EnvironmentSystem:
                 self._place_body(npc_id, where, BodyKind.NPC)
             else:
                 # Restore can't put it back mid-road: back to the origin, errand resumes.
-                origin = self._transit_origins.get(npc_id, "")
+                origin = transit_origins.get(npc_id, "")
                 if origin:
                     self._place_body(npc_id, origin, BodyKind.NPC)
+        # After every placement, the caller's and the Npcs' above: placing starts a fresh record.
+        raw_arrived = engine.get("arrived_steps")
+        arrived_steps = raw_arrived if isinstance(raw_arrived, Mapping) else {}
+        for body_id, body in self._bodies.items():
+            if body.location_id == IN_TRANSIT:
+                body.transit_origin = transit_origins.get(body_id)
+            if body_id in arrived_steps:
+                body.arrived_step = coerce_int(arrived_steps[body_id], default=0)
         # A malformed snapshot restores nothing rather than failing the whole world's restore.
         for entity_id, payload in (entities.items() if isinstance(entities, Mapping) else ()):
             if not isinstance(payload, Mapping):

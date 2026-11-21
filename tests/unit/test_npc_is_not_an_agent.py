@@ -66,8 +66,8 @@ def test_it_never_enters_the_roster_the_whole_cognition_loop_runs_on() -> None:
 
     agents: dict[str, object] = {"a1": object()}
     assert npc_id not in agents
-    # The location table is shared (a body is a body), but "who is an Npc" has its own lookup table.
-    assert npc_id in env._locations                       # noqa: SLF001
+    # The body table is shared (a body is a body), but "who is an Npc" has its own lookup table.
+    assert npc_id in env._bodies                          # noqa: SLF001
     assert env.get_npc("a1") is None
 
 
@@ -98,7 +98,8 @@ def test_binding_never_puts_one_where_arbitration_would_look_for_an_agent() -> N
         payload={"errand_npc_index": 1, "errand_destination_index": 1},
         packet=_packet(),
         visible_ids=[], roster_ids=[], reachable_ids=["gate"],
-        entity_ids=[], entity_types={}, entity_holders={}, npc_ids=["npc_x"], own_item_ids=[],
+        entity_ids=[], entity_types={}, entity_holders={}, npc_ids=["npc_x"], npc_start=1,
+        own_item_ids=[],
     )
     bound = _bind_errand(slots)
     assert bound is not None
@@ -120,14 +121,14 @@ def test_the_thing_it_carries_is_numbered_off_the_list_that_was_printed() -> Non
     def _bind(index: int):
         return _bind_errand(_Slots(
             payload={
-                "errand_npc_index": 1, "errand_destination_index": 1,
+                "errand_npc_index": 2, "errand_destination_index": 1,
                 "errand_item_index": index, "errand_recipient_index": 1,
             },
             packet=_packet(),
             visible_ids=[], roster_ids=["a2"], reachable_ids=["gate"],
             # Three items in the printed list; only the second is in my hand.
             entity_ids=["floor_lamp", "my_letter", "his_seal"],
-            entity_types={}, entity_holders={}, npc_ids=["npc_x"], own_item_ids=["my_letter"],
+            entity_types={}, entity_holders={}, npc_ids=["npc_x"], npc_start=2, own_item_ids=["my_letter"],
         ))
 
     bound = _bind(2)                      # the second printed item = the letter in my hand
@@ -420,14 +421,10 @@ def test_every_read_of_a_body_kind_is_a_positive_one() -> None:
     _ast, _, functions = _environment_functions()
 
     def _reads_kind(node) -> bool:
-        # self._bodies.get(x) / self._bodies[x]
-        target = node.func.value if isinstance(node, _ast.Call) and isinstance(
-            node.func, _ast.Attribute
-        ) else getattr(node, "value", None)
-        return (
-            isinstance(target, _ast.Attribute) and target.attr == "_bodies"
-            and isinstance(target.value, _ast.Name) and target.value.id == "self"
-        )
+        # self._kind_of(x) / <body>.kind
+        if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Attribute):
+            return node.func.attr == "_kind_of"
+        return isinstance(node, _ast.Attribute) and node.attr == "kind"
 
     offenders = [
         func.name
@@ -478,7 +475,7 @@ def test_the_npc_roster_holds_exactly_the_bodies_registered_as_npcs() -> None:
 
     def _invariant() -> None:
         from core.interfaces.entity import BodyKind
-        kinded = {bid for bid, kind in env._bodies.items() if kind is BodyKind.NPC}
+        kinded = {bid for bid, body in env._bodies.items() if body.kind is BodyKind.NPC}
         assert set(env._npcs) == kinded, (set(env._npcs), kinded)
 
     _invariant()
@@ -486,7 +483,7 @@ def test_the_npc_roster_holds_exactly_the_bodies_registered_as_npcs() -> None:
     restored = _env()
     restore(restored, saved(env))
     from core.interfaces.entity import BodyKind
-    assert {bid for bid, k in restored._bodies.items() if k is BodyKind.NPC} == set(restored._npcs)
+    assert {bid for bid, b in restored._bodies.items() if b.kind is BodyKind.NPC} == set(restored._npcs)
     assert set(restored._npcs) == set(env._npcs), "还原过来的名册要一样"
 
 
@@ -561,8 +558,8 @@ def test_a_word_with_no_audience_is_not_shouted_but_kept_as_the_briefing() -> No
     """Spoken words need listeners, via the same two channels as SEND_MESSAGE: a named recipient,
     or errand_announce.
 
-    With neither, the words are the instructions given when sending the errand, so they go into
-    action_description, not ``ErrandOrder``. Don't infer a public shout from an empty recipient: the
+    With neither, the words are the instructions given when sending the errand, so they become
+    ``ErrandOrder.brief``, never ``message``. Don't infer a public shout from an empty recipient: the
     sender can't see who's at the destination, and the briefing often must stay private. The flag
     is consumed in decide; downstream, a message always has a real listener.
     """
@@ -570,24 +567,29 @@ def test_a_word_with_no_audience_is_not_shouted_but_kept_as_the_briefing() -> No
 
     def _bind(**extra):
         return _bind_errand(_Slots(
-            payload={"errand_npc_index": 1, "errand_destination_index": 1, **extra},
+            payload={"errand_npc_index": 2, "errand_destination_index": 1, **extra},
             packet=_packet(),
             visible_ids=[], roster_ids=["a2"], reachable_ids=["gate"],
-            entity_ids=[], entity_types={}, entity_holders={}, npc_ids=["npc_x"], own_item_ids=[],
+            entity_ids=[], entity_types={}, entity_holders={}, npc_ids=["npc_x"], npc_start=2,
+            own_item_ids=[],
         ))
 
-    # No listener: the words aren't spoken, but they don't vanish either; they go into the
-    # description
+    # No listener: the words aren't spoken, but they don't vanish either; they become the brief
     briefing = _bind(errand_message="你去东宫外头转一圈，回来报我")
     assert briefing.errand.message == ""
-    assert briefing.description_suffix == "（我向他指派任务：你去东宫外头转一圈，回来报我）"
+    assert briefing.errand.brief == "你去东宫外头转一圈，回来报我"
+    assert briefing.description_suffix == "（我指派任务时交代：你去东宫外头转一圈，回来报我）"
+    # Stored as written; only where it is embedded does its closing mark go
+    ended = _bind(errand_message="你去东宫看看。")
+    assert ended.errand.brief == "你去东宫看看。"
+    assert ended.description_suffix == "（我指派任务时交代：你去东宫看看）"
 
     # A named recipient: said only to him
     direct = _bind(errand_recipient_index=1, errand_message="殿下召见")
     assert (direct.errand.message, direct.errand.recipient_id) == ("殿下召见", "a2")
-    assert direct.description_suffix == ""
+    assert direct.description_suffix == "" and direct.errand.brief == ""
 
     # Declared public: announced aloud, no recipient needed
     public = _bind(errand_announce=True, errand_message="城门今夜不开")
     assert (public.errand.message, public.errand.recipient_id) == ("城门今夜不开", "")
-    assert public.description_suffix == ""
+    assert public.description_suffix == "" and public.errand.brief == ""

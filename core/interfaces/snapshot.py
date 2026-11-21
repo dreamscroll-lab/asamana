@@ -49,8 +49,14 @@ class AgentState:
     # Others' acts landed on him since he last perceived (StateLayer.acted_upon).
     acted_upon: list[str] = field(default_factory=list)
     long_term_goal_entities: list[dict[str, object]] = field(default_factory=list)
+    # When the next long-term revision is due (StateLayer.long_term_revised_step).
+    long_term_revised_step: int = 0
+    failed_goals_since_revision: int = 0
     # The memory id counter. Restarted, it would hand out ids already in use and overwrite memories.
     memory_seq: int = 0
+    # Errand reports that reached him while he wasn't deciding, as ``dataclasses.asdict``
+    # Messages (Agent.pending_errand_reports). Lost, he would never see what the runner brought back.
+    pending_errand_reports: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass

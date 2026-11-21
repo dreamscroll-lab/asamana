@@ -101,7 +101,7 @@ def stage_sort_key(stage_value: str) -> int:
 # Plain strings, not ``LLMScene``: importing it would be a cycle. A test pins each to a real scene.
 BUILD_SCENE_ORDER: tuple[str, ...] = (
     "world_template_selection",
-    "world_building",       # theme analysis
+    "world_building",       # sub-place generation, then theme analysis (one scene; extra.builder tells them apart)
     "cast_design",
     "persona_generation",   # agent generation
     "need_goal_generation",  # initializer: needs + opening goals

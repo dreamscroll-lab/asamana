@@ -58,6 +58,8 @@ def encode_agent_state(world_id: str, agent_id: str, state: StateLayer) -> Agent
         last_decision_step=state.last_decision_step,
         acted_upon=list(state.acted_upon),
         long_term_goal_entities=[_goal_entity_to_dict(g) for g in state.long_term_goal_entities],
+        long_term_revised_step=state.long_term_revised_step,
+        failed_goals_since_revision=state.failed_goals_since_revision,
     )
 
 
@@ -120,6 +122,8 @@ def decode_agent_state(agent_id: str, stored: AgentState, *, orphaned: bool) -> 
         # decision loop next step (the cadence gate is bypassed for a beat).
         last_decision_step=stored.last_decision_step,
         acted_upon=list(stored.acted_upon),
+        long_term_revised_step=stored.long_term_revised_step,
+        failed_goals_since_revision=stored.failed_goals_since_revision,
     )
 
 

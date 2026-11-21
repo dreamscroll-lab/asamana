@@ -189,14 +189,14 @@ def test_the_delivery_rules_survive_a_snapshot_round_trip() -> None:
     import json
 
     from core.serialization import dump_json
-    from providers.snapshot.file import _message_from_dict
+    from core.interfaces.message import message_from_dict
 
     original = Message(
         id="m1", world_id="w1", sender_id="mouth", content="城门今夜不开",
         recipients=None, location_scope="loc_a", deliver_step=3, created_step=2,
         sender_name="王二", sender_is_agent=False, doer_ids=("mouth", "a2"),
     )
-    restored = _message_from_dict(json.loads(dump_json(dataclasses.asdict(original))))
+    restored = message_from_dict(json.loads(dump_json(dataclasses.asdict(original))))
     assert restored.doer_ids == ("mouth", "a2")
     assert restored.sender_is_agent is False
 

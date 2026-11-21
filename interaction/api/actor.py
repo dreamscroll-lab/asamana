@@ -204,7 +204,7 @@ def build_actor_router(services: ApiServices) -> Any:
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         meta = await manager.get_world(world_id)
-        return {**to_wire_json(meta), "run_state": services.run_state(world_id)}
+        return services.world_payload(meta)
 
     return router
 

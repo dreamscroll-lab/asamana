@@ -37,9 +37,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.interfaces.urgency import Urgency
+from core.interfaces.urgency import Urgency, parse_urgency
 
 ANONYMOUS_SENDER_NAME = "匿名"
+# ``metadata["source"]`` of an errand-runner's report to whoever sent him; its ``metadata["spoken"]``
+# is what he said, the rest is the scene he brought back.
+ERRAND_REPORT_SOURCE = "errand_report"
 
 
 @dataclass
@@ -87,6 +90,38 @@ class Message:
     sender_is_agent: bool = True           # False = sender has no cognition; receivers form no relation with it
     doer_ids: tuple[str, ...] = ()        # all members of the acting body, excluded from delivery; sender always excluded
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def message_from_dict(data: dict) -> Message:
+    """Deserialize a Message stored as ``dataclasses.asdict`` JSON (snapshots).
+
+    Delivery is determined by recipients + location_scope + deliver_step; urgency is parsed
+    leniently via parse_urgency.
+    """
+    return Message(
+        id=str(data["id"]),
+        world_id=str(data["world_id"]),
+        sender_id=str(data["sender_id"]),
+        content=str(data["content"]),
+        recipients=list(data["recipients"]) if data.get("recipients") is not None else None,
+        location_scope=(
+            str(data["location_scope"])
+            if data.get("location_scope") is not None
+            else None
+        ),
+        deliver_step=int(data["deliver_step"]),
+        created_step=int(data["created_step"]),
+        sender_name=str(data.get("sender_name", "")),
+        anonymous=bool(data["anonymous"]),
+        intent=str(data.get("intent", "")),
+        urgency=parse_urgency(data.get("urgency")),
+        # Dropping either field changes delivery after a restore: a mindless body would be
+        # treated as a person who forms relations, and execution members would receive their own
+        # act again.
+        sender_is_agent=bool(data.get("sender_is_agent", True)),
+        doer_ids=tuple(data.get("doer_ids") or ()),
+        metadata=dict(data.get("metadata", {})),
+    )
 
 
 class MessageProvider(ABC):

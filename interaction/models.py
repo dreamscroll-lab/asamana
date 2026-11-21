@@ -12,6 +12,7 @@ from agent.personality import AgentActivityStatus, EmotionType
 from core.coerce import (
     coerce_datetime,
     coerce_dict,
+    coerce_enum,
     coerce_int,
     coerce_list,
     coerce_optional_bool,
@@ -26,7 +27,7 @@ from core.interfaces.snapshot import WorldSnapshot
 from engine.environment import IN_TRANSIT
 from world.catalog import WorldCatalog
 from world.models import AgentDefinition
-from core.interfaces.entity import EntityPresence
+from core.interfaces.entity import EntityPresence, WorldEntityType, content_is_public
 from world.setup import WorldSetup
 from world.identity_color import MINDLESS_BODY_COLOR
 
@@ -110,11 +111,16 @@ class NpcIdentity:
 
 @dataclass(frozen=True)
 class PlaceIdentity:
-    """A place's public identity, fixed at build and identical for every viewer."""
+    """A place's public identity, fixed at build and identical for every viewer.
+
+    ``sub_places``: the names of its sub-places (``core.interfaces.place.SubPlace``), from the
+    world's setup; fixed with it at confirmation.
+    """
 
     location_id: str
     name: str
     description: str
+    sub_places: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -145,6 +151,14 @@ class WorldGraph:
 
     nodes: list[GraphNode] = field(default_factory=list)
     edges: list[GraphEdge] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SubPlaceSetupView:
+    """One sub-place of a world's setup (``SubPlace``): a named spot of the place ``location_id``."""
+
+    location_id: str
+    name: str
 
 
 @dataclass(frozen=True)
@@ -291,6 +305,7 @@ class SetupView:
     npcs: list[NpcSetupView] = field(default_factory=list)
     historical_events: list[SetupHistoricalEventView] = field(default_factory=list)
     relations: list[SetupRelationView] = field(default_factory=list)
+    sub_places: list[SubPlaceSetupView] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -554,7 +569,8 @@ class ActionSummary:
     affected_entity_ids: list[str] = field(default_factory=list)
     # Accepted creations by this beat; a subset of affected_entity_ids, never inferred from age.
     created_entity_ids: list[str] = field(default_factory=list)
-    # Listeners the initiator named, standing there: party to none of it, so kept out of
+    # Who actually heard it, as against the listeners ``target.reaches`` names: those still
+    # there when it ended whose hearing of it landed. Party to none of it, so kept out of
     # participant_ids (they spent no turn on it).
     overheard_by: list[str] = field(default_factory=list)
     # Who cut it short (phase="interrupt"); "" when nobody inside chose to stop.
@@ -655,7 +671,8 @@ ScopeEvent = ActionSummary | ObservationSummary | MessageSummary | BroadcastSumm
 @dataclass(frozen=True)
 class EntityPrivateView:
     """What only whoever holds a thing can read: the words in a letter, the figures in a ledger.
-    Seeing a thing is not reading it."""
+    Seeing a thing is not reading it. Words that are public sit in ``EntityView.content``
+    instead; one thing's content is in exactly one of the two."""
 
     content: str = ""
 
@@ -669,6 +686,10 @@ class EntityView:
     it in ``affected_entity_ids``. ``is_public`` says whether someone in its presence can
     perceive it.
 
+    ``content`` is what it carries when everyone present can read it, a stele's inscription or a
+    notice (``core.interfaces.entity.content_is_public``); a letter's words are its holder's and
+    sit in ``private.content``.
+
     ``created_step`` is the step it came into the world on. A client can't derive it by
     diffing entity tables: it lacks the step before the earliest one it holds.
     """
@@ -679,6 +700,7 @@ class EntityView:
     description: str = ""
     is_public: bool = True
     created_step: int = 0
+    content: str = ""
     private: EntityPrivateView = field(default_factory=lambda: EntityPrivateView())
 
 
@@ -1111,9 +1133,13 @@ class _StepAssembler:
         held: dict[str, dict[str, EntityView]] = {}
         for entity_id, raw in sorted(self._state.entities.items()):
             payload = coerce_dict(raw)
-            presence = str(payload.get("presence") or "")
-            if presence == EntityPresence.DESTROYED.value:
+            presence = coerce_enum(EntityPresence, payload.get("presence"), default=EntityPresence.AT_LOCATION)
+            if presence is EntityPresence.DESTROYED:
                 continue
+            content = str(payload.get("content") or "")
+            public = content_is_public(
+                presence, coerce_enum(WorldEntityType, payload.get("entity_type"), default=WorldEntityType.ITEM),
+            )
             view = EntityView(
                 name=str(payload.get("name") or ""),
                 entity_type=str(payload.get("entity_type") or ""),
@@ -1121,10 +1147,11 @@ class _StepAssembler:
                 description=str(payload.get("description") or ""),
                 is_public=bool(payload.get("is_public", True)),
                 created_step=coerce_int(payload.get("created_step"), default=0),
-                private=EntityPrivateView(content=str(payload.get("content") or "")),
+                content=content if public else "",
+                private=EntityPrivateView(content="" if public else content),
             )
             ref = str(payload.get("presence_ref") or "")
-            bucket = held if presence == EntityPresence.HELD.value else located
+            bucket = held if presence is EntityPresence.HELD else located
             bucket.setdefault(ref, {})[str(entity_id)] = view
         return located, held
 

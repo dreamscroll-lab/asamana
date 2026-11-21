@@ -727,7 +727,7 @@ def _other_talks_to_hero(other, *, talk_topic: str = "") -> None:
 
     talk = json.dumps({
         "selected_index": _TALK_INDEX, "person_indices": [1], "action_description": "找二郎说话。",
-        "inner_monologue": "有事相商。", "estimated_steps": 1,
+        "inner_monologue": "有事相商。", "estimated_hours": 1,
         **({"talk_topic": talk_topic} if talk_topic else {}),
     })
     other.decision_engine._llm_router = LLMRouter(  # noqa: SLF001
@@ -810,10 +810,9 @@ async def test_an_act_that_fails_to_start_is_told_and_the_actor_is_asked_again(c
     executor.start = _broken  # type: ignore[method-assign]
     await _step_answering(runtime, agents, ActorDecision(action=_work()))
 
-    acts = [e for e in await _thread(container, runtime, world_id) if e["kind"] in ("began", "ended")]
-    assert [(e["kind"], e.get("fact"), e.get("happened")) for e in acts] == [
-        ("began", None, None), ("ended", "", False),
-    ]
+    # It never began, so it is told in one entry, not as a begin and an end.
+    acts = [e for e in await _thread(container, runtime, world_id) if e["kind"] in ("began", "ended", "acted")]
+    assert [(e["kind"], e.get("fact"), e.get("happened")) for e in acts] == [("acted", "", False)]
     # Free again: even at this pace it is asked what next, not left waiting on the lost act.
     runtime.set_actor_pace(ActorPace.WHEN_REACHED)
     _result, turns = await _step_answering(runtime, agents, _IDLE)

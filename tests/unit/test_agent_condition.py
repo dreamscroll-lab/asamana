@@ -227,6 +227,7 @@ async def test_a_condition_can_land_on_the_doer_himself(container) -> None:
     doesn't go through a target; only the doer's own axis can carry it."""
     agent = _make_agent(container)
     await agent._apply_feedback(
+        releases_body=True,
         result=_own_result(doer_condition_set=BOUND), dominant_need=None, emotion=None,
     )
     assert agent.personality.state.condition == BOUND
@@ -239,6 +240,7 @@ async def test_the_doer_can_free_himself(container) -> None:
     agent = _make_agent(container)
     agent.personality.set_condition(BOUND)
     await agent._apply_feedback(
+        releases_body=True,
         result=_own_result(doer_condition_cleared=True), dominant_need=None, emotion=None,
     )
     assert agent.personality.state.condition is None
@@ -250,7 +252,7 @@ async def test_an_ordinary_action_leaves_the_doers_condition_alone(container) ->
     write as "not given means clear"."""
     agent = _make_agent(container)
     agent.personality.set_condition(BOUND)
-    await agent._apply_feedback(result=_own_result(), dominant_need=None, emotion=None)
+    await agent._apply_feedback(result=_own_result(), dominant_need=None, emotion=None, releases_body=True)
     assert agent.personality.state.condition == BOUND
 
 

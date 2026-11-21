@@ -83,8 +83,10 @@ _SETUP = {
     "npc_seeds": [
         {"npc_id": "npc_1", "name": "营门卒", "gender": "男", "age": 28,
          "location": "north_camp", "description": "守营门，认符不认人"}],
+    "sub_places": [{"location_id": "north_camp", "name": "辕门"}],
 }
-_WORLD_CONFIG = {"places": {"north_camp": {"place_id": "north_camp", "name": "北营"}}}
+_WORLD_CONFIG = {"places": {"north_camp": {"place_id": "north_camp", "name": "北营"},
+                            "west_field": {"place_id": "west_field", "name": "城西空地"}}}
 
 
 def _view(trace_dir: str, steps: list[int] | None = None, setup: dict | None = None) -> WorldAuditView:
@@ -205,6 +207,14 @@ def test_init_is_the_confirmed_world_not_the_build_s_raw_output(trace_dir: str) 
     assert "（主角）长　30岁　男　在 北营" in block
     assert "north_camp" not in block and "agent-x" not in block
     assert view.init["seconds_per_step"] == 7200
+
+
+def test_init_lists_every_place_on_the_map_not_only_those_with_sub_places(trace_dir: str) -> None:
+    """The judge reads the place list as every place there is. A place without sub-places left out
+    of it makes whatever starts there look placed somewhere invented."""
+    block = init_block(_view(trace_dir))
+    assert "- 北营" in block and "子地点：辕门" in block
+    assert "- 城西空地" in block
 
 
 def test_init_prompt_lists_history_oldest_first_and_shows_only_the_opening_s_scales(
@@ -417,7 +427,7 @@ def test_a_conscripted_step_drops_the_intent_and_keeps_what_actually_happened() 
     assert "decision" not in s and "short_term_goals" not in s   # intents and goals that never happened aren't injected
     assert s["intent_dropped"] == "conscripted"
     assert s["joined"] == ["乙来找我谈"]
-    assert s["results"] == [{"fact": "乙拉着我谈了半天", "success": False}]
+    assert s["results"] == [{"joined": "乙来找我谈", "fact": "乙拉着我谈了半天", "success": False}]
     assert s["appraisal"][0]["emotion"] == "frustration"
 
     block = "\n".join(_step_lines(AgentStepView(step=1, world_time="t", summary=s),
@@ -665,6 +675,333 @@ def test_the_words_actually_sent_are_an_input_to_the_action() -> None:
     assert "决策｜原话" not in block and "原话" not in block.split("\n")[0]
     assert "  行动｜输入：原话:速来" in block
     assert "      · 做什么：遣人送信给乙｜原话:速来" in "\n".join(_mams_lines("甲", s, sps=3600))
+
+
+def _letter_beside_a_talk(*more):
+    """He sends a letter and, the same step, is invited into a talk. The letter has no executor
+    call; its result comes only through feedback. The talk's subjective memory arrives ahead of the
+    talk's feedback: memory prose is written through a queue, so only its id says whose it is."""
+    letter, talk = "send_message_甲_1_000001", "talk_乙_1_000002"
+    memory = _call("memory", "memory_summarization", extra={"execution_id": talk})
+    memory.output = "乙越问越近，我心里发紧。"
+    return _sum([
+        _call("decision", out={"selected_index": 1, "action_description": "遣人送信给丙",
+                               "message_content": "速来"},
+              extra={"action_menu": {"1": "SEND_MESSAGE"}, "verdict": "executed"}),
+        _call("action", "agent_action_narration", {"fact": "乙问起旧事，我搪塞了过去", "success": True},
+              {"talk_role": "addressee", "conscripted_input": "乙来找我谈", "execution_id": talk,
+               "action_description": "我去问甲旧事", "action_initiator": "乙",
+               "action_participants": ["乙", "甲"]}),
+        _call("feedback", out={"emotion": "fear", "intensity": 0.5, "valence": -0.4},
+              extra={"execution_id": letter, "feedback_action_desc": "遣人送信给丙",
+                     "feedback_action_success": True, "feedback_action_actual": "我把信送了出去"}),
+        _call("feedback", "need_goal_generation", {"goals": [{"index": 1, "status": "completed"}]},
+              {"execution_id": letter, "goal_texts": {"1": "叫丙速来"}}),
+        memory,
+        _call("feedback", out={"emotion": "trust", "intensity": 0.4, "valence": 0.2},
+              extra={"execution_id": talk, "feedback_action_desc": "应乙的邀请交谈",
+                     "feedback_action_actual": "乙问起旧事，我搪塞了过去"}),
+        _call("feedback", "need_goal_generation", {"goals": [{"index": 1, "status": "failed"}]},
+              {"execution_id": talk, "goal_texts": {"1": "瞒住旧事"}, "residue": "我要盯住乙"}),
+        *more,
+    ])
+
+
+def test_sams_lays_out_a_letter_and_a_talk_as_two_whole_acts() -> None:
+    """Each act reads as one group, in the order the acts landed: what it was (and who drew him in),
+    its result, his reaction, the goals it moved, the matters it left, his memory of it. The
+    letter's words stay on the letter: on the talk they would read as said in the talk. The second
+    reaction starts from the first's mood, not from the perception's."""
+    from tuning.judge_audit import _action_lines
+
+    from tuning.judge_audit import _acts
+
+    s = _letter_beside_a_talk()
+    # The talk's own result is in already; its feedback adds nothing, the letter's adds the letter.
+    assert [r.get("fact") for r in s["results"]] == ["乙问起旧事，我搪塞了过去", "我把信送了出去"]
+    # The memory and the open matter belong to the talk by id; trailing the last group by position
+    # alone would look the same on the page.
+    (letter_act, talk_act), unclaimed = _acts(s)
+    assert talk_act.memories == ["乙越问越近，我心里发紧。"] and talk_act.residue == ["我要盯住乙"]
+    assert not letter_act.memories and not unclaimed.memories and not unclaimed.residue
+    assert _action_lines(s, "甲") == [
+        "  （这一步他身上落了 2 件事，按落地先后各成一组：每组是那件事本身、他对它的反应、它推动的目标与留下的记忆）",
+        "  ┈┈ 其1 ┈┈",
+        "  行动｜输入：遣人送信给丙｜原话:速来",
+        "  行动｜输出(结果)：[成功]",
+        "    记忆(己方)：我把信送了出去",
+        "  反馈｜输出：情绪 fear(强度0.5,情绪正负值-0.4)",
+        "  目标进展：「叫丙速来」→已完成",
+        "  ┈┈ 其2 ┈┈",
+        "  行动｜被邀入：乙来找我谈（他被他人邀入此互动，执行的不是自己决定的动作——属正常调度机制）",
+        "  行动｜输入：这一动由 乙 发起：我去问甲旧事｜参与:乙、甲",
+        "  行动｜输出(结果)：[成功]",
+        "    记忆(己方)：乙问起旧事，我搪塞了过去",
+        "  反馈｜输出：情绪 fear→trust(强度0.4,情绪正负值0.2)",
+        "  目标进展：「瞒住旧事」→已失败/搁置",
+        "  新留下的未了事项：我要盯住乙",
+        "  记忆(主观感受)：乙越问越近，我心里发紧。",
+    ]
+
+
+def test_what_no_act_claims_follows_the_acts_and_opens_no_act() -> None:
+    """A memory with no id, or with another execution's, is no act of his this step: it follows the
+    acts unclaimed, and never opens a third group holding nothing but a memory."""
+    from tuning.judge_audit import _action_lines
+
+    stray = _call("memory", "memory_summarization", extra={"execution_id": "talk_丙_0_000009"})
+    stray.output = "想起丙昨日的话。"
+    bare = _call("memory", "memory_summarization")
+    bare.output = "夜里睡不安稳。"
+    lines = _action_lines(_letter_beside_a_talk(stray, bare), "甲")
+    assert "  ┈┈ 其3 ┈┈" not in lines
+    assert lines[-2:] == ["  记忆(主观感受)：想起丙昨日的话。", "  记忆(主观感受)：夜里睡不安稳。"]
+
+
+def test_one_act_takes_everything_unclaimed_and_shows_no_groups() -> None:
+    """With one act there is nothing to tell apart: no group heading, no number, and a memory or a
+    goal batch with no id is that act's."""
+    from tuning.judge_audit import _action_lines
+
+    mem = _call("memory", "memory_summarization")
+    mem.output = "总算把话递到了。"
+    s = _sum([
+        _call("decision", out={"selected_index": 1, "action_description": "遣人送信给丙",
+                               "message_content": "速来"},
+              extra={"action_menu": {"1": "SEND_MESSAGE"}, "verdict": "executed"}),
+        _call("feedback", out={"emotion": "relief", "intensity": 0.4, "valence": 0.3},
+              extra={"execution_id": "send_甲", "feedback_action_desc": "遣人送信给丙",
+                     "feedback_action_success": True, "feedback_action_actual": "我把信送了出去"}),
+        _call("feedback", "need_goal_generation", {"goals": [{"index": 1, "status": "completed"}]},
+              {"goal_texts": {"1": "叫丙速来"}}),
+        mem,
+    ])
+    assert _action_lines(s, "甲") == [
+        "  行动｜输入：遣人送信给丙｜原话:速来",
+        "  行动｜输出(结果)：[成功]",
+        "    记忆(己方)：我把信送了出去",
+        "  反馈｜输出：情绪 relief(强度0.4,情绪正负值0.3)",
+        "  目标进展：「叫丙速来」→已完成",
+        "  记忆(主观感受)：总算把话递到了。",
+    ]
+
+
+def test_words_with_no_act_of_his_own_are_still_laid_out() -> None:
+    """His decided words stay visible when no result of his carries them (a null step), and appear
+    once."""
+    from tuning.judge_audit import _action_lines
+
+    s = _sum([
+        _call("decision", out={"selected_index": 1, "action_description": "遣人送信给丙",
+                               "message_content": "速来"},
+              extra={"action_menu": {"1": "SEND_MESSAGE"}, "verdict": "executed"}),
+    ])
+    assert _action_lines(s, "甲") == ["  行动｜输入：原话:速来"]
+
+
+@pytest.mark.parametrize("verdict", ["conscripted", "stood_down"])
+def test_words_of_an_intent_that_never_entered_the_world_are_not_laid_out(verdict: str) -> None:
+    """A dropped intent's words were never sent. Laid out as his words this step, they read as a
+    letter that went out, beside a notice saying nothing of his did."""
+    from tuning.judge_audit import _mams_lines, _step_lines
+    from tuning.audit_reconstruct import AgentStepView
+
+    s = _sum([
+        _call("decision", out={"selected_index": 1, "action_description": "遣人送信给丙",
+                               "message_content": "速来"},
+              extra={"action_menu": {"1": "SEND_MESSAGE"}, "verdict": verdict}),
+    ])
+    block = "\n".join(_step_lines(AgentStepView(step=1, world_time="t", summary=s), name="甲", sps=3600))
+    assert "速来" not in block and "速来" not in "\n".join(_mams_lines("甲", s, sps=3600))
+
+
+def test_a_multi_step_start_has_no_result_and_no_groups() -> None:
+    """The step a multi-step act starts holds only the intent: no result yet, so no act and no
+    group; the words go with the intent, once."""
+    from tuning.judge_audit import _step_lines
+    from tuning.audit_reconstruct import AgentStepView
+
+    s = _sum([
+        _call("decision", out={"selected_index": 1, "action_description": "遣人送信给丙",
+                               "message_content": "速来"},
+              extra={"action_menu": {"1": "SEND_MESSAGE"}, "verdict": "executed", "spans_steps": 3}),
+    ])
+    block = "\n".join(_step_lines(AgentStepView(step=1, world_time="t", summary=s), name="甲", sps=3600))
+    assert "【这一动跨多步】" in block and block.count("原话:速来") == 1
+    assert "┈┈" not in block and "行动｜输出" not in block
+
+
+def _kept_on_calls() -> list:
+    """He is mid-way through a multi-step act: at step start he weighs dropping it and keeps on, and
+    it doesn't finish this step. A letter that reaches him is remembered after, outside the
+    step-start segment. Nothing ended, yet the step still splits in two."""
+    weigh = _call("interrupt", "agent_interrupt_decision", {"thought": "还不到放下的时候", "interrupt": False},
+                  {"settles_prior_action": True, "interrupt_doing": "守在门外",
+                   "interrupt_trigger": "远处传来喧哗"})
+    memory = _call("memory", "memory_summarization")
+    memory.output = "信里的话让我心里一沉。"
+    return [weigh, memory]
+
+
+def test_a_step_start_where_nothing_ended_is_not_headed_as_ended() -> None:
+    """The step-start segment is what the engine did with the act in hand, which doesn't always end
+    it. Headed "it ended" over a segment holding only a decision to keep on, the judge looks for a
+    result that was never there."""
+    from tuning.audit_reconstruct import AgentStepView
+    from tuning.judge_audit import _mams_lines, _step_lines, agent_step_block
+
+    calls = _kept_on_calls()
+    s = _sum(calls)
+    assert "carried" in s
+    sams = "\n".join(_step_lines(AgentStepView(step=1, world_time="t", summary=s), name="甲", sps=3600))
+    mams = "\n".join(_mams_lines("甲", s, sps=3600))
+    for block in (sams, mams):
+        assert "了结了" not in block and "了结之后" not in block
+        assert "他掂量过要不要放下手上那件事，没有放下" in block and "掂量之后" in block
+    # Weighing and memory are no sass beats: sass has no step-start segment here to head at all.
+    sass = agent_step_block(_VIEW_FOR_SASS, "a1", AgentStepView(step=1, world_time="t", calls=calls))
+    assert "── 承上：" not in sass and "了结之后" not in sass
+
+
+def test_a_step_start_where_the_act_ended_is_headed_as_ended() -> None:
+    """A result in the step-start segment is the act ending there, and is headed so."""
+    from tuning.audit_reconstruct import AgentStepView
+    from tuning.judge_audit import _step_lines
+
+    calls = [
+        _call("action", "agent_action_narration", {"fact": "我守满了时辰", "success": True},
+              {"settles_prior_action": True}),
+        _call("feedback", out={"emotion": "trust", "intensity": 0.4, "valence": 0.2},
+              extra={"settles_prior_action": True}),
+        _kept_on_calls()[1],
+    ]
+    sams = "\n".join(_step_lines(AgentStepView(step=1, world_time="t", summary=_sum(calls)),
+                                 name="甲", sps=3600))
+    assert "他手上那件事先了结了" in sams and "了结之后" in sams and "掂量" not in sams
+
+
+_JOINED = {"execution_id": "talk_乙_1_000002", "initiator": "乙", "purpose": "我去找甲对好口径",
+           "spans_steps": 2}
+
+
+def test_a_body_drawn_into_a_long_act_beside_a_letter_is_laid_out() -> None:
+    """He sends a letter while his body is drawn into a two-step talk. The talk yields nothing this
+    step, so without the stamp his side of the step shows only the letter, and his breaking the
+    talk off next step reads as breaking off a talk that never began."""
+    from tuning.audit_reconstruct import AgentStepView
+    from tuning.judge_audit import _mams_lines, _step_lines
+
+    s = _sum([
+        _call("decision", out={"selected_index": 1, "action_description": "遣人送信给丙",
+                               "message_content": "速来"},
+              extra={"action_menu": {"1": "SEND_MESSAGE"}, "verdict": "executed",
+                     "joined_execution": _JOINED}),
+        _call("feedback", out={"emotion": "fear", "intensity": 0.5, "valence": -0.4},
+              extra={"execution_id": "send_甲", "feedback_action_desc": "遣人送信给丙",
+                     "feedback_action_success": True, "feedback_action_actual": "我把信送了出去"}),
+    ])
+    sams = _step_lines(AgentStepView(step=1, world_time="t", summary=s), name="甲", sps=3600)
+    assert ("  行动｜被并进：这一动由 乙 发起：我去找甲对好口径（要占 约2小时，这一步还没走完，结果要到它走完那一步才有）"
+            "（他的身体被并进了这一动，不是他自己决定的——属正常调度机制）") in sams
+    # The letter is still his own act, words and all.
+    assert "  行动｜输入：遣人送信给丙｜原话:速来" in sams
+    assert ("      · 【被并进】这一动由 乙 发起：我去找甲对好口径（要占 约2小时，这一步还没走完，"
+            "结果要到它走完那一步才有）") in _mams_lines("甲", s, sps=3600)
+
+
+def test_a_conscripted_body_points_at_the_act_it_joined() -> None:
+    """Conscripted into an act that runs on: the notice points below, where the act is named."""
+    from tuning.audit_reconstruct import AgentStepView
+    from tuning.judge_audit import _step_lines
+
+    s = _sum([_call("decision", out={"selected_index": 0, "action_description": "回府"},
+                    extra={"action_menu": {"0": "MOVE"}, "verdict": "conscripted",
+                           "joined_execution": _JOINED})])
+    block = "\n".join(_step_lines(AgentStepView(step=1, world_time="t", summary=s), name="甲", sps=3600))
+    assert "他被并进了别人的行动（见下方「行动」）" in block
+    assert "行动｜被并进：这一动由 乙 发起：我去找甲对好口径" in block
+
+
+def test_a_joined_act_that_settles_is_told_by_its_result_alone() -> None:
+    """When the act he was drawn into settles the same step, its result says so; naming it again as
+    still running would contradict that result."""
+    from tuning.judge_audit import _action_lines
+
+    s = _sum([
+        _call("decision", out={"selected_index": 0, "action_description": "回府"},
+              extra={"action_menu": {"0": "MOVE"}, "verdict": "conscripted",
+                     "joined_execution": {**_JOINED, "spans_steps": 1}}),
+        _call("action", "agent_action_narration", {"fact": "乙和我对好了口径", "success": True},
+              {"talk_role": "addressee", "conscripted_input": "乙来找我谈", "execution_id": _JOINED["execution_id"],
+               "action_description": "我去找甲对好口径", "action_initiator": "乙",
+               "action_participants": ["乙", "甲"]}),
+    ])
+    lines = _action_lines(s, "甲", 3600)
+    assert not any("被并进" in x for x in lines)
+    assert any("被邀入：乙来找我谈" in x for x in lines)
+
+
+def test_results_are_numbered_per_act_not_per_record() -> None:
+    """A talk he started yields two results of one act, the transcript and his own memory. Numbered
+    per record, one act reads as two (and in mams a lone "其2" stands where the transcript, which
+    prints no result line, took "其1"); numbered per act, one act carries no number at all."""
+    from tuning.judge_audit import _mams_lines, _step_lines
+    from tuning.audit_reconstruct import AgentStepView
+
+    talk = {"execution_id": "talk_甲_1_000001", "action_description": "我去问乙旧事",
+            "action_initiator": "甲", "action_participants": ["甲", "乙"]}
+    s = _sum([
+        _call("decision", out={"selected_index": 0, "action_description": "我去问乙旧事"},
+              extra={"action_menu": {"0": "TALK"}, "verdict": "executed"}),
+        _call("action", "agent_action_narration",
+              {"dialogue": [{"speaker": 1, "line": "旧事如何？"}, {"speaker": 2, "line": "不提也罢。"}]}, talk),
+        _call("action", "agent_action_narration", {"fact": "乙不肯提旧事", "success": False}, talk),
+        _call("feedback", out={"emotion": "frustration", "intensity": 0.5, "valence": -0.4},
+              extra={"execution_id": talk["execution_id"], "feedback_action_desc": "我去问乙旧事",
+                     "feedback_action_actual": "乙不肯提旧事"}),
+        _call("feedback", "need_goal_generation", {"goals": [{"index": 1, "status": "failed"}]},
+              {"execution_id": talk["execution_id"], "goal_texts": {"1": "问清旧事"}}),
+    ])
+    assert len(s["results"]) == 2
+    block = "\n".join(_step_lines(AgentStepView(step=1, world_time="t", summary=s), name="甲", sps=3600))
+    mams = "\n".join(_mams_lines("甲", s, sps=3600))
+    assert "其1" not in block and "其2" not in block and "针对" not in block
+    assert "      · 结果：[失败] 乙不肯提旧事" in mams and "其2" not in mams
+
+
+def test_mams_lays_out_a_letter_and_a_talk_as_two_whole_acts() -> None:
+    """The director's view lays out each act of the step whole, his own letter and the talk he was
+    pulled into: what it was, its result, his reaction to it and the goals it moved."""
+    from tuning.judge_audit import _mams_lines
+
+    s = _letter_beside_a_talk()
+    mams = _mams_lines("甲", s, sps=3600)
+    # Each act reads whole, in the order it landed: what it was, its result, the reaction, the goals.
+    assert mams[1:] == [
+        "      · 做什么（其1）：遣人送信给丙｜原话:速来",
+        "      · 结果（其1）：[成功] 我把信送了出去",
+        "      · 情绪（其1，对结果的反应）：fear（强度0.5，情绪正负值-0.4）",
+        "      · 目标进展（其1）：",
+        "          - 叫丙速来→已完成",
+        "      · 【被邀入】（其2）乙来找我谈（执行的不是他自己决定的动作）",
+        "      · 结果（其2，由 乙 发起）：[成功] 乙问起旧事，我搪塞了过去",
+        "      · 情绪（其2）：fear→trust（强度0.4，情绪正负值0.2）",
+        "      · 目标进展（其2）：",
+        "          - 瞒住旧事→已失败/搁置",
+    ]
+
+
+def test_one_reaction_names_no_act() -> None:
+    """A single feedback emotion has only one act to belong to; naming it would be noise."""
+    from tuning.judge_audit import _step_lines
+    from tuning.audit_reconstruct import AgentStepView
+
+    s = _sum([_call("feedback", out={"emotion": "fear", "intensity": 0.5, "valence": -0.4},
+                    extra={"feedback_action_desc": "遣人送信给丙",
+                           "feedback_action_actual": "我把信送了出去"})])
+    block = "\n".join(_step_lines(AgentStepView(step=1, world_time="t", summary=s),
+                                  name="甲", sps=3600))
+    assert "反馈｜输出：情绪 fear" in block and "针对" not in block
 
 
 def test_a_multi_step_action_is_marked_only_at_its_opening() -> None:
@@ -1413,7 +1750,7 @@ def test_no_bare_index_is_left_for_the_judge_to_decode() -> None:
     gloss = "".join(_index_gloss(StageCall(
         stage="decision", scene="s", prompt=[], parse_ok=True, ok=True,
         output={"selected_index": 2, "person_indices": [1, 2], "destination_index": 3,
-                "errand_npc_index": 1, "physical_entity_index": 1, "updated_index": 1,
+                "errand_npc_index": 1, "physical_entity_index": 1, "changes": [{"entity": 1}, {"entity": 0}],
                 "goals": [{"index": 1, "status": "completed"}],
                 "dialogue": [{"speaker": 1, "line": "…"}]},
         extra={"action_menu": {"2": "MOVE"},
@@ -1425,7 +1762,8 @@ def test_no_bare_index_is_left_for_the_judge_to_decode() -> None:
                "action_participants": ["甲", "乙"]})))
     for expect in ("selected_index #2 = MOVE", "person_indices #1 = 甲", "person_indices #2 = 乙",
                    "destination_index #3 = 玄武门", "errand_npc_index #1 = 马夫",
-                   "physical_entity_index #1 = 兵符", "updated_index #1 = 兵符",
+                   "physical_entity_index #1 = 兵符", "changes.entity #1 = 兵符",
+                   "changes.entity #0 = （当场新做出来的）",
                    "目标 #1 = 取兵符", "对白 speaker 1 = 甲、2 = 乙"):
         assert expect in gloss, f"序号没译出来：{expect}"
 

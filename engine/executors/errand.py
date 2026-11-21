@@ -6,7 +6,8 @@ every failure is an objective check (busy or restrained → ``start`` rejects; u
 ``NpcRunner`` reports it; item not in the assigner's hands → rejected). Templates also can't
 leak the order into the observation, where an LLM might.
 
-Assigning takes one step: the point of sending someone is not waiting yourself.
+Assigning is momentary (``ActionExecutor.momentary``): the point of sending someone is not
+waiting yourself.
 
 The trip itself is driven by ``engine.npc_runner``, not here: a residue that outlives its
 action belongs to world advancement. Don't stretch the execution to drive it: on the assigner
@@ -19,15 +20,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, List
 
 from core.interfaces.action import (
-    ActionResult, ActionType, AgentAction, EntityStateChange, ErrandOrder,
+    ActionResult, ActionType, AgentAction, EntityStateChange, ErrandOrder, Observed,
 )
 from core.interfaces.directory import WorldDirectory
 from core.action_duration import action_duration_steps
 from core.logging import get_logger
+from core.prompts import strip_end_punct
 from core.interfaces.execution import TickResult
 from engine.executors.base import ActionExecutionState, ActionExecutor, adjudication_failed_result
-from engine.narration import observed_here, scene_line
-from engine.scene import observe_location
+from engine.narration import scene_line
 
 if TYPE_CHECKING:
     from agent.agent import Agent
@@ -38,13 +39,16 @@ logger = get_logger(__name__)
 
 #: Carries the ErrandOrder from start to complete in ``state.extra``.
 _ORDER_KEY = "errand_order"
+#: Where the order was given, fixed at start: ERRAND is momentary, so ``complete`` never reads
+#: where the assigner is (he may have been carried off the same step).
+_ISSUED_AT_KEY = "issued_at"
 
 
 def _render_errand(
     order: ErrandOrder, *, environment: "EnvironmentSystem", directory: WorldDirectory,
 ) -> list[str]:
     """The only order → text conversion: reads ``ErrandOrder``'s four axes without a dispatch
-    table, resolving every id here to a name (never a bare id).
+    table, resolving every id here to a name (never a bare id), then the brief.
 
     Each clause names the place rather than "那处": clauses are spliced into different
     sentences, where a back-reference can miss. The place-only cell is produced here too.
@@ -68,7 +72,10 @@ def _render_errand(
             else f"去{destination}当众说出：「{order.message}」"
         )
     # All four axes empty = go take a look. That is a task, not "no instructions".
-    return lines or [f"前往{destination}看看"]
+    lines = lines or [f"前往{destination}看看"]
+    if order.brief:
+        lines.append(f"并交代：「{strip_end_punct(order.brief)}」")
+    return lines
 
 
 class ErrandExecutor(ActionExecutor):
@@ -78,6 +85,8 @@ class ErrandExecutor(ActionExecutor):
     mutates_world_during_complete = False
     # Never put the Npc in claims: arbitration can't find it in agents and would reject the action.
     conscription = None
+    # Once the order is given, the bearer's body runs it: the assigner's isn't needed.
+    momentary = True
 
     def __init__(self, directory: WorldDirectory) -> None:
         self._directory = directory
@@ -106,9 +115,12 @@ class ErrandExecutor(ActionExecutor):
             # unconditionally, so an item held across town would jump into the bearer's hands.
             item = environment.get_entity(order.item_id)
             if item is None or item.owner_id != action.agent_id:
-                reason = f"{(item.name if item is not None else '') or '那样东西'}已不在他手上"
+                reason = f"{(item.name if item is not None else '') or '那样东西'}已不在手上"
         if reason:
-            return self._unavailable(action, step, reason, environment=environment)
+            return self._unavailable(
+                action, step, reason, environment=environment,
+                location_id=environment.get_body_location(action.agent_id),
+            )
 
         # Check and occupy in one statement here, not at landing: otherwise two senders in one
         # beat both see the body free, and the loser's success memory is already written.
@@ -117,6 +129,7 @@ class ErrandExecutor(ActionExecutor):
         if not environment.assign_errand(order, requester_id=action.agent_id):
             return self._unavailable(
                 action, step, "指派失败", environment=environment,
+                location_id=environment.get_body_location(action.agent_id),
             )
 
         state = ActionExecutionState.create(
@@ -134,6 +147,7 @@ class ErrandExecutor(ActionExecutor):
             expected_outcome=action.expected_outcome,
         )
         state.extra[_ORDER_KEY] = order
+        state.extra[_ISSUED_AT_KEY] = environment.get_body_location(action.agent_id)
         return state
 
     async def tick(
@@ -161,7 +175,8 @@ class ErrandExecutor(ActionExecutor):
         if stored is not None:
             return [stored]
 
-        location = observe_location(environment, state.initiator_id)
+        issued_at = str(state.extra.get(_ISSUED_AT_KEY, ""))
+        location = environment.narrative_location_name(issued_at)
         order = state.extra.get(_ORDER_KEY)
         npc = environment.get_npc(order.npc_id) if isinstance(order, ErrandOrder) else None
         if not isinstance(order, ErrandOrder) or npc is None:
@@ -182,8 +197,8 @@ class ErrandExecutor(ActionExecutor):
                 environment.clear_errand(order.npc_id)
                 failed = self._unavailable(
                     self._stub(state, step), step,
-                    f"{(item.name if item is not None else '') or '那样东西'}已不在他手上",
-                    environment=environment,
+                    f"{(item.name if item is not None else '') or '那样东西'}已不在手上",
+                    environment=environment, location_id=issued_at,
                 )
                 return [failed.extra["completed_result"]]
 
@@ -202,7 +217,7 @@ class ErrandExecutor(ActionExecutor):
         # Three channels written separately: the observation must not contain what was ordered.
         outcome = scene_line(location, f"{doer_name}向{bearer}指派任务：{errand_clause}。")
         item = environment.get_entity(order.item_id) if order.item_id else None
-        handover_clause = f"把{(item.name if item is not None else '') or '某物'}交到他手上，" if (
+        handover_clause = f"把{(item.name if item is not None else '') or '某物'}交了过去，" if (
             order.item_id
         ) else ""
         observation = scene_line(
@@ -214,7 +229,8 @@ class ErrandExecutor(ActionExecutor):
             expected_outcome=state.expected_outcome or state.purpose,
             outcome=outcome,
             succeeded=True,
-            observations=observed_here(environment, state.initiator_id, observation),
+            # Where the order was given, not ``observed_here``: that reads his current body.
+            observations=[Observed(location_id=issued_at, text=observation)],
             # A lurker nearby hears what was ordered.
             happening=outcome,
             factual_memory=f"我向{bearer}指派任务：{errand_clause}。",
@@ -235,11 +251,12 @@ class ErrandExecutor(ActionExecutor):
 
     def _unavailable(
         self, action: AgentAction, step: int, reason: str, *,
-        environment: "EnvironmentSystem",
+        environment: "EnvironmentSystem", location_id: str,
     ) -> ActionExecutionState:
         """Can't send it: unavailable, not unwilling (an Npc has no will to reject with). A real
-        world event, remembered normally; ``reason`` is a structured fact."""
-        location = observe_location(environment, action.agent_id)
+        world event, remembered normally; ``reason`` is a structured fact. ``location_id``: where
+        the order was given."""
+        location = environment.narrative_location_name(location_id)
         doer_name = self._directory.agent_name(action.agent_id)
         outcome = scene_line(location, f"{doer_name}本想给别人指派任务，却因{reason}未能完成指派。")
         return ActionExecutionState.create_failed(
@@ -249,7 +266,7 @@ class ErrandExecutor(ActionExecutor):
                 action=action,
                 expected_outcome=action.expected_outcome,
                 outcome=outcome,
-                observations=observed_here(environment, action.agent_id, outcome),
+                observations=[Observed(location_id=location_id, text=outcome)],
                 succeeded=False,
                 failure_reason=reason,
                 factual_memory=f"给别人指派任务没有成功：{reason}",

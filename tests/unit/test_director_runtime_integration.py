@@ -69,7 +69,7 @@ async def _submit(runtime, environment, agents, text: str):
         all_agents={a.agent_id: a for a in agents},
         agent_locations={a.agent_id: environment.get_body_location(a.agent_id) for a in agents},
         npcs=_npc_menu(environment),
-        locations=environment.space.all_places(),
+        space=environment.space,
         entities=environment.all_live_entities(),
         world_time=runtime.clock.current,
     )
@@ -238,7 +238,7 @@ async def test_directive_killing_someone_is_reaped_by_the_normal_death_path(cont
 async def test_someone_the_director_kills_mid_action_does_not_act_on_that_step(container) -> None:
     """The kill lands before anything acts, so the victim's ongoing work must not tick or finish
     on the step that killed him."""
-    work = '{"selected_index": 3, "action_description": "批阅文书", "estimated_steps": 3}'
+    work = '{"selected_index": 3, "action_description": "批阅文书", "estimated_hours": 3}'
     container.llm_router.get(LLMScene.AGENT_DECISION_MAIN).fixed_response = work
     runtime, environment, agents, location = _runtime(container)
     await runtime.run_step(agents)
@@ -354,7 +354,7 @@ async def test_a_torn_down_action_and_a_fresh_decision_land_in_one_step(containe
     mover = agents[0]
 
     container.llm_router.get(LLMScene.AGENT_DECISION_MAIN).fixed_response = (
-        '{"selected_index": 3, "action_description": "闭门批阅文书", "estimated_steps": 6}'
+        '{"selected_index": 3, "action_description": "闭门批阅文书", "estimated_hours": 6}'
     )
     await runtime.run_step(agents)
 

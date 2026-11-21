@@ -604,9 +604,10 @@ async def test_decide_returns_no_action_when_act_false(container, act_value) -> 
 # ---------------------------------------------------------------------------
 # Semantic retry: an HTTP-200 JSON reply missing fields shouldn't burn the beat.
 # complete_with_retry only retries transport failures, so the decision path's "retry once before
-# falling back" covers the semantic level too. The retry resends the same request (no prompt
-# changes, no filling fields in for the LLM); only when both attempts are unusable does it return
-# FAILED (tier-1 no-op).
+# falling back" covers the semantic level too. The retry keeps the same prompt and, when the first
+# answer was rejected for a known reason, adds that answer and the constraint it broke; it never
+# fills fields in for the LLM. Only when both attempts are unusable does it return FAILED (tier-1
+# no-op).
 # ---------------------------------------------------------------------------
 
 
@@ -634,7 +635,7 @@ _OBJECTLESS_REST_MISSING_DESCRIPTION = json.dumps(
         "act": True,
         "selected_index": 6,
         "expected_outcome": "恢复体力与心神",
-        "estimated_steps": 3,
+        "estimated_hours": 3,
     },
     ensure_ascii=False,
 )
@@ -646,7 +647,7 @@ _OBJECTLESS_REST_COMPLETE = json.dumps(
         "selected_index": 6,
         "action_description": "寻一僻静处暂歇，闭目养神以缓解连日奔波的疲惫",
         "expected_outcome": "恢复体力与心神",
-        "estimated_steps": 3,
+        "estimated_hours": 3,
     },
     ensure_ascii=False,
 )
@@ -669,6 +670,76 @@ async def test_decide_retries_once_and_recovers_the_beat(container) -> None:
     assert result.action.action_type is ActionType.REST
     assert result.action.estimated_steps == 3
     assert "僻静" in result.action.action_description
+
+
+def _capture_calls(engine, payloads: List[str]) -> List[list]:
+    """Like ``_stub_responses``, keeping each call's messages."""
+    from core.interfaces.llm import LLMResponse
+
+    seen: List[list] = []
+
+    async def _sequenced(scene, messages, *args, **kwargs):
+        seen.append(list(messages))
+        content = payloads[min(len(seen) - 1, len(payloads) - 1)]
+        return LLMResponse(content=content, input_tokens=1, output_tokens=1, model="stub")
+
+    engine._llm_router.complete_with_retry = _sequenced  # type: ignore[method-assign]
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_answer_is_retried_with_the_constraint_it_broke(container) -> None:
+    """Resent unchanged, the model makes the same rejected choice again and the beat is lost.
+    The retry keeps the first prompt as its prefix (so it stays cached), then the first answer,
+    then the broken constraint in the prompt's own terms."""
+    engine = DecisionEngine(container.llm_router)
+    seen = _capture_calls(
+        engine, [_OBJECTLESS_REST_MISSING_DESCRIPTION, _OBJECTLESS_REST_COMPLETE]
+    )
+
+    result = await engine.decide(personality=_make_personality(), packet=_make_packet())
+
+    assert result.status is DecisionStatus.ACTED
+    first, retry = seen
+    assert [m.role for m in retry] == ["system", "user", "assistant", "user"]
+    assert [m.content for m in retry[:2]] == [m.content for m in first]
+    assert retry[2].content == _OBJECTLESS_REST_MISSING_DESCRIPTION
+    assert "我没有写 action_description" in retry[3].content
+    assert "missing_action_description" not in retry[3].content
+
+
+@pytest.mark.asyncio
+async def test_a_failure_with_no_known_reason_is_resent_unchanged(container) -> None:
+    """A reply with no JSON at all has a note; a failed call has no reply and nothing to say."""
+    engine = DecisionEngine(container.llm_router)
+    calls = [0]
+    seen: List[list] = []
+
+    async def _fail_then_answer(scene, messages, *args, **kwargs):
+        from core.interfaces.llm import LLMResponse
+        calls[0] += 1
+        seen.append(list(messages))
+        if calls[0] == 1:
+            raise RuntimeError("upstream down")
+        return LLMResponse(content=_OBJECTLESS_REST_COMPLETE, input_tokens=1, output_tokens=1, model="stub")
+
+    engine._llm_router.complete_with_retry = _fail_then_answer  # type: ignore[method-assign]
+    result = await engine.decide(personality=_make_personality(), packet=_make_packet())
+
+    assert result.status is DecisionStatus.ACTED
+    assert [m.content for m in seen[1]] == [m.content for m in seen[0]]
+
+
+def test_every_rejection_reason_has_a_retry_note() -> None:
+    """A reason left out here makes that rejection retry blind, which is how a whole step is lost
+    to the same choice twice."""
+    import inspect
+    import re as _re
+
+    import agent.decision as decision
+
+    reasons = set(_re.findall(r'reject\("([a-z_]+)"\)', inspect.getsource(decision)))
+    assert reasons and reasons <= set(decision._REJECTION_NOTES)
 
 
 @pytest.mark.asyncio
@@ -801,7 +872,7 @@ def test_parse_person_index_resolves_to_agent_id(container) -> None:
         "person_indices": [2],  # → agent-cheng
         "action_description": "与程知节商议",
         "inner_monologue": "",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -817,7 +888,7 @@ def test_parse_destination_index_resolves_to_location_id(container) -> None:
         "selected_index": 0,
         "destination_index": 1,
         "action_description": "前往玄武门",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -834,13 +905,13 @@ def test_parse_move_without_resolved_destination_rejected(container) -> None:
     candidates = [ActionCandidate(ActionType.MOVE, "移动")]
     # destination_index omitted
     omitted = json.dumps({
-        "selected_index": 0, "action_description": "动身离开", "estimated_steps": 1,
+        "selected_index": 0, "action_description": "动身离开", "estimated_hours": 1,
     })
     assert engine._parse_llm_selection(omitted, candidates, packet) is None
     # destination_index out of range (only 2 neighboring locations, picks 9)
     out_of_range = json.dumps({
         "selected_index": 0, "destination_index": 9,
-        "action_description": "动身离开", "estimated_steps": 1,
+        "action_description": "动身离开", "estimated_hours": 1,
     })
     assert engine._parse_llm_selection(out_of_range, candidates, packet) is None
 
@@ -865,7 +936,7 @@ def test_parse_person_index_resolves_absent_recipient(container) -> None:
     raw = json.dumps({
         "selected_index": 0, "person_indices": [1],
         "action_description": "回信尉迟恭：按计划即刻行事", "message_content": "按计划即刻行事。",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -880,7 +951,7 @@ def test_parse_send_message_stray_item_id_not_bound(container) -> None:
     candidates = [ActionCandidate(ActionType.SEND_MESSAGE, ActionType.SEND_MESSAGE.label)]
     raw = json.dumps({
         "selected_index": 0, "item_name": "禁军统领", "message_announce": True,
-        "action_description": "通告全军戒备", "message_content": "全军戒备。", "estimated_steps": 1,
+        "action_description": "通告全军戒备", "message_content": "全军戒备。", "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -901,7 +972,7 @@ def test_parse_physical_entity_index_resolves_visible_entity(container) -> None:
     candidates = [ActionCandidate(ActionType.PHYSICAL, "物理干预")]
     raw = json.dumps({
         "selected_index": 0, "physical_entity_index": 1,
-        "action_description": "我一把抓起调兵符节藏入怀中", "estimated_steps": 1,
+        "action_description": "我一把抓起调兵符节藏入怀中", "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -920,7 +991,7 @@ def test_parse_physical_person_index_on_person(container) -> None:
     candidates = [ActionCandidate(ActionType.PHYSICAL, "物理干预")]
     raw = json.dumps({
         "selected_index": 0, "physical_person_index": 1,
-        "action_description": "我夺刀制住李建成", "inner_monologue": "先发制人", "estimated_steps": 1,
+        "action_description": "我夺刀制住李建成", "inner_monologue": "先发制人", "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -944,7 +1015,7 @@ def test_parse_physical_channels_never_cross_namespaces(container) -> None:
     candidates = [ActionCandidate(ActionType.PHYSICAL, "物理干预")]
     raw = json.dumps({
         "selected_index": 0, "physical_person_index": 9,   # out-of-range person index
-        "action_description": "我按住李建成", "estimated_steps": 1,
+        "action_description": "我按住李建成", "estimated_hours": 1,
     })
     assert engine._parse_llm_selection(raw, candidates, packet) is None
 
@@ -967,7 +1038,7 @@ def test_parse_physical_without_target_rejected(container) -> None:
     # person_indices)
     unbound = json.dumps({
         "selected_index": 0, "person_indices": [1],
-        "action_description": "扑向李建成，死死拽住他衣袖", "estimated_steps": 1,
+        "action_description": "扑向李建成，死死拽住他衣袖", "estimated_hours": 1,
     })
     assert engine._parse_llm_selection(unbound, candidates, packet) is None
     # ② A self-filled item_id goes through the abstract-target channel, and its kind is always
@@ -979,14 +1050,14 @@ def test_parse_physical_without_target_rejected(container) -> None:
     # whether a name looks like a person, which is the keyword matching Rule 7 forbids.
     freeform = json.dumps({
         "selected_index": 0, "item_name": "宫门",
-        "action_description": "我用肩撞开紧闭的宫门", "estimated_steps": 1,
+        "action_description": "我用肩撞开紧闭的宫门", "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(freeform, candidates, packet)
     assert sel is not None and sel.target.acted_on_kind == "object"
     # ③ The person index points to someone on the list who isn't present
     not_present = json.dumps({
         "selected_index": 0, "physical_person_index": 2,
-        "action_description": "我冲上去制住尉迟恭", "estimated_steps": 1,
+        "action_description": "我冲上去制住尉迟恭", "estimated_hours": 1,
     })
     assert engine._parse_llm_selection(not_present, candidates, packet) is None
 
@@ -1087,7 +1158,7 @@ def test_item_list_marks_who_holds_what(main_engine) -> None:
 
     for text in (prompt, actor_prompt):    # the actor's interpretation reads the same lists
         mine = text.index("我手上的东西：")
-        not_mine = text.index("不在我手上的东西（放在此处，或在别人手上）：")
+        not_mine = text.index("不在我手上的东西（放在此处，或在别人手上；")
         assert text.index("眼前的东西（两组的序号连着数）：") < mine < text.index("#1 短刀") < not_mine
         assert "#1 短刀（由我持有；可交出）" in text     # in my hands: what I can do is hand it over
         assert not_mine < text.index("#2 灯笼") < text.index("#3 虎符")
@@ -1128,7 +1199,7 @@ def test_parse_binds_a_recipient_alongside_the_entity(container) -> None:
 
     sel = engine._parse_llm_selection(json.dumps({
         "selected_index": 0, "physical_entity_index": 1, "physical_recipient_index": 1,
-        "action_description": "我把虎符双手奉给尉迟恭", "estimated_steps": 1,
+        "action_description": "我把虎符双手奉给尉迟恭", "estimated_hours": 1,
     }), candidates, packet)
     assert sel is not None
     assert sel.target.acted_on_ids == ["e1"] and sel.target.acted_on_kind == "item"
@@ -1138,7 +1209,7 @@ def test_parse_binds_a_recipient_alongside_the_entity(container) -> None:
     # Not handed to anyone, just put down → empty recipient, still a valid entity binding.
     dropped = engine._parse_llm_selection(json.dumps({
         "selected_index": 0, "physical_entity_index": 1,
-        "action_description": "我把虎符搁在案上", "estimated_steps": 1,
+        "action_description": "我把虎符搁在案上", "estimated_hours": 1,
     }), candidates, packet)
     assert dropped is not None and dropped.target.reached_agents == []
 
@@ -1163,12 +1234,12 @@ def test_a_bad_recipient_burns_the_beat(container) -> None:
     # ① Recipient index out of range
     assert engine._parse_llm_selection(json.dumps({
         "selected_index": 0, "physical_entity_index": 1, "physical_recipient_index": 9,
-        "action_description": "我把虎符交给他", "estimated_steps": 1,
+        "action_description": "我把虎符交给他", "estimated_hours": 1,
     }), candidates, packet) is None
     # ② Recipient filled but the person channel was used, so there's nothing to hand over
     assert engine._parse_llm_selection(json.dumps({
         "selected_index": 0, "physical_person_index": 1, "physical_recipient_index": 1,
-        "action_description": "我把虎符交给他", "estimated_steps": 1,
+        "action_description": "我把虎符交给他", "estimated_hours": 1,
     }), candidates, packet) is None
 
 
@@ -1201,7 +1272,7 @@ def test_parse_out_of_range_person_index_falls_through(container) -> None:
         "selected_index": 0,
         "person_indices": [99],  # out of range
         "action_description": "与某人对话",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     # Out of range falls back to an empty target. TALK with no target then fails the spatial check
@@ -1222,7 +1293,7 @@ def test_parse_non_integer_person_index_falls_through(container) -> None:
         "selected_index": 0,
         "person_indices": ["abc"],  # string → filtered by IndexedRef
         "action_description": "对话",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     # The index is invalid at parse time → no agent bound; the later spatial check (TALK needs a
@@ -1243,7 +1314,7 @@ def test_parse_index_takes_precedence_over_string_field(container) -> None:
         "person_indices": [1],        # → Yuchi Gong
         "target_agent_id": "agent-cheng",  # distractor field
         "action_description": "对话",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     })
     sel = engine._parse_llm_selection(raw, candidates, packet)
     assert sel is not None
@@ -1321,3 +1392,17 @@ def test_roster_omits_gender_when_unknown(main_engine) -> None:
     )
     prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
     assert "#1 无名氏（在场）" in prompt
+
+
+def test_main_prompt_names_each_destinations_sub_places_and_how_to_reach_them(main_engine) -> None:
+    """A destination's sub-places are part of its description; a spot inside the place I'm
+    already in needs no move."""
+    packet = _make_packet(
+        reachable_location_ids=["donggong"],
+        location_views={"donggong": LocationView(
+            name="东宫", description="皇太子居所", sub_places=("显德殿", "崇教殿"),
+        )},
+    )
+    prompt = _decision_prompt(main_engine, _make_personality(), packet, candidates=[])
+    assert "#1 东宫（脚程约1小时）：皇太子居所；显德殿、崇教殿都在此地" in prompt
+    assert "我已身在其中，不必移动" in prompt

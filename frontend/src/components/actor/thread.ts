@@ -28,7 +28,10 @@ export type ThreadItem =
   // An answer that is a choice of its own, not the confirming of a decision summary.
   | { kind: "chose"; key: string; choice: "idle" | "carry_on" | "break_off" | "accept" | "refuse"; description: string }
   // An act of the character's, from its start: `elapsed` of `total` steps, `ended` once it is over.
-  | { kind: "act"; key: string; description: string; elapsed: number; total: number; ended: boolean; breakingOff: boolean }
+  // `whole`: told in one entry (`acted`). It has no inside, so it stands beside the act in
+  // progress, never as it.
+  // `void`: it ended with nothing to tell (no fact): not done, so not shown as done.
+  | { kind: "act"; key: string; description: string; elapsed: number; total: number; ended: boolean; breakingOff: boolean; whole: boolean; void: boolean }
   | { kind: "ended"; key: string; fact: string; succeeded: boolean; happened: boolean }
   // A live conversation, its dialogue turns in order; `over` once it has ended.
   | { kind: "conversation"; key: string; dialogue: DialogueTurn[]; over: boolean };
@@ -120,7 +123,7 @@ export function buildThread(entries: ActorEntry[], turn: ActorTurn | null): Thre
         // Its start is its first step.
         act = {
           kind: "act", key: e.entry_id, description: e.description, total: e.total_steps,
-          elapsed: 1, ended: false, breakingOff: false,
+          elapsed: 1, ended: false, breakingOff: false, whole: false, void: false,
         };
         push(e, act);
         break;
@@ -141,10 +144,19 @@ export function buildThread(entries: ActorEntry[], turn: ActorTurn | null): Thre
         if (e.end) conversation.over = true;
         break;
       }
+      case "acted":
+        // Told whole, beside the act in progress, which stays `act`.
+        push(e, {
+          kind: "act", key: e.entry_id, description: e.description, total: 1,
+          elapsed: 1, ended: true, breakingOff: false, whole: true, void: !e.fact,
+        });
+        push(e, { kind: "ended", key: `${e.entry_id}-ended`, fact: e.fact, succeeded: e.succeeded, happened: e.happened });
+        break;
       case "ended":
         if (act && !act.ended) {
           act.ended = true;
           act.elapsed = act.total;
+          act.void = !e.fact;
         }
         push(e, { kind: "ended", key: e.entry_id, fact: e.fact, succeeded: e.succeeded, happened: e.happened });
         break;
@@ -153,11 +165,12 @@ export function buildThread(entries: ActorEntry[], turn: ActorTurn | null): Thre
   return items;
 }
 
-/** The act under way that can still be broken off: one spanning steps, not yet ended. */
+/** The act under way that can still be broken off: one spanning steps, not yet ended. An act
+ * told whole has no inside, so it neither is that act nor hides it. */
 export function breakableAct(items: ThreadItem[]): Extract<ThreadItem, { kind: "act" }> | null {
   for (let i = items.length - 1; i >= 0; i--) {
     const item = items[i];
-    if (item.kind === "act") return !item.ended && item.total > 1 ? item : null;
+    if (item.kind === "act" && !item.whole) return !item.ended && item.total > 1 ? item : null;
   }
   return null;
 }

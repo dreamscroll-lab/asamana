@@ -861,7 +861,7 @@ async def test_invite_gives_up_when_the_body_is_already_committed(container) -> 
         ("background", agents["busy"], _plan_for(agents["busy"], env, step=2, action=None)),
     ]
 
-    arb, seized = await runtime._arbiter.arbitrate(  # noqa: SLF001
+    arb, seized, _ = await runtime._arbiter.arbitrate(  # noqa: SLF001
         plans, agents, 2, {"busy"},
     )
 
@@ -899,7 +899,7 @@ async def test_compel_takes_the_body_out_of_whatever_it_was_doing(container) -> 
         ("background", agents["busy"], _plan_for(agents["busy"], env, step=2, action=None)),
     ]
 
-    arb, seized = await runtime._arbiter.arbitrate(  # noqa: SLF001
+    arb, seized, _ = await runtime._arbiter.arbitrate(  # noqa: SLF001
         plans, agents, 2, {"busy"},
     )
 
@@ -942,7 +942,7 @@ async def test_compel_also_dissolves_a_third_partys_execution(container) -> None
         ("background", agents["partner"], _plan_for(agents["partner"], env, step=2, action=None)),
     ]
 
-    _arb, seized = await runtime._arbiter.arbitrate(  # noqa: SLF001
+    _arb, seized, _ = await runtime._arbiter.arbitrate(  # noqa: SLF001
         plans, agents, 2, {"victim", "partner"},
     )
 
@@ -1010,8 +1010,8 @@ async def test_same_step_compel_leaves_the_talker_a_refusal_not_a_dangling_talk(
         ("main", agents["listener"], _plan_for(agents["listener"], env, step=2, action=None)),
         ("background", agents["carrier"], _plan_for(agents["carrier"], env, step=2, action=_carry("listener"))),
     ]
-    arb, seized = await runtime._arbiter.arbitrate(plans, agents, 2, set())  # noqa: SLF001
-    await runtime._commit_execution(plans, arb, agents)  # noqa: SLF001
+    arb, seized, _ = await runtime._arbiter.arbitrate(plans, agents, 2, set())  # noqa: SLF001
+    await runtime._commit_execution(plans, arb, {}, agents)  # noqa: SLF001
 
     assert "listener" in registry.get_active_for_agent("carrier").participant_ids
     refusal = registry.get_active_for_agent("talker")
@@ -1040,9 +1040,9 @@ async def test_same_step_compel_frees_a_listener_whose_turn_has_not_come(contain
         ("background", agents["listener"], _plan_for(agents["listener"], env, step=2, action=work)),
     ]
     caplog.set_level(logging.INFO, logger="engine.arbiter")
-    arb, _ = await runtime._arbiter.arbitrate(plans, agents, 2, set())  # noqa: SLF001
+    arb, _, _ = await runtime._arbiter.arbitrate(plans, agents, 2, set())  # noqa: SLF001
     assert any(r.message == "admission_revoked" for r in caplog.records)
-    await runtime._commit_execution(plans, arb, agents)  # noqa: SLF001
+    await runtime._commit_execution(plans, arb, {}, agents)  # noqa: SLF001
 
     assert "talker" in registry.get_active_for_agent("carrier").participant_ids
     mine = registry.get_active_for_agent("listener")
@@ -1073,9 +1073,9 @@ async def test_same_step_compel_gives_a_listener_whose_turn_has_passed_his_own_t
         ("background", agents["carrier"], _plan_for(agents["carrier"], env, step=2, action=_carry("talker"))),
     ]
     caplog.set_level(logging.INFO, logger="engine.arbiter")
-    arb, _ = await runtime._arbiter.arbitrate(plans, agents, 2, set())  # noqa: SLF001
+    arb, _, _ = await runtime._arbiter.arbitrate(plans, agents, 2, set())  # noqa: SLF001
     assert any(r.message == "admission_revoked" for r in caplog.records)
-    await runtime._commit_execution(plans, arb, agents)  # noqa: SLF001
+    await runtime._commit_execution(plans, arb, {}, agents)  # noqa: SLF001
 
     mine = registry.get_active_for_agent("listener")
     assert mine is not None and mine.action_type == ActionType.TALK
@@ -1112,8 +1112,8 @@ async def test_same_step_compel_revokes_a_carry_that_never_set_out(container, ca
         ("main", agents["b"], _plan_for(agents["b"], env, step=2, action=None)),
         ("main", agents["c"], _plan_for(agents["c"], env, step=2, action=_move_carrying("c", "a"))),
     ]
-    arb, seized = await runtime._arbiter.arbitrate(plans, agents, 2, set())  # noqa: SLF001
-    await runtime._commit_execution(plans, arb, agents)  # noqa: SLF001
+    arb, seized, _ = await runtime._arbiter.arbitrate(plans, agents, 2, set())  # noqa: SLF001
+    await runtime._commit_execution(plans, arb, {}, agents)  # noqa: SLF001
 
     assert set(registry.get_active_for_agent("c").participant_ids) == {"c", "a"}
     assert arb["a"].is_passive_join
@@ -1143,7 +1143,7 @@ async def test_a_revoked_seizure_leaves_the_old_action_it_meant_to_break_untouch
         ("main", agents["b"], _plan_for(agents["b"], env, step=2, action=None)),
         ("main", agents["d"], _plan_for(agents["d"], env, step=2, action=None)),
     ]
-    arb, seized = await runtime._arbiter.arbitrate(plans, agents, 2, {"b", "d"})  # noqa: SLF001
+    arb, seized, _ = await runtime._arbiter.arbitrate(plans, agents, 2, {"b", "d"})  # noqa: SLF001
 
     assert seized == []
     assert registry.get_active_for_agent("b") is old and registry.get_active_for_agent("d") is old
@@ -1165,7 +1165,7 @@ async def test_a_body_freed_by_a_revoked_admission_can_still_be_enrolled(contain
         ("background", agents["listener"], _plan_for(agents["listener"], env, step=2, action=None)),
     ]
     caplog.set_level(logging.INFO, logger="engine.arbiter")
-    arb, _ = await runtime._arbiter.arbitrate(plans, agents, 2, set())  # noqa: SLF001
+    arb, _, _ = await runtime._arbiter.arbitrate(plans, agents, 2, set())  # noqa: SLF001
     assert any(r.message == "admission_revoked" for r in caplog.records)
 
     talk = registry.get_active_for_agent("x")
@@ -1188,7 +1188,7 @@ async def test_a_refusal_never_cites_an_admission_that_was_revoked(container, se
         ("background", agents["carrier"], _plan_for(agents["carrier"], env, step=2, action=_carry(seized))),
         ("background", agents["listener"], _plan_for(agents["listener"], env, step=2, action=None)),
     ]
-    arb, _ = await runtime._arbiter.arbitrate(plans, agents, 2, set())  # noqa: SLF001
+    arb, _, _ = await runtime._arbiter.arbitrate(plans, agents, 2, set())  # noqa: SLF001
 
     mine = registry.get_active_for_agent("x")
     if seized == "talker":
@@ -1218,7 +1218,7 @@ async def test_commit_releases_a_body_whose_execution_is_already_gone(container,
         agent_id="talker", location_id="n0", ongoing_execution_id="talk_gone",
         action_result=ActionResult(action=plan.action, expected_outcome="", outcome="x", succeeded=True),
     )
-    await runtime._commit_execution([("main", agents["talker"], plan)], {"talker": dangling}, agents)  # noqa: SLF001
+    await runtime._commit_execution([("main", agents["talker"], plan)], {"talker": dangling}, {}, agents)  # noqa: SLF001
 
     assert agents["talker"].personality.state.action_status == ActionStatus.IDLE
     assert any(r.message == "stranded_participant_released" for r in caplog.records)

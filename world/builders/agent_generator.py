@@ -44,7 +44,7 @@ from world.models import (
     AgentDefinition, AgentTier, CastDesign, FigureCastRole, unique_agent_id,
     ThemeAnalysis, ThemeFigure,
 )
-from world.builders import BuildReplyRejected, complete_with_build_retry
+from world.builders import LOCATION_NAME_RULE, BuildReplyRejected, complete_with_build_retry
 
 logger = get_logger(__name__)
 
@@ -126,10 +126,10 @@ class AgentGenerator:
                     annotate_call(agent_name=figure.name):
                 return await self._llm_router.complete(
                     # reason ≤80 chars ≈ 125, plus one character's full persona: background (≤140 chars ≈ 210) + self_image/life_goal (≤50 chars each ≈ 75)
-                    # + appearance (≤40 chars ≈ 60) + long_term_goals (3 × ≤40 chars ≈ 180) + hard_constraints (3 × ≤40 chars ≈ 180)
+                    # + appearance (≤40 chars ≈ 60) + long_term_goals (3 × ≤40 chars ≈ 180)
                     # + 5 × initial_needs (label ≤60 chars ≈ 90 + 3 numbers + structure ≈ 110) + traits/values/location/emotion ≈ 200;
-                    # estimate ~1650 tok.
-                    LLMScene.PERSONA_GENERATION, messages, max_tokens=output_budget(1650),
+                    # estimate ~1470 tok.
+                    LLMScene.PERSONA_GENERATION, messages, max_tokens=output_budget(1470),
                     json_mode=True,
                 )
 
@@ -181,7 +181,7 @@ class AgentGenerator:
         system_sections.append(
             "【任务】\n"
             "为该人物生成紧凑的人物种子数据。先在 reason 里想清楚这个人是什么样的，再据此写其余字段。三类不变量的塑造分工——（只是参考，不用生搬硬套）\n"
-            "- 核心张力 决定该角色的 background / core_traits / core_values / hard_constraints / "
+            "- 核心张力 决定该角色的 background / core_traits / core_values / "
             "life_goal：这些是角色在张力中长期形成的身份层。\n"
             "- 叙事主题 决定 core_values 的意义指向、trait 与措辞的色彩气质，"
             "以及 initial_emotion.primary 倾向的情感谱系（主题决定纹理与指向，不决定具体值）。\n"
@@ -218,8 +218,7 @@ class AgentGenerator:
             "signature_color": f"最能代表该角色气质的颜色，从以下选项中选一个填入（只填英文名）：{PALETTE_CHOICES}。凭其身份、性格与处世气度择一最贴切者。",
             "life_goal": "人生目标（一句话、≤50字），可选，也可以没有，不用硬编。用第一人称。",
             "long_term_goals": ["当前阶段的长期目标（一句话、每条≤40字，最多3条）。长期目标是要走很长一段路才能推进或守住的【方向】：比手头的小事远得多、又不像 life_goal 那样遥不可及，需持续奋斗、不会轻易到手，且是个能长出多种走法的方向，而非某一桩具体的事或一次具体行动。以角色自身当下的视角表述意图，不得引用任何事件的史称或事后命名，不得把尚未发生的事件当作已确定的未来，这个很重要！"],
-            "hard_constraints": ["<一句话、≤40字不可逾越的底线，描述该角色绝对不会做或绝对会坚守的事，至多3条，也可以一条都没有>"],
-            "initial_location": "初始地点（使用可用地点列表中的 name 字段值），需要结合角色本身和开局情景选择地点，不要乱选。",
+            "initial_location": f"初始地点（{LOCATION_NAME_RULE}），需要结合角色本身和开局情景选择地点，不要乱选。",
             "initial_emotion": {
                 "primary": f"情绪类型（{EmotionType.prompt_list()} 之一）",
                 "intensity": EMOTION_INTENSITY_DEFINITION,
@@ -336,7 +335,8 @@ class AgentGenerator:
             # From ThemeAnalyzer, not this call: only that call sees the whole cast, so only it can
             # keep cross-figure facts (how many hold which secret) consistent.
             secret=figure.secret,
-            hard_constraints=coerce_str_list(payload.get("hard_constraints")),
+            # Not generated: a generated bottom line is mostly a stock moral guard rail that keeps
+            # every character from crossing the story's lines. The setup can still give one.
             innate_needs=build_innate_needs(_active, _hidden),
         )
         return AgentDefinition(

@@ -241,6 +241,8 @@ async def test_a_leg_of_the_road_moves_the_anchor_with_the_body() -> None:
     class _Walker:
         """An executor that only moves one step forward: it changes the world in tick and emits no narration."""
 
+        momentary = False
+
         async def tick(self, state, step, *, agents, environment, message_system):  # noqa: ANN001
             environment.move_body(body_id=state.initiator_id, location_id="garden")
             return []

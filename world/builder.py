@@ -7,6 +7,7 @@ from typing import Any, Callable, Sequence, TypeVar
 
 from core.container import Container
 from core.context import get_log_context, set_log_context
+from core.interfaces.place import SubPlace
 from core.interfaces.trace import Stage
 from core.logging import get_logger
 from core.interfaces.world_config import WorldConfig
@@ -18,6 +19,7 @@ from world.models import (
 from world.setup import MapPlaces, WorldSetup
 from world.builders.agent_generator import AgentGenerator
 from world.builders.cast_designer import CastDesigner
+from world.builders.sub_place_generator import SubPlaceGenerator
 from world.builders.template_selector import TemplateSelector
 from world.builders.theme_analyzer import ThemeAnalyzer
 
@@ -32,6 +34,7 @@ class WorldBuilder:
     def __init__(self, container: Container) -> None:
         self._container = container
         self._template_selector = TemplateSelector(container.llm_router)
+        self._sub_place_generator = SubPlaceGenerator(container.llm_router)
         self.theme_analyzer = ThemeAnalyzer(container.llm_router)
         self.agent_generator = AgentGenerator(container.llm_router)
         self._cast_designer = CastDesigner(container.llm_router)
@@ -57,7 +60,8 @@ class WorldBuilder:
         builder picks the one the theme belongs on (see ``TemplateSelector``).
         Passing exactly one means "this map, no choice"; passing none is an error
         (there is no default map). Choosing comes first because ``ThemeAnalyzer``
-        places the whole cast into that map's locations.
+        places the whole cast into that map's locations; the theme's sub-places
+        come next, so it can place people and things by their names too.
 
         ``on_phase`` is an optional tuning observation hook (see ``tuning/``),
         invoked with ``(phase_name, product)`` after each build sub-step. It must
@@ -80,17 +84,21 @@ class WorldBuilder:
                     "world_build.template_selection",
                     active_world_config.to_runtime_context(),
                 )
+            sub_places = await self._sub_place_generator.generate(theme, active_world_config)
+            if on_phase is not None:
+                on_phase("world_build.sub_places", {"sub_places": [s.as_dict() for s in sub_places]})
+            locations = _world_config_locations(active_world_config, sub_places)
             analysis = await self.theme_analyzer.analyze(
                 theme,
                 world_context=active_world_config.to_runtime_context(),
                 min_agents=min_agents,
                 max_agents=max_agents,
                 max_npcs=max_npcs,
-                available_locations=_world_config_locations(active_world_config),
+                available_locations=locations,
             )
-            _canonicalize_analysis_locations(analysis, active_world_config)
-            _drop_seeds_shadowing_locations(analysis, active_world_config)
-            _canonicalize_seed_locations(analysis, active_world_config)
+            analysis.key_locations = locations
+            _drop_seeds_shadowing_locations(analysis, active_world_config, sub_places)
+            _canonicalize_seed_locations(analysis, active_world_config, sub_places)
             _purge_orphan_references(analysis)
             if on_phase is not None:
                 on_phase("world_build.theme_analysis", analysis)
@@ -105,13 +113,13 @@ class WorldBuilder:
             if on_phase is not None:
                 on_phase("world_build.cast_design", cast_design)
             agent_definitions = await self.agent_generator.generate(analysis, cast_design)
-            _canonicalize_agent_locations(agent_definitions, active_world_config)
+            _canonicalize_agent_locations(agent_definitions, active_world_config, sub_places)
             if on_phase is not None:
                 on_phase("world_build.agent_generation", agent_definitions)
             initializer = WorldInitializer(self._container, max_npcs=max_npcs)
             setup = await initializer.prepare(
                 world_id,
-                WorldSetup.from_build(theme, analysis, agent_definitions),
+                WorldSetup.from_build(theme, analysis, agent_definitions, sub_places),
                 active_world_config,
             )
             logger.info(
@@ -168,20 +176,23 @@ def _purge_orphan_references(analysis: ThemeAnalysis) -> None:
 
 
 
-def _world_config_locations(world_config: WorldConfig) -> list[LocationSeed]:
-    """Every place on this map, presented by its name (falling back to the id only if unnamed).
+def _world_config_locations(
+    world_config: WorldConfig, sub_places: Sequence[SubPlace] = (),
+) -> list[LocationSeed]:
+    """Every place on this map, presented by its name (falling back to the id only if unnamed),
+    with the names of its sub-places.
 
     This list goes into build-time prompts (entity placement, agents' starting locations), so it
     must carry names. An id is a code-layer coordinate, and feeding it to the LLM is a layer leak:
     the model picks a spot by `xuanwu_gate` and that id then lands verbatim in the world asset and
-    in post-hoc audit text. Mapping a name back to an id is ``WorldConfig.resolve_location_id``'s
-    job (it accepts ids, aliases and display names), so the upward side has no reason to use ids
-    as names.
+    in post-hoc audit text. Mapping a name back to an id is ``_location_id``'s job, so the upward
+    side has no reason to use ids as names.
     """
     return [
         LocationSeed(
             name=str(getattr(place, "name", "") or place_id),
             description=str(getattr(place, "description", "")),
+            sub_places=tuple(s.name for s in sub_places if s.location_id == place_id),
         )
         for place_id, place in world_config.get_places().items()
     ]
@@ -190,21 +201,26 @@ def _world_config_locations(world_config: WorldConfig) -> list[LocationSeed]:
 def _drop_seeds_shadowing_locations(
     analysis: ThemeAnalysis,
     world_config: WorldConfig,
+    sub_places: Sequence[SubPlace] = (),
 ) -> None:
-    """Drop world_entity_seeds whose name is already a location on the map.
+    """Drop thing seeds named like a location or a sub-place, and NPC seeds named like a sub-place.
 
-    The map is the single source of truth for locations. The LLM sometimes generates an entity
-    seed for an existing location (usually a landmark, e.g. "玄武门"), so the same name appears
-    twice in the directory (an enterable location and a non-enterable entity), ambiguous for both
-    narrative and addressing.
+    The map is the single source of truth for locations, the sub-places for the spots inside them.
+    The LLM sometimes names a thing after one of them (usually a landmark, e.g. "玄武门"), or an NPC
+    after the spot they work at (a clerk called "旅馆前台" beside the sub-place "旅馆前台"), so one
+    name answers to two referents in the directory, ambiguous for both narrative and addressing.
+    The place stands: people and things are already placed by its name.
 
-    Match on exact identity only (location id / display name / alias, by ``name_key``), the same
-    rule ``WorldSetup.validate`` holds a revised thing to. Don't use ``resolve_location_id``: its
-    substring fallback would also kill legitimate landmarks like "玄武门前的石狮". No type filter:
+    Each kind is held to the rule ``WorldSetup.validate`` holds a revised one to, so a build never
+    reaches validation with a collision it could have repaired: things clash with places and
+    sub-places, NPCs with sub-places. Match on exact identity only (location id / display name /
+    alias / sub-place name, by ``name_key``). Don't use ``resolve_location_id``: its substring
+    fallback would also kill legitimate landmarks like "玄武门前的石狮". No type filter on things:
     any seed sharing a location's name is the same ambiguity, whether it calls itself an item or
     a landmark.
     """
-    taken = MapPlaces.of(world_config).names
+    sub_place_names = {name_key(s.name) for s in sub_places}
+    taken = MapPlaces.of(world_config).names | sub_place_names
     kept: list[WorldEntitySeed] = []
     for seed in analysis.world_entity_seeds:
         if name_key(seed.name) in taken:
@@ -219,25 +235,33 @@ def _drop_seeds_shadowing_locations(
             continue
         kept.append(seed)
     analysis.world_entity_seeds = kept
+    kept_npcs: list[NpcSeed] = []
+    for npc in analysis.npc_seeds:
+        if name_key(npc.name) in sub_place_names:
+            logger.warning(
+                "npc_seed_shadows_sub_place",
+                extra={"seed_name": npc.name, "location": npc.location},
+            )
+            continue
+        kept_npcs.append(npc)
+    analysis.npc_seeds = kept_npcs
 
 
-def _canonicalize_analysis_locations(
-    analysis: ThemeAnalysis,
-    world_config: WorldConfig,
-) -> None:
-    locations = _world_config_locations(world_config)
-    if locations:
-        analysis.key_locations = locations
-
-
-def _location_id(world_config: WorldConfig, requested: str, *, name: str) -> str:
+def _location_id(
+    world_config: WorldConfig, sub_places: Sequence[SubPlace], requested: str, *, name: str,
+) -> str:
     """Where ``name`` stands, as a location id, on the map's own rules.
 
-    After the build every location in the setup is an id: nothing re-reads location text, so the
-    world needs no aliases and resolves the same way every time it is materialized. Text no place
-    answers to falls back to the first location: someone or something in the wrong place is
-    still usable, one missing from the world isn't.
+    A sub-place's name resolves to its place first, before the map's substring fallback can read
+    "承天门街" (in 皇城) as 承天门. After the build every location in the setup is an
+    id: nothing re-reads location text, so the world needs no aliases and resolves the same way
+    every time it is materialized. Text nothing answers to falls back to the first location:
+    someone or something in the wrong place is still usable, one missing from the world isn't.
     """
+    key = name_key(requested)
+    for sub_place in sub_places:
+        if name_key(sub_place.name) == key:
+            return sub_place.location_id
     resolved = world_config.resolve_location_id(requested)
     if resolved is not None:
         return resolved
@@ -251,9 +275,13 @@ def _location_id(world_config: WorldConfig, requested: str, *, name: str) -> str
     return fallback
 
 
-def _canonicalize_seed_locations(analysis: ThemeAnalysis, world_config: WorldConfig) -> None:
+def _canonicalize_seed_locations(
+    analysis: ThemeAnalysis, world_config: WorldConfig, sub_places: Sequence[SubPlace] = (),
+) -> None:
     def placed(seed: _Seed) -> _Seed:
-        return dataclasses.replace(seed, location=_location_id(world_config, seed.location, name=seed.name))
+        return dataclasses.replace(
+            seed, location=_location_id(world_config, sub_places, seed.location, name=seed.name),
+        )
 
     analysis.npc_seeds = [placed(seed) for seed in analysis.npc_seeds]
     analysis.world_entity_seeds = [placed(seed) for seed in analysis.world_entity_seeds]
@@ -262,8 +290,9 @@ def _canonicalize_seed_locations(analysis: ThemeAnalysis, world_config: WorldCon
 def _canonicalize_agent_locations(
     agent_definitions: Sequence[AgentDefinition],
     world_config: WorldConfig,
+    sub_places: Sequence[SubPlace] = (),
 ) -> None:
     for definition in agent_definitions:
         definition.initial_location = _location_id(
-            world_config, definition.initial_location, name=definition.soul.name,
+            world_config, sub_places, definition.initial_location, name=definition.soul.name,
         )

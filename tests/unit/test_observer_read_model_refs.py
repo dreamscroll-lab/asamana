@@ -110,6 +110,25 @@ def test_an_entity_is_listed_where_it_is() -> None:
     assert listed == {"ground", "hand"}
 
 
+def test_content_sits_in_the_tier_of_who_can_read_it() -> None:
+    def thing(entity_type: str, presence: str, ref: str) -> dict[str, object]:
+        return {"name": "物", "entity_type": entity_type, "state": "", "presence": presence,
+                "presence_ref": ref, "is_public": True, "content": "字"}
+
+    view = StepView.from_snapshot(snapshot_of(
+        agents={"a": {"agent_id": "a", "agent_name": "甲", "location_id": "loc-gate"}},
+        entities={
+            "stele": thing("landmark", "at_location", "loc-gate"),
+            "letter": thing("item", "at_location", "loc-gate"),
+        },
+    ))
+
+    here = view.locations["loc-gate"].entities
+    # Fixed at a place: everyone present reads it. Lying about: only whoever picks it up.
+    assert (here["stele"].content, here["stele"].private.content) == ("字", "")
+    assert (here["letter"].content, here["letter"].private.content) == ("", "字")
+
+
 def test_dialogue_turns_name_their_speaker_by_id() -> None:
     view = StepView.from_snapshot(snapshot_of(records=[{
         "agent_id": "a", "location_id": "loc-gate",

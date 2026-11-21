@@ -89,8 +89,8 @@ class WorldEntity:
     # is about, and registration order would push it behind every seed.
     created_step:   int = 0
     # What it carries: the words in a letter, the figures in a ledger, the inscription on a stele;
-    # description only says what it looks like. Who can read it is decided by ``readable_by``, not
-    # ``is_public``: seeing that it's there isn't reading what it says.
+    # description only says what it looks like. Who can read it is decided by ``readable_by``
+    # (``content_is_public``), not ``is_public``: seeing that it's there isn't reading what it says.
     content:        str = ""
 
     # -- derived read-only placement views (single source of truth = presence) --
@@ -120,13 +120,23 @@ class WorldEntity:
     def readable_by(self, viewer_id: str) -> bool:
         """Whether this person can read ``content`` right now.
 
-        Whoever holds it can read it; anything fixed at a location (a stele, a notice) can be read by
-        everyone present. Something in someone else's hands or lying on the ground has to be picked up
-        first: seeing a letter from across the room isn't seeing what's written on it.
+        Whoever holds it can read it; when ``content_is_public``, so can everyone present.
+        Something in someone else's hands or lying on the ground has to be picked up first:
+        seeing a letter from across the room isn't seeing what's written on it.
         """
         if self.owner_id is not None:
             return self.owner_id == viewer_id
-        return self.location_id is not None and not self.is_takeable
+        return content_is_public(self.presence, self.entity_type)
+
+
+def content_is_public(presence: EntityPresence, entity_type: WorldEntityType) -> bool:
+    """Whether what a thing carries is readable by everyone present: it is fixed at a place (a
+    stele, a notice). Otherwise its content is private to whoever holds it.
+
+    The one statement of this rule. ``WorldEntity.readable_by`` asks it of a live entity, the
+    observer's read model asks it of a snapshot payload to put content in the right tier.
+    """
+    return presence is EntityPresence.AT_LOCATION and not entity_type.is_takeable
 
 
 @dataclass

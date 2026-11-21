@@ -26,6 +26,8 @@ import {
 import { reportedDead } from "../lib/agentState";
 
 const DEAD_COLOR = 0x5a606b; // grayed-out token for a fallen agent
+// How solid a fallen body is drawn; the scene's update() composes it with the focus dim.
+export const DEAD_ALPHA = 0.5;
 
 // The vitality bar shows only below this, so it never reads as an always-on game HUD.
 const VIT_SHOW_BELOW = 0.85;
@@ -293,7 +295,6 @@ export class BodyRig {
     // Revive on a scrub back before the death. Keyed on tok.dead, not the sprite's angle:
     // death uses the `down` frame and never rotates.
     if (tok.dead) { tok.sprite.setAngle(0).clearTint(); this.applyPose(tok, "idle"); }
-    tok.baseAlpha = 1;
     tok.dead = false;
     this.setDeadMark(tok, false);
     this.updateVitalityBar(tok, state.vitality ?? 1, false);
@@ -336,7 +337,6 @@ export class BodyRig {
     // The sheet's `down` frame, not the standing figure rotated (reads as a tipped signboard).
     this.applyPose(tok, "down");
     tok.sprite.setTint(DEAD_COLOR);
-    tok.baseAlpha = 0.5;
     tok.dead = true;
     this.setDeadMark(tok, true);
     this.updateVitalityBar(tok, 0, true);

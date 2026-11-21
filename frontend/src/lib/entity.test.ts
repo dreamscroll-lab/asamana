@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { entityTipLines } from "./entity";
 
-const letter = { name: "密信", state: "intact", description: "一封火漆封口的信", private: { content: "三日后子时，玄武门" } };
+const letter = { name: "密信", state: "intact", description: "一封火漆封口的信", content: "", private: { content: "三日后子时，玄武门" } };
 
 describe("物的悬停卡", () => {
   it("描述与内容都印,内容加引号、身份是 content", () => {
@@ -19,8 +19,13 @@ describe("物的悬停卡", () => {
     expect(entityTipLines({ ...letter, state: "已拆封" })[0].text).toBe("密信 · 已拆封");
   });
 
+  it("公开的内容(碑文)同样印出", () => {
+    const stele = { name: "石碑", state: "intact", description: "", content: "敢有擅入者斩", private: { content: "" } };
+    expect(entityTipLines(stele).at(-1)).toEqual({ text: "「敢有擅入者斩」", tone: "content" });
+  });
+
   it("没有内容就没有那一行,不印空引号", () => {
-    expect(entityTipLines({ ...letter, private: { content: "" } }).map((l) => l.tone)).toEqual(["head", "background"]);
-    expect(entityTipLines({ name: "刀", state: "intact", description: "", private: { content: "" } }).map((l) => l.text)).toEqual(["刀"]);
+    expect(entityTipLines({ ...letter, content: "", private: { content: "" } }).map((l) => l.tone)).toEqual(["head", "background"]);
+    expect(entityTipLines({ name: "刀", state: "intact", description: "", content: "", private: { content: "" } }).map((l) => l.text)).toEqual(["刀"]);
   });
 });

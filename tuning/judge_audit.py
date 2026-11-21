@@ -432,7 +432,7 @@ def _beat_legend() -> list[str]:
             "feedback 反馈：结果落地后他的反应，以及目标推进到哪一步",
         ]),
         "  （拍名后缀是这次调用的 scene，只用来区分同一拍里的不同调用（如情绪自评与目标进展），"
-        "是代码层标记，不必解读；「承上·」前缀表示它属于步首那段了结，不是新起的一轮）",
+        "是代码层标记，不必解读；「承上·」前缀表示它属于步首对他手上那件事的处理（了结它，或掂量要不要放下它），不是新起的一轮）",
     ]
 
 
@@ -540,6 +540,19 @@ def init_block(view: WorldAuditView) -> str:
     # Without this block the judge sees half the world and can't judge what this opening allows besides
     # talking. Placement (where) must be included: whether things and people sit where the conflict is
     # is something this audit can judge.
+    # The whole map: every place, with its own description and the theme's sub-places hung under
+    # it. The judge reads placement (above and below) against it and judges whether each sub-place
+    # belongs where it was put. A place without sub-places is still listed: the judge treats this
+    # list as every place there is.
+    places = [p for p in init.get("places") or [] if isinstance(p, dict)]
+    if places:
+        lines.append(_sub_sep("地图上的全部地点及其子地点（开局落位以此为准；判子地点是否确属所在地点、粒度是否恰当、是否服务核心张力）"))
+    for p in places:
+        desc = f"：{p.get('description')}" if p.get("description") else ""
+        lines.append(f"- {p.get('name')}{desc}")
+        if p.get("sub_places"):
+            lines.append(f"    子地点：{_join(p['sub_places'])}")
+
     entities = init.get("world_entity_seeds") or []
     npcs = init.get("npcs") or []
     if entities or npcs:
@@ -652,11 +665,13 @@ def _index_gloss(c: StageCall) -> list[str]:
         for idx in (raw if isinstance(raw, list) else ([] if raw is None else [raw])):
             if name := _menu_lookup(c.extra.get(menu_key), idx):
                 pairs.append(f"{slot} #{idx} = {name}")
-    # WORK's updated_index points to which of the things in hand (0 = none of them); the list is declared by that adjudication point.
-    if (ui := out.get("updated_index")) is not None and "updated_index" in str(out):
-        name = _menu_lookup(c.extra.get("item_candidates"), ui)
-        pairs.append(f"updated_index #{ui} = {name or '（一件也没动到）'}"
-                     if c.extra.get("item_candidates") is not None else "")
+    # A change's entity (WORK, a conversation's things) points into the things that call declared;
+    # 0 is a thing made on the spot.
+    if c.extra.get("item_candidates") is not None:
+        for ch in out.get("changes") or []:
+            if isinstance(ch, dict) and (ei := ch.get("entity")) is not None:
+                name = _menu_lookup(c.extra.get("item_candidates"), ei)
+                pairs.append(f"changes.entity #{ei} = {name or '（当场新做出来的）'}")
     for g in out.get("goals") or []:
         if isinstance(g, dict) and (txt := _menu_lookup(c.extra.get("goal_texts"), g.get("index"))):
             pairs.append(f"目标 #{g['index']} = {txt}")
@@ -694,14 +709,19 @@ def agent_step_block(view: WorldAuditView, aid: str, sv: AgentStepView) -> str:
     lines.append(_sub_sep("人设基线（每一拍共同的输入；据此判自称的身份 / 关系有没有出处）"))
     lines.extend(_persona_baseline_lines(name, kf.get(name, {}), _personas_by_id(view).get(aid) or {}))
     units = sass_units(sv)
+    # Read off the step-start beats themselves: a step that is all settlement isn't split into
+    # phases, so the summary can't say which part was the settlement. Weighing whether to stop is
+    # no sass beat, so a segment shown here never holds only that.
+    headings = _settlement_headings(
+        settled=any(u.call.stage in ("action", "feedback") for u in units if u.carried), kept_on=False)
     shown_carried = False
     for unit in units:
         if unit.carried and not shown_carried:
             shown_carried = True
-            lines.append(_sub_sep("承上：这一步开头，他手上那件事先了结了（当场被中断，或跨多步的那一动走完）"))
+            lines.append(_sub_sep(headings[0]))
         elif shown_carried and not unit.carried:
             shown_carried = False
-            lines.append(_sub_sep("了结之后，这一步他身上接着发生的"))
+            lines.append(_sub_sep(headings[1]))
         c = unit.call
         if unit.label is None:
             lines.append(f"\n· {c.stage}／{c.scene}  ⚠该调用失败或输出无法解析，没有可判的产出")
@@ -814,6 +834,119 @@ def _numbered(items: list, render) -> list[str]:
     return out
 
 
+class _Act(NamedTuple):
+    """One act of a phase with everything that is its: results, his reactions, the goal batches it
+    moved, the open matters it left, and his subjective memory of it."""
+
+    number: str  # "其2"; "" when the phase holds one act
+    results: list
+    reactions: list
+    goals: list
+    residue: list
+    memories: list
+
+
+def _acts(s: dict[str, Any]) -> tuple[list[_Act], _Act]:
+    """A phase's acts in the order they landed, plus what no act claims (number "").
+
+    Joined by execution id. Ordered by landing: feedback runs act by act as acts settle (a momentary
+    act before the body-occupying one), but every adjudication comes before any feedback, so the
+    results' own order would put a talk ahead of the letter issued before it. A talk's transcript
+    and its own memory are two results of one act and share its number.
+
+    Only a result or a feedback call opens an act. Open matters and memories join an act already
+    there: one carrying no id, or another execution's, is never an act of his own this step, so it
+    stays unclaimed instead of opening an act with nothing but a memory. With one act, everything
+    unclaimed is its.
+    """
+    by: dict[str, _Act] = {}
+    loose = _Act("", [], [], [], [], [])
+
+    def act(key: str) -> _Act:
+        return by.setdefault(key, _Act("", [], [], [], [], []))
+
+    def paired(key: str) -> list[tuple[Any, Any]]:
+        """Each value of ``key`` with the execution it belongs to, None where none was recorded."""
+        ids = s.get(f"{key}_of") or []
+        return [(x, ids[i] if i < len(ids) else None) for i, x in enumerate(s.get(key) or [])]
+
+    for ap in s.get("appraisal") or []:
+        (act(str(ap["execution_id"])) if ap.get("execution_id") else loose).reactions.append(ap)
+    for batch, eid in paired("goal_progress"):
+        (act(str(eid)) if eid else loose).goals.append(batch)
+    for i, r in enumerate(s.get("results") or []):
+        key = (r.get("execution_id") or r.get("did")) if isinstance(r, dict) else None
+        act(str(key) if key else f"#{i}").results.append(r)
+    for field, key in (("residue", "residue"), ("memories", "memory")):
+        for item, eid in paired(key):
+            getattr(by.get(str(eid)) or loose if eid else loose, field).append(item)
+    groups = list(by.values())
+    if len(groups) == 1:
+        for field in ("reactions", "goals", "residue", "memories"):
+            getattr(groups[0], field).extend(getattr(loose, field))
+        loose = _Act("", [], [], [], [], [])
+    acts = [g._replace(number=f"其{n}" if len(groups) > 1 else "") for n, g in enumerate(groups, 1)]
+    return acts, loose
+
+
+def _reaction_befores(s: dict[str, Any]) -> dict[int, Any]:
+    """Each reaction's mood before it, by id: the perception's for the first, the reaction before
+    for the next. Reactions land one after another, so don't start each from the perception."""
+    before = (s.get("emotion") or {}).get("primary")
+    out: dict[int, Any] = {}
+    for ap in s.get("appraisal") or []:
+        out[id(ap)] = before
+        before = ap.get("emotion") or before
+    return out
+
+
+def _own_act(acts: list[_Act], name: str) -> _Act | None:
+    """The act he started himself (the one this phase's decision is about), not one he was drawn into."""
+    return next((a for a in acts if any(
+        isinstance(r, dict) and r.get("initiator") in (None, name)
+        and not r.get("joined") and not r.get("acted_upon")
+        for r in a.results)), None)
+
+
+def _pending_join(s: dict[str, Any], sps: Any) -> str:
+    """The act his body was drawn into this phase, when no result of it is here to say so: it runs
+    on past this step. "" when there is none, or its result already tells it."""
+    j = s.get("joined_execution")
+    if not isinstance(j, dict) or any(isinstance(r, dict) and r.get("execution_id") == j.get("execution_id")
+                                      for r in s.get("results") or []):
+        return ""
+    n = j.get("spans_steps")
+    when = (f"要占 {describe_duration(n, sps)}，这一步还没走完，结果要到它走完那一步才有"
+            if isinstance(n, int) and n > 1 and sps else "这一步没有结果落地")
+    return f"这一动由 {j.get('initiator') or '某人'} 发起：{j.get('purpose') or ''}（{when}）"
+
+
+def _settlement_headings(*, settled: bool, kept_on: bool) -> tuple[str, str]:
+    """The headings around a cell's step-start segment: before it, and before the round after it.
+
+    The segment is whatever the engine did with the act in hand at step start
+    (``settles_prior_action``), which doesn't always end it: he can weigh dropping it and keep on, and
+    the act runs on. So say what the segment holds, not what segments usually hold: a heading saying
+    the act ended, over a segment where nothing ended, reads as a result gone missing.
+    ``settled``: a result or a reaction landed in it. ``kept_on``: he weighed stopping and chose not to.
+    """
+    if settled:
+        return ("承上：这一步开头，他手上那件事先了结了（当场被中断，或跨多步的那一动走完）",
+                "了结之后，这一步他身上接着发生的")
+    if kept_on:
+        return ("承上：这一步开头，他掂量过要不要放下手上那件事，没有放下（那件事这一步没有了结）",
+                "掂量之后，这一步他身上接着发生的")
+    return ("承上：这一步开头，先处理了他手上那件事，没有结果落地（那件事这一步没有了结）",
+            "此后，这一步他身上接着发生的")
+
+
+def _phase_headings(carried: dict[str, Any]) -> tuple[str, str]:
+    """``_settlement_headings`` for a cell split into the carried phase and the round after it."""
+    return _settlement_headings(
+        settled=bool(carried.get("results") or carried.get("appraisal")),
+        kept_on=(carried.get("interrupt") or {}).get("interrupt") is False)
+
+
 def _phases(s: dict[str, Any]) -> list[dict[str, Any]]:
     """Phase order within a cell: the engine settles the action in hand first and then starts a new
     round, so with carry-over there are two segments, carry-over first (see audit_reconstruct.summarize).
@@ -834,20 +967,22 @@ def _step_lines(sv: AgentStepView, *, name: str, sps: Any) -> list[str]:
     """
     phases = _phases(sv.summary)
     lines: list[str] = []
+    headings = _phase_headings(phases[0]) if len(phases) > 1 else None
     for i, phase in enumerate(phases):
-        if len(phases) > 1:
-            lines.append("  ── 承上：这一步开头，他手上那件事先了结了（当场被中断，或跨多步的那一动走完）──"
-                         if i == 0 else "  ── 了结之后，这一步他身上接着发生的 ──")
+        if headings:
+            lines.append(f"  ── {headings[min(i, 1)]} ──")
         lines.extend(_phase_lines(phase, name=name, sps=sps))
     return lines
 
 
 def _phase_lines(s: dict[str, Any], *, name: str, sps: Any) -> list[str]:
-    """One phase's content, laid out along the cognition loop: interrupt → perception → motivation → decision → action → feedback → memory → step end.
+    """One phase's content, laid out along the cognition loop: interrupt → perception → motivation →
+    decision, once for the phase; then each act as one group (action → feedback → goals → memory,
+    see ``_action_lines``); then step end.
 
-    Two things can still land in one phase (pulled into someone else's action in the step it
-    settles); they're then numbered and listed. Merging would pair A's result with B's inputs, and
-    dropping one leaves the judge unable to tell anything is missing.
+    Two acts can land in one phase (a momentary act beside the body-occupying act he was drawn
+    into). Merging them would pair A's result with B's inputs, and dropping one leaves the judge
+    unable to tell anything is missing.
     """
     lines: list[str] = _mind_lines(s, "perception") + _mind_lines(s, "interrupt")
     itr = s.get("interrupt") or {}
@@ -888,17 +1023,7 @@ def _phase_lines(s: dict[str, Any], *, name: str, sps: Any) -> list[str]:
     lines.extend(_goal_lines("  新短期目标", s.get("short_term_goals")))
     lines.extend(_mind_lines(s, "decision"))
     lines.extend(_decision_lines(s, sps))
-    lines.extend(_action_lines(s, name))
-    for ap in s.get("appraisal") or []:
-        before = emo.get("primary")
-        arrow = f"{before}→{ap['emotion']}" if before and ap.get("emotion") else ap.get("emotion")
-        lines.append(f"  反馈｜输出：情绪 {arrow}(强度{ap.get('intensity')},情绪正负值{ap.get('valence')})")
-    lines.extend(_numbered(s.get("goal_progress") or [],
-                           lambda g, tag: _goal_progress_lines(g, tag)))
-    for res in s.get("residue") or []:
-        lines.extend(_goal_lines("新留下的未了事项", res))
-    for mem in s.get("memory") or []:
-        lines.append(f"  记忆(主观感受)：{mem}")
+    lines.extend(_action_lines(s, name, sps))
     lines.extend(_step_level_lines(s))
     return lines
 
@@ -964,7 +1089,7 @@ def _decision_lines(s: dict[str, Any], sps: Any) -> list[str]:
         # The action he was folded into doesn't necessarily settle this step: a multi-step interaction only
         # yields a result when it finishes, and until then he has no action under his name. Pointing to an
         # absent "action below" sends the judge looking for nothing, and it reads as a gap in this step's record.
-        where = ("（见下方「行动」）" if (s.get("results") or s.get("joined"))
+        where = ("（见下方「行动」）" if (s.get("results") or s.get("joined") or s.get("joined_execution"))
                  else "（那一动这一步还没走完，结果要到它走完那一步才有）")
         return [{
             "conscripted": f"  【本步他没有自己的行动】他被并进了别人的行动{where}，"
@@ -999,36 +1124,83 @@ def _decision_lines(s: dict[str, Any], sps: Any) -> list[str]:
     return out
 
 
-def _action_lines(s: dict[str, Any], name: str) -> list[str]:
-    """Action: what actually happened to him this step. Being invited in / acted upon must be stated: those aren't actions he decided on."""
+_JOINED_NOTE = "（他被他人邀入此互动，执行的不是自己决定的动作——属正常调度机制）"
+_ACTED_UPON_NOTE = "（他是他人行动的对象，下方结果是被施加之后的反应，不是他自己决定或执行的动作）"
+
+
+def _action_lines(s: dict[str, Any], name: str, sps: Any = None) -> list[str]:
+    """What actually happened to him this phase, one act at a time: the act (and, if it wasn't his
+    own, who drew him in or what was done to him), its result, his reaction, the goals it moved, the
+    matters it left open, his subjective memory of it.
+
+    Grouped by act, not by beat: with a momentary act beside a body-occupying one, beat by beat would
+    list two results, then two reactions, then two goal batches, and the judge would have to pair
+    them up across each other. Each act's feedback runs as one stretch anyway; only adjudication
+    runs for all acts first, and the raw call order stays in sass. What no act claims follows the
+    acts.
+    """
+    acts, loose = _acts(s)
     lines: list[str] = []
+    # Being drawn in or acted upon is said with that act; one no result carries (a talk that hasn't
+    # finished this step) is said up front, or it would vanish.
+    carried = {(k, r[k]) for a in acts for r in a.results if isinstance(r, dict)
+               for k in ("joined", "acted_upon") if r.get(k)}
     for ci in s.get("joined") or []:
-        lines.append(f"  行动｜被邀入：{ci}"
-                     "（他被他人邀入此互动，执行的不是自己决定的动作——属正常调度机制）")
+        if ("joined", ci) not in carried:
+            lines.append(f"  行动｜被邀入：{ci}{_JOINED_NOTE}")
     for au in s.get("acted_upon") or []:
-        lines.append(f"  行动｜被施加：{au}"
-                     "（他是他人行动的对象，下方结果是被施加之后的反应，不是他自己决定或执行的动作）")
-    results = s.get("results") or []
-    peer = s.get("peer") or (s.get("decision") or {}).get("target")
-    shown: set[str] = set()  # several results from the same action (dialogue + own memory) share one input; report it once
-
+        if ("acted_upon", au) not in carried:
+            lines.append(f"  行动｜被施加：{au}{_ACTED_UPON_NOTE}")
+    if pending := _pending_join(s, sps):
+        lines.append(f"  行动｜被并进：{pending}（他的身体被并进了这一动，不是他自己决定的——属正常调度机制）")
     said = (s.get("decision") or {}).get("message_content") or ""
-    said_done = False
+    own = _own_act(acts, name)
+    if said and own is None:
+        # No result of his own carries the words (the act came to nothing ruled, a null step), but they
+        # are still what he decided to send this step.
+        lines.append(f"  行动｜输入：原话:{said}")
+    if len(acts) > 1:
+        lines.append(f"  （这一步他身上落了 {len(acts)} 件事，按落地先后各成一组：每组是那件事本身、"
+                     "他对它的反应、它推动的目标与留下的记忆）")
+    befores = _reaction_befores(s)
+    for act in acts:
+        if act.number:
+            lines.append(f"  ┈┈ {act.number} ┈┈")
+        lines.extend(_act_lines(act, s, name, said if act is own else "", befores))
+    lines.extend(_act_lines(loose, s, name, "", befores))
+    return lines
 
-    def _one(r: Any, tag: str) -> list[str]:
-        nonlocal said_done
-        head = ""
+
+def _act_lines(act: _Act, s: dict[str, Any], name: str, said: str, befores: dict[int, Any]) -> list[str]:
+    """One act's group. ``said`` is the words he decided to send, given only to his own act: on an act
+    he was drawn into, a letter beside a talk would read as said in the talk."""
+    lines: list[str] = []
+    for key, label, note in (("joined", "被邀入", _JOINED_NOTE), ("acted_upon", "被施加", _ACTED_UPON_NOTE)):
+        for x in dict.fromkeys(r[key] for r in act.results if isinstance(r, dict) and r.get(key)):
+            lines.append(f"  行动｜{label}：{x}{note}")
+    if said and not any(isinstance(r, dict) and r.get("did") for r in act.results):
+        # No result says what the act was, so no input line would carry the words.
+        lines.append(f"  行动｜输入：原话:{said}")
+        said = ""
+    fallback_peer = s.get("peer") or (s.get("decision") or {}).get("target")
+    shown: set[str] = set()  # a talk's transcript and own memory share one input; say it once
+    for r in act.results:
         if isinstance(r, dict) and r.get("did") and r["did"] not in shown:
             shown.add(r["did"])
-            head = _action_input_line(r, name, "" if said_done else said)
-            said_done = said_done or bool(said)
-        return ([head] if head else []) + _action_output_lines(r, name, peer, tag)
-
-    lines.extend(_numbered(results, _one))
-    if said and not said_done:
-        # An action that spans steps from the start (an errand-runner's message, a letter) has no result this
-        # step, but its exact words still belong on the starting step: the settling step has no decision to take them from.
-        lines.append(f"  行动｜输入：原话:{said}")
+            lines.append(_action_input_line(r, name, said))
+            said = ""
+        parts = r.get("participants") if isinstance(r, dict) else None
+        peer = next((p for p in parts if p != name), None) if parts and len(parts) == 2 else None
+        lines.extend(_action_output_lines(r, name, peer or fallback_peer))
+    for ap in act.reactions:
+        before = befores.get(id(ap))
+        arrow = f"{before}→{ap['emotion']}" if before and ap.get("emotion") else ap.get("emotion")
+        lines.append(f"  反馈｜输出：情绪 {arrow}(强度{ap.get('intensity')},情绪正负值{ap.get('valence')})")
+    lines.extend(_numbered(act.goals, lambda g, tag: _goal_progress_lines(g, tag)))
+    for res in act.residue:
+        lines.extend(_goal_lines("新留下的未了事项", res))
+    for mem in act.memories:
+        lines.append(f"  记忆(主观感受)：{mem}")
     return lines
 
 
@@ -1153,16 +1325,21 @@ def _mams_lines(name: str, s: dict[str, Any], *, sps: Any) -> list[str]:
             "【决策（决定要做，实际还没发生）】") if has_act else ""
     phases = _phases(s)
     body: list[str] = []
+    headings = _phase_headings(phases[0]) if len(phases) > 1 else None
     for i, phase in enumerate(phases):
-        if len(phases) > 1:
-            body.append("      · ── 承上：这一步开头，他手上那件事先了结了 ──" if i == 0
-                        else "      · ── 了结之后，这一步他身上接着发生的 ──")
+        if headings:
+            body.append(f"      · ── {headings[min(i, 1)]} ──")
         body.extend(_mams_phase_lines(phase, name, sps=sps))
     return [f"  ● {name}{kind}{at}{tgt}".rstrip(), *body] if body else []
 
 
+_MAMS_JOINED_NOTE = "（执行的不是他自己决定的动作）"
+_MAMS_ACTED_UPON_NOTE = "（下方结果是被施加之后的反应，非他自己所决策 / 所执行）"
+
+
 def _mams_phase_lines(s: dict[str, Any], name: str, *, sps: Any) -> list[str]:
-    """One phase's body in mams: interrupt → what he does → result → emotion → goal progress → long-term goal review."""
+    """One phase's body in mams: interrupt, then each act as one group (what it was → result →
+    emotion → goal progress, as in ``_action_lines``), then long-term goal review."""
     lines: list[str] = []
     dec = s.get("decision") or {}
     results = s.get("results") or []
@@ -1180,61 +1357,91 @@ def _mams_phase_lines(s: dict[str, Any], name: str, *, sps: Any) -> list[str]:
                            "重现，那是被顺延的尝试，不算重复空转。",
             "stood_down": "      · 【本步他没有出手】意图没有被世界接下，未进入世界——不是重复空转。",
         }[why])
+    acts, loose = _acts(s)
+    own = _own_act(acts, name)
+    # Drawn into an act or acted upon: said with that act's result. One no result carries (a talk
+    # that hasn't finished this step) stays up top, or it would vanish.
+    carried_in = {(k, r[k]) for a in acts for r in a.results if isinstance(r, dict)
+                  for k in ("joined", "acted_upon") if r.get(k)}
     for ci in s.get("joined") or []:
-        lines.append(f"      · 【被邀入】{ci}（执行的不是他自己决定的动作）")
+        if ("joined", ci) not in carried_in:
+            lines.append(f"      · 【被邀入】{ci}{_MAMS_JOINED_NOTE}")
     for au in s.get("acted_upon") or []:
-        lines.append(f"      · 【被施加】{au}（下方结果是被施加之后的反应，非他自己所决策 / 所执行）")
+        if ("acted_upon", au) not in carried_in:
+            lines.append(f"      · 【被施加】{au}{_MAMS_ACTED_UPON_NOTE}")
+    if pending := _pending_join(s, sps):
+        lines.append(f"      · 【被并进】{pending}")
     # "What he does" prefers this phase's decision; phases without one (a multi-step action finishing,
     # settling an interrupted action, or being folded into someone else's action) fall back to the
     # landed action's own description, but only one he initiated; otherwise the initiator's first person would be pinned on him.
     body = dec.get("action_description") or next(
         (r["did"] for r in results
-         if isinstance(r, dict) and r.get("did") and r.get("initiator") in (None, name)), "")
+         if isinstance(r, dict) and r.get("did") and r.get("initiator") in (None, name)
+         and not r.get("joined")), "")
     # The exact words sent travel with the action, not on a separate line: split up, the director would
     # have to match the two lines back to the same action across the result and emotion between them.
     # TALK's words are already folded into action_description (decision._bind_talk), so they aren't repeated.
     said = dec.get("message_content") or ""
     did_parts = [x for x in (body, f"原话:{said}" if said and said not in body else "") if x]
-    if did_parts:
-        lines.append("      · 做什么：" + "｜".join(did_parts))
-    if (n := dec.get("spans_steps")) and sps:
-        lines.append(f"      · 【跨多步】这一动要占 {describe_duration(n, sps)}，结果在它走完那一步才有。")
-    if dec.get("rejected"):
-        lines.append("      · 【被判不可行】仲裁当场否了它，当步以失败结算。")
-    # One phase can hold both results he initiated and results others applied to him. When the initiator
-    # isn't him, name the initiator (same as _action_input_line): unnamed it reads as "he did it himself",
-    # and someone else's [success] under "his action was ruled infeasible" reads as a contradiction.
-    for i, r in enumerate(results, 1):
-        by = r.get("initiator")
-        marks = ([f"其{i}"] if len(results) > 1 else []) + ([f"由 {by} 发起"] if by and by != name else [])
-        tag = f"（{'，'.join(marks)}）" if marks else ""
-        succ = r.get("success") if "success" in r else r.get("achieved")
-        mark = "[成功] " if succ is True else ("[失败] " if succ is False else "")
-        if oc := (r.get("outcome") or r.get("fact")):
-            lines.append(f"      · 结果{tag}：{mark}{oc}")
+
+    def _doing(tag: str) -> list[str]:
+        out = [f"      · 做什么{tag}：" + "｜".join(did_parts)] if did_parts else []
+        if (n := dec.get("spans_steps")) and sps:
+            out.append(f"      · 【跨多步】这一动要占 {describe_duration(n, sps)}，结果在它走完那一步才有。")
+        if dec.get("rejected"):
+            out.append("      · 【被判不可行】仲裁当场否了它，当步以失败结算。")
+        return out
+
     # Emotion has two sources, and which one must be stated: perception emotion is how he sees the
     # situation; feedback emotion is his reaction once the result lands. A bare emotion is read as a
     # reaction to the result, which this step may not have (conscripted / interrupted means no result,
     # or the result landed without a feedback emotion). Say "no reaction to a result", not "no result":
     # the latter would contradict a "结果：…" that may already be laid out above.
-    e = s.get("emotion") or {}
-    before = e.get("primary")
-    afters = [a for a in (s.get("appraisal") or []) if a.get("emotion")]
-    last = afters[-1] if afters else None
-    if before and last:
-        lines.append(f"      · 情绪：{before}→{_emo(last['emotion'], last.get('intensity'), last.get('valence'))}")
-    elif last:
-        lines.append(f"      · 情绪（对结果的反应）：{_emo(last['emotion'], last.get('intensity'), last.get('valence'))}")
-    elif before:
-        lines.append(f"      · 情绪（他此刻所感；本步还没有结果的反应）：{_emo(before, e.get('intensity'), e.get('valence'))}")
+    befores = _reaction_befores(s)
+
+    def _reaction(ap: dict, number: str) -> str:
+        after = _emo(ap["emotion"], ap.get("intensity"), ap.get("valence"))
+        before = befores.get(id(ap))
+        if before:
+            return f"      · 情绪{f'（{number}）' if number else ''}：{before}→{after}"
+        return f"      · 情绪（{f'{number}，' if number else ''}对结果的反应）：{after}"
+
     # Goal status transitions: only completed / failed move the plot (in progress = nothing happened; laying it out is noise).
     # Goal text isn't truncated: a half sentence can't say which goal was completed, and that's this cell's only information.
-    trans = [f"{_goal_gist(g.get('text'))}→{_GOAL_STATUS_LABELS.get(g.get('status'), g.get('status'))}"
-             for batch in (s.get("goal_progress") or []) for g in batch
-             if isinstance(g, dict) and g.get("status") in ("completed", "failed")]
-    if trans:
-        lines.append("      · 目标进展：")
-        lines.extend(f"          - {x}" for x in trans)
+    def _transitions(batches: list, tag: str) -> list[str]:
+        trans = [f"{_goal_gist(g.get('text'))}→{_GOAL_STATUS_LABELS.get(g.get('status'), g.get('status'))}"
+                 for batch in batches for g in batch
+                 if isinstance(g, dict) and g.get("status") in ("completed", "failed")]
+        return [f"      · 目标进展{tag}：", *(f"          - {x}" for x in trans)] if trans else []
+
+    # Each act reads whole, in the order the acts landed: what it was (his own doing, or who drew him
+    # in), its result, his reaction to it, the goals it moved. Laid out field by field instead, the
+    # director has to pair a description with a result and a reaction across the other act's lines.
+    if own is None:
+        lines.extend(_doing(""))
+    for act in acts:
+        tag = f"（{act.number}）" if act.number else ""
+        if act is own:
+            lines.extend(_doing(tag))
+        for key, label, note in (("joined", "被邀入", _MAMS_JOINED_NOTE),
+                                 ("acted_upon", "被施加", _MAMS_ACTED_UPON_NOTE)):
+            for x in dict.fromkeys(r[key] for r in act.results if isinstance(r, dict) and r.get(key)):
+                lines.append(f"      · 【{label}】{tag}{x}{note}")
+        for r in act.results:
+            by = r.get("initiator")
+            marks = ([act.number] if act.number else []) + ([f"由 {by} 发起"] if by and by != name else [])
+            rtag = f"（{'，'.join(marks)}）" if marks else ""
+            succ = r.get("success") if "success" in r else r.get("achieved")
+            mark = "[成功] " if succ is True else ("[失败] " if succ is False else "")
+            if oc := (r.get("outcome") or r.get("fact")):
+                lines.append(f"      · 结果{rtag}：{mark}{oc}")
+        lines.extend(_reaction(ap, act.number) for ap in act.reactions if ap.get("emotion"))
+        lines.extend(_transitions(act.goals, tag))
+    lines.extend(_reaction(ap, "") for ap in loose.reactions if ap.get("emotion"))
+    lines.extend(_transitions(loose.goals, ""))
+    e = s.get("emotion") or {}
+    if e.get("primary") and not any(ap.get("emotion") for ap in s.get("appraisal") or []):
+        lines.append(f"      · 情绪（他此刻所感；本步还没有结果的反应）：{_emo(e['primary'], e.get('intensity'), e.get('valence'))}")
     # Long-term goal review: at most a few per run, but the most direct evidence of growth / arc; the director's view can't see only short-term goals.
     # Conclusion only (changed to what / unchanged); the item-by-item thought belongs to sams.
     ltg = s.get("long_term_goals")
@@ -1316,8 +1523,9 @@ def world_block(view: WorldAuditView) -> str:
     going their own way) / dramatic_arc (the conflict-emotion curve) / emergent_novelty (misunderstanding
     / reversal / scheming) / action_efficacy (actions drive the world, not a log of events) /
     persona_worldview (the dead reappearing / timeline / OOC). So it borrows mass's resolved interaction
-    edges (type + target) + persona baseline and sams' cross-step sequence, but compresses each
-    (step, agent) to one line (across all steps × agents, full blocks would blow up the tokens).
+    edges (type + target) + persona baseline and sams' cross-step sequence, but lays each
+    (step, agent) out thinner than sams (``_mams_lines``: no cognition details; across all steps ×
+    agents, sams' full cells would blow up the tokens).
     Long-term ambitions = the convergence target (in the persona baseline).
     """
     init = view.init

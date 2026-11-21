@@ -46,41 +46,42 @@ from agent.actor_operations import (
 from core.context import (
     annotate_call, get_active_call, note_active_call_adoption, note_call_adoption, observe_actor,
 )
-from core.interfaces.action import DialogueTurn, Ref
+from core.interfaces.action import ActionTarget, DialogueTurn, Ref
 from core.interfaces.trace import SUPERSEDED, BeatKind, Stage, TraceSink, record_beat
 from core.prompts import situation_location
 from core.interfaces.actor import (
-    UNREADABLE,
+    ActedEntry,
     ActorAction,
     ActorAmendments,
     ActorAnswer,
     ActorAnswerRejected,
-    ActorDecision,
     ActorConfirmation,
+    ActorDecision,
+    ActorDecisionSummary,
+    ActorDialogueTurn,
+    ActorEntry,
+    ActorIdleAnswer,
     ActorIntent,
     ActorIntentResult,
-    ActorOperations,
-    ActorDecisionSummary,
-    ActorPublicAnswer,
-    ActorIdleAnswer,
-    ActorEntry,
     ActorInterruptAnswer,
     ActorInvitationAnswer,
-    ActorDialogueTurn,
     ActorMind,
+    ActorOperations,
     ActorPace,
+    ActorPublicAnswer,
     ActorTurn,
     AnsweredEntry,
-    Invitation,
     AskedEntry,
     BeganEntry,
     BreakOffEntry,
     Conversation,
     DialogueTurnEntry,
     EndedEntry,
+    Invitation,
     ProgressedEntry,
     SaidEntry,
     TurnKind,
+    UNREADABLE,
 )
 from core.logging import get_logger
 from core.serialization import dump_json
@@ -254,6 +255,13 @@ class ActorCoordinator:
         self._freed = True
         self._record(EndedEntry(step=step, fact=fact, succeeded=succeeded, happened=happened))
 
+    def acted(self, *, step: int, description: str, fact: str, succeeded: bool, happened: bool) -> None:
+        # Its own act is over: asked at either pace once the body is free, as after ``ended``.
+        self._freed = True
+        self._record(ActedEntry(
+            step=step, description=description, fact=fact, succeeded=succeeded, happened=happened,
+        ))
+
     def decides_this_step(self, *, step: int, signals: "PerceivedSignals") -> bool:
         # Weighed first, never short-circuited: the turn's reason needs it at either pace.
         reached = self._reached(step, signals)
@@ -413,6 +421,7 @@ class ActorCoordinator:
         base: ActorAction | None = None
         reading = ""
         reading_call: Any = None
+        target = ActionTarget()
         try:
             base = build_actor_operation(intent, packet) if intent.operation is not None else None
             is_direct_operation = not requires_actor_interpretation(intent)
@@ -431,7 +440,7 @@ class ActorCoordinator:
                 decision, reading = read if read is not None else (None, "")
             if decision is not None and decision.action is not None:
                 # A selected operation may lack slots until its description is interpreted.
-                agent.bind_actor_action(decision.action, packet)
+                target = agent.bind_actor_action(decision.action, packet).target
             reason = None if decision is not None else UNREADABLE
         except ActorAnswerRejected as exc:
             note_active_call_adoption(False, exc.reason)
@@ -440,7 +449,7 @@ class ActorCoordinator:
         if generation != self._intent_generation or current is None or current.turn_id != turn.turn_id:
             return ActorIntentResult("rejected", "stale_intent")
         decision_summary = build_actor_decision_summary(
-            decision, packet, seconds_per_step=self._time_config.seconds_per_step, intent=intent,
+            decision, target, packet, seconds_per_step=self._time_config.seconds_per_step, intent=intent,
         ) if decision is not None else None
         self._record(SaidEntry(
             step=turn.step, turn_id=turn.turn_id, words=words or (base.action_description if base else ""),

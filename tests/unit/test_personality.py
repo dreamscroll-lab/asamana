@@ -107,6 +107,7 @@ def test_complete_action_with_none_emotion_keeps_current_mood() -> None:
         estimated_steps=1,
     )
     personality.complete_action(
+        releases_body=True,
         step=4,
         description="Search the archives.",
         result_summary="Found nothing.",
@@ -142,6 +143,7 @@ def test_personality_begin_and_complete_action_lifecycle() -> None:
     assert personality.state.action_remaining_steps == 1
 
     personality.complete_action(
+        releases_body=True,
         step=5,
         description="Search the archives.",
         result_summary="Found the document.",
@@ -155,6 +157,30 @@ def test_personality_begin_and_complete_action_lifecycle() -> None:
     assert personality.state.last_action_succeeded is True
     assert personality.state.activity_status == AgentActivityStatus.IDLE
     assert personality.state.emotion.primary == "joy"
+
+
+def test_a_momentary_act_records_its_result_and_leaves_the_body_as_it_is() -> None:
+    """A momentary act never held the body: its result is recorded, and the body-occupying act in
+    progress (one it was drawn into the same step) goes on."""
+    personality = PersonalityLayer(soul=_make_soul())
+    personality.begin_action(
+        step=3, description="Talk it over.", activity_status=AgentActivityStatus.TALKING,
+        target="b", estimated_steps=3,
+    )
+
+    personality.complete_action(
+        step=3,
+        description="Send word to the gate.",
+        result_summary="The word went out.",
+        succeeded=True,
+        emotion=None,
+        releases_body=False,
+    )
+
+    assert personality.state.last_action == "Send word to the gate."
+    assert personality.state.action_status == ActionStatus.IN_PROGRESS
+    assert personality.state.current_action == "Talk it over."
+    assert personality.state.activity_status == AgentActivityStatus.TALKING
 
 
 def test_personality_update_emotion_clamps_values() -> None:

@@ -38,7 +38,7 @@ from enum import Enum
 from typing import Literal
 
 from core.interfaces.action import (
-    KIND_AGENT, KIND_ITEM, KIND_LANDMARK, KIND_LOCATION, KIND_NPC, ActionType, DialogueTurn, Ref,
+    KIND_AGENT, KIND_ITEM, KIND_LANDMARK, KIND_LOCATION, KIND_NPC, ActionTarget, ActionType, DialogueTurn, Ref,
 )
 from core.interfaces.urgency import Urgency
 from core.prompts import AFFECTION_RANGE, EMOTION_INTENSITY_RANGE, EMOTION_VALENCE_RANGE, TRUST_RANGE
@@ -311,12 +311,16 @@ class ActorIntent:
 class ActorDecisionSummary:
     """A public decision summary, without executor slots or executable authority: an action, or
     ``operation`` ``IDLE_OPERATION`` for doing nothing this step (no description, target or
-    duration)."""
+    duration).
+
+    ``target`` is the bound action's own, so the summary names exactly whom and what the act
+    will touch; ``parameters`` carry only what is not a relation to the world (the words, the
+    errand's order, the expected outcome)."""
 
     decision_summary_id: str
     description: str
     operation: str
-    target: Ref | None
+    target: ActionTarget
     estimated_duration_seconds: int
     parameters: dict[str, str | bool | list[str]] = field(default_factory=dict)
 
@@ -592,6 +596,7 @@ class EntryKind(str, Enum):
     BEGAN = "began"
     PROGRESSED = "progressed"
     ENDED = "ended"
+    ACTED = "acted"
     DIALOGUE_TURN = "dialogue_turn"
 
 
@@ -713,6 +718,29 @@ class EndedEntry:
 
 
 @dataclass(frozen=True)
+class ActedEntry:
+    """An act of the character's told in one entry. An act with an inside (steps going by,
+    dialogue, a break-off) is told as a ``BeganEntry`` … ``EndedEntry`` pair; one without is told
+    whole: an act that never held the body, which may fall inside the act in progress and leaves
+    it untouched, and an act that never started. ``fact``, ``succeeded`` and ``happened`` read as
+    in ``EndedEntry``.
+
+    A momentary act's entry is recorded at feedback, which lands after the step's adjudication,
+    so it can follow the dialogue of a live conversation settled the same step though the act
+    came first. Accepted: settling momentary acts in a batch of their own would delay every such
+    step by a feedback round."""
+
+    step: int
+    description: str
+    fact: str
+    succeeded: bool
+    happened: bool = True
+    time_label: str = ""
+    kind: EntryKind = field(default=EntryKind.ACTED, init=False)
+    entry_id: str = field(default_factory=_entry_id)
+
+
+@dataclass(frozen=True)
 class DialogueTurnEntry:
     """A dialogue turn of a live conversation, either side's. ``end``: the conversation ends with
     it, by the speaker's choice or because the turns ran out; an ending turn's line may be empty.
@@ -728,5 +756,5 @@ class DialogueTurnEntry:
 
 ActorEntry = (
     PerceivedEntry | AskedEntry | SaidEntry | AnsweredEntry | BreakOffEntry | BeganEntry
-    | ProgressedEntry | EndedEntry | DialogueTurnEntry
+    | ProgressedEntry | EndedEntry | ActedEntry | DialogueTurnEntry
 )

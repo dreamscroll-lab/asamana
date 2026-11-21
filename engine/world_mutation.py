@@ -421,6 +421,7 @@ class WorldMutationChannel:
                 self._environment.get_body_location(agent_id)
             ),
             time_label=self._environment.current_world_time_label,
+            arrival=self._environment.own_arrival(agent_id),
         )
 
     def _onlookers_at(

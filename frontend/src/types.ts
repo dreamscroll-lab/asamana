@@ -26,7 +26,7 @@ export interface WorldMeta {
   /**
    * World time per step, in seconds; authored by the theme analysis, revisable in the setup and
    * frozen by confirming. Shown on the creation-review card since it decides whether the
-   * story runs in hours or days. 0 when unknown.
+   * story runs in hours or days, and in the actor console. 0 when unknown.
    */
   seconds_per_step: number;
   run_state: RunState;
@@ -41,6 +41,9 @@ export interface WorldMeta {
   actor_pace: ActorPace;
   // The whole cast has been shown to the user as the director; the world takes no actor after.
   director_reviewed: boolean;
+  // The state a client may trust, as an opaque token compared only for equality. A new one begins
+  // when what a client holds no longer stands as a whole (a reset, the actor's exit).
+  epoch: string;
 }
 
 /** What this backend deployment offers, independent of any world. */
@@ -194,7 +197,8 @@ export interface ActionSummary {
   affected_entity_ids: string[];
   // Accepted creations by this beat; a subset of affected_entity_ids.
   created_entity_ids: string[];
-  // Listeners the initiator named, standing there. Not in participant_ids: they spent no turn on it.
+  // Who actually heard it, as against the listeners `target.reaches` names. Not in participant_ids:
+  // they spent no turn on it.
   overheard_by: string[];
   // Who cut short an in-progress action (phase "interrupt"); "" otherwise.
   interrupted_by: string;
@@ -283,8 +287,10 @@ export interface EntityView {
   // The step it came into the world on, so new things are read off the step's own table
   // rather than by diffing (impossible for the feed's earliest step).
   created_step: number;
+  // What it carries when everyone present can read it: a stele's inscription, a notice.
+  content: string;
   // What only its holder can read — the words in a letter, the figures in a ledger. Seeing a
-  // thing is not reading it.
+  // thing is not reading it. A thing's content is in exactly one of the two.
   private: { content: string };
 }
 
@@ -544,11 +550,15 @@ export interface NpcIdentity {
   description: string;
 }
 
-/** Public place identity, fixed at build and identical for every viewer (GET /worlds/{id}/places). */
+/**
+ * Public place identity, fixed at build and identical for every viewer (GET /worlds/{id}/places).
+ * `sub_places`: the names of the place's sub-places, the named spots belonging to it.
+ */
 export interface PlaceIdentity {
   location_id: string;
   name: string;
   description: string;
+  sub_places: string[];
 }
 
 /**
@@ -651,6 +661,13 @@ export interface SetupView {
   npcs: NpcSetupView[];
   historical_events: SetupHistoricalEventView[];
   relations: SetupRelationView[];
+  sub_places: SubPlaceSetupView[];
+}
+
+/** One sub-place of a world's setup: a named spot belonging to the place `location_id`. */
+export interface SubPlaceSetupView {
+  location_id: string;
+  name: string;
 }
 
 /** A value of one of the backend's closed vocabularies and its label. */
@@ -732,6 +749,9 @@ export type MapSelect =
 // WebSocket envelope: the backend tags each frame with a type.
 export type WsFrame =
   | { type: "status"; data: { world_id: string; status: RunState } }
+  // The world's epoch: sent on connect, then whenever a new one begins. One other than the epoch
+  // a client holds means what it holds no longer stands.
+  | { type: "epoch"; data: { world_id: string; epoch: string } }
   // The latest persisted step, sent once on connect; then `step` frames as they complete.
   | { type: "latest_step"; data: StepView }
   | { type: "step"; data: StepView }
@@ -836,7 +856,8 @@ export interface ActorDecisionSummary {
   decision_summary_id: string;
   description: string;
   operation: string;
-  target: ActorTarget | null;
+  // The bound action's own target; the card renders it under labels the operation picks.
+  target: ActionTarget;
   estimated_duration_seconds: number;
   parameters: Record<string, string | boolean | string[]>;
 }
@@ -1013,6 +1034,9 @@ export type ActorEntry =
   // How it ended, as the character remembers it; `fact` empty when it was never adjudicated,
   // `happened` false when it never engaged the world.
   | { kind: "ended"; entry_id: string; step: number; time_label: string; fact: string; succeeded: boolean; happened: boolean }
+  // A momentary act, told whole as it landed: it never held the body, so it neither begins nor
+  // ends the act in progress. `fact`, `succeeded`, `happened` as in `ended`.
+  | { kind: "acted"; entry_id: string; step: number; time_label: string; description: string; fact: string; succeeded: boolean; happened: boolean }
   // A dialogue turn of a live conversation, either side's. `end`: the conversation ends with it
   // (by the speaker's choice, or the turns ran out); an ending turn's line may be empty. SPEAK
   // turns leave no `asked` or `answered` entries: these are their record.

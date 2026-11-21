@@ -420,6 +420,18 @@ async def test_agent_generator_reasons_first_and_the_reason_is_not_kept() -> Non
 
 
 @pytest.mark.asyncio
+async def test_agent_generator_neither_asks_for_nor_keeps_a_bottom_line() -> None:
+    """A generated bottom line is mostly a stock moral guard rail; only the setup gives one."""
+    payload = '{"core_traits": ["cautious"], "hard_constraints": ["绝不无证据地指控队友"]}'
+    router, spy = _spy_router_capturing_scene(LLMScene.PERSONA_GENERATION, payload)
+
+    definitions = await AgentGenerator(router).generate(_analysis())
+
+    assert "hard_constraints" not in _prompt_text(spy)
+    assert all(d.soul.hard_constraints == () for d in definitions)
+
+
+@pytest.mark.asyncio
 async def test_agent_generator_prompt_contains_all_three_invariants() -> None:
     """Each per-figure AgentGenerator call must include all three invariants."""
     analysis = _analysis()

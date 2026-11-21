@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,7 @@ from core.model_keys import ModelKeysMissing
 from interaction.application import NarrativeApplication
 from world import DEFAULT_CATALOG_PATH, WorldCatalog
 
+from interaction.api.serialization import to_wire_json
 from interaction.models import WorldMeta
 from interaction.world_manager import WorldManager
 
@@ -98,6 +99,20 @@ class ApiServices:
     def run_state(self, world_id: str) -> str | None:
         state = self.application.run_status(world_id)
         return state.value if state is not None else None
+
+    def world_payload(self, meta: WorldMeta) -> dict[str, Any]:
+        """A world's metadata plus what only this process knows of it (its run state and epoch):
+        what every per-world route answers with.
+
+        While an actor performs, who the main characters are is not theirs to know (see
+        ``interaction.actor_view``)."""
+        if self.application.performing_character(meta.world_id) is not None:
+            meta = replace(meta, main_agent_names=[])
+        return {
+            **to_wire_json(meta),
+            "run_state": self.run_state(meta.world_id),
+            "epoch": self.application.epoch(meta.world_id),
+        }
 
 
 def create_app(

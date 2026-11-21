@@ -24,6 +24,7 @@ import RelationshipGraph from "../components/RelationshipGraph";
 import SeedPanel from "../components/setup/SeedPanel";
 import HistoryPanel from "../components/setup/HistoryPanel";
 import RelationPanel from "../components/setup/RelationPanel";
+import PlacePanel from "../components/setup/PlacePanel";
 import LorePanel from "../components/setup/LorePanel";
 import { durationLabel } from "../lib/duration";
 import CharacterEditor, {
@@ -140,7 +141,9 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
   const [castId, setCastId] = useState("");
   const [historyEditing, setHistoryEditing] = useState(false);
   const [relationEditing, setRelationEditing] = useState(false);
-  const setupEditing = editing !== null || seedEditing || loreEditing || historyEditing || relationEditing;
+  const [subPlaceEditing, setSubPlaceEditing] = useState(false);
+  const setupEditing =
+    editing !== null || seedEditing || loreEditing || historyEditing || relationEditing || subPlaceEditing;
 
   // The whole cast is the director's: once reviewed (or once the world is confirmed without an
   // actor) nobody can be cast, and only then is it shown.
@@ -367,7 +370,7 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
           : loreHeader(meta.seconds_per_step ? (
             <div className="flex items-center gap-2 text-xs bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 text-slate-400">
               <span>⏳</span>
-              <span>叙事节奏 · 每步 {durationLabel(meta.seconds_per_step)}</span>
+              <span>每步时长 {durationLabel(meta.seconds_per_step)}</span>
             </div>
           ) : null)}
       </div>
@@ -500,6 +503,13 @@ function WorldReview({ id, initialMeta, identities, places, dataError, retryData
               onSave={async (entityId, revision) => setSetup(await api.reviseEntity(id, entityId, revision))}
               onAdd={async (entity) => setSetup((await api.addEntity(id, entity)).setup)}
               onRemove={async (entityId) => setSetup(await api.removeEntity(id, entityId))} />
+            <PlacePanel
+              subPlaces={setup.sub_places}
+              places={places}
+              editable={revisable && !busy && !setupEditing}
+              onEditingChange={setSubPlaceEditing}
+              onSave={async (subPlaces) => setSetup(await api.replaceSubPlaces(id, subPlaces))}
+            />
           </div>
           <div className="lg:col-span-7 space-y-8">
             <RelationPanel

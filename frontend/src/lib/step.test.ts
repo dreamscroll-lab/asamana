@@ -8,7 +8,7 @@ import { beatsOf, figuresOf } from "../phaser/figures";
 import type { ActionSummary, AgentView, CharacterIdentity, EntityView, NpcView, StepView } from "../types";
 
 const thing = (is_public = true): EntityView => ({
-  name: "书信", entity_type: "item", state: "", description: "", is_public, created_step: 0, private: { content: "" },
+  name: "书信", entity_type: "item", state: "", description: "", is_public, created_step: 0, content: "", private: { content: "" },
 });
 
 const agent = (agent_id: string, carrying: { open?: Record<string, EntityView>; hidden?: Record<string, EntityView> } = {}): AgentView => ({

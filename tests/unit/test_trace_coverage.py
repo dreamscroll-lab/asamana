@@ -19,6 +19,7 @@ from core.context import get_log_context, note_active_call_adoption, set_active_
 from core.interfaces.llm import LLMScene, extract_json
 from core.interfaces.trace import Stage
 from interaction.application import NarrativeApplication
+from engine.space import SpaceManager
 from engine.world_pressure import WorldPressureEvaluator
 from providers.trace import BufferedJsonlTraceSink, InMemoryTraceSink
 from tests.unit.test_decision_m4_gaps import _make_personality, _mem
@@ -71,6 +72,7 @@ async def test_long_term_goal_review_adoption(traced, payload, expected, adopted
 
     result = await NeedEngine(llm_router=container.llm_router).revise_long_term_goals(
         personality=personality, recent_memory_texts=["寻常的一天"], is_main_character=False,
+        now_step=10,
     )
 
     assert result == expected
@@ -86,9 +88,10 @@ async def test_failed_build_flushes_rejected_attempts_to_disk(mock_build_contain
     sink = BufferedJsonlTraceSink(str(tmp_path))
     mock_build_container.trace_sink = sink
     mock_build_container.llm_router._trace_sink = sink  # noqa: SLF001
+    # Sub-place generation is the first call on this scene, so it is the stage that fails.
     mock_build_container.llm_router.get(LLMScene.WORLD_BUILDING).fixed_response = "broken json"
     previous = get_log_context()
-    with pytest.raises(ValueError, match="ThemeAnalyzer failed"):
+    with pytest.raises(ValueError, match="SubPlaceGenerator failed"):
         await WorldBuilder(mock_build_container).build(
             "a world", world_id="failed-build", world_configs=[TiledWorldConfig(template="changan_iso")],
         )
@@ -244,7 +247,8 @@ async def test_editor_gate_records_no_injection_as_a_valid_answer(traced, payloa
     container, sink = traced
     _reply(container, LLMScene.NARRATIVE_EDITOR, payload)
     editor = _narrative_editor(container, router=container.llm_router)
-    await editor._passes_llm_check(_world_time(), "Recent events")  # noqa: SLF001
+    menu = editor._menu(1, {}, {}, SpaceManager(), ())  # noqa: SLF001
+    await editor._passes_llm_check(_world_time(), "Recent events", menu)  # noqa: SLF001
     assert sink.llm_calls[-1].adopted is adopted
 
 

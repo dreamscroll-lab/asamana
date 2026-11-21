@@ -7,7 +7,7 @@ from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 
 from agent.decision import send_description
-from core.interfaces.action import ActionType, Ref
+from core.interfaces.action import ActionTarget, ActionType, Ref
 from core.action_duration import action_duration_steps, travel_duration_steps
 from core.prompts import person_referent
 from core.interfaces.actor import (
@@ -223,49 +223,33 @@ def check_actor_operation(action: ActorAction, base: ActorAction, intent: ActorI
     if action.action_type is ActionType.ERRAND:
         if action.errand_recipient_id and action.errand_announce:
             raise ActorAnswerRejected("errand_address_conflict")
-        if action.errand_message and not action.errand_recipient_id and not action.errand_announce:
-            raise ActorAnswerRejected("message_requires_recipient_or_announce")
+        # Words with neither a recipient nor an announcement are not refused: decision binding
+        # keeps them as the order's brief, the same rule as for an AI-driven character.
     for field in fields(ActorAction):
         if field.name not in mutable and getattr(action, field.name) != getattr(base, field.name):
             raise ActorAnswerRejected("operation_constraint_conflict")
 
 
 def build_actor_decision_summary(
-    decision: ActorDecision, packet: "PerceptionPacket", *, seconds_per_step: int,
+    decision: ActorDecision, target: ActionTarget, packet: "PerceptionPacket", *, seconds_per_step: int,
     intent: ActorIntent | None = None,
 ) -> ActorDecisionSummary:
+    """``target`` is what binding ``decision`` produced (``Agent.bind_actor_action``)."""
     action = decision.action
     if action is None:
-        return ActorDecisionSummary(uuid.uuid4().hex, "", IDLE_OPERATION, None, 0)
-    target: Ref | None = None
+        return ActorDecisionSummary(uuid.uuid4().hex, "", IDLE_OPERATION, ActionTarget(), 0)
     params: dict[str, str | bool | list[str]] = {}
-    if action.destination_id:
-        target = Ref.place(action.destination_id)
-        if action.move_carry_ids:
-            params["move_carry_ids"] = list(action.move_carry_ids)
-    elif action.errand_npc_id:
-        target = Ref.npc(action.errand_npc_id)
+    if action.errand_npc_id:
+        # The order is not a relation of the act (it lands elsewhere, later): binding keeps it
+        # out of the target, in ``ErrandOrder``.
         params["destination_id"] = action.errand_destination_id or ""
         for name, value in (("item_id", action.errand_item_id), ("recipient_id", action.errand_recipient_id),
                             ("message", action.errand_message)):
             if value:
                 params[name] = value
         params["announce"] = action.errand_announce
-    elif action.physical_person_id:
-        target = Ref.agent(action.physical_person_id)
-    elif action.physical_npc_id:
-        target = Ref.npc(action.physical_npc_id)
-    elif action.physical_entity_id:
-        entity = next(e for e in packet.spatial.visible_entities if e.entity_id == action.physical_entity_id)
-        target = Ref.entity(entity.entity_id, entity.entity_type)
-    elif action.person_ids:
-        target = Ref.agent(action.person_ids[0])
-        if len(action.person_ids) > 1:
-            params["person_ids"] = list(action.person_ids)
     if action.item_name:
         params["item_name"] = action.item_name
-    if action.physical_recipient_id:
-        params["recipient_id"] = action.physical_recipient_id
     if action.talk_topic:
         params["talk_topic"] = action.talk_topic
     if action.expected_outcome:
@@ -275,13 +259,6 @@ def build_actor_decision_summary(
         params["anonymous"] = action.anonymous
         params["announce"] = action.message_announce
         params["urgency"] = action.urgency.value
-        if action.message_announce and not action.person_ids:
-            target = Ref.place(packet.spatial.location_id)
-    if intent is not None and intent.target == Ref.agent(packet.agent_id):
-        target = intent.target
-        # Recipients are no longer the target then: every one of them is listed.
-        if action.person_ids:
-            params["person_ids"] = list(action.person_ids)
     operation = intent.operation.value if intent is not None and intent.operation else action.action_type.value
     if action.action_type is ActionType.MOVE:
         destination = next(place for place in packet.spatial.reachable_locations

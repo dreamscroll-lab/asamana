@@ -800,7 +800,7 @@ not "step 47".
   time config); durations are converted from `seconds_per_step` into natural language ("约3小时") —
   see the step-duration hint in `agent/decision.py`. `iso_label()` (which contains `step=NNNN`) is
   only for code-layer logs and snapshots and must never enter a prompt or memory prose.
-- **Up**: the LLM outputs a step count (e.g. `estimated_steps`) only when the prompt has explicitly
+- **Up**: the LLM outputs a step count only when the prompt has explicitly
   taught the conversion unit ("每步约1小时") — a controlled upward channel like IndexedRef;
   otherwise the LLM uses natural durations and code converts them into steps.
 - **Test**: "第N步" in in-character text, memory prose or dialogue is a leak (e.g.
@@ -914,6 +914,11 @@ Every action type exists to do at least one of:
 - **Advance goals**: move a `GoalEntity` toward completion and drive the next cognition cycle. After every action, goal progress evaluation decides which goals advanced or completed, triggering new goal generation.
 
 **A new action type must** meet at least one of these, with an effect no existing type can produce. If two candidates serve the same purpose with the same effect, merge them.
+
+**Momentary acts:**
+
+1. An act is momentary if, once issued, it no longer needs the doer's own body; that is the only test.
+2. Within one step a character has at most one act occupying its body, alongside any number of momentary acts.
 
 ---
 

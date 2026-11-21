@@ -151,3 +151,20 @@ async def test_character_and_place_identities_are_kept_only_once_confirmed() -> 
     assert await manager.place_identities("w") is frozen_places
     assert await manager.character_identities("none") == {}
     assert await manager.place_identities("none") is None
+
+
+@pytest.mark.asyncio
+async def test_a_places_identity_names_its_sub_places() -> None:
+    snapshots = InMemorySnapshotProvider()
+    setup = setup_dict({"a": {"name": "甲"}})
+    setup["sub_places"] = [{"location_id": "palace", "name": "显德殿"}]
+    await snapshots.save_world_setup("w", setup)
+    await snapshots.save_world_config("w", {"places": {
+        "palace": {"place_id": "palace", "name": "太极宫"},
+        "yard": {"place_id": "yard", "name": "内院"},
+    }})
+    catalog = WorldCatalog(None)
+    catalog.register("w")
+    places = await WorldManager(snapshot_provider=snapshots, catalog=catalog).place_identities("w")
+    assert places is not None
+    assert places["palace"].sub_places == ("显德殿",) and places["yard"].sub_places == ()

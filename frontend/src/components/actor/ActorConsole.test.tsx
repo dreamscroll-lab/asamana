@@ -42,7 +42,9 @@ function elements(node: ReactNode): Element[] {
 
 function consoleTree(entries: ActorEntry[] = []) {
   state.values.push(null, "every_step", "唉", null, null, null);
-  return ActorConsole({ worldId: "world", selfId: "self", entries, turn, runState: "running", step: 1, pace: "every_step", immersive: true });
+  return ActorConsole({
+    worldId: "world", selfId: "self", entries, turn, runState: "running", step: 1, pace: "every_step", immersive: true,
+  });
 }
 
 beforeEach(() => {
@@ -56,7 +58,7 @@ describe("a reading of words awaiting confirmation", () => {
     const markup = renderToStaticMarkup(consoleTree([
       { kind: "asked", entry_id: "asked", time_label: "", step: 1, turn },
       { kind: "said", entry_id: "said", time_label: "", step: 1, turn_id: "t", words: "先等等看", reason: null, reading: "", intent: null,
-        decision_summary: { decision_summary_id: "d", description: "", operation: "idle", target: null,
+        decision_summary: { decision_summary_id: "d", description: "", operation: "idle", target: { acts_on: [], claims: [], reaches: [] },
           estimated_duration_seconds: 0, parameters: {} } },
     ]));
     expect(markup).toContain("⏸ 本步不行动");

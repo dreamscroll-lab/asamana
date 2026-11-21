@@ -388,6 +388,7 @@ async def test_actor_turn_is_delivered_and_restored_only_through_websocket(mock_
         with client.websocket_connect(f"/ws/{world_id}") as ws:
             assert ws.receive_json()["type"] == "status"
             assert ws.receive_json() == {"type": "actor_turn", "data": None}
+            assert ws.receive_json()["type"] == "epoch"
             assert ws.receive_json()["type"] == "latest_step"
             assert client.post(f"{base}/run", json={"steps": 1}).status_code == 200
             while True:
@@ -420,6 +421,7 @@ async def test_turns_and_entries_reach_the_websocket(mock_build_container, test_
         with client.websocket_connect(f"/ws/{world_id}") as ws:
             assert ws.receive_json()["type"] == "status"
             assert ws.receive_json() == {"type": "actor_turn", "data": None}
+            assert ws.receive_json()["type"] == "epoch"
             assert ws.receive_json()["type"] == "latest_step"
             mock_build_container.event_bus.publish({"type": "actor_turn", "world_id": world_id, "turn": turn})
             mock_build_container.event_bus.publish({"type": "actor_turn", "world_id": world_id, "turn": None})
@@ -544,7 +546,8 @@ async def test_self_operations_use_turn_identity_and_follow_description_requirem
     provider = mock_build_container.llm_router.get(LLMScene.ACTOR_INTENT)
     provider.fixed_response = json.dumps({
         "decision": "act",
-        "action_description": "我按描述完成自己的行动", "estimated_steps": 3,
+        # Six hours in this world's two-hour steps: the summary below expects three.
+        "action_description": "我按描述完成自己的行动", "estimated_hours": 6,
     })
     parser = AsyncMock(wraps=provider.complete)
     monkeypatch.setattr(provider, "complete", parser)
@@ -591,7 +594,8 @@ async def test_self_operations_use_turn_identity_and_follow_description_requirem
         assert said["decision_summary"]["estimated_duration_seconds"] == step_seconds * (1 if operation == "rest" else 3)
         answered = next(entry for entry in thread if entry["kind"] == "answered")
         assert said["intent"]["operation"] == said["decision_summary"]["operation"] == operation
-        assert said["intent"]["target"] == said["decision_summary"]["target"] == target
+        assert said["intent"]["target"] == target
+        assert said["decision_summary"]["target"] == {"acts_on": [], "claims": [], "reaches": []}
         assert answered["answer"] == {"decision_summary_id": said["decision_summary"]["decision_summary_id"]}
         assert "action_description" not in json.dumps(thread)
     snapshot = await mock_build_container.snapshot.load(world_id, 1)

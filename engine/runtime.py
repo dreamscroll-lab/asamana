@@ -17,7 +17,7 @@ from agent.personality import ActionStatus, activity_status_for
 from core.context import annotate_call, observe_stage, set_log_context
 from core.event_bus import NarrativeEventBus
 from core.interfaces.action import COVERTABLE_ACTION_TYPES
-from core.interfaces.action import Ref
+from core.interfaces.action import AgentAction, Ref
 from core.interfaces.actor import (
     ActorAmendments,
     ActorPublicAnswer,
@@ -51,7 +51,7 @@ from engine.death_handler import DeathHandler
 from engine.director import DirectorChannel
 from engine.injection import Author, InjectionDispatcher, serialize_injection
 from engine.intervention_receipt import build_receipt
-from engine.executors.base import action_semantics, participant_action_desc
+from engine.executors.base import ActionExecutionState, action_semantics, participant_action_desc
 from engine.world_mutation import WorldMutationChannel
 from engine.execution_processor import ExecutionProcessor
 from engine.interrupt_coordinator import InterruptCoordinator
@@ -424,8 +424,11 @@ class NarrativeRuntime:
                 world_id=self._world_id,
                 all_agents=agents_dict,
                 agent_locations=self._environment.body_locations(agents_dict),
-                locations=self._environment.space.all_places(),
+                space=self._environment.space,
                 entities=self._environment.all_live_entities(),
+                npc_locations=self._environment.body_locations(
+                    npc.npc_id for npc in self._environment.all_npcs()
+                ),
             )
         # Injections land without an LLM call of their own: each goes into the trace as a beat
         # of the step it lands in, under its author's stage.
@@ -471,9 +474,9 @@ class NarrativeRuntime:
             )
             for agent in agents
         }
-        for spatial in agent_spatials.values():
+        for viewer_id, spatial in agent_spatials.items():
             attach_presence(
-                spatial, directory=self._directory, agents=agents_dict,
+                spatial, viewer_id=viewer_id, directory=self._directory, agents=agents_dict,
                 environment=self._environment,
             )
 
@@ -614,20 +617,13 @@ class NarrativeRuntime:
         )
 
         exec_start = time.perf_counter()
-        arbitration, seize_records = await self._arbiter.arbitrate(
+        arbitration, seize_records, momentary = await self._arbiter.arbitrate(
             planned_steps, agents_dict, step, in_progress_at_step_start
         )
-        agent_records = await self._commit_execution(planned_steps, arbitration, agents_dict)
-        # Same-tick completion sweep. The decision step counts as step 1, so a duration-1
-        # execution is born with remaining_steps==0 and must complete this step; ticks run only
-        # at step start and miss it. Every remaining<=0 execution (incl. create_failed) is
-        # finalized and merged into its agent_record in place, so consumers see one record.
-        # remaining_steps<=0 is the system's only completion criterion (same as tick).
-        pending = [
-            exec_state
-            for exec_state in list(self._executor_registry.all_active())
-            if exec_state.remaining_steps <= 0
-        ]
+        agent_records = await self._commit_execution(planned_steps, arbitration, momentary, agents_dict)
+        # Same-tick completion sweep: finalized and merged into its agent_record in place, so
+        # consumers see one record per execution.
+        pending = self._same_step_pending()
         if pending:
             # Same tick, two phases: concurrent adjudication + grouped parallel settlement.
             # Completion results merge into agent_records in pending order, so the record order
@@ -1402,6 +1398,7 @@ class NarrativeRuntime:
         self,
         planned_steps: List[tuple[str, "Agent", AgentStepPlan]],
         arbitration: dict[str, ArbitratedAction],
+        momentary: dict[str, list[ArbitratedAction]],
     ) -> None:
         """Stamp the arbitration verdict on every body that decided this step (see the
         ``_commit_execution`` call site).
@@ -1414,8 +1411,15 @@ class NarrativeRuntime:
         for _phase, _agent, plan in planned_steps:
             if plan.action is None:
                 continue  # no intent: not scheduled / chose not to act / decision failed
-            resolved = arbitration.get(plan.agent_id)
-            exec_state = self._executor_registry.get_active_for_agent(plan.agent_id)
+            # A momentary decision is told by its own execution, whatever his body went on to do.
+            if self._executor_registry.is_momentary(plan.action.action_type):
+                resolved = next(iter(momentary.get(plan.agent_id, [])), None)
+            else:
+                resolved = arbitration.get(plan.agent_id)
+            exec_state = (
+                self._executor_registry.get(resolved.ongoing_execution_id)
+                if resolved is not None and resolved.ongoing_execution_id is not None else None
+            )
             # Read the carried completion result: ``create_failed``, the single funnel for
             # arbitration vetoes and precondition failures, sets ``not_executed``. Not the
             # first-beat marker: an infeasible action never has that beat, so it would always
@@ -1437,10 +1441,29 @@ class NarrativeRuntime:
                 fields["verdict"] = "rejected"
             else:
                 fields["verdict"] = "executed"
-                if exec_state is not None and exec_state.remaining_steps > 0:
+                if (
+                    exec_state is not None and exec_state.remaining_steps > 0
+                    and not self._executor_registry.is_momentary(exec_state.action_type)
+                ):
                     # Only the start is marked; later beats read as the same act continuing, so
                     # review needn't chain steps.
                     fields["spans_steps"] = exec_state.remaining_steps + 1
+            # The act his body was drawn into, told apart from the verdict: a momentary decision's
+            # verdict is its own, so a body drafted beside it would otherwise leave no trace until
+            # the drawn-into act settles, perhaps steps later.
+            body = arbitration.get(plan.agent_id)
+            joined = (
+                self._executor_registry.get(body.ongoing_execution_id)
+                if body is not None and body.is_passive_join and body.ongoing_execution_id is not None
+                else None
+            )
+            if joined is not None:
+                fields["joined_execution"] = {
+                    "execution_id": joined.execution_id,
+                    "initiator": self._directory.agent_name(joined.initiator_id),
+                    "purpose": joined.purpose,
+                    "spans_steps": joined.remaining_steps + 1,
+                }
             self._trace_sink.annotate_recorded_call(
                 self._world_id, step=plan.step, agent_id=plan.agent_id,
                 stage=Stage.DECISION.value, **fields,
@@ -1459,8 +1482,11 @@ class NarrativeRuntime:
         conscripted co-participant join_ongoing_action. Completion and all writeback happen
         later in finalize: same step for a born-zero execution (same-step sweep), else via
         tick. There is no commit_step.
+
+        Only his body's verdict lands here; his momentary act, if any, was committed before
+        (``_commit_momentary``) and stands whatever happens to the body.
         """
-        exec_state = self._executor_registry.get_active_for_agent(plan.agent_id)
+        exec_state = self._execution_of(resolved)
         # The record describes what the agent actually does: on passive join, the joined action.
         # His own plan.action was dropped by conscription (kept via defer_decided_intent) and
         # must never leak into the executed record.
@@ -1471,10 +1497,15 @@ class NarrativeRuntime:
         remaining = exec_state.remaining_steps if exec_state else max(0, record_action.estimated_steps - 1)
 
         if resolved.is_passive_join:
+            # A momentary act is not discarded: it was issued, and lands on its own, motivation
+            # included (``_commit_momentary``).
+            issued_momentary = plan.action is not None and self._executor_registry.is_momentary(
+                plan.action.action_type
+            )
             # His own decided action is discarded; keep the intent for next step's decision (the
             # perception that drove it lasts one step). None if his decision failed. Before the
             # join, so his own act comes to nothing before the one he is drawn into begins.
-            if plan.action is not None:
+            if plan.action is not None and not issued_momentary:
                 await agent.defer_decided_intent(plan.action, plan.step, invited_by=resolved.invited_by)
             await agent.join_ongoing_action(
                 # His own line (``participant_action_desc``), never the join record's outcome:
@@ -1488,11 +1519,13 @@ class NarrativeRuntime:
             )
             # Two trace marks for review (cognitive outputs carry no review-only field):
             #  · Motivation is voided (join_ongoing_action doesn't submit the need evaluation) →
-            #    unadopted, so review won't flag a never-queued goal as unpursued.
+            #    unadopted, so review won't flag a never-queued goal as unpursued. Not beside an
+            #    issued momentary act: its motivation has landed, and marking it would hide goals
+            #    that are live.
             #  · Decision survives via defer_decided_intent, so it stays adopted; its conscription
             #    mark exempts it from the decision↔action check. Marked now: a multi-step
             #    interaction's action call happens only on its final step.
-            if self._trace_sink is not None:
+            if self._trace_sink is not None and not issued_momentary:
                 self._trace_sink.mark_call_unadopted(
                     self._world_id, step=plan.step, agent_id=plan.agent_id,
                     stage=Stage.MOTIVATION.value, reason=CONSCRIPTED,
@@ -1501,6 +1534,7 @@ class NarrativeRuntime:
             await agent.begin_ongoing_step(
                 plan=plan, estimated_steps=remaining,
                 total_steps=exec_state.estimated_steps if exec_state else record_action.estimated_steps,
+                executed=self._executed(resolved),
             )
 
         # Invariant guard: arbitration gave him an execution the registry lacks. Landing
@@ -1517,6 +1551,21 @@ class NarrativeRuntime:
             )
             agent.release_action(step=plan.step)
 
+        return self._begin_record(
+            agent, record_action=record_action, resolved=resolved, exec_state=exec_state,
+            remaining=remaining,
+        )
+
+    def _begin_record(
+        self,
+        agent: "Agent",
+        *,
+        record_action: AgentAction,
+        resolved: ArbitratedAction,
+        exec_state: ActionExecutionState | None,
+        remaining: int,
+    ) -> Dict[str, Any]:
+        """The opening-beat record of one execution, as one agent takes part in it."""
         return {
             "agent_id": agent.agent_id,
             "agent_name": agent.personality.soul.name,
@@ -1578,15 +1627,89 @@ class NarrativeRuntime:
             "dialogue": [],
         }
 
+    def _same_step_pending(self) -> List[ActionExecutionState]:
+        """The executions to settle in this step's sweep, in settling order.
+
+        The decision step counts as step 1, so a duration-1 execution is born with
+        remaining_steps==0 and must complete this step; ticks run only at step start and miss it.
+        remaining_steps<=0 (incl. create_failed) is the completion criterion for acts occupying
+        the body.
+
+        Momentary executions settle here whatever their remaining_steps, and come first: issued
+        first, they are adjudicated first on a shared item, and their feedback lands before the
+        same doer's body-occupying act (``finalize_executions_batch`` keeps input order for both; see
+        ``ActionExecutor.momentary``).
+        """
+        active = self._executor_registry.all_active()
+        momentary = [e for e in active if self._executor_registry.is_momentary(e.action_type)]
+        due = [
+            e for e in active
+            if not self._executor_registry.is_momentary(e.action_type) and e.remaining_steps <= 0
+        ]
+        return [*momentary, *due]
+
+    def _executed(self, resolved: ArbitratedAction) -> bool:
+        """The act really began in the world: the invitee didn't refuse, and it wasn't ruled
+        infeasible (``create_failed``, the funnel for arbitration vetoes and precondition
+        failures, marks its result ``not_executed``). Either way it settles as a failure without
+        having happened."""
+        if resolved.refused:
+            return False
+        exec_state = self._execution_of(resolved)
+        carried = exec_state.extra.get("completed_result") if exec_state is not None else None
+        return not (carried is not None and carried.not_executed)
+
+    def _execution_of(self, resolved: ArbitratedAction) -> ActionExecutionState | None:
+        """The execution an arbitration verdict names. By id, never by agent: one agent may stand
+        in two this step, a momentary act and his body's."""
+        if resolved.ongoing_execution_id is None:
+            return None
+        return self._executor_registry.get(resolved.ongoing_execution_id)
+
+    def _commit_momentary(
+        self, agent: "Agent", plan: AgentStepPlan, issued: List[ArbitratedAction],
+    ) -> List[Dict[str, Any]]:
+        """Commit one agent's momentary acts: the decision's motivation lands, the body stays free
+        for whatever his body's verdict brings. Returns one opening-beat record per act; each is
+        settled in this step's sweep."""
+        agent.begin_momentary_act(plan=plan, executed=any(self._executed(r) for r in issued))
+        records: List[Dict[str, Any]] = []
+        for resolved in issued:
+            exec_state = self._execution_of(resolved)
+            records.append(self._begin_record(
+                agent, record_action=plan.action, resolved=resolved, exec_state=exec_state,
+                remaining=0,
+            ))
+        return records
+
     async def _commit_execution(
         self,
         planned_steps: List[tuple[str, "Agent", AgentStepPlan]],
         arbitration: dict[str, ArbitratedAction],
+        momentary: dict[str, list[ArbitratedAction]],
         agents_dict: Dict[str, "Agent"],
     ) -> List[Dict[str, Any]]:
         agent_records: List[Dict[str, Any]] = []
         if not planned_steps:
             return agent_records
+
+        # Momentary acts first: issued first, and the body's verdict below builds on the
+        # motivation they landed. They change no body, so they never clash with it.
+        for _phase, agent, plan in planned_steps:
+            if plan.action is None or not self._executor_registry.is_momentary(plan.action.action_type):
+                continue
+            issued = momentary.get(plan.agent_id)
+            if not issued:
+                # Its execution failed to start (logged by the arbiter).
+                agent.drop_unstarted_intent(plan.action, plan.step)
+                continue
+            try:
+                agent_records.extend(self._commit_momentary(agent, plan, issued))
+            except Exception as exc:  # noqa: BLE001 — Rule 4 per agent, as for the body-occupying commits below
+                logger.error(
+                    "agent_commit_failed",
+                    extra={"agent_id": plan.agent_id, "step": plan.step, "error": str(exc)},
+                )
 
         # Commits only mutate their own agent, so each consecutive phase group gathers in
         # parallel while main→bg record order holds. Agents absent from arbitration (decision
@@ -1598,8 +1721,9 @@ class NarrativeRuntime:
             phase, agent, plan = item
             if plan.agent_id not in arbitration:
                 # An intent with no verdict: its execution failed to start (logged by the
-                # arbiter). Nothing to commit; the character decides afresh next step.
-                if plan.action is not None:
+                # arbiter). Nothing to commit; the character decides afresh next step. A
+                # momentary intent was settled above, whether or not his body had a verdict.
+                if plan.action is not None and not self._executor_registry.is_momentary(plan.action.action_type):
                     agent.drop_unstarted_intent(plan.action, plan.step)
                 continue
             if phase != current_phase:
@@ -1617,7 +1741,7 @@ class NarrativeRuntime:
         #   rejected     ruled infeasible, settled as a failure that step
         #   refused      the one invited refused; a failure that happened, remembered
         #   start_failed admitted but couldn't start: infrastructure failure, not a verdict
-        self._stamp_verdicts(planned_steps, arbitration)
+        self._stamp_verdicts(planned_steps, arbitration, momentary)
 
         for group in groups:
             group_records = await asyncio.gather(

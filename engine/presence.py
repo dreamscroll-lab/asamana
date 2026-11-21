@@ -6,7 +6,8 @@ It merges two authorities, neither of which should own the other:
 - Identity (name / gender / age / bio) comes from ``WorldDirectory``, which must not grow any
   mutable-state query (that would create a second source of truth).
 - The per-step mutable half comes from live objects: an agent's condition from ``Agent``, an
-  Npc's busy flag and condition from ``Npc``.
+  Npc's busy flag and condition from ``Npc``, and an agent's arrival, relative to the viewer's
+  own, from ``EnvironmentSystem.arrival_seen_by``.
 
 It must live in one place, shared by the runtime and the tuning harness: scattered copies drift
 (the harness's scene override replaces the present set, and a copy that forgets to rebuild leaves
@@ -72,6 +73,7 @@ def _attach_npcs(
 def attach_presence(
     spatial: SpatialPerception,
     *,
+    viewer_id: str,
     directory: WorldDirectory,
     agents: Mapping[str, "Agent"],
     environment: "EnvironmentSystem",
@@ -84,6 +86,10 @@ def attach_presence(
     Presence is expressed by the key existing, not by non-empty fields: everyone in view is named
     from the directory, and one it can't name has an empty ``identity`` (rendered as "某人", never a
     bare id) yet is still in the table; an empty ``condition`` omits the line.
+
+    ``arrival`` is relative to ``viewer_id`` (whose perception this is): someone who was here
+    before the viewer came is only "already here", never how long. Don't render anyone's own
+    time at the place: that is a god's-eye fact the viewer never saw.
     """
     identities = directory.agent_identity_map(spatial.visible_agent_ids)
     spatial.visible_agents = {
@@ -93,6 +99,7 @@ def attach_presence(
                 render_condition(agent.personality.state.condition)
                 if (agent := agents.get(agent_id)) is not None else ""
             ),
+            arrival=environment.arrival_seen_by(viewer_id, agent_id, step=spatial.current_step),
         )
         for agent_id in spatial.visible_agent_ids
     }

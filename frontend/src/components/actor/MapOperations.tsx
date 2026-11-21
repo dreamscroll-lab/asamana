@@ -3,7 +3,7 @@ import { identityOf } from "../../lib/worldTable";
 import { useCast } from "../../lib/cast";
 import { api } from "../../api/client";
 import type { ActorOperations, ActorOperationParameters, ActorTurn, MapOperationTarget } from "../../types";
-import { BTN, BTN_PRIMARY } from "../buttonStyles";
+import { BTN, BTN_PRIMARY, BTN_SELECTED } from "../buttonStyles";
 import { targetName, reasonText } from "./decisionSummary";
 import { missingParameters, OPERATION_LABEL } from "./shortcuts";
 import { useActorSubmission } from "./submission";
@@ -72,7 +72,7 @@ export default function MapOperations({ worldId, turn, selection, onClose }: {
       <header className="flex items-center justify-between gap-2"><strong>{targetName(selection.target, b, self)}</strong><button type="button" className={BTN} aria-label="关闭" title="关闭" onClick={onClose}><span aria-hidden="true">×</span></button></header>
       {!capabilities && !error && <p className="text-slate-400">正在查看可用操作…</p>}
       {capabilities?.operations.length === 0 && <p className="text-slate-400">此刻没有可用操作。</p>}
-      <div className="flex flex-wrap gap-2">{capabilities?.operations.map((o) => <button key={o.operation} className={`${BTN} ${operation === o.operation ? "border-indigo-400 text-indigo-200" : ""}`}
+      <div className="flex flex-wrap gap-2">{capabilities?.operations.map((o) => <button key={o.operation} type="button" aria-pressed={operation === o.operation} className={operation === o.operation ? BTN_SELECTED : BTN}
         disabled={busy || !o.available} title={o.available ? "" : reasonText(o.reason)}
         onClick={() => { setOperation(o.operation); setParameters({}); setDescription(""); setError(""); }}>{OPERATION_LABEL[o.operation] ?? o.operation}</button>)}</div>
       {capability && <form className="space-y-3" onSubmit={(e) => { e.preventDefault(); void submit(); }}>

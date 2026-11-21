@@ -4,11 +4,11 @@ import type { Cast } from "../lib/cast";
 import type { Places } from "../lib/places";
 import type { ActorTarget, BroadcastSummary, MapFocus, MapSelect, NpcView, StepView } from "../types";
 import { type Placed, type PlacedEntity, type Scoped, indexStep } from "../lib/step";
-import { type Beat, type Figure, beatsOf, drawsVeil, figuresOf } from "./figures";
+import { type Beat, type Figure, beatsOf, drawsVeil, figuresOf, playsBeforeWalk } from "./figures";
 import { THEME } from "../lib/theme";
-import { ActionType, type ActionTypeValue, Phase, actedOnAgents } from "../lib/contract";
+import { ActionType, type ActionTypeValue, Phase, actedOnAgents, actedOnNpcs } from "../lib/contract";
 import { ACTION_IDENTITY } from "../lib/actionIdentity";
-import { type BodyHost, BodyRig } from "./body";
+import { type BodyHost, BodyRig, DEAD_ALPHA } from "./body";
 import { type EntityHost, EntityLayer } from "./entities";
 import { WorldMap } from "./worldMap";
 import {
@@ -44,6 +44,7 @@ import {
   stealthVeil,
   footDust,
   localAnnounce,
+  handOff,
   physicalEffect,
 } from "./effects";
 
@@ -69,7 +70,7 @@ function tweenTargets(targets: unknown): object[] {
 // Level-of-detail: below this camera zoom, hide per-token labels/pip/vitality bar
 // (unless the token is focused) so a zoomed-out map reads as clean color dots.
 const DETAIL_ZOOM = 0.85;
-// Opacity of a figure the viewer did NOT single out; applyFocus explains the two values.
+// Opacity of a figure the viewer did NOT single out; solidity() explains the two values.
 const BG_ALPHA = 0.3;
 const BG_ALPHA_MARKED = 0.45;
 // How far tokens may be enlarged as the camera pulls back — this buys far-view legibility.
@@ -382,11 +383,13 @@ export class TiledWorldScene
     for (const [id, tok] of bodies) {
       // A figure on ground the map's art hides fades — the only occlusion handling. The test is
       // the backend's `standable` grid, the same one A* tolls (HIDDEN_STEP_TOLL) and findStanding
-      // refuses: one truth, no second opinion about the art. The fade and the focus dim (baseAlpha)
+      // refuses: one truth, no second opinion about the art. The fade and solidity (focus, death)
       // both mean "less prominent", so the dimmer one wins; don't multiply them: a background
       // figure under a canopy (0.3 × 0.42) vanishes.
+      const foc = focusOn ? this.isFocused(id) : false;
+      const solid = this.solidity(tok, focusOn, foc);
       const hidden = this.map.hiddenGround(tok.container.x, tok.container.y);
-      const want = hidden ? Math.min(tok.baseAlpha, HIDDEN_ALPHA) : tok.baseAlpha;
+      const want = hidden ? Math.min(solid, HIDDEN_ALPHA) : solid;
       tok.container
         .setDepth(sortDepth(tok.container.y, geometry))
         .setAlpha(tok.container.alpha + (want * tok.presenceAlpha - tok.container.alpha) * fadeStep)
@@ -423,7 +426,6 @@ export class TiledWorldScene
           this.body.applyPose(tok, "idle");
         }
       }
-      const foc = focusOn ? this.isFocused(id) : false;
       const detail = detailZoom || foc;
       // The nameplate shows as one unit at detail zoom or when focused. A focus does not hide
       // other plates: at background alpha the name is the last way to tell who the crowd is.
@@ -448,6 +450,20 @@ export class TiledWorldScene
     this.announcer.pinBanner();
     this.camera.fly(this.focus, this.focusActive(), dt * this.speedScale);
     this.ambient.follow();
+  }
+
+  /**
+   * How solid a figure is before ground occlusion: death and the focus dim, the dimmer winning.
+   * Derived every frame, never stored: the body report and the focus are written at different
+   * moments of a step, and a stored value lets the later writer erase the other's (a figure
+   * whose beat lands after applyFocus would come back to full opacity outside the focus).
+   */
+  private solidity(tok: AgentToken, focusOn: boolean, focused: boolean): number {
+    const life = tok.dead ? DEAD_ALPHA : 1;
+    if (!focusOn || focused) return life;
+    // A figure under a standing condition keeps a higher floor: the mark is a child of this
+    // container, so the dim multiplies into it and at BG_ALPHA it would be a smudge.
+    return Math.min(life, tok.condText ? BG_ALPHA_MARKED : BG_ALPHA);
   }
 
   // --- FxHost surface ---------------------------------------------------------
@@ -658,7 +674,8 @@ export class TiledWorldScene
     if (!id || p.isDown || p.wasTouch) return;
     const label = obj as Phaser.GameObjects.Text;
     const top = label.y - label.displayHeight / 2 - 4;
-    this.hoverTip.showPlace(label.x, top, label.text, identityOf(String(id), this.places)?.description ?? "");
+    const place = identityOf(String(id), this.places);
+    this.hoverTip.showPlace(label.x, top, label.text, place?.description ?? "", place?.sub_places ?? []);
   }
 
   private handleContext(p: Phaser.Input.Pointer): void {
@@ -727,8 +744,8 @@ export class TiledWorldScene
     return false;
   }
 
-  // Emphasis/dim pass: focused subjects get full opacity and the focus ring, the rest are
-  // dimmed. A location focus also dims everything outside it.
+  // Emphasis pass: focused subjects get the focus ring and full chips, and a location focus
+  // darkens the map outside it. The dim itself is not set here; update() derives it (solidity).
   private applyFocus(): void {
     const active = this.focusActive();
     // A panel belonging to somebody the viewer just stopped watching stands down.
@@ -746,7 +763,6 @@ export class TiledWorldScene
     }
     for (const [id, tok] of this.tokens) {
       if (!active) {
-        tok.baseAlpha = tok.dead ? 0.5 : 1;
         tok.focusRing.setVisible(false);
         this.hud.renderChip(tok); // focus cleared → every chip back to compact
         this.pockets.sync(id, tok); // …and every condition back to its bare mark
@@ -754,9 +770,6 @@ export class TiledWorldScene
       }
       const on = this.isFocused(id);
       tok.focusRing.setVisible(on);
-      // A figure under a standing condition keeps a higher floor: the mark is a child of this
-      // container, so the dim multiplies into it and at BG_ALPHA it would be a smudge.
-      tok.baseAlpha = on ? 1 : tok.condText ? BG_ALPHA_MARKED : BG_ALPHA;
       this.hud.renderChip(tok); // focused subject → full text, others → compact (no-op if no chip)
       this.pockets.sync(id, tok); // words for the subject, the bare mark for everyone else
     }
@@ -869,7 +882,7 @@ export class TiledWorldScene
     container.on("pointerout", () => this.hoverTip.hide());
     tok = {
       container, sprite, skinId, posed: false, headY: this.body.measureHeadY(skinId),
-      plate, focusRing, identityRings, label, color, baseAlpha: 1, presenceAlpha: 1, floor: 0, vitTrack, vitFill,
+      plate, focusRing, identityRings, label, color, presenceAlpha: 1, floor: 0, vitTrack, vitFill,
       condPip: pip, pouch, condText: "",
       locationId: state.location_id, dead: false, hurt: false, vit: 1, phase: Math.random() * Math.PI * 2,
       dir: INITIAL_DIR,
@@ -995,7 +1008,10 @@ export class TiledWorldScene
     const createdEntityIds = new Set<string>();
     for (const a of actions) for (const eid of a.affected_entity_ids ?? []) causedEntityIds.add(eid);
     for (const a of actions) for (const eid of a.created_entity_ids) createdEntityIds.add(eid);
-    const shownEntities = this.entities.beginStep(entities, causedEntityIds, createdEntityIds, cut, isWholeWorld(this.viewer));
+    const handedEntityIds = new Set(actions.flatMap((a) => (handOff(a) ? a.affected_entity_ids : [])));
+    const shownEntities = this.entities.beginStep(
+      entities, causedEntityIds, createdEntityIds, cut, isWholeWorld(this.viewer), handedEntityIds,
+    );
 
     // Clear corpses shown dead in a prior step, and anyone a seek carried past his death, still
     // standing as last drawn. Only one dying this step gets a token below (see gone()), so a
@@ -1206,7 +1222,7 @@ export class TiledWorldScene
     // asynchronously, and its moveAgent (killTweensOf) would kill the new render's walk and
     // hang the player.
     if (this.renderGen !== gen) return;
-    await Promise.all(
+    const walk = () => Promise.all(
       group.agentIds.map((id) => {
         const st = stateById.get(id);
         if (!st) return Promise.resolve();
@@ -1217,15 +1233,15 @@ export class TiledWorldScene
         return this.moveAgent(st, states);
       }),
     );
-    if (this.renderGen !== gen || establish) return;
-    // Exactly when movement lands: earlier, the note hangs over last beat's room; later, it
-    // waits behind dialogue and deeds.
-    this.noteNpcOutcomes(group.agentIds);
-    // Stagger so concurrent locations' bubbles cascade in rather than pop at once.
-    if (order > 0) {
-      await this.delayP(Math.min(order, 5) * 160);
-      if (this.renderGen !== gen) return;
+    if (establish) {
+      await walk();
+      return;
     }
+    // Stagger so concurrent locations' bubbles cascade in rather than pop at once.
+    const stagger = async (): Promise<boolean> => {
+      if (order > 0) await this.delayP(Math.min(order, 5) * 160);
+      return this.renderGen === gen;
+    };
 
     // The deed's icon + label, worn on the chip for its whole life on the map ("开始" → "进行中"
     // → result) and shared with the feed via lib/actionIdentity.
@@ -1235,19 +1251,36 @@ export class TiledWorldScene
     };
     const acts = [...group.actions]
       .filter((a) => a.action_type !== ActionType.move)
-      // Under a focus only the subjects' actions play; everyone still moves.
-      .filter((a) => !this.focusActive() || this.isFocused(a.agent_id))
+      // Under a focus only what the subjects do, or what is done to them, plays; everyone still
+      // moves. "Done to" matters for an NPC: it has no deeds of its own, so its errand being
+      // handed over is the only beat about it.
+      .filter((a) => !this.focusActive() || this.isFocused(a.agent_id)
+        || [...actedOnAgents(a.target), ...actedOnNpcs(a.target)].some((id) => this.isFocused(id)))
       // Backend emission ordinal = causal order; a joint act's beats share it and keep their
       // participant order (stable sort).
       .sort((a, b) => a.seq - b.seq);
+    // Beats at the place a figure left play there before the walk, the rest after it (see
+    // playsBeforeWalk). Not on a cut: the map isn't where this step began, so there is no
+    // "before" to play them in.
+    const before = cut ? [] : acts.flatMap((a, i) =>
+      playsBeforeWalk(a, stateById.get(a.agent_id)?.location_id ?? "") ? [i] : []);
+    const after = acts.flatMap((_, i) => (before.includes(i) ? [] : [i]));
     // For each withheld agent/entity, the index of the last beat involving it; afterBeat lands
     // the change as that beat ends, so the cause always plays first.
-    //   body:   the agent's own last action, OR the last physical strike that targets them.
+    //   body:   the agent's own last action, OR the last physical strike that targets them; never
+    //           a beat before the walk, or he would fall where he stood and never walk to where
+    //           the step leaves him (the safety net in draw() lands it after the walk).
     //   entity: the last action that names it in affected_entity_ids.
     const bodyBeat = new Map<string, number>();
     const entityBeat = new Map<string, number>();
     if (withheldAgents.size > 0 || this.entities.withheld.size > 0) {
       acts.forEach((a, idx) => {
+        if (before.includes(idx)) {
+          for (const eid of a.affected_entity_ids ?? []) {
+            if (this.entities.withheld.has(eid)) entityBeat.set(eid, Math.max(entityBeat.get(eid) ?? -1, idx));
+          }
+          return;
+        }
         if (withheldAgents.has(a.agent_id)) bodyBeat.set(a.agent_id, Math.max(bodyBeat.get(a.agent_id) ?? -1, idx));
         if (a.action_type === ActionType.physical) {
           for (const t of actedOnAgents(a.target)) {
@@ -1275,128 +1308,141 @@ export class TiledWorldScene
     };
 
     const seenDialogue = new Set<string>();
-    for (let actIdx = 0; actIdx < acts.length; actIdx++) {
-      const act = acts[actIdx];
-      if (this.renderGen !== gen) return;
-      const tok = this.tokens.get(act.agent_id);
-      if (!tok) continue;
-      // An interrupt shows the cut, never the deed it cut (no effect, no intent caption). It is a
-      // float note, not a result chip: he did nothing this step, and a note also stays out of the
-      // end-of-step chip dwell. The gist only — the reason is in the feed as inner monologue — and the
-      // fallback must not be the doer's own description, which is the deed again.
-      if (act.phase === Phase.interrupt) {
-        const said = act.shared?.gist || "行动已中断";
-        const chars = [...said];
-        this.hud.floatNote(
-          tok.container.x,
-          tok.container.y + tok.headY - PLATE_GAP - PLATE_RISE - 12,
-          `✕ ${chars.length > NOTE_CHARS ? chars.slice(0, NOTE_CHARS).join("") + "…" : said}`,
-          CUT_ACCENT,
-        );
-        await this.delayP(FLOAT_NOTE_MS);
-        if (this.renderGen !== gen) return;
-        afterBeat(actIdx);
-        continue;
-      }
-      // not_executed never reaches the stage: the intent never engaged the world, so there is
-      // nothing to pose or fire, and being foiled is a cognitive event the feed keeps. Skipping it
-      // also keeps a non-event from delaying the real deeds queued behind it in the track.
-      if (act.not_executed) {
-        afterBeat(actIdx); // …but if he died on the step his plan failed, he still grays out
-        continue;
-      }
-      // Opening beat of a multi-step act: nothing has happened yet, so only the pose and the
-      // intent. The result belongs to the closing beat; playing it here would stage it twice.
-      if (act.phase === Phase.begin) {
+    // Plays the beats at `indices`, in order; false once the render is superseded.
+    const playBeats = async (indices: number[]): Promise<boolean> => {
+      for (const actIdx of indices) {
+        const act = acts[actIdx];
+        if (this.renderGen !== gen) return false;
+        const tok = this.tokens.get(act.agent_id);
+        if (!tok) continue;
+        // An interrupt shows the cut, never the deed it cut (no effect, no intent caption). It is a
+        // float note, not a result chip: he did nothing this step, and a note also stays out of the
+        // end-of-step chip dwell. The gist only — the reason is in the feed as inner monologue — and the
+        // fallback must not be the doer's own description, which is the deed again.
+        if (act.phase === Phase.interrupt) {
+          const said = act.shared?.gist || "行动已中断";
+          const chars = [...said];
+          this.hud.floatNote(
+            tok.container.x,
+            tok.container.y + tok.headY - PLATE_GAP - PLATE_RISE - 12,
+            `✕ ${chars.length > NOTE_CHARS ? chars.slice(0, NOTE_CHARS).join("") + "…" : said}`,
+            CUT_ACCENT,
+          );
+          await this.delayP(FLOAT_NOTE_MS);
+          if (this.renderGen !== gen) return false;
+          afterBeat(actIdx);
+          continue;
+        }
+        // not_executed never reaches the stage: the intent never engaged the world, so there is
+        // nothing to pose or fire, and being foiled is a cognitive event the feed keeps. Skipping it
+        // also keeps a non-event from delaying the real deeds queued behind it in the track.
+        if (act.not_executed) {
+          afterBeat(actIdx); // …but if he died on the step his plan failed, he still grays out
+          continue;
+        }
+        // Opening beat of a multi-step act: nothing has happened yet, so only the pose and the
+        // intent. The result belongs to the closing beat; playing it here would stage it twice.
+        if (act.phase === Phase.begin) {
+          this.faceSubject(tok, act);
+          this.body.playDeed(tok, act, this.tokens);
+          // The veil is not a result: he is hidden from this beat on. Firing it only with results
+          // would make him vanish steps after he crouched.
+          if (drawsVeil(act)) stealthVeil(this, tok, act.detected);
+          // Its await also covers the veil above: without a wait, the next clearEphemeral would wipe
+          // it mid-draw.
+          // Seen from outside with nothing to say (its motion shows it), the pose holds the beat.
+          if (act.caption) await this.hud.playActionCaption(tok, act, chipOf(act.action_type) ?? "•", gen);
+          else await this.delayP(1500);
+          // The deed's own icon, not ⏳, so the glyph never switches mid-act; "开始 · 预计X" carries
+          // the temporal state.
+          this.hud.setActionChip(
+            tok, chipOf(act.action_type) ?? "⏳",
+            act.shared?.duration_label ? `开始 · 预计${act.shared.duration_label}` : "开始",
+            "ok", undefined, act.caption,
+          );
+          continue;
+        }
+        // Middle beat of a multi-step act: hold the pose and show progress on the chip. Never
+        // replay the deed (caption, dialogue, strike, letter), or a long act stutters.
+        if (act.phase === Phase.ongoing_tick) {
+          // Re-aim: over a long act his subject may have crossed the room.
+          this.faceSubject(tok, act);
+          this.body.playDeed(tok, act, this.tokens);
+          // "进行中" + a progress bar; same identity glyph as the other beats, not ⏳.
+          this.hud.setActionChip(
+            tok, chipOf(act.action_type) ?? "⏳", "进行中", "ok",
+            act.shared && act.shared.total_steps > 0 ? act.shared.elapsed_steps / act.shared.total_steps : undefined,
+            act.caption,
+          );
+          continue;
+        }
         this.faceSubject(tok, act);
+        // The body acts for every kind of action — one table over the deed (deedPose.ts).
         this.body.playDeed(tok, act, this.tokens);
-        // The veil is not a result: he is hidden from this beat on. Firing it only with results
-        // would make him vanish steps after he crouched.
-        if (drawsVeil(act)) stealthVeil(this, tok, act.detected);
-        // Its await also covers the veil above: without a wait, the next clearEphemeral would wipe
-        // it mid-draw.
-        // Seen from outside with nothing to say (its motion shows it), the pose holds the beat.
-        if (act.caption) await this.hud.playActionCaption(tok, act, chipOf(act.action_type) ?? "•", gen);
-        else await this.delayP(1500);
-        // The deed's own icon, not ⏳, so the glyph never switches mid-act; "开始 · 预计X" carries
-        // the temporal state.
+        if (act.action_type === ActionType.talk) {
+          // No connector line: facing, the talk pose and alternating bubbles already say it.
+          // An overhearer only turns to watch — a bubble or talk pose would make him a party to it.
+          for (const oid of act.overheard_by ?? []) {
+            const ot = this.token(oid);
+            if (ot && ot !== tok) faceOnlooker(this, ot, [act.agent_id]);
+          }
+          const dialogue = act.shared?.dialogue ?? [];
+          const sig = dialogue.map((t) => `${t.speaker}:${t.line}`).join("|");
+          if (dialogue.length && !seenDialogue.has(sig)) {
+            seenDialogue.add(sig);
+            await this.hud.playDialogue(dialogue, tok, [act.agent_id, ...subjectPeopleIds(act)], gen);
+          } else {
+            await this.delayP(650);
+          }
+          // No result chip for talk: the bubbles already render the exchange.
+          afterBeat(actIdx);
+          continue;
+        }
+        // Non-talk: transient effect, then the intent caption, then the persistent result chip.
+        if (act.action_type === ActionType.physical) physicalEffect(this, tok, act);
+        // Covert: a shadow closes in around him (red if spotted) — about the doer, since COVERT has
+        // no structured target. See drawsVeil for which beats.
+        else if (drawsVeil(act)) stealthVeil(this, tok, act.detected);
+        // The closing beat gets no intent bubble (it was said when he set out; the chip carries it).
+        // The wait stays: it covers the fire-and-forget effects above, which the next clearEphemeral
+        // would otherwise wipe mid-swing.
+        if (act.phase === Phase.ongoing_complete || !act.caption) {
+          await this.delayP(1500);
+        } else {
+          await this.hud.playActionCaption(tok, act, chipOf(act.action_type) ?? "•", gen);
+        }
+        // send_message fires after the caption: arcs to named recipients, else a local announcement.
+        // Awaited, unlike other effects: nothing after it covers its flight, so the next
+        // clearEphemeral would delete the letter mid-air.
+        if (act.action_type === ActionType.send_message) {
+          const addressees = actedOnAgents(act.target);
+          if (addressees.length) await directedMessages(this, tok, addressees);
+          else if (!act.anonymous) await localAnnounce(this, tok);
+        }
+        // On a failure the chip says why: `failure_reason` is a short phrase written for this spot,
+        // never parsed out of `outcome`. Falls back to the gist, then the caption; from outside
+        // there is no gist, and a deed its motion showed gets no chip at all.
         this.hud.setActionChip(
-          tok, chipOf(act.action_type) ?? "⏳",
-          act.shared?.duration_label ? `开始 · 预计${act.shared.duration_label}` : "开始",
-          "ok", undefined, act.caption,
-        );
-        continue;
-      }
-      // Middle beat of a multi-step act: hold the pose and show progress on the chip. Never
-      // replay the deed (caption, dialogue, strike, letter), or a long act stutters.
-      if (act.phase === Phase.ongoing_tick) {
-        // Re-aim: over a long act his subject may have crossed the room.
-        this.faceSubject(tok, act);
-        this.body.playDeed(tok, act, this.tokens);
-        // "进行中" + a progress bar; same identity glyph as the other beats, not ⏳.
-        this.hud.setActionChip(
-          tok, chipOf(act.action_type) ?? "⏳", "进行中", "ok",
-          act.shared && act.shared.total_steps > 0 ? act.shared.elapsed_steps / act.shared.total_steps : undefined,
+          tok,
+          chipOf(act.action_type) ?? "•",
+          act.shared?.failure_reason || act.shared?.gist || act.caption,
+          act.shared?.succeeded === false ? "fail" : "ok",
+          undefined,
           act.caption,
         );
-        continue;
-      }
-      this.faceSubject(tok, act);
-      // The body acts for every kind of action — one table over the deed (deedPose.ts).
-      this.body.playDeed(tok, act, this.tokens);
-      if (act.action_type === ActionType.talk) {
-        // No connector line: facing, the talk pose and alternating bubbles already say it.
-        // An overhearer only turns to watch — a bubble or talk pose would make him a party to it.
-        for (const oid of act.overheard_by ?? []) {
-          const ot = this.token(oid);
-          if (ot && ot !== tok) faceOnlooker(this, ot, [act.agent_id]);
-        }
-        const dialogue = act.shared?.dialogue ?? [];
-        const sig = dialogue.map((t) => `${t.speaker}:${t.line}`).join("|");
-        if (dialogue.length && !seenDialogue.has(sig)) {
-          seenDialogue.add(sig);
-          await this.hud.playDialogue(dialogue, tok, [act.agent_id, ...subjectPeopleIds(act)], gen);
-        } else {
-          await this.delayP(650);
-        }
-        // No result chip for talk: the bubbles already render the exchange.
         afterBeat(actIdx);
-        continue;
       }
-      // Non-talk: transient effect, then the intent caption, then the persistent result chip.
-      if (act.action_type === ActionType.physical) physicalEffect(this, tok, act);
-      // Covert: a shadow closes in around him (red if spotted) — about the doer, since COVERT has
-      // no structured target. See drawsVeil for which beats.
-      else if (drawsVeil(act)) stealthVeil(this, tok, act.detected);
-      // The closing beat gets no intent bubble (it was said when he set out; the chip carries it).
-      // The wait stays: it covers the fire-and-forget effects above, which the next clearEphemeral
-      // would otherwise wipe mid-swing.
-      if (act.phase === Phase.ongoing_complete || !act.caption) {
-        await this.delayP(1500);
-      } else {
-        await this.hud.playActionCaption(tok, act, chipOf(act.action_type) ?? "•", gen);
-      }
-      // send_message fires after the caption: arcs to named recipients, else a local announcement.
-      // Awaited, unlike other effects: nothing after it covers its flight, so the next
-      // clearEphemeral would delete the letter mid-air.
-      if (act.action_type === ActionType.send_message) {
-        const addressees = actedOnAgents(act.target);
-        if (addressees.length) await directedMessages(this, tok, addressees);
-        else if (!act.anonymous) await localAnnounce(this, tok);
-      }
-      // On a failure the chip says why: `failure_reason` is a short phrase written for this spot,
-      // never parsed out of `outcome`. Falls back to the gist, then the caption; from outside
-      // there is no gist, and a deed its motion showed gets no chip at all.
-      this.hud.setActionChip(
-        tok,
-        chipOf(act.action_type) ?? "•",
-        act.shared?.failure_reason || act.shared?.gist || act.caption,
-        act.shared?.succeeded === false ? "fail" : "ok",
-        undefined,
-        act.caption,
-      );
-      afterBeat(actIdx);
-    }
+      return true;
+    };
+
+    if (before.length > 0 && !((await stagger()) && (await playBeats(before)))) return;
+    await walk();
+    if (this.renderGen !== gen) return;
+    // Exactly when movement lands: earlier, the note hangs over last beat's room; later, it
+    // waits behind dialogue and deeds.
+    this.noteNpcOutcomes(group.agentIds);
+    if (before.length === 0 && !(await stagger())) return;
+    await playBeats(after);
   }
 
   /** Put a figure where this step says he is, at once: the step before it was not drawn. */
@@ -1441,11 +1487,16 @@ export class TiledWorldScene
       this.placed.add(state.agent_id);
       return this.presence.enter(tok, at);
     }
+    // Whoever leaves his place closes his open pocket: a panel trailing a walker covers the
+    // ground and the people he passes. A shuffle within the room keeps it. His result chip goes
+    // with him: it is what he did this step, and its words name the place.
     if (state.transit && state.transit.total_steps > 0) {
+      this.pockets.close(state.agent_id);
       return this.walker.walkTransit(tok, state.agent_id, state.transit);
     }
     const pos = this.staging.positionFor(state, states);
     if (state.arrival && state.arrival.total_steps > 0) {
+      this.pockets.close(state.agent_id);
       // Walk the engine's route (through the waypoints it reported him passing) into his place in
       // the room. A ground route here could miss those waypoints.
       const walked = this.walker.walkTransit(tok, state.agent_id, state.arrival, pos);
@@ -1463,6 +1514,7 @@ export class TiledWorldScene
     // Displaced by the director, not walked: a cut. Don't route him on foot — that would show a
     // teleport as a stroll through the palace and tell a story that isn't true.
     if (state.displaced) {
+      this.pockets.close(state.agent_id);
       // A puff at each end, as a walk leaves; otherwise the cut looks like a dropped frame.
       const leftFrom = { x: tok.container.x, y: tok.container.y };
       tok.container.setPosition(pos.x, pos.y);
@@ -1478,6 +1530,7 @@ export class TiledWorldScene
     if (Phaser.Math.Distance.Between(from.x, from.y, pos.x, pos.y) < WALK_ROUTE_MIN_PX) {
       return this.tweenP({ targets: tok.container, x: pos.x, y: pos.y, duration: 500, ease: "Sine.easeInOut" });
     }
+    this.pockets.close(state.agent_id);
     const route = this.walker.groundRoute(from, pos);
     if (!route) {
       // No route: place him as a cut. Don't slide him through the wall instead.

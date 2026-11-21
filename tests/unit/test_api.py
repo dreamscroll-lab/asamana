@@ -151,6 +151,7 @@ async def test_websocket_sends_initial_status_and_latest_step(container, test_co
         first = ws.receive_json()
         assert first["type"] == "status"
         assert ws.receive_json() == {"type": "actor_turn", "data": None}   # restated even when none is open
+        assert ws.receive_json()["type"] == "epoch"
         second = ws.receive_json()
         assert second["type"] == "latest_step"
         assert second["data"]["step"] == 0
@@ -174,6 +175,7 @@ async def test_restore_only_state_never_reaches_observation(container, test_conf
         with client.websocket_connect(f"/ws/{world_id}") as ws:
             assert ws.receive_json()["type"] == "status"
             assert ws.receive_json() == {"type": "actor_turn", "data": None}
+            assert ws.receive_json()["type"] == "epoch"
             payloads.append(ws.receive_json())
             snapshot.step = 1
             container.event_bus.publish({
@@ -221,6 +223,7 @@ async def test_a_step_published_while_connecting_is_not_lost(
     with client.websocket_connect(f"/ws/{world_id}") as ws:
         assert ws.receive_json()["type"] == "status"
         assert ws.receive_json() == {"type": "actor_turn", "data": None}
+        assert ws.receive_json()["type"] == "epoch"
         assert ws.receive_json()["type"] == "latest_step"
         pushed = ws.receive_json()
         assert pushed["type"] == "step" and pushed["data"]["step"] == 1
@@ -238,6 +241,7 @@ async def test_the_step_the_initial_frame_carried_is_not_pushed_twice(
     with client.websocket_connect(f"/ws/{world_id}") as ws:
         assert ws.receive_json()["type"] == "status"
         assert ws.receive_json() == {"type": "actor_turn", "data": None}
+        assert ws.receive_json()["type"] == "epoch"
         assert ws.receive_json()["type"] == "latest_step"      # step 0
         for step in (0, 1):
             container.event_bus.publish(
@@ -246,6 +250,42 @@ async def test_the_step_the_initial_frame_carried_is_not_pushed_twice(
             )
         nxt = ws.receive_json()
         assert nxt["type"] == "step" and nxt["data"]["step"] == 1   # 0 is skipped
+
+
+@pytest.mark.asyncio
+async def test_after_a_reset_the_feed_sends_the_new_history_from_step_one(container, test_config) -> None:
+    """The connection opened at step 1 of a history the reset discarded: the new history's step 1
+    is a new step, not the one its initial frame carried. On failure this test hangs: the dropped
+    step never arrives."""
+    world_id = "world-api"
+    await container.snapshot.save(world_id, 0, _snapshot(world_id, 0, {}))
+    await container.snapshot.save(world_id, 1, _snapshot(world_id, 1, {}))
+    client = _client(container, test_config)
+    with client.websocket_connect(f"/ws/{world_id}") as ws:
+        for kind in ("status", "actor_turn", "epoch"):
+            assert ws.receive_json()["type"] == kind
+        assert ws.receive_json()["data"]["step"] == 1          # the latest step at connect
+        step_one = {"type": "step", "world_id": world_id, "step": 1, "snapshot": _snapshot(world_id, 1, {})}
+        container.event_bus.publish({"type": "epoch", "world_id": world_id, "epoch": "after-reset"})
+        assert ws.receive_json() == {"type": "epoch", "data": {"world_id": world_id, "epoch": "after-reset"}}
+        container.event_bus.publish(step_one)
+        again = ws.receive_json()
+        assert again["type"] == "step" and again["data"]["step"] == 1
+
+
+@pytest.mark.asyncio
+async def test_the_feed_and_every_world_route_report_the_same_epoch(container, test_config) -> None:
+    world_id = "world-api"
+    await container.snapshot.save(world_id, 0, _snapshot(world_id, 0, {}))
+    catalog = WorldCatalog(None)
+    catalog.register(world_id)
+    client = _client(container, test_config, catalog=catalog)
+
+    epoch = client.get(f"/api/worlds/{world_id}").json()["epoch"]
+    assert [w["epoch"] for w in client.get("/api/worlds").json()] == [epoch]
+    with client.websocket_connect(f"/ws/{world_id}") as ws:
+        frames = [ws.receive_json() for _ in range(3)]
+    assert frames[2] == {"type": "epoch", "data": {"world_id": world_id, "epoch": epoch}}
 
 
 @pytest.mark.asyncio
@@ -392,8 +432,8 @@ async def test_places_lists_the_worlds_place_identities(container, test_config) 
 
     client = _client(container, test_config)
     assert client.get(f"/api/worlds/{world_id}/places").json() == [
-        {"location_id": "palace", "name": "太极宫", "description": "宫城正殿"},
-        {"location_id": "yard", "name": "内院", "description": ""},
+        {"location_id": "palace", "name": "太极宫", "description": "宫城正殿", "sub_places": []},
+        {"location_id": "yard", "name": "内院", "description": "", "sub_places": []},
     ]
     step = client.get(f"/api/worlds/{world_id}/steps/0").json()
     assert "name" not in step["locations"]["palace"]

@@ -330,6 +330,75 @@ async def test_a_reset_that_fails_halfway_leaves_no_stale_session(
     assert not app.has_session(wid)
 
 
+def _announced_epochs(queue: asyncio.Queue) -> list[str]:
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    return [e["epoch"] for e in events if e and e.get("type") == "epoch"]
+
+
+@pytest.mark.asyncio
+async def test_each_reset_begins_a_new_epoch_and_announces_it(mock_build_container, test_config) -> None:
+    app = NarrativeApplication(mock_build_container, test_config)
+    wid = (await confirmed_world(app, "宫廷权谋", template="changan_iso")).world_id
+    before = app.epoch(wid)
+    queue = mock_build_container.event_bus.subscribe(wid)
+
+    await app.reset_session(wid)
+    await app.reset_session(wid)
+
+    announced = _announced_epochs(queue)
+    assert len(set([before, *announced])) == 3
+    assert announced[-1] == app.epoch(wid)
+
+
+@pytest.mark.asyncio
+async def test_a_reset_that_fails_halfway_still_begins_a_new_epoch(
+    mock_build_container, test_config, monkeypatch,
+) -> None:
+    """The stores are already rewound, so what clients hold no longer stands."""
+    from world.initializer import WorldInitializer
+
+    app = NarrativeApplication(mock_build_container, test_config)
+    wid = (await confirmed_world(app, "宫廷权谋", template="changan_iso")).world_id
+    await app.run_world(wid, steps=1)
+    before = app.epoch(wid)
+    queue = mock_build_container.event_bus.subscribe(wid)
+
+    async def broken_restore(self, world_id, **_kw):
+        raise OSError("snapshot store down")
+
+    monkeypatch.setattr(WorldInitializer, "restore", broken_restore)
+    with pytest.raises(OSError):
+        await app.reset_session(wid)
+    assert _announced_epochs(queue) == [app.epoch(wid)] != [before]
+
+
+@pytest.mark.asyncio
+async def test_a_client_that_reads_the_world_mid_reset_is_told_to_reload(
+    mock_build_container, test_config, monkeypatch,
+) -> None:
+    """The epoch changes only once the reset has landed: one read while it is under way is the old
+    one, so the announcement that follows differs from it."""
+    from world.initializer import WorldInitializer
+
+    app = NarrativeApplication(mock_build_container, test_config)
+    wid = (await confirmed_world(app, "宫廷权谋", template="changan_iso")).world_id
+    read_mid_reset: list[str] = []
+    restore = WorldInitializer.restore
+
+    async def observed_restore(self, world_id, **kw):
+        read_mid_reset.append(app.epoch(world_id))
+        return await restore(self, world_id, **kw)
+
+    monkeypatch.setattr(WorldInitializer, "restore", observed_restore)
+    queue = mock_build_container.event_bus.subscribe(wid)
+    await app.reset_session(wid)
+
+    assert _announced_epochs(queue) == [app.epoch(wid)]
+    assert read_mid_reset != [app.epoch(wid)]
+
+
 @pytest.mark.asyncio
 async def test_run_refused_while_a_reset_is_in_flight(mock_build_container, test_config) -> None:
     """Reset spans dozens of awaits; starting a run in that window lets the new session take that

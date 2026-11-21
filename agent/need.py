@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from agent.relation import PerceivedRelation
 
 from agent.goals import (
-    GoalEntity, GoalOrigin, GoalStatus, active_goals, enqueue_goals,
+    GoalEntity, GoalOrigin, GoalStatus, active_goals, closed_step, enqueue_goals,
     goal_age_hint, goal_due_hint, is_active_goal, is_due,
     is_past_allowance, live_goals, order_goals_for_prompt, parse_goal_evaluation,
     parse_goal_item, parse_residue, trim_goal_history,
@@ -36,6 +36,7 @@ from core.prompts import (
     render_entity,
     render_situation_header,
     situation_location,
+    strip_end_punct,
     urgency_label,
     vitality_line,
 )
@@ -44,6 +45,10 @@ _logger = get_logger(__name__)
 
 # Said when the hands are empty: left out, a goal or a verdict assumes the thing it needs is there.
 _NOTHING_HELD = "无"
+
+# How many of the most recently closed goals a goal prompt lists: "不必重复" and "别原样重来"
+# weigh differently for yesterday vs just now.
+_RECENT_CLOSED_GOAL_LIMIT: int = 5
 
 
 def _held_lines(held: "Sequence[VisibleEntity]") -> List[str]:
@@ -69,10 +74,15 @@ _GOAL_EVALUATION_SYSTEM = """\
 【约束】
 - 判定依据是本轮行动与结果、**以及所给"近期客观经历"这条已记录的轨迹**——有些目标跨多步累积达成，最新这一步可能正好把它推过完成线，须结合轨迹判断；但只能依据**已记录的事实**，不得臆测这些记录之外、未给出的信息，**也不得借此重新解读目标本身**。
 - 允许从结果合理倒推：若行动结果在常理上已蕴含某目标达成/过期（即便结果未点名该目标），可据此判 completed / failed——但倒推链必须落在结果上、写进 reason，不能凭空脑补。（例：目标是「去餐厅吃饭」，结果是「我吃饱了」，结果虽未明确表示去了餐厅，但常理上已蕴含吃饭达成，可据此倒推判 completed。 ）
+- 所给「此前收到的任务报告」也属于已记录的轨迹：
+  - 它答复的是被评判者**更早**指派的任务，在本轮行动之前就已收到，不是本轮行动的结果；本轮若又指派了任务，那一趟还没有回来。
+  - 「到达时所见」是执行任务的人到那处时亲眼所见。
+  - 所见只到那一刻为止：没列出的不等于不存在，也不得补出所见里没写的内容。
 - 一次成功的行动**未必**使目标 completed——多数目标要多步推进，没真正达成就保持 active。
 - **警惕「永远 active」**：目标文本后可能标着它「已历约多久仍未了结」。若一个目标已历时明显偏久、且轨迹显示反复推进却始终停在原地（结果一再未达预期、状态毫无实质变化），说明当前手段对它无效——判 failed（搁置），不要无限 active。一个推进不动的目标会锁死后续认知。判 failed（搁置）时，reason 必须点明「反复无进展」的具体依据，落在已记录的轨迹 / 时长上，不臆测。
 - 但别矫枉过正：真正在**逐步推进**（每步能看到可见进展、只是尚未跨过完成线）的多步目标保持 active——搁置只针对「原地打转」，不是「还没做完」；拿不准是「有进展但慢」还是「原地打转」时，倾向保留 active。
-- 判断之前先明确好当前时间和当前地点，避免在结果中涉及到时间问题时出现错乱的情况。
+- 判 failed 时，reason 要说清这件事为什么失败、卡在哪里，具体因为什么，比如对方一再拒绝开口；只说「本轮没有推进」过于笼统，因为这样完全不知道失败原因。
+- 判断之前先明确好当前时间和当前地点，避免在结果中涉及到时间问题时出现错乱，或目标明显过期却还判为活跃的情况。比如当前时间是6月3号，但是目标中说6月2号之前一定要做某事，这个目标明显是完不成了，因为已经过期了。
 - 涉及某样东西的目标，要结合所给「被评判者此刻手上的东西」来判，比如要靠手上的东西才能成立的事，就看提前那东西在不在他手上；这里只列他手上的，没列出的东西不等于不存在。比如目标是已经把某样东西交给某人，那东西还在他手上，就是还没交出去。
 - **每个目标必须把判断依据(reason)写在最前面，再给序号(index)与状态(status)——先分析后定状态，不要凭空直接给状态。**
 - 只输出 JSON，不要任何多余内容。
@@ -81,26 +91,35 @@ _GOAL_EVALUATION_SYSTEM = """\
 除了上面既有目标的进退，这次行动本身可能产生被评判者**没有了结的事项**。先分析、再指出。
 
 算 residue 的（只要落在本轮行动与结果上、有据可依）：
-- 行动结果里明确表示、或由结果直接通过常理推得的下一步将要做的事项
-- 本轮行动只做了部分事项，还有未完成事项需要继续做
+- 行动结果里明确表示、或由结果直接通过常理推得的被评判者自己下一步将要做的事项
+- 本轮行动只做了部分事项，还有未完成事项需要被评判者继续做
 
 不算 residue 的（写了就是错）：
 - 复述已经发生的事
 - 泛泛的心情、决心、表态（「我要更谨慎些」「我得振作」这类不是没有了结的事项）
 - 没有任何依据或者通过推理也得不到的你自己臆想的事项
 - 与上面待判定目标里已有的那些意思相近或相同的事项
+- 与所给「近来没做成的目标」意思相近的事项：那件事已经试过没做成，换个说法再挂上去还是同一件事。
+  除非本轮结果带来了让它重新走得通的新条件（比如对方新答应了、新给了时间，改变了决定等等），那就是新的事项，照常写
 - **指向所给材料里根本不存在的人、地方或东西的事项**
 - 要用到他手上没有的东西、却没把「先去得到它」算进去的事项
-- 不属于被评判者的事项
+- 不属于被评判者的事项：事项归**需要动手去做的人**。别人应下要做的事——哪怕是被评判者吩咐的——
+  是那个人的，不是被评判者的；既不要把它写成「我去做」，也不要改写成「我须让他做」「我盯着他做」之类。
+  比如被评判者吩咐小甲明早把信送到乙家：送信是小甲的事，不写「我明早送信」，也不写「我得督促小甲送信」。
+- 单纯的等待（等回复、等回报、等某人把事办完）：等待本身什么都不做，不是要了结的事项。
 
 约束：
 """ + CLOSED_WORLD_FACT_RULE + """
+- 每条写的是被评判者**自己要动手做**的一件事，看这件事由谁来做：不是被评判者的事项不写；被评判者只需要
+  等待的，比如在等别人回来、回话、办完之类的也不写，等待本来就相当于什么都不做；被评判者自己还得
+  去做的事项照常写
 - 用**被评判者本人的口吻、第一人称**写（「我……」），每条不超过 28 字，最多 2 条；里头若提到
   时间，写具体时间点，不写「明日 / 今夜」等等相对时间
 - due_in_hours：**这件事说定了截止时间，就填从此刻到截止时间还有几小时；没说定时间就填null或者都不填写。**
   比如当前时间为6月3日上午10点，截止时间为6月6日中午12点，那它们之间相差74小时，due_in_hours就写74。
   **但 text 里若已经写下了一个具体时点，due_in_hours 就不可以为 null**——那个时候是这条事项自己
   带着的，把它折算成小时填上即可，不是另添一个期限。
+- 将行动结果的成功等同于符合“本轮行动期望的结果”，这是不对的，是否符合期望结果要根据实际行动发生内容来定。
 - 每条事项必须具体，明确，不能模糊不清，模糊不清的事项不用生成，比如“我需要立刻质问小A”这个就非常模糊，因为它根本没有说明“需要质问的内容是什么？”
 - **绝大多数行动不留下任何没有了结事项**（休息、赶路、寒暄、独自琢磨都是如此）——这时给空数组
   `[]`，这是正常且被期望的结果。不要为了填满而胡编乱造，宁可给空。
@@ -114,7 +133,7 @@ index 为所给待判定目标的序号（整数，从 1 开始）；status 只�
 residue 那两项放在最后——要先判完上面每个目标的去留，才知道这次行动真正**新**留下的是什么。
 两项之间同样是先想后判：
 - residue_reason（≤60字）：先在这里逐一审视本轮行动与结果，说清**哪一句话**让你认为留下了没了结的
-  事项、它为什么不属于上面已有的目标；**若认为什么都没留下，也要在这里说明为什么**（多数行动本
+  事项、它为什么不属于上面已有的或近来没做成的目标；**若认为什么都没留下，也要在这里说明为什么**（多数行动本
   就如此，这是正常答案，不必勉强找出点什么）。
 - residue：由上面的分析推出的条目；没有则给 []。**不得出现分析里没有依据的条目。**
 """ + ABSOLUTE_TIME_RULE + """"""
@@ -131,9 +150,9 @@ _GOAL_EVALUATION_USER = """\
 行动结果：{action_result}
 被评判者此刻手上的东西：
 {held_items}
-{recent_experience}待判定的目标（按序号）：
+{recent_experience}{errand_reports}待判定的目标（按序号）：
 {goals_numbered}
-
+{failed_short_term}
 依上面说定的两项任务、约束与 JSON 格式给出裁定（先逐个目标判状态，再给 residue），
 只输出 JSON、不写任何多余内容。"""
 
@@ -214,13 +233,14 @@ _LONG_TERM_GOAL_UPDATE_SYSTEM = """\
 就着这些事，回头看我那几条长期目标还对吗？衡量的根子只有一条：这段经历有没有真的改变我要走的方向——真变了才动，没变就守住。
 什么样的经历才算"真的改变了方向"？常见的有这么几种（但绝不止这些；归根到底还是回到上面那条根子去判断，别只盯着这几条对号入座，也别因为某件事不在其列就轻易放过）：
 - 某条目标已经被我做成了——它实现了，该从我往后要奔赴的方向里退场
-- 某条目标已经再无可能——路被堵死、它赖以成立的前提没了，再死守也是空耗
+- 某条目标已经再无可能——路被堵死、它赖以成立的前提没了，再死守也是空耗。为它使的力一再落空、没做成的总是同一件事（哪怕换了说法、换了走法），往往就是这个信号
 - 我看清了什么、心气变了——同一桩处境，今日的我和往日的我，要走的路已经不同
 - 这些事逼出了一个新方向，且它分量够重，够得上我从此把它当成长期的奔头
 真要动，手法不外乎：改写某条、放下一条（已做成的、再无可能的、或不再属于我的）、或添一条新的——其中"放下"和"添"同样要紧，别只惦着添新的，却把早该退场的旧目标一直攥在手里。
 
 【我要避开的】
 - 为变而变：方向没真变，就别动那几条长期目标
+- 把一两次没做成、或只是被别的事挤开没顾上，当成再无可能
 - 背弃或改写我的人生目标：北极星只用来校准长期目标，不能被推翻
 - 把长期目标缩成手头的事：眼下的小事、一时的情绪、或几步就能了结的某桩具体事，都不是长期目标——它是要走很长一段路的奔头
 - 把长期目标锁成一桩具体的事或一次具体行动：那就成了计划——它该是个能长出很多种走法、容得下变化的【方向】
@@ -247,6 +267,9 @@ _LONG_TERM_GOAL_UPDATE_USER = """\
 {current_long_term}
 - 我眼下手头在忙的小事（只作参照，别当长期目标）：
 {short_term}
+
+【我近来没做成的事】（{memory_order_hint}）
+{failed_short_term}
 
 【这段日子发生的事情】（{memory_order_hint}）
 {recent_memories}
@@ -473,6 +496,12 @@ def build_innate_needs(
     return tuple(list(active) + list(hidden))
 
 
+def _failure_cause(goal: GoalEntity) -> str:
+    if goal.status != GoalStatus.FAILED or not goal.progress_summary:
+        return ""
+    return f"（失败原因：{strip_end_punct(goal.progress_summary)}）"
+
+
 class NeedEngine:
     """Stateless need/goal compute service.
 
@@ -697,6 +726,7 @@ class NeedEngine:
         personality: PersonalityLayer,
         situation: Situation = Situation(),
         recent_factuals: list[str] = (),
+        errand_reports: Sequence[str] = (),
         expected_outcome: str = "",
         held: "Sequence[VisibleEntity]" = (),
     ) -> List[GoalEntity]:
@@ -706,7 +736,10 @@ class NeedEngine:
         One call, two jobs: (1) judge each ACTIVE goal; (2) name the unfinished business this action
         newly left, enqueued as ``origin=RESIDUE`` goals. Without (2), loose ends never reach the next
         step's motivation. ``expected_outcome`` is the intended result written at decision time (a
-        MOVE's "what to do once there" lives in it).
+        MOVE's "what to do once there" lives in it). ``errand_reports`` are the full errand reports
+        he holds (``Agent.pending_errand_reports``), dated, scene included: memory keeps only
+        their spoken line. They answer earlier errands and reached him before this action:
+        trajectory, not this action's result.
 
         INTERRUPTED goals are not judge candidates (no resume mechanism, a deliberate simplification);
         they leave only via the deadline fallback or capacity eviction.
@@ -745,7 +778,22 @@ class NeedEngine:
             + "\n"
             if any(recent_factuals) else ""
         )
-        situation_header = render_situation_header(situation, voice=SituationVoice.THIRD)
+        # Without the failed goals, one failed a step ago comes straight back as residue the next
+        # time the agent says he'll try again. FAILED also holds goals evicted for capacity, which
+        # weren't tried; they can't be told apart, and the prompt's "new condition" exception
+        # keeps such an intent writable.
+        failed_lines = self.recently_failed_goal_lines(entities, now_step=step)
+        failed_short_term = (
+            "近来没做成的目标（只作对照参考，不在待判定之列）：\n" + "\n".join(failed_lines) + "\n"
+            if failed_lines else ""
+        )
+        reports_block = (
+            f"此前收到的任务报告（执行任务的人回来说的话，及其到达那处时所见；{MEMORY_ORDER_HINT}）：\n"
+            + "\n".join(f"- {r}" for r in errand_reports)
+            + "\n"
+            if errand_reports else ""
+        )
+        situation_header = render_situation_header(situation, voice=SituationVoice.THIRD, who=agent_name)
         system_prompt = _GOAL_EVALUATION_SYSTEM
         user_prompt = _GOAL_EVALUATION_USER.format(
             situation_header=situation_header,
@@ -753,9 +801,11 @@ class NeedEngine:
             action_description=action_description,
             expected_outcome=expected_outcome or "（无）",
             action_result=action_result,
+            errand_reports=reports_block,
             held_items="\n".join(f"- {line}" for line in _held_lines(held)),
             recent_experience=recent_block,
             goals_numbered=goals_numbered,
+            failed_short_term=failed_short_term,
         )
         residue_goals: List[tuple[str, int | None]] = []
         try:
@@ -766,8 +816,10 @@ class NeedEngine:
                 .add("我刚做了", action_description)
                 .add("我原本期望", expected_outcome or "（无）")
                 .add("实际结果", action_result)
+                .add("此前收到的任务报告", list(errand_reports))
                 .add("此刻手上的东西", _held_lines(held))
-                .add("近来的经历", recent_block.splitlines()),
+                .add("近来的经历", recent_block.splitlines())
+                .add("近来没做成的目标", [line.strip() for line in failed_lines]),
                 goal_texts=goal_texts_by_index,
                 location=situation_location(situation),
             ):
@@ -842,12 +894,18 @@ class NeedEngine:
         personality: PersonalityLayer,
         recent_memory_texts: List[str],
         is_main_character: bool,
+        now_step: int,
         situation: Situation = Situation(),
     ) -> List[str] | None:
         """Revisit long-term goals in first person; ``life_goal`` (the north star) never changes.
 
         ``recent_memory_texts`` covers both factual and experiential streams: a goal achieved or
         invalidated is an objective fact, so this doesn't depend on reflection insight.
+
+        Recently FAILED short-term goals are listed too. Memory holds each attempt but not that
+        the goal behind them was given up, so without this list a direction the world never lets
+        through (someone who can't be found) looks merely unfinished, and the goal keeps feeding
+        new short-term goals for the same thing.
 
         Returns None for no update (``[]``, unchanged, or error), else the new goal texts
         for the caller to write via ``personality.set_long_term_goals``. Writes nothing.
@@ -864,6 +922,10 @@ class NeedEngine:
             )
             or "  · （暂无）"
         )
+        failed_short_term = "\n".join(self._closed_goal_lines(
+            [g for g in state.short_term_goal_entities if g.status == GoalStatus.FAILED],
+            now_step=now_step,
+        )) or "  - （没有）"
         recent = (
             "\n".join(f"- {t}" for t in recent_memory_texts if t)
             or "- （没有特别值得一提的事）"
@@ -875,6 +937,7 @@ class NeedEngine:
             persona=personality.to_prompt_context(include_goals=False, include_emotion=True),
             current_long_term=current_long_term,
             short_term=short_term,
+            failed_short_term=failed_short_term,
             recent_memories=recent,
             memory_order_hint=MEMORY_ORDER_HINT,
         )
@@ -918,6 +981,38 @@ class NeedEngine:
             )
         return None
 
+    def recently_failed_goal_lines(
+        self, entities: Sequence[GoalEntity], *, now_step: int,
+    ) -> List[str]:
+        """The latest failed short-term goals as dated lines, for prompts that must not turn one
+        straight back into a goal (residue, external pressure)."""
+        return self._closed_goal_lines(
+            [g for g in entities if g.status == GoalStatus.FAILED],
+            now_step=now_step, limit=_RECENT_CLOSED_GOAL_LIMIT,
+        )
+
+    def _closed_goal_lines(
+        self, goals: Sequence[GoalEntity], *, now_step: int, limit: int | None = None,
+    ) -> List[str]:
+        """Closed goals as ``  - <when><text>`` lines, oldest first, the latest ``limit`` of them;
+        a failed one also carries why it failed (its progress_summary).
+
+        Closed goals are past events: they take memory's recency_prefix wording (not
+        goal_due_hint) so the LLM places them on one timeline with recalled memories. Without the
+        why, a failed goal reads as a matter merely not yet done, and comes back reworded.
+        """
+        ordered = sorted(goals, key=closed_step)
+        if limit is not None:
+            ordered = ordered[-limit:]
+        return [
+            "  - " + recency_prefix(
+                now_step=now_step, ref_step=closed_step(g),
+                seconds_per_step=self._seconds_per_step,
+                world_start_second_of_day=self._world_start_second_of_day,
+            ) + g.text + _failure_cause(g)
+            for g in ordered
+        ]
+
     def to_prompt_context(
         self,
         personality: PersonalityLayer,
@@ -951,16 +1046,8 @@ class NeedEngine:
             top_rival = max(rivals, key=lambda n: n.intensity)
             lines.append(f"同时也在意（仍在牵扯注意力）：{_prompt_label(top_rival.type)}")
         if recently_completed:
-            # Closed goals are past events: use memory's recency_prefix wording (not goal_due_hint)
-            # so the LLM can place them on one timeline with recalled memories.
             lines.append(f"我近期已经完成的事项（{MEMORY_ORDER_HINT}）：")
-            for g in sorted(recently_completed, key=lambda g: g.last_evaluated_step):
-                when = recency_prefix(
-                    now_step=now_step, ref_step=g.last_evaluated_step,
-                    seconds_per_step=self._seconds_per_step,
-                    world_start_second_of_day=self._world_start_second_of_day,
-                )
-                lines.append(f"  - {when}{g.text}")
+            lines.extend(self._closed_goal_lines(recently_completed, now_step=now_step))
         def _render(goals: Sequence[GoalEntity]) -> List[str]:
             return [
                 f"  {i}. {g.text}{goal_due_hint(g, now_step, self._seconds_per_step)}"
@@ -1072,20 +1159,16 @@ class NeedEngine:
             history_lines: List[str] = []
             for label, items in (
                 ("我已经做完（不必重复）", recently_completed),
-                ("我试过但失败了（换个方向，别原样重来）", recently_failed),
+                # Giving up is named beside a new route: "换个方向" alone sends the agent down
+                # another road to the same unreachable end.
+                ("我试过但没做成（别原样重来：是换个走法，还是认清它眼下走不通、就此放下，想清楚再定）",
+                 recently_failed),
             ):
                 if items:
                     history_lines.append(f"- {label}：")
-                    # Five most recent, oldest first. The time point matters: "不必重复" weighs
-                    # differently for yesterday vs just now.
-                    recent_last = sorted(items, key=lambda g: g.last_evaluated_step)[-5:]
-                    for g in recent_last:
-                        when = recency_prefix(
-                            now_step=now_step, ref_step=g.last_evaluated_step,
-                            seconds_per_step=self._seconds_per_step,
-                            world_start_second_of_day=self._world_start_second_of_day,
-                        )
-                        history_lines.append(f"  - {when}{g.text}")
+                    history_lines.extend(self._closed_goal_lines(
+                        items, now_step=now_step, limit=_RECENT_CLOSED_GOAL_LIMIT,
+                    ))
             recently_completed_section = (
                 f"我的近况（{MEMORY_ORDER_HINT}）：\n" + "\n".join(history_lines) if history_lines else ""
             )

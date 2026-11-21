@@ -23,7 +23,7 @@ const kept = (holder: string): Record<string, PlacedEntity> => ({
     presence_ref: holder,
     description: "圈定亲信的名单",
     is_public: false,
-    private: { content: "" },
+    content: "", private: { content: "" },
     // step({ bornIds: [...] }) sets the real birth step, since only it knows the step number.
     created_step: 0,
   },
@@ -38,7 +38,7 @@ const setDown = (where: string): Record<string, PlacedEntity> => ({
     presence: "at_location",
     presence_ref: where,
     description: "拦住了侧门",
-    private: { content: "" },
+    content: "", private: { content: "" },
     is_public: true,
     created_step: 0,
   },

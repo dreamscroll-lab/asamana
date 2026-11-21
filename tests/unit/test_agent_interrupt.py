@@ -284,7 +284,7 @@ async def test_interrupt_prompt_injects_recent_factual_not_short_term_goals(cont
     # A distinctive short-term goal that must NOT appear (include_goals=False).
     agent.personality.state.short_term_goals = ["去偏殿清点府库"]
     # Two recent factual events, oldest first after chrono sort.
-    agent.memory_system.sample_recent_events = lambda step, top_k=5: [  # type: ignore[method-assign]
+    agent.memory_system.sample_recent_events = lambda step, top_k=5, **_kw: [  # type: ignore[method-assign]
         (SimpleNamespace(stored_content="我在朝堂上听见李建成与人低语", created_step=1, kind="event"), None),
         (SimpleNamespace(stored_content="我瞥见东宫侍卫悄然调动", created_step=3, kind="event"), None),
     ]

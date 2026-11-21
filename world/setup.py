@@ -18,7 +18,7 @@ about a theme.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, fields, replace
 from typing import Any
 
@@ -27,6 +27,7 @@ from agent.need import NEED_INTENSITY_RANGE, NEED_WEIGHT_RANGE, NeedState, build
 from agent.personality import GENDERS, EmotionState, SoulLayer
 from core.interfaces.snapshot import SnapshotProvider
 from core.interfaces.perception import DEFAULT_ENTITY_STATE
+from core.interfaces.place import SubPlace
 from core.interfaces.world_config import WorldConfig
 from core.logging import get_logger
 from core.prompts import (
@@ -37,6 +38,7 @@ from core.validate import require_at_least, require_in_range, require_member, re
 from engine.clock import STEP_SECONDS_RANGE, WorldTimeConfig, resolve_step_seconds
 from world.identity_color import free_identity_color
 from world.models import (
+    SUB_PLACE_LIMIT,
     AgentDefinition,
     AgentTier,
     NpcSeed,
@@ -277,12 +279,18 @@ class WorldSetup:
     # What stands in the world's places, and who keeps them.
     entity_seeds: tuple[WorldEntitySeed, ...] = ()
     npc_seeds: tuple[NpcSeed, ...] = ()
+    # The theme's named spots inside its places (``SubPlace``).
+    sub_places: tuple[SubPlace, ...] = ()
 
     # ----- the build ---------------------------------------------------------
 
     @classmethod
     def from_build(
-        cls, theme: str, analysis: ThemeAnalysis, definitions: Sequence[AgentDefinition],
+        cls,
+        theme: str,
+        analysis: ThemeAnalysis,
+        definitions: Sequence[AgentDefinition],
+        sub_places: Sequence[SubPlace] = (),
     ) -> WorldSetup:
         """The setup a build produced. The build speaks of people by name; here they become ids.
 
@@ -349,6 +357,7 @@ class WorldSetup:
                 replace(seed, entity_id=unique_entity_id(seed.name, used_ids))
                 for seed in analysis.world_entity_seeds
             ),
+            sub_places=tuple(sub_places),
         )
 
     # ----- persistence -------------------------------------------------------
@@ -378,6 +387,7 @@ class WorldSetup:
             "historical_events": [e.as_dict() for e in self.historical_events],
             "entity_seeds": [s.as_dict() for s in self.entity_seeds],
             "npc_seeds": [s.as_dict() for s in self.npc_seeds],
+            "sub_places": [s.as_dict() for s in self.sub_places],
         }
 
     @classmethod
@@ -411,6 +421,7 @@ class WorldSetup:
                 )
                 for s in data.get("npc_seeds", [])
             ),
+            sub_places=tuple(SubPlace.from_dict(s) for s in data.get("sub_places", [])),
         )
 
     # ----- the rules ---------------------------------------------------------
@@ -435,8 +446,13 @@ class WorldSetup:
         seen: set[str] = set()
         for name in self._names():
             if name_key(name) in seen:
-                raise ValueError(f"The name {name!r} is used twice among characters, NPCs and things")
+                raise ValueError(
+                    f"The name {name!r} is used twice among characters, NPCs, things and sub-places"
+                )
             seen.add(name_key(name))
+        for sub_place in self.sub_places:
+            _validate_sub_place(sub_place, places)
+        warn_if_over_sub_place_limit(self.sub_places)
         for definition in self.characters:
             _validate_character(definition, places)
         for npc in self.npc_seeds:
@@ -614,6 +630,19 @@ class WorldSetup:
     def with_relations(self, relations: Sequence[SetupRelation], *, places: MapPlaces) -> WorldSetup:
         return replace(self, relations=tuple(relations))._validated(places)
 
+    def with_sub_places(self, sub_places: Sequence[SubPlace], *, places: MapPlaces) -> WorldSetup:
+        """Replace the sub-places whole. Nothing else names them: every location in the setup is
+        already a place id, so a renamed or removed sub-place leaves no one stranded.
+
+        The per-place cap is refused here, on the sub-place edit, and only warned about in
+        ``validate``: a generated setup past it still confirms and takes other edits."""
+        per_place: dict[str, int] = {}
+        for sub_place in sub_places:
+            per_place[sub_place.location_id] = per_place.get(sub_place.location_id, 0) + 1
+            if per_place[sub_place.location_id] > SUB_PLACE_LIMIT:
+                raise ValueError(f"A place has at most {SUB_PLACE_LIMIT} sub-places")
+        return replace(self, sub_places=tuple(sub_places))._validated(places)
+
     def _entity(self, entity_id: str) -> WorldEntitySeed:
         for seed in self.entity_seeds:
             if seed.entity_id == entity_id:
@@ -638,6 +667,7 @@ class WorldSetup:
             *(d.soul.name for d in self.characters),
             *(n.name for n in self.npc_seeds),
             *(e.name for e in self.entity_seeds),
+            *(s.name for s in self.sub_places),
         ]
 
     def _validated(self, places: MapPlaces) -> WorldSetup:
@@ -664,6 +694,29 @@ def _validate_lore(lore: WorldLore) -> None:
         start_hour=time_config["start_hour"],
         seconds_per_step=time_config["seconds_per_step"],
     )
+
+
+def _validate_sub_place(sub_place: SubPlace, places: MapPlaces) -> None:
+    require_text(sub_place.name, "sub-place name")
+    # A sub-place named like a place is one name for two referents, and resolving it would pick one.
+    if name_key(sub_place.name) in places.names:
+        raise ValueError(f"The sub-place {sub_place.name!r} has a place's name")
+    require_member(sub_place.location_id, places.ids, f"location of {sub_place.name!r}")
+
+
+def warn_if_over_sub_place_limit(sub_places: Iterable[SubPlace]) -> None:
+    """Flag each place holding more than ``SUB_PLACE_LIMIT`` sub-places. Generation past the
+    limit is still a sound world, so nothing is dropped; the sub-place edit refuses it instead
+    (``WorldSetup.with_sub_places``)."""
+    per_place: dict[str, int] = {}
+    for sub_place in sub_places:
+        per_place[sub_place.location_id] = per_place.get(sub_place.location_id, 0) + 1
+    for place_id, count in per_place.items():
+        if count > SUB_PLACE_LIMIT:
+            logger.warning(
+                "sub_places_over_limit",
+                extra={"location_id": place_id, "count": count, "limit": SUB_PLACE_LIMIT},
+            )
 
 
 def _validate_entity(seed: WorldEntitySeed, places: MapPlaces) -> None:

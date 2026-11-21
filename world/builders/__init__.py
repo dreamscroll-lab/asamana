@@ -18,6 +18,15 @@ BUILD_ATTEMPTS = 2
 BUILD_RETRY_DELAY_SECONDS = 1.0
 
 
+# How a build prompt asks where someone or something stands. Theme analysis and character
+# generation share it, so both answer the same way and resolve the same way
+# (``world.builder._location_id``: a sub-place's name lands on its place).
+LOCATION_NAME_RULE = (
+    "优先填可用地点列表中某个地点的 name 值；"
+    "只有当需要细化具体指出是 sub_places 里的某一处时，才填那个子地点名"
+)
+
+
 class BuildReplyRejected(ValueError):
     """A reply a stage's parse can't use; ``adoption_reason`` labels the call's trace."""
 

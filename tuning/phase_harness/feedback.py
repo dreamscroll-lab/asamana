@@ -205,7 +205,7 @@ async def _run_feedback_self(
     try:
         # A born-zero (duration-1) self action begins and finalizes on the same step; finalize
         # lands all feedback (emotion/need/relation/memory/goal-progress).
-        await agent.begin_ongoing_step(plan=plan, estimated_steps=1)
+        await agent.begin_ongoing_step(plan=plan, executed=True, estimated_steps=1)
         await agent.finalize_ongoing_action(result=result, step=run_step)
         error = None
     except Exception as exc:  # noqa: BLE001

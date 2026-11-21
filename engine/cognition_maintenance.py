@@ -117,9 +117,16 @@ class CognitionMaintenance:
                 return_exceptions=True,
             )
 
-        # Long-term goal revision has its own cycle and reads recent factual + experiential
-        # memories (see Agent.revise_long_term_goals), not reflection's insights.
-        if self._long_term_goal_revision_enabled and self._long_term_goal_revision_interval > 0 and step % self._long_term_goal_revision_interval == 0:
+        # Long-term goal revision reads recent factual + experiential memories (see
+        # Agent.revise_long_term_goals), not reflection's insights. Each agent keeps its own due
+        # time (Agent.long_term_revision_due): its period, or enough failed short-term goals; both
+        # count from its last revision. The trigger is objective; whether the direction still
+        # holds stays the LLM's call.
+        if self._long_term_goal_revision_enabled and self._long_term_goal_revision_interval > 0:
+            revising = [
+                agent for agent in agents
+                if agent.long_term_revision_due(step, interval=self._long_term_goal_revision_interval)
+            ]
 
             async def _revise_long_term_goals(agent: "Agent") -> None:
                 try:
@@ -132,7 +139,7 @@ class CognitionMaintenance:
                     )
 
             await asyncio.gather(
-                *(_revise_long_term_goals(agent) for agent in agents),
+                *(_revise_long_term_goals(agent) for agent in revising),
                 return_exceptions=True,
             )
 

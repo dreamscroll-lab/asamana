@@ -74,7 +74,19 @@ class GoalEntity:
 # generation prompt. Regeneration appends, never overwrites; over capacity the oldest is marked
 # FAILED rather than silently dropped, so it still shows up in the history.
 _SHORT_TERM_GOAL_CAP: int = 6
-_SHORT_TERM_GOAL_HISTORY_CAP: int = 6
+# Closed goals are kept per status, so a run of completions can't push failures out before the
+# long-term revision has seen them.
+_COMPLETED_GOAL_HISTORY_CAP: int = 6
+# At least FAILED_GOALS_PER_REVISION, so the revision a run of failures brings forward lists them;
+# only failures beyond it in the very step of the revision fall out unseen.
+_FAILED_GOAL_HISTORY_CAP: int = 6
+
+# Short-term goals that failed since the last long-term revision and bring the next one forward
+# (Agent.long_term_revision_due). Most failures are bad timing or a refusal, and revising long-term
+# goals often draws them toward short-term ones, so it takes a run of them. The cost: a single
+# blocked pursuit failing once per _SHORT_TERM_GOAL_STALL_STEPS reaches the count no sooner than
+# the period; the count brings a revision forward only where failures pile up.
+FAILED_GOALS_PER_REVISION: int = 5
 
 # Literal-similarity (SequenceMatcher.ratio) dedup threshold on enqueue. High on purpose: it only
 # catches near-verbatim repeats; semantic duplicates are the generation prompt's job. The ratio is
@@ -272,13 +284,31 @@ def _evict_over_cap(entities: List[GoalEntity], current_step: int) -> None:
         )
 
 
+def closed_step(goal: GoalEntity) -> int:
+    """The step a closed goal closed at. Every way a goal closes stamps last_evaluated_step;
+    created_step only satisfies the type."""
+    return goal.created_step if goal.last_evaluated_step is None else goal.last_evaluated_step
+
+
 def trim_goal_history(entities: List[GoalEntity]) -> None:
-    """Keep only the latest _SHORT_TERM_GOAL_HISTORY_CAP terminal goals, in place."""
-    terminal_idxs = [i for i, g in enumerate(entities) if not is_live_goal(g)]
-    drop = len(terminal_idxs) - _SHORT_TERM_GOAL_HISTORY_CAP
-    if drop <= 0:
-        return
-    for i in sorted(terminal_idxs[:drop], reverse=True):
+    """Keep only the most recently closed goals of each status, up to its cap, in place.
+
+    Ordered by when each closed, not by queue position: the queue is in creation order, so a
+    long-lived goal that has only just failed would be the first dropped, unseen by the revision
+    it counts toward.
+    """
+    drop: List[int] = []
+    for status, cap in (
+        (GoalStatus.COMPLETED, _COMPLETED_GOAL_HISTORY_CAP),
+        (GoalStatus.FAILED, _FAILED_GOAL_HISTORY_CAP),
+    ):
+        # sorted is stable: goals closed in the same step keep queue order.
+        idxs = sorted(
+            (i for i, g in enumerate(entities) if g.status == status),
+            key=lambda i: closed_step(entities[i]),
+        )
+        drop.extend(idxs[:max(len(idxs) - cap, 0)])
+    for i in sorted(drop, reverse=True):
         del entities[i]
 
 

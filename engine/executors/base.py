@@ -408,6 +408,22 @@ class ActionExecutor(ABC):
     # Arbitration orders conscripting actions first (ExecutionArbiter._initiative_order).
     conscription: "Conscription | None" = None
 
+    # A momentary act doesn't occupy the body. The one test: once issued, does it still need the
+    # doer's own body? If not, the world carries it on (a letter on its way, an errand run by
+    # another body), and how long that takes is irrelevant. A character holds at most one
+    # body-occupying act per step alongside any number of momentary ones; today a decision issues
+    # one act, so a step has at most one of each.
+    #
+    # What follows for a momentary executor:
+    # - it takes no body, its doer's included: ``conscription`` stays None, and its doer stays
+    #   free to be invited or compelled the same step, which neither revokes nor defers the act;
+    # - it lands first, against the step-start world: started before anything else in the step,
+    #   adjudicated and fed back first, and always settled within the step it was issued in;
+    # - whatever it says about the doer's body (where it happened, who saw it) is fixed in
+    #   ``start()``: ``complete()`` must not read where the doer is, or a doer carried off the same
+    #   step would have issued it from wherever he was taken.
+    momentary: bool = False
+
     @abstractmethod
     async def start(
         self,

@@ -4,7 +4,9 @@ import type { SetupView, WorldMeta } from "../types";
 
 const state = vi.hoisted(() => ({
   cursor: 0, values: new Map<number, unknown>(), effects: [] as (() => unknown)[],
+  setters: new Map<number, ReturnType<typeof vi.fn>>(),
 }));
+const socket = vi.hoisted(() => ({ onFrame: undefined as ((frame: unknown) => void) | undefined }));
 const global = vi.hoisted(() => ({
   cast: vi.fn(() => ({ cast: {}, status: "ready", error: null })),
   places: vi.fn(() => ({ places: {}, status: "ready", error: null })),
@@ -31,11 +33,19 @@ vi.mock("react", async (original) => ({
   ...await original<typeof import("react")>(),
   useState: (initial: unknown) => {
     const slot = state.cursor++;
-    return [state.values.has(slot) ? state.values.get(slot) : initial, vi.fn()];
+    const setter = vi.fn();
+    state.setters.set(slot, setter);
+    return [state.values.has(slot) ? state.values.get(slot) : initial, setter];
   },
   useEffect: (effect: () => unknown) => { state.effects.push(effect); },
 }));
-vi.mock("react-router-dom", () => ({ useParams: () => ({ id: "world" }), useNavigate: () => controls.navigate }));
+vi.mock("react-router-dom", () => ({
+  useParams: () => ({ id: "world" }), useNavigate: () => controls.navigate,
+  useOutletContext: () => ({ setImmersive: vi.fn() }),
+}));
+vi.mock("../lib/deployment", async (original) => ({
+  ...await original<typeof import("../lib/deployment")>(), useModelKeys: () => true,
+}));
 vi.mock("../lib/cast", () => ({ useCast: global.cast, loadCast: vi.fn(), reloadCast: global.reloadCast }));
 vi.mock("../lib/places", async (original) => ({
   ...await original<typeof import("../lib/places")>(),
@@ -46,6 +56,11 @@ vi.mock("../lib/worldsContext", () => ({ useWorlds: () => ({ worlds: [], refresh
 vi.mock("../lib/vocabulary", () => ({ useVocabulary: () => ({ emotions: [], needs: [] }) }));
 vi.mock("../components/RelationshipGraph", () => ({ default: () => null }));
 vi.mock("../components/EditableWorldName", () => ({ default: () => null }));
+vi.mock("../api/ws", () => ({ WorldSocket: class {
+  constructor(_id: string, onFrame: (frame: unknown) => void) { socket.onFrame = onFrame; }
+  connect(): void {}
+  close(): void {}
+} }));
 vi.mock("../api/client", () => ({ API_BASE: "", api: {
   getWorld: vi.fn(), agents: vi.fn(), places: vi.fn(), getSetup: vi.fn(), agentProfile: vi.fn(), confirmWorld: vi.fn(),
 } }));
@@ -59,13 +74,13 @@ const meta: WorldMeta = {
   world_id: "world", theme: "草稿", world_name: "草稿世界", description: "", status: "unknown",
   created_at: null, current_step: 0, main_agent_names: [], seconds_per_step: 3600,
   run_state: null, confirmed: false, actor_character_id: null, actor_exited: false,
-  actor_pace: "every_step", director_reviewed: false,
+  actor_pace: "every_step", director_reviewed: false, epoch: "first",
 };
 const setup: SetupView = {
   narrative_theme: "",
   opening_time: { era_name: "", start_year: 1, start_month: 1, start_day: 1, start_hour: 6 },
   entities: [], npcs: [],
-  seconds_per_step: 3600, historical_events: [], relations: [],
+  seconds_per_step: 3600, historical_events: [], relations: [], sub_places: [],
   characters: [{
     agent_id: "a", name: "甲", role: "新身份", age: 30, gender: "女", background: "新背景",
     appearance: "", color: "#123456", core_traits: [], core_values: [], self_image: "",
@@ -79,7 +94,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.cursor = 0;
   state.values.clear();
+  state.setters.clear();
   state.effects = [];
+  socket.onFrame = undefined;
   controls.confirm = undefined;
   vi.mocked(api.getWorld).mockResolvedValue(meta);
   vi.mocked(api.agents).mockResolvedValue([]);
@@ -210,5 +227,30 @@ describe("world identity phase boundary", () => {
     places.resolve({});
     await confirmation;
     expect(controls.navigate).toHaveBeenCalledExactlyOnceWith("/worlds/world");
+  });
+});
+
+describe("a new epoch reloads every page watching the world", () => {
+  // WorldEntry's slots: the world it read (0), its read error (1), how many times it has read (2).
+  const reloaded = () => {
+    expect(state.setters.get(0)).toHaveBeenCalledWith(null);
+    expect(state.setters.get(2)).toHaveBeenCalled();
+  };
+
+  it.each([
+    ["a new epoch", "second", true],
+    ["the epoch it was read in", "first", false],
+  ])("on %s: %s", (_, epoch, reloads) => {
+    state.values.set(0, { ...meta, confirmed: true });
+    renderToStaticMarkup(<WorldView />);
+    for (const effect of state.effects) {
+      try { effect(); } catch { /* this test only drives the socket's effect */ }
+    }
+    expect(socket.onFrame).toBeTypeOf("function");
+
+    socket.onFrame!({ type: "epoch", data: { world_id: "world", epoch } });
+
+    if (reloads) reloaded();
+    else expect(state.setters.get(0)).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-"""Tests for the ActionExecutor framework: SimpleExecutor, SocialExecutor,
+"""Tests for the ActionExecutor framework: SimpleExecutor, SendMessageExecutor, SocialExecutor,
 MovementExecutor, WorkExecutor, and the registry."""
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import pytest
 
 from agent.agent import Agent
 from agent.decision import ActionType, AgentAction, DecisionEngine
-from core.interfaces.action import ActionTarget, Deed, Observed, Ref
+from core.interfaces.action import ActionResult, ActionTarget, Deed, Observed, Ref
 from core.interfaces.llm import LLMScene
 from agent.memory import MemorySystem
 from agent.need import NeedEngine
@@ -24,6 +24,7 @@ from engine.scene import SceneVisibility
 from engine.executors.covert import CovertExecutor
 from engine.executors.movement import MovementExecutor, arrival_view, carried_bodies
 from engine.executors.registry import ActionExecutorRegistry
+from engine.executors.send_message import SendMessageExecutor
 from engine.executors.simple import SimpleExecutor
 from engine.executors.social import SocialExecutor
 from engine.executors.work import WorkExecutor
@@ -346,19 +347,6 @@ class TestSimpleExecutor:
         assert state.initiator_id == "agent-a"
 
     @pytest.mark.asyncio
-    async def test_send_message_start_returns_immediate_result(self) -> None:
-        from core.interfaces.action import ActionResult
-        executor = SimpleExecutor(_directory())
-        env = _make_environment()
-        action = _make_action(agent_id="agent-a", action_type=ActionType.SEND_MESSAGE, estimated_steps=1)
-        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
-        assert isinstance(state, ActionExecutionState)
-        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
-        result = results[0]
-        assert isinstance(result, ActionResult)
-        assert result.succeeded
-
-    @pytest.mark.asyncio
     async def test_rest_tick_produces_narrative(self) -> None:
         executor = SimpleExecutor(_directory())
         env = _make_environment()
@@ -394,128 +382,6 @@ class TestSimpleExecutor:
         s1 = await executor.start(action, 1, agents={}, environment=env, message_system=None)
         s2 = await executor.start(action, 2, agents={}, environment=env, message_system=None)
         assert s1.execution_id != s2.execution_id
-
-    # --- SEND_MESSAGE memory ---
-
-    @pytest.mark.asyncio
-    async def test_send_message_factual_memory_renders_recipient_name_not_id(self, container) -> None:
-        """Memory records the recipient by name (narrative layer), not by agent id."""
-        from core.interfaces.action import ActionResult
-        agent_b = _make_agent(container, world_id="w", agent_id="bob", name="鲍勃", is_main=False)
-        executor = SimpleExecutor(_directory({"bob": agent_b}))
-        env = _make_environment()
-        action = _make_action(
-            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="约他见面", content="明天见面", target_agent_id="bob",
-        )
-        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
-        assert isinstance(state, ActionExecutionState)
-        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
-        result = results[0]
-        assert isinstance(result, ActionResult)
-        assert result.factual_memory is not None
-        assert "鲍勃" in result.factual_memory
-        assert "bob" not in result.factual_memory    # no id leak
-        assert "明天见面" in result.factual_memory
-
-    @pytest.mark.asyncio
-    async def test_send_message_unknown_recipient_falls_back_to_descriptive(self) -> None:
-        """A recipient the directory doesn't know falls back to "某人" (someone), never to an id."""
-        from core.interfaces.action import ActionResult
-        executor = SimpleExecutor(_directory())  # empty directory, so every lookup misses
-        env = _make_environment()
-        action = _make_action(
-            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="密报", target_agent_id="ghost-id",
-        )
-        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
-        assert isinstance(state, ActionExecutionState)
-        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
-        result = results[0]
-        assert isinstance(result, ActionResult)
-        assert "某人" in result.factual_memory
-        assert "ghost-id" not in result.factual_memory
-
-    @pytest.mark.asyncio
-    async def test_broadcast_memory_names_who_actually_heard_it(self, container) -> None:
-        """A broadcast's memory names everyone who was present, not a vague "在场众人" (everyone
-        present): later it has to answer "who heard this"."""
-        from core.interfaces.action import ActionResult
-        listener = _make_agent(container, world_id="w", agent_id="agent-b", name="李元吉")
-        executor = SimpleExecutor(_directory({"agent-b": listener}))
-        env = _make_environment()
-        action = _make_action(
-            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="向众人示警", content="敌军来犯", target_agent_id=None,
-        )
-        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
-        assert isinstance(state, ActionExecutionState)
-        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
-        result = results[0]
-        assert isinstance(result, ActionResult)
-        assert result.succeeded
-        assert "李元吉" in result.factual_memory
-        assert "在场众人" not in result.factual_memory
-        assert "敌军来犯" in result.factual_memory
-        assert "hall" in result.factual_memory
-        assert result.outcome.count("成功") == 1  # not "成功向…成功宣告" (success repeated)
-
-    @pytest.mark.asyncio
-    async def test_a_shout_into_an_empty_room_is_not_a_delivery(self) -> None:
-        """Announcing to an empty room is not a successful delivery, and nothing is delivered."""
-        from core.interfaces.action import ActionResult
-        executor = SimpleExecutor(_directory())
-        env = _make_environment()
-        env.move_body(body_id="agent-b", location_id="garden")   # he's the only one left
-        sent: list = []
-
-        class _Spy:
-            async def dispatch_from_action(self, action, **kw):  # noqa: ANN001
-                sent.append(action)
-
-        action = _make_action(
-            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="向众人示警", content="敌军来犯", target_agent_id=None,
-        )
-        state = await executor.start(action, 1, agents={}, environment=env, message_system=_Spy())
-        results = await executor.complete(
-            state, 1, agents={}, environment=env, message_system=_Spy(),
-        )
-        result = results[0]
-        assert isinstance(result, ActionResult)
-        assert result.succeeded is False
-        assert result.failure_reason == "此处无人"
-        assert "没有人听见" in result.factual_memory and "敌军来犯" in result.factual_memory
-        assert not sent, "没有接收者的消息不该进队列"
-        # Nothing broke; the room really is empty. This must not be filtered out as a null step.
-        assert result.adjudication_failed is False
-
-    @pytest.mark.asyncio
-    async def test_send_message_directed_delivers_regardless_of_location(self) -> None:
-        """A directed message has location_scope=None so it reaches absent recipients; a broadcast
-        is scoped to the sender's location."""
-        captured: list[dict] = []
-
-        class _CaptureMessageSystem:
-            async def dispatch_from_action(self, action, *, current_step, sender_name="", location_scope=None):
-                captured.append({"recipients": list(action.target.acted_on_agents), "location_scope": location_scope})
-
-        executor = SimpleExecutor(_directory())
-        env = _make_environment()  # agent-a is in hall
-        # directed at bob, who is elsewhere, so scope must be None
-        directed = _make_action(
-            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="速归", target_agent_id="bob",
-        )
-        await executor.start(directed, 1, agents={}, environment=env, message_system=_CaptureMessageSystem())
-        assert captured[-1]["location_scope"] is None
-
-        broadcast = _make_action(
-            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
-            description="全体集合", target_agent_id=None,
-        )
-        await executor.start(broadcast, 1, agents={}, environment=env, message_system=_CaptureMessageSystem())
-        assert captured[-1]["location_scope"] == "hall"
 
     @pytest.mark.asyncio
     async def test_rest_tick_is_narrative_only(self) -> None:
@@ -677,57 +543,6 @@ class TestSimpleExecutor:
         assert "。，" not in done.factual_memory and "」。。" not in done.factual_memory
 
     @pytest.mark.asyncio
-    async def test_send_message_outcome_quotes_delivered_words_and_preserves_intent(self) -> None:
-        """The words delivered are distinct from the sender's description of the action."""
-        class _Sink:
-            async def dispatch_from_action(self, action, *, current_step, sender_name="", location_scope=None):
-                return None
-
-        executor = SimpleExecutor(_directory(), seconds_per_step=3600)
-        env = _make_environment()
-        action = AgentAction(
-            agent_id="agent-a", step=1, action_type=ActionType.SEND_MESSAGE,
-            action_description="我传话给他，约他今夜在府中相见",
-            content="今夜府中一见。",
-            target=ActionTarget(acts_on=[Ref.agent("agent-b")]),
-        )
-        state = await executor.start(
-            action, 1, agents={}, environment=env, message_system=_Sink(),
-        )
-        result = state.extra["completed_result"]
-        assert "：「今夜府中一见。」" in result.outcome
-        assert "我传话给他" not in result.outcome
-        assert "今夜府中一见。" in result.factual_memory
-        assert result.factual_memory.startswith("我成功在")
-        assert result.action.action_description == action.action_description
-        assert result.action.content == action.content
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("directed", [True, False])
-    @pytest.mark.parametrize("heard", [True, False])
-    async def test_message_results_retain_verbatim_words_for_delivery_and_unheard_attempts(
-        self, directed: bool, heard: bool,
-    ) -> None:
-        executor = SimpleExecutor(_directory())
-        env = _make_environment()
-        if not heard:
-            env.move_body(body_id="agent-b", location_id="garden")
-        recipient = "agent-b" if heard else "agent-a"
-        message = "今夜你会来吗？别走！"
-        description = "我传话提醒大家"
-        action = AgentAction(
-            agent_id="agent-a", step=1, action_type=ActionType.SEND_MESSAGE,
-            action_description=description, content=message,
-            target=ActionTarget(acts_on=[Ref.agent(recipient)] if directed else []),
-        )
-        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
-        result = (await executor.complete(state, 1, agents={}, environment=env, message_system=None))[0]
-        assert result.succeeded is heard
-        assert message in result.outcome and message in result.factual_memory
-        assert description not in result.outcome and description not in result.factual_memory
-        assert result.action.action_description == description and result.action.content == message
-
-    @pytest.mark.asyncio
     async def test_rest_outcome_without_description_uses_default(self) -> None:
         """A description with no substance (a bare 'rest') falls back to the default "休息"
         wording."""
@@ -761,6 +576,196 @@ class TestSimpleExecutor:
         assert not result.succeeded
         assert result.vitality_damage < 0  # negative = partial recovery
         assert "2" in result.factual_memory
+
+
+# ---------------------------------------------------------------------------
+# SendMessageExecutor
+# ---------------------------------------------------------------------------
+
+class TestSendMessageExecutor:
+    @pytest.mark.asyncio
+    async def test_send_message_start_returns_immediate_result(self) -> None:
+        from core.interfaces.action import ActionResult
+        executor = SendMessageExecutor(_directory())
+        env = _make_environment()
+        action = _make_action(agent_id="agent-a", action_type=ActionType.SEND_MESSAGE, estimated_steps=1)
+        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
+        assert isinstance(state, ActionExecutionState)
+        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
+        result = results[0]
+        assert isinstance(result, ActionResult)
+        assert result.succeeded
+
+    @pytest.mark.asyncio
+    async def test_send_message_factual_memory_renders_recipient_name_not_id(self, container) -> None:
+        """Memory records the recipient by name (narrative layer), not by agent id."""
+        from core.interfaces.action import ActionResult
+        agent_b = _make_agent(container, world_id="w", agent_id="bob", name="鲍勃", is_main=False)
+        executor = SendMessageExecutor(_directory({"bob": agent_b}))
+        env = _make_environment()
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
+            description="约他见面", content="明天见面", target_agent_id="bob",
+        )
+        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
+        assert isinstance(state, ActionExecutionState)
+        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
+        result = results[0]
+        assert isinstance(result, ActionResult)
+        assert result.factual_memory is not None
+        assert "鲍勃" in result.factual_memory
+        assert "bob" not in result.factual_memory    # no id leak
+        assert "明天见面" in result.factual_memory
+
+    @pytest.mark.asyncio
+    async def test_send_message_unknown_recipient_falls_back_to_descriptive(self) -> None:
+        """A recipient the directory doesn't know falls back to "某人" (someone), never to an id."""
+        from core.interfaces.action import ActionResult
+        executor = SendMessageExecutor(_directory())  # empty directory, so every lookup misses
+        env = _make_environment()
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
+            description="密报", target_agent_id="ghost-id",
+        )
+        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
+        assert isinstance(state, ActionExecutionState)
+        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
+        result = results[0]
+        assert isinstance(result, ActionResult)
+        assert "某人" in result.factual_memory
+        assert "ghost-id" not in result.factual_memory
+
+    @pytest.mark.asyncio
+    async def test_broadcast_memory_names_who_actually_heard_it(self, container) -> None:
+        """A broadcast's memory names everyone who was present, not a vague "在场众人" (everyone
+        present): later it has to answer "who heard this"."""
+        from core.interfaces.action import ActionResult
+        listener = _make_agent(container, world_id="w", agent_id="agent-b", name="李元吉")
+        executor = SendMessageExecutor(_directory({"agent-b": listener}))
+        env = _make_environment()
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
+            description="向众人示警", content="敌军来犯", target_agent_id=None,
+        )
+        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
+        assert isinstance(state, ActionExecutionState)
+        results = await executor.complete(state, 1, agents={}, environment=env, message_system=None)
+        result = results[0]
+        assert isinstance(result, ActionResult)
+        assert result.succeeded
+        assert "李元吉" in result.factual_memory
+        assert "在场众人" not in result.factual_memory
+        assert "敌军来犯" in result.factual_memory
+        assert "hall" in result.factual_memory
+        assert result.outcome.count("成功") == 1  # not "成功向…成功宣告" (success repeated)
+
+    @pytest.mark.asyncio
+    async def test_a_shout_into_an_empty_room_is_not_a_delivery(self) -> None:
+        """Announcing to an empty room is not a successful delivery, and nothing is delivered."""
+        from core.interfaces.action import ActionResult
+        executor = SendMessageExecutor(_directory())
+        env = _make_environment()
+        env.move_body(body_id="agent-b", location_id="garden")   # he's the only one left
+        sent: list = []
+
+        class _Spy:
+            async def dispatch_from_action(self, action, **kw):  # noqa: ANN001
+                sent.append(action)
+
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
+            description="向众人示警", content="敌军来犯", target_agent_id=None,
+        )
+        state = await executor.start(action, 1, agents={}, environment=env, message_system=_Spy())
+        results = await executor.complete(
+            state, 1, agents={}, environment=env, message_system=_Spy(),
+        )
+        result = results[0]
+        assert isinstance(result, ActionResult)
+        assert result.succeeded is False
+        assert result.failure_reason == "此处无人"
+        assert "没有人听见" in result.factual_memory and "敌军来犯" in result.factual_memory
+        assert not sent, "没有接收者的消息不该进队列"
+        # Nothing broke; the room really is empty. This must not be filtered out as a null step.
+        assert result.adjudication_failed is False
+
+    @pytest.mark.asyncio
+    async def test_send_message_directed_delivers_regardless_of_location(self) -> None:
+        """A directed message has location_scope=None so it reaches absent recipients; a broadcast
+        is scoped to the sender's location."""
+        captured: list[dict] = []
+
+        class _CaptureMessageSystem:
+            async def dispatch_from_action(self, action, *, current_step, sender_name="", location_scope=None):
+                captured.append({"recipients": list(action.target.acted_on_agents), "location_scope": location_scope})
+
+        executor = SendMessageExecutor(_directory())
+        env = _make_environment()  # agent-a is in hall
+        # directed at bob, who is elsewhere, so scope must be None
+        directed = _make_action(
+            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
+            description="速归", target_agent_id="bob",
+        )
+        await executor.start(directed, 1, agents={}, environment=env, message_system=_CaptureMessageSystem())
+        assert captured[-1]["location_scope"] is None
+
+        broadcast = _make_action(
+            agent_id="agent-a", action_type=ActionType.SEND_MESSAGE,
+            description="全体集合", target_agent_id=None,
+        )
+        await executor.start(broadcast, 1, agents={}, environment=env, message_system=_CaptureMessageSystem())
+        assert captured[-1]["location_scope"] == "hall"
+
+    @pytest.mark.asyncio
+    async def test_send_message_outcome_quotes_delivered_words_and_preserves_intent(self) -> None:
+        """The words delivered are distinct from the sender's description of the action."""
+        class _Sink:
+            async def dispatch_from_action(self, action, *, current_step, sender_name="", location_scope=None):
+                return None
+
+        executor = SendMessageExecutor(_directory())
+        env = _make_environment()
+        action = AgentAction(
+            agent_id="agent-a", step=1, action_type=ActionType.SEND_MESSAGE,
+            action_description="我传话给他，约他今夜在府中相见",
+            content="今夜府中一见。",
+            target=ActionTarget(acts_on=[Ref.agent("agent-b")]),
+        )
+        state = await executor.start(
+            action, 1, agents={}, environment=env, message_system=_Sink(),
+        )
+        result = state.extra["completed_result"]
+        assert "：「今夜府中一见。」" in result.outcome
+        assert "我传话给他" not in result.outcome
+        assert "今夜府中一见。" in result.factual_memory
+        assert result.factual_memory.startswith("我成功在")
+        assert result.action.action_description == action.action_description
+        assert result.action.content == action.content
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("directed", [True, False])
+    @pytest.mark.parametrize("heard", [True, False])
+    async def test_message_results_retain_verbatim_words_for_delivery_and_unheard_attempts(
+        self, directed: bool, heard: bool,
+    ) -> None:
+        executor = SendMessageExecutor(_directory())
+        env = _make_environment()
+        if not heard:
+            env.move_body(body_id="agent-b", location_id="garden")
+        recipient = "agent-b" if heard else "agent-a"
+        message = "今夜你会来吗？别走！"
+        description = "我传话提醒大家"
+        action = AgentAction(
+            agent_id="agent-a", step=1, action_type=ActionType.SEND_MESSAGE,
+            action_description=description, content=message,
+            target=ActionTarget(acts_on=[Ref.agent(recipient)] if directed else []),
+        )
+        state = await executor.start(action, 1, agents={}, environment=env, message_system=None)
+        result = (await executor.complete(state, 1, agents={}, environment=env, message_system=None))[0]
+        assert result.succeeded is heard
+        assert message in result.outcome and message in result.factual_memory
+        assert description not in result.outcome and description not in result.factual_memory
+        assert result.action.action_description == description and result.action.content == message
 
 
 # ---------------------------------------------------------------------------
@@ -1454,7 +1459,6 @@ class TestSocialExecutor:
         assert all(r.dialogue for r in results)
         assert all(r.adjudication_failed is False for r in results)
 
-
     @pytest.mark.asyncio
     async def test_one_unattributable_line_voids_the_whole_transcript(self, container) -> None:
         """If any line has no identifiable speaker, the whole transcript is discarded and the
@@ -2124,7 +2128,7 @@ class TestWorkExecutor:
         env = _make_environment()
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我把换防部署令写完了。", "success": true,'
-            ' "product_name": "换防部署令", "product_desc": "圈定亲信的名单", "product_carried": true,'
+            ' "changes": [{"entity": 0, "name": "换防部署令", "description": "圈定亲信的名单", "carried": true}],'
             ' "outcome": "常何写完了换防部署令。", "observation": "常何伏案写了半日。", "why": ""}'
         )
         action = _make_action(
@@ -2159,7 +2163,7 @@ class TestWorkExecutor:
         env = _make_environment()
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我把栅栏筑起来了。", "success": true,'
-            ' "product_name": "一道栅栏", "product_desc": "拦住了侧门", "product_carried": false,'
+            ' "changes": [{"entity": 0, "name": "一道栅栏", "description": "拦住了侧门", "carried": false}],'
             ' "outcome": "常何筑起了一道栅栏。", "observation": "常何忙了半日。", "why": ""}'
         )
         action = _make_action(
@@ -2190,7 +2194,7 @@ class TestWorkExecutor:
         env = _make_environment()
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我把明日各步在心里走了一遍。", "success": true,'
-            ' "product_name": "", "product_desc": "",'
+            ' "changes": [],'
             ' "outcome": "常何默坐推演了半日。", "observation": "常何闭目默坐。", "why": ""}'
         )
         action = _make_action(
@@ -2217,7 +2221,7 @@ class TestWorkExecutor:
         env = _make_environment()
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "终究没能写完。", "success": false,'
-            ' "product_name": "换防部署令", "product_desc": "还差一半",'
+            ' "changes": [{"entity": 0, "name": "换防部署令", "description": "还差一半", "carried": true}],'
             ' "outcome": "常何没能写完。", "observation": "常何伏案半日。", "why": "时候不够"}'
         )
         action = _make_action(
@@ -2246,8 +2250,7 @@ class TestWorkExecutor:
         ))
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我添了几处转圜的余地。", "success": true,'
-            ' "updated_index": 1, "updated_state": "已添转圜", "updated_desc": "三页，边角添了小字",'
-            ' "product_name": "", "product_desc": "",'
+            ' "changes": [{"entity": 1, "state": "已添转圜", "description": "三页，边角添了小字", "carried": true}],'
             ' "outcome": "李建成添了几处转圜。", "observation": "李建成伏案半日。", "why": ""}'
         )
         action = AgentAction(
@@ -2278,8 +2281,8 @@ class TestWorkExecutor:
         env = _make_environment()
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我写好了给秦王的信。", "success": true,'
-            ' "product_name": "密信", "product_desc": "火漆封口", "product_content": "明晨卯时，玄武门换防",'
-            ' "product_carried": true,'
+            ' "changes": [{"entity": 0, "name": "密信", "description": "火漆封口", "content": "明晨卯时，玄武门换防",'
+            ' "carried": true}],'
             ' "outcome": "常何写好了一封信。", "observation": "常何伏案写了半日。", "why": ""}'
         )
         action = _make_action(
@@ -2308,9 +2311,7 @@ class TestWorkExecutor:
         llm = container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION)
         llm.fixed_response = (
             '{"fact": "我在奏章后头添了一句。", "success": true,'
-            ' "updated_index": 1, "updated_state": "", "updated_desc": "",'
-            ' "updated_content": "臣请削秦王兵权，并调尉迟恭出京",'
-            ' "product_name": "", "product_desc": "", "product_content": "",'
+            ' "changes": [{"entity": 1, "content": "臣请削秦王兵权，并调尉迟恭出京", "carried": true}],'
             ' "outcome": "李建成改了奏章。", "observation": "李建成伏案。", "why": ""}'
         )
         action = AgentAction(
@@ -2343,9 +2344,8 @@ class TestWorkExecutor:
         ))
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我把木料削成了一把椅子。", "success": true,'
-            ' "updated_index": 1, "updated_name": "半截木料", "updated_state": "只剩半截",'
-            ' "updated_desc": "", "product_name": "一把矮凳", "product_desc": "四条腿，未上漆",'
-            ' "product_carried": true,'
+            ' "changes": [{"entity": 1, "name": "半截木料", "state": "只剩半截", "carried": true},'
+            ' {"entity": 0, "name": "一把矮凳", "description": "四条腿，未上漆", "carried": true}],'
             ' "outcome": "甲削出了一把矮凳。", "observation": "甲忙了半日。", "why": ""}'
         )
         action = AgentAction(
@@ -2376,8 +2376,7 @@ class TestWorkExecutor:
         ))
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我翻看了一遍,什么也没改。", "success": true,'
-            ' "updated_index": 0, "updated_state": "", "updated_desc": "",'
-            ' "product_name": "", "product_desc": "",'
+            ' "changes": [],'
             ' "outcome": "甲翻看了一遍。", "observation": "甲翻看了一遍。", "why": ""}'
         )
         action = AgentAction(
@@ -2393,8 +2392,8 @@ class TestWorkExecutor:
 
     @pytest.mark.asyncio
     async def test_a_thing_in_hand_is_listed_once(self, container, monkeypatch) -> None:
-        """The scene list and the roster divide the room between them: the item in my hands is
-        listed only in the roster, not again among the scene's items."""
+        """The scene lines divide the room between them: the item in my hands is listed only on
+        its numbered line, the one lying here only on its own, numbered on from the first."""
         from core.interfaces.llm import LLMScene
         agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="甲")
         agents = {"agent-a": agent_a}
@@ -2409,7 +2408,7 @@ class TestWorkExecutor:
             presence_ref="hall",
         ))
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
-            '{"fact": "我读了一阵。", "success": true, "updated_index": 0,'
+            '{"fact": "我读了一阵。", "success": true, "changes": [],'
             ' "outcome": "甲读了一阵。", "observation": "甲读了一阵。", "why": ""}'
         )
         captured: list[str] = []
@@ -2430,44 +2429,136 @@ class TestWorkExecutor:
         prompt = captured[0]
         assert prompt.count("一卷旧册") == 1, "手上那件只该出现在「我手上的东西」那行里"
         assert "- 我手上的东西：#1 一卷旧册" in prompt
-        assert "一盏灯" in prompt, "地上那件仍是现场证据"
-        assert "现场物件：一盏灯" in prompt, "地上那件不进名单——动它得先夺过来"
+        assert prompt.count("一盏灯") == 1
+        assert "- 此处地上的东西：#2 一盏灯（可取）" in prompt
+        assert "- 现场物件：无" in prompt
 
     @pytest.mark.asyncio
-    async def test_a_thing_on_the_floor_is_out_of_reach_of_a_solo_stint(self, container) -> None:
-        """Editing an item requires holding it. Anyone can use the one on the floor, and one person
-        working alone must not quietly change it.
-
-        It isn't on the judge's menu, and if the judge makes up an index for it anyway, out-of-range
-        indices are treated as no reference.
-        """
+    async def test_a_thing_lying_here_is_worked_on_where_it_lies_or_taken(self, container) -> None:
+        """What lies where the doer works is in reach: changed where it lies, or picked up when
+        carried. A fixture keeps its changes and stays put; an index past the list names nothing."""
         from core.interfaces.llm import LLMScene
         agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="李建成")
         agents = {"agent-a": agent_a}
         executor = WorkExecutor(container.llm_router, _directory(agents))
         env = _make_environment()
         env.register_entity(WorldEntity(
-            entity_id="onfloor", name="案上的旧稿", entity_type=WorldEntityType.ITEM,
-            presence_ref="hall",
+            entity_id="draft", name="案上的旧稿", entity_type=WorldEntityType.ITEM, presence_ref="hall",
         ))
+        env.register_entity(WorldEntity(
+            entity_id="wall", name="照壁", entity_type=WorldEntityType.LANDMARK, presence_ref="hall",
+        ))
+        order = [e.entity_id for e in env.reachable_in_order(env.get_items_at("hall"), viewer_id="agent-a")]
+        draft, wall = order.index("draft") + 1, order.index("wall") + 1
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
-            '{"fact": "我另写了一份。", "success": true,'
-            ' "updated_index": 1, "updated_state": "已改定", "updated_desc": "",'
-            ' "product_name": "新的说辞", "product_desc": "三页", "product_carried": true,'
-            ' "outcome": "李建成另写了一份。", "observation": "李建成伏案半日。", "why": ""}'
+            '{"fact": "我改定了旧稿收好，又在照壁上题了字。", "success": true, "changes": ['
+            f'{{"entity": {draft}, "state": "已改定", "carried": true}},'
+            f'{{"entity": {wall}, "state": "题了字", "carried": true}},'
+            '{"entity": 3, "state": "破了", "carried": false}],'
+            ' "outcome": "李建成改稿题字。", "observation": "李建成伏案半日。", "why": ""}'
         )
         action = AgentAction(
-            agent_id="agent-a", step=1, action_type=ActionType.WORK,
-            action_description="另写一份",
+            agent_id="agent-a", step=1, action_type=ActionType.WORK, action_description="改稿题字",
         )
         state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
         result = (await executor.complete(
             state, 1, agents=agents, environment=env, message_system=None,
         ))[0]
 
-        assert result.entity_state_changes == []
-        assert [s.name for s in result.entity_spawns] == ["新的说辞"]
-        assert env.get_entity("onfloor").state == "intact"
+        by_id = {c.entity_id: c for c in result.entity_state_changes}
+        assert set(by_id) == {"draft", "wall"}
+        assert by_id["draft"].owner_id == "agent-a" and "李建成拿起了案上的旧稿" in by_id["draft"].perception
+        assert by_id["wall"].owner_id is None and by_id["wall"].perception == ""
+        assert by_id["wall"].new_state == "题了字"
+
+    @pytest.mark.asyncio
+    async def test_a_thing_lying_here_stays_put_when_carried_is_left_out(self, container) -> None:
+        """A missing carried keeps a thing where it was: lying here, it isn't picked up."""
+        from core.interfaces.llm import LLMScene
+        agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="甲")
+        agents = {"agent-a": agent_a}
+        executor = WorkExecutor(container.llm_router, _directory(agents))
+        env = _make_environment()
+        env.register_entity(WorldEntity(
+            entity_id="board", name="木牌", entity_type=WorldEntityType.ITEM, presence_ref="hall",
+        ))
+        container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
+            '{"fact": "我在木牌上刻了字。", "success": true,'
+            ' "changes": [{"entity": 1, "state": "刻了字"}],'
+            ' "outcome": "甲刻字。", "observation": "甲刻字。", "why": ""}'
+        )
+        action = AgentAction(
+            agent_id="agent-a", step=1, action_type=ActionType.WORK, action_description="刻字",
+        )
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        [change] = (await executor.complete(
+            state, 1, agents=agents, environment=env, message_system=None,
+        ))[0].entity_state_changes
+
+        assert change.owner_id is None and change.location_id is None and change.new_state == "刻了字"
+
+    @pytest.mark.asyncio
+    async def test_a_thing_in_hand_can_be_set_down(self, container) -> None:
+        """Reading a list out and leaving it on the table: an entry with nothing changed but
+        carried false lands it here, in sight."""
+        from core.interfaces.llm import LLMScene
+        agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="甲")
+        agents = {"agent-a": agent_a}
+        executor = WorkExecutor(container.llm_router, _directory(agents))
+        env = _make_environment()
+        env.register_entity(WorldEntity(
+            entity_id="list", name="核对清单", entity_type=WorldEntityType.ITEM,
+            presence=EntityPresence.HELD, presence_ref="agent-a", content="三点，北门",
+        ))
+        container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
+            '{"fact": "我把清单念完，留在了桌上。", "success": true,'
+            ' "changes": [{"entity": 1, "name": "核对清单", "content": "三点，北门", "carried": false}],'
+            ' "outcome": "甲念完了清单。", "observation": "甲念完把纸搁下。", "why": ""}'
+        )
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.WORK, description="当众念清单", estimated_steps=1,
+        )
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        result = (await executor.complete(
+            state, 1, agents=agents, environment=env, message_system=None,
+        ))[0]
+
+        [change] = result.entity_state_changes
+        # Name and content copied back unchanged are no change.
+        assert (change.new_name, change.new_content) == ("", "")
+        assert change.location_id == "hall" and change.owner_id is None
+        assert "甲把核对清单放在了此处" in change.perception
+        env.change_entity_state(change)
+        assert env.get_entity("list").location_id == "hall"
+
+    @pytest.mark.asyncio
+    async def test_a_work_entry_that_changes_nothing_or_names_nothing_is_dropped(self, container) -> None:
+        from core.interfaces.llm import LLMScene
+        agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="甲")
+        agents = {"agent-a": agent_a}
+        executor = WorkExecutor(container.llm_router, _directory(agents))
+        env = _make_environment()
+        env.register_entity(WorldEntity(
+            entity_id="scroll", name="一卷旧册", entity_type=WorldEntityType.ITEM,
+            presence=EntityPresence.HELD, presence_ref="agent-a", state="完好",
+        ))
+        container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
+            '{"fact": "我翻了一遍。", "success": true,'
+            ' "changes": [{"entity": 1, "state": "完好", "carried": true},'
+            ' {"entity": 2, "state": "破了", "carried": true},'
+            ' {"entity": 0, "name": "", "description": "一张纸", "carried": true}],'
+            ' "outcome": "甲翻了一遍。", "observation": "甲翻了一遍。", "why": ""}'
+        )
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.WORK, description="翻旧册", estimated_steps=1,
+        )
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        result = (await executor.complete(
+            state, 1, agents=agents, environment=env, message_system=None,
+        ))[0]
+
+        # Same state copied back, an index naming nothing in hand, a made thing with no name.
+        assert result.entity_state_changes == [] and result.entity_spawns == []
 
     @pytest.mark.asyncio
     async def test_work_product_never_reaches_bystanders(self, container) -> None:
@@ -2480,7 +2571,7 @@ class TestWorkExecutor:
         env = _make_environment()
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
             '{"fact": "我把换防部署令写完了。", "success": true,'
-            ' "product_name": "换防部署令", "product_desc": "圈定亲信的名单", "product_carried": true,'
+            ' "changes": [{"entity": 0, "name": "换防部署令", "description": "圈定亲信的名单", "carried": true}],'
             ' "outcome": "常何写完了换防部署令。", "observation": "常何伏案写了半日。", "why": ""}'
         )
         action = _make_action(
@@ -2506,7 +2597,7 @@ class TestWorkExecutor:
 
         async def _fail_outcome(
             self_inner, *, agent, purpose, duration_label, recalled=None, now_step=0, location="",
-            situation_header="", scene="", expected_outcome="", in_hand=None,
+            situation_header="", scene="", expected_outcome="", in_reach=None,
         ):
             from engine.executors.work import _WorkVerdict
             return _WorkVerdict(
@@ -2623,6 +2714,24 @@ class TestWorkExecutor:
         prompt = _joined(container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).call_history[-1])
         assert "上月的盐税账少了三十两。" in prompt
         assert "m1" not in prompt          # ids never cross the LLM boundary
+
+    @pytest.mark.asyncio
+    async def test_work_judge_forbids_carrying_recalled_state_into_the_fact(self, container) -> None:
+        """Recall can miss a later memory, so a recalled state may be stale. The fact must not
+        restate it as the present, or the stale state is persisted again as a new memory."""
+        from core.interfaces.llm import LLMScene
+        agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="A")
+        agents = {"agent-a": agent_a}
+        executor = WorkExecutor(container.llm_router, _directory(agents))
+        env = _make_environment()
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.WORK, description="整理账本", estimated_steps=1,
+        )
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        await executor.complete(state, 1, agents=agents, environment=env, message_system=None)
+        call = container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).call_history[-1]
+        system = next(m.content for m in call if m.role == "system")
+        assert "不能把旧事里的状态、情形当成此刻的状态、情形" in system
 
     @pytest.mark.asyncio
     async def test_work_recall_failure_still_judges(self, container, monkeypatch) -> None:
@@ -3593,7 +3702,6 @@ class TestPhysicalExecutor:
         for change in changes:
             env.change_entity_state(change, doer_id="agent-a")
         assert env.find_item("letter_7").owner_id == "agent-a", "世界必须真的变了"
-
 
     @pytest.mark.parametrize("payload", [
         '{"success": true, "fact": "我按住了他。"}',                    # no outcome
@@ -4747,7 +4855,6 @@ class TestPhysicalExecutor:
         assert isinstance(result, ActionResult)
         assert result.target_effects == []
 
-
     @pytest.mark.asyncio
     async def test_landmark_physical_action_declares_state_change_without_owner(self, container) -> None:
         from core.interfaces.action import ActionResult
@@ -4922,6 +5029,54 @@ class TestCovertExecutor:
         assert result.succeeded is achieved
         assert result.detected is detected
         assert result.factual_memory == "我看清密信上写着三日后动手"
+
+    @staticmethod
+    async def _complete_covert(container, verdict: dict) -> ActionResult:
+        import json
+
+        from core.interfaces.llm import LLMScene
+        from engine.executors.covert import CovertExecutor
+
+        container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = json.dumps(
+            verdict, ensure_ascii=False,
+        )
+        env = _make_environment()
+        agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="甲", is_main=True)
+        agents = {"agent-a": agent_a}
+        executor = CovertExecutor(container.llm_router, _directory(agents))
+        action = _make_action(agent_id="agent-a", action_type=ActionType.COVERT, description="翻看密信")
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        [result] = await executor.complete(state, 1, agents=agents, environment=env, message_system=None)
+        return result
+
+    @pytest.mark.asyncio
+    async def test_covert_outcome_records_what_he_caught_and_exposure_shows_only_traces(
+        self, container,
+    ) -> None:
+        """The outcome is the complete record, so it carries what he caught; onlookers who catch
+        him see only his traces."""
+        result = await self._complete_covert(container, {
+            "detected": True, "observation": "甲在案边停留了片刻。",
+            "fact": "我看清密信上写着三日后动手", "achieved": True, "why": "",
+            "outcome": "甲在案边停留片刻，看清密信上写着三日后动手。",
+        })
+        assert "三日后动手" in result.outcome
+        assert "停留了片刻" in _obs_text(result)
+        assert "三日后" not in _obs_text(result)
+
+    @pytest.mark.asyncio
+    async def test_covert_exposure_without_observation_never_borrows_the_outcome(
+        self, container,
+    ) -> None:
+        """A judge that omits the observation leaves exposure to a bare template; the outcome
+        would hand onlookers what he caught."""
+        result = await self._complete_covert(container, {
+            "detected": True, "fact": "我看清密信上写着三日后动手", "achieved": True, "why": "",
+            "outcome": "甲在案边停留片刻，看清密信上写着三日后动手。",
+        })
+        exposure = _obs_text(result)
+        assert "甲" in exposure
+        assert "三日后" not in exposure and "密信" not in exposure
 
     @pytest.mark.asyncio
     async def test_covert_judge_is_told_this_action_moves_nobody(self, container) -> None:
@@ -5517,10 +5672,10 @@ class TestCovertExecutor:
                 "agent-a", environment=env, directory=directory, agents=agents, **kw,
             )
 
-        empty = render(visibility=SceneVisibility.OWN_EYES, split_own_entities=True)
+        empty = render(visibility=SceneVisibility.OWN_EYES, split_in_reach=True)
         assert empty.text.count(_ORDINARY_FIXTURES_LINE) == 1
         assert "- 现场物件：无" in empty.text                  # the tracked list stays truthful
-        assert empty.own_entities == ()
+        assert empty.in_reach == ()
 
         env.register_entity(WorldEntity(
             entity_id="lamp", name="灯笼", entity_type=WorldEntityType.ITEM,
@@ -5600,8 +5755,8 @@ class TestCovertExecutor:
         from engine.executors.covert import CovertExecutor
 
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = (
-            '{"achieved": true, "detected": true, "fact": "仓促间撞翻烛台，被人看见了",'
-            ' "outcome": "甲撞翻了烛台。"}'
+            '{"achieved": true, "detected": true, "observation": "甲撞翻了烛台。",'
+            ' "fact": "仓促间撞翻烛台，被人看见了", "outcome": "甲撞翻烛台，被人看见。"}'
         )
         env = _make_environment()  # agent-a and agent-b are both in hall
         agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="A", is_main=True)
@@ -5623,6 +5778,8 @@ class TestCovertExecutor:
         assert result.succeeded is False
         assert result.detected is True
         assert "撞翻烛台" in result.factual_memory
+        # Caught lurking is seen whether or not he got to finish.
+        assert "撞翻了烛台" in _obs_text(result)
 
 
 # ---------------------------------------------------------------------------
@@ -6253,6 +6410,7 @@ class TestDoerAlwaysNamedIn3p:
         container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).fixed_response = json.dumps({
             "success": True, "achieved": True, "detected": True,
             "outcome": "那桩事悄没声地办妥了。",     # no subject
+            "observation": "在一旁悄没声地忙着。",   # no subject either
             "fact": "我把事办妥了。", "why": "",
         }, ensure_ascii=False)
         env = _make_environment()
@@ -6270,7 +6428,7 @@ class TestDoerAlwaysNamedIn3p:
 
         assert "李世民" in res.outcome, f"3p 通道必须点名行动者,实际:{res.outcome}"
         assert "那桩事悄没声地办妥了" in res.outcome, "判官的叙述本身应当保留"
-        if _obs_text(res):             # a COVERT exposure shows bystanders the same string, so adding the name once fixes both channels
+        if _obs_text(res):             # what onlookers see names him too
             assert "李世民" in _obs_text(res)
 
 
@@ -6742,7 +6900,9 @@ async def test_talk_recent_past_comes_first_and_the_other_blocks_give_way() -> N
         relation_system=SimpleNamespace(perceive=_perceive),
         memory_system=SimpleNamespace(
             recall_about_agent=_recall_about, retrieve=_retrieve,
-            sample_recent_events=lambda step, top_k: pairs[:top_k],
+            sample_recent_events=lambda step, top_k, require_factual=False: [
+                pair for pair in pairs if pair[0] is not None or not require_factual
+            ][:top_k],
         ),
     )
     ctx = await SocialExecutor(None, _directory())._gather_context(agent, "b", "议事", "议事", 5)  # type: ignore[arg-type]
@@ -6782,7 +6942,7 @@ async def test_talk_one_failed_recall_does_not_blank_the_other_blocks() -> None:
         relation_system=SimpleNamespace(perceive=_perceive),
         memory_system=SimpleNamespace(
             recall_about_agent=_boom, retrieve=_retrieve,
-            sample_recent_events=lambda step, top_k: [(fact, None)],
+            sample_recent_events=lambda step, top_k, **_kw: [(fact, None)],
         ),
     )
     ctx = await SocialExecutor(None, _directory())._gather_context(agent, "b", "议事", "议事", 5)  # type: ignore[arg-type]

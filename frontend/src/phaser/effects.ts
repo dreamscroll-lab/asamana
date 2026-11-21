@@ -7,7 +7,7 @@ import Phaser from "phaser";
 
 import type { Beat } from "./figures";
 import { toHex } from "../lib/color";
-import { Deed, actedOnAgents, reachedAgents } from "../lib/contract";
+import { ActionType, Deed, actedOnAgents, reachedAgents } from "../lib/contract";
 import type { Dir } from "./skins";
 import { type AgentToken, FONT, TEXT_RES } from "./types";
 
@@ -326,6 +326,39 @@ export function flyMessageArc(
   });
 }
 
+// An item's gold: its marker, its state notes, and its flight when it changes hands.
+export const ITEM_GOLD = 0xd9a441;
+
+/** A thing flying from one pair of hands to another as itself, the gold star: as a ✉ it would read as a letter. */
+export function flyThing(host: FxHost, from: AgentToken, to: AgentToken): Promise<void> {
+  return flyMessageArc(
+    host, from.container.x, from.container.y, to.container.x, to.container.y,
+    { color: ITEM_GOLD, glyph: "✦", ripple: ITEM_GOLD },
+  );
+}
+
+/**
+ * Whose hands a deed moves its things between, giver first: given into someone's hands, or taken
+ * out of them. Read off the act's own record, so it holds in any view, including one that won't
+ * show the thing in its new hands (something concealed, now in another's pocket). Null for any
+ * other act, or when nothing changed hands (`affected_entity_ids` empty).
+ */
+export function handOff(act: Beat): { from: string; to: string } | null {
+  if (act.action_type !== ActionType.physical || !act.affected_entity_ids?.length) return null;
+  const other = reachedAgents(act.target).find((id) => id !== act.agent_id);
+  if (!other) return null;
+  if (act.deed === Deed.relinquish) return { from: act.agent_id, to: other };
+  if (act.deed === Deed.seize) return { from: other, to: act.agent_id };
+  return null;
+}
+
+function handOffArc(host: FxHost, act: Beat): void {
+  const ends = handOff(act);
+  const from = ends && host.token(ends.from);
+  const to = ends && host.token(ends.to);
+  if (from && to) void flyThing(host, from, to);
+}
+
 // SEND_MESSAGE to named recipients: a pulse at the sender, then a ✉ arc to EACH recipient.
 // The directed arcs distinguish it from a local announcement and a broadcast.
 export function directedMessages(host: FxHost, tok: AgentToken, targetIds: string[]): Promise<void> {
@@ -401,6 +434,10 @@ export function physicalEffect(host: FxHost, tok: AgentToken, act: Beat): void {
       break;
     case Deed.seize:
       seizeEffect(host, tok, act);
+      handOffArc(host, act);
+      break;
+    case Deed.relinquish:
+      handOffArc(host, act);
       break;
     case Deed.operate:
       operateEffect(host, tok, act);
@@ -434,12 +471,12 @@ function thingPoints(
 }
 
 // Take a thing: no violence. A gold gleam gathers INWARD onto the doer, the opposite of a smash.
-// Only from a marker: a thing taken from someone's hands already flies from him to the doer when
-// its change is revealed (entities.ts), so don't gleam it from the holder as well.
+// Only from a marker: a thing taken from someone's hands flies from him to the doer (handOffArc),
+// so don't gleam it from the holder as well.
 function seizeEffect(host: FxHost, tok: AgentToken, act: Beat): void {
   for (const m of thingPoints(host, tok, act)) {
     if (!m.marker) continue;
-    const gleam = host.add.circle(m.x, m.y, 12).setStrokeStyle(2.5, 0xd9a441).setDepth(31);
+    const gleam = host.add.circle(m.x, m.y, 12).setStrokeStyle(2.5, ITEM_GOLD).setDepth(31);
     host.pushEphemeral(gleam);
     host.tweens.add({ targets: gleam, x: tok.container.x, y: tok.container.y - 6, scale: 0.3, alpha: 0, duration: 480, ease: "Cubic.easeIn" });
   }

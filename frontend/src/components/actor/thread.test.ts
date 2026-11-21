@@ -8,7 +8,7 @@ import type {
 const briefing: ActorBriefing = { location: null, people: [], npcs: [], places: [], entities: [] };
 
 const act = (description: string): ActorDecisionSummary => ({
-  decision_summary_id: `decision_summary-${description}`, description, operation: "work", target: null, parameters: {}, estimated_duration_seconds: 7200,
+  decision_summary_id: `decision_summary-${description}`, description, operation: "work", target: { acts_on: [], claims: [], reaches: [] }, parameters: {}, estimated_duration_seconds: 7200,
 });
 const IDLE: ActorPublicAnswer = { idle: true };
 
@@ -34,6 +34,9 @@ const began = (step: number, total_steps: number): ActorEntry => ({
 });
 const ended = (step: number): ActorEntry => ({
   kind: "ended", entry_id: id(), time_label: "", step, fact: "我抄完了奏章", succeeded: true, happened: true,
+});
+const acted = (step: number): ActorEntry => ({
+  kind: "acted", entry_id: id(), time_label: "", step, description: "给太子传信", fact: "我向太子传信", succeeded: true, happened: true,
 });
 const perceived = (): ActorEntry => ({
   kind: "perceived", entry_id: id(), time_label: "", step: 2, messages: [], broadcasts: ["宫中走水"], acted_upon: [],
@@ -126,6 +129,30 @@ describe("buildThread · 行动", () => {
 
     const items = buildThread([began(1, 3), { kind: "break_off", entry_id: id(), time_label: "", step: 1 }], null);
     expect(breakableAct(items)).toMatchObject({ breakingOff: true });
+  });
+
+  it("一条记完的行动不结束也不遮住进行中的事", () => {
+    const items = buildThread([began(1, 3), acted(1)], null);
+    expect(items).toMatchObject([
+      { kind: "act", description: "抄奏章", ended: false, whole: false },
+      { kind: "act", description: "给太子传信", ended: true, whole: true },
+      { kind: "ended", fact: "我向太子传信" },
+    ]);
+    expect(breakableAct(items)).toMatchObject({ description: "抄奏章" });
+
+    const after = buildThread([began(1, 3), acted(1), ended(3)], null);
+    expect(after[0]).toMatchObject({ ended: true, elapsed: 3 });
+  });
+
+  it("没有结果的行动结束了也不算做完,分开始结束的和一条记完的一样", () => {
+    const nothing = { fact: "", succeeded: false };
+    const body = buildThread([began(1, 3), { ...ended(2), ...nothing } as ActorEntry], null);
+    expect(body[0]).toMatchObject({ kind: "act", ended: true, void: true });
+    const whole = buildThread([{ ...acted(1), ...nothing, happened: false } as ActorEntry], null);
+    expect(whole[0]).toMatchObject({ kind: "act", ended: true, whole: true, void: true });
+
+    const done = buildThread([began(1, 3), ended(2), acted(2)], null);
+    expect(done.filter((i) => i.kind === "act")).toMatchObject([{ void: false }, { void: false }]);
   });
 });
 

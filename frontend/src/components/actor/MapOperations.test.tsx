@@ -17,6 +17,7 @@ vi.mock("./submission", () => ({
   useActorSubmission: () => ({ busy: false, run: vi.fn() }),
 }));
 import MapOperations from "./MapOperations";
+import { BTN, BTN_SELECTED } from "../buttonStyles";
 
 function panel(target: { kind: "agent" | "location"; id: string } = { kind: "location", id: "room" }) {
   const onClose = vi.fn();
@@ -86,6 +87,18 @@ function operationForm(operation: ActorOperation, required_parameters: string[],
   const confirm = elements.find((candidate) => candidate.type === "button" && candidate.props.children === "确认")!;
   return { field, confirm, markup: renderToStaticMarkup(overlay), elements };
 }
+
+describe("map operation choice", () => {
+  it("marks only the chosen operation, in a style that does not stack colors on BTN", () => {
+    stateValues.push({ turn_id: "turn", target: { kind: "location", id: "room" }, operations: [
+      { operation: "work", available: true, reason: null, required_parameters: [] },
+      { operation: "rest", available: true, reason: null, required_parameters: [] },
+    ] }, "rest", {}, "", "");
+    const choices = formElements(panel().overlay).filter((e) => e.type === "button" && "aria-pressed" in e.props) as ReactElement<{ "aria-pressed": boolean; className: string }>[];
+    expect(choices.map((c) => c.props["aria-pressed"])).toEqual([false, true]);
+    expect(choices.map((c) => c.props.className)).toEqual([BTN, BTN_SELECTED]);
+  });
+});
 
 describe("map operation backend-owned requirements", () => {
   it("keeps physical description labels, HTML validation and submit gating consistent", () => {

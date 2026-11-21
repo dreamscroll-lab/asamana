@@ -38,7 +38,7 @@ from agent.personality import (
     SoulLayer,
     StateLayer,
 )
-from core.interfaces.action import ActionType, AgentAction
+from core.interfaces.action import ActionType, AgentAction, Ref
 from core.interfaces.message import Message
 from core.interfaces.perception import (
     Broadcast,
@@ -242,7 +242,7 @@ def test_an_index_outside_the_roster_is_recorded_not_just_dropped() -> None:
     slots = _Slots(payload={"person_indices": [1, 9], "destination_index": 7},
                    packet=object(), visible_ids=[], roster_ids=["a1", "a2"],
                    reachable_ids=["loc1"], entity_ids=[], entity_types={}, entity_holders={}, npc_ids=[],
-                   own_item_ids=[])
+                   npc_start=3, own_item_ids=[])
     assert slots.many("person_indices", slots.roster_ids) == ["a1"]     # #9 is outside the list
     assert slots.one("destination_index", slots.reachable_ids) is None  # #7, same
     assert len(slots.dropped) == 2
@@ -252,7 +252,7 @@ def test_an_index_outside_the_roster_is_recorded_not_just_dropped() -> None:
     # Record nothing when everything is in range; a silent channel shouldn't make noise.
     clean = _Slots(payload={"person_indices": [1]}, packet=object(), visible_ids=[],
                    roster_ids=["a1"], reachable_ids=[], entity_ids=[], entity_types={}, entity_holders={},
-                   npc_ids=[], own_item_ids=[])
+                   npc_ids=[], npc_start=2, own_item_ids=[])
     assert clean.many("person_indices", clean.roster_ids) == ["a1"] and clean.dropped == []
 
 
@@ -370,7 +370,7 @@ async def test_decide_returns_valid_agent_action(container: object) -> None:
     packet = _make_packet(visible_agent_ids=["agent-2"])
     # selected_index=3 → WORK (no target binding required).
     container.llm_router.get(LLMScene.AGENT_DECISION_MAIN).fixed_response = json.dumps(
-        {"selected_index": 3, "action_description": "整理书卷", "inner_monologue": "", "estimated_steps": 1},
+        {"selected_index": 3, "action_description": "整理书卷", "inner_monologue": "", "estimated_hours": 1},
         ensure_ascii=False,
     )
 
@@ -430,7 +430,7 @@ def test_parse_llm_selection_picks_indexed_candidate(container: object) -> None:
             "destination_index": 1,
             "action_description": "我前往庭院散心。",
             "inner_monologue": "心绪杂乱，需要透透气。",
-            "estimated_steps": 2,
+            "estimated_hours": 2,
         },
         ensure_ascii=False,
     )
@@ -599,7 +599,7 @@ def test_parse_llm_selection_binds_person_via_person_index(container: object) ->
             "person_indices": [1],
             "action_description": "我去和他说话。",
             "inner_monologue": "需要了解他的意图。",
-            "estimated_steps": 1,
+            "estimated_hours": 1,
         },
         ensure_ascii=False,
     )
@@ -630,7 +630,7 @@ def test_send_message_parses_message_content_and_routes_to_content(container: ob
             "action_description": "我向父皇传讯，揭发太子谋反",
             "message_content": "父皇！太子欲谋逆，请明察！",
             "inner_monologue": "必须先发制人。",
-            "estimated_steps": 1,
+            "estimated_hours": 1,
         },
         ensure_ascii=False,
     )
@@ -670,7 +670,7 @@ def test_talk_folds_message_content_into_action_description(container: object) -
             "action_description": "我压低声音，对张浩说那条匿名短信的事。",
             "message_content": "我收到匿名短信，说李华在南郊待建区，明天三点前不去就找不到了。",
             "inner_monologue": "得让他帮我判断真假。",
-            "estimated_steps": 1,
+            "estimated_hours": 1,
         },
         ensure_ascii=False,
     )
@@ -702,7 +702,7 @@ def test_talk_without_message_content_keeps_description_unchanged(container: obj
             "selected_index": 0,
             "person_indices": [1],
             "action_description": "我去和他说话。",
-            "estimated_steps": 1,
+            "estimated_hours": 1,
         },
         ensure_ascii=False,
     )
@@ -722,7 +722,7 @@ def test_a_talk_s_stated_topic_stays_apart_from_its_description(container: objec
             {
                 "selected_index": 0, "person_indices": [1],
                 "action_description": "我去探他口风，问他最担忧何事。",
-                "talk_topic": "借一步说话，核对谋划", "estimated_steps": 1, **extra,
+                "talk_topic": "借一步说话，核对谋划", "estimated_hours": 1, **extra,
             },
             ensure_ascii=False,
         )
@@ -752,7 +752,7 @@ def test_covert_does_not_bind_agent_target(container: object) -> None:
             "person_indices": [1],  # filled, but COVERT still doesn't bind
             "action_description": "暗中观察李建成的动向。",
             "inner_monologue": "得摸清他的部署。",
-            "estimated_steps": 1,
+            "estimated_hours": 1,
         },
         ensure_ascii=False,
     )
@@ -776,7 +776,7 @@ def test_send_message_binds_multiple_recipients(container: object) -> None:
             "person_indices": [1, 2],
             "action_description": "我向两位重臣同时传讯",
             "message_content": "速来议事。",
-            "estimated_steps": 1,
+            "estimated_hours": 1,
         },
         ensure_ascii=False,
     )
@@ -799,7 +799,7 @@ def test_talk_with_multiple_indices_binds_only_first(container: object) -> None:
             "person_indices": [1, 2],
             "action_description": "我去交谈。",
             "inner_monologue": "先谈一个。",
-            "estimated_steps": 1,
+            "estimated_hours": 1,
         },
         ensure_ascii=False,
     )
@@ -825,7 +825,7 @@ def test_send_message_directed_with_unresolvable_index_is_rejected(container: ob
             "person_indices": [1],  # points into an empty list → no recipient resolves
             "action_description": "向常何发送密信",
             "message_content": "速速控制门禁。",
-            "estimated_steps": 1,
+            "estimated_hours": 1,
         },
         ensure_ascii=False,
     )
@@ -851,7 +851,7 @@ def test_an_announcement_must_be_declared_not_inferred_from_an_empty_roster(
         "selected_index": 0,
         "action_description": "向全城宣告戒严",
         "message_content": "即刻起全城戒严。",
-        "estimated_steps": 1,
+        "estimated_hours": 1,
     }
     declared = engine._parse_llm_selection(  # noqa: SLF001
         json.dumps({**base, "message_announce": True}, ensure_ascii=False), candidates, packet
@@ -881,7 +881,7 @@ def test_parse_llm_selection_extracts_location_id(container: object) -> None:
             "destination_index": 1,
             "action_description": "前往花园。",
             "inner_monologue": "换个地方观察。",
-            "estimated_steps": 1,
+            "estimated_hours": 1,
         },
         ensure_ascii=False,
     )
@@ -908,7 +908,7 @@ def test_parse_llm_selection_extracts_item_id(container: object) -> None:
             "item_name": "sword",
             "action_description": "拿起剑。",
             "inner_monologue": "需要自保。",
-            "estimated_steps": 1,
+            "estimated_hours": 1,
         },
         ensure_ascii=False,
     )
@@ -932,7 +932,7 @@ def test_parse_llm_selection_no_target_when_not_needed(container: object) -> Non
             "selected_index": 0,
             "action_description": "仔细思考。",
             "inner_monologue": "需要冷静。",
-            "estimated_steps": 1,
+            "estimated_hours": 1,
         },
         ensure_ascii=False,
     )
@@ -963,7 +963,7 @@ def test_parse_llm_selection_rejects_talk_to_absent_person(container: object) ->
     packet = _make_packet(visible_agent_ids=["agent-2"], inbox=[msg])  # roster=[agent-2 (present), agent-99 (absent)]
     content = json.dumps(
         {"selected_index": 0, "person_indices": [2],
-         "action_description": "找人说话。", "inner_monologue": "需要交流。", "estimated_steps": 1},
+         "action_description": "找人说话。", "inner_monologue": "需要交流。", "estimated_hours": 1},
         ensure_ascii=False,
     )
 
@@ -1001,7 +1001,7 @@ def test_parse_llm_selection_rejects_talk_without_any_target(container: object) 
     content = json.dumps(
         {"selected_index": 0, "person_indices": [],
          "action_description": "我端坐御座，等他们入殿后先以家常话相问。",
-         "inner_monologue": "该先想好怎么开场。", "estimated_steps": 1},
+         "inner_monologue": "该先想好怎么开场。", "estimated_hours": 1},
         ensure_ascii=False,
     )
 
@@ -1020,7 +1020,7 @@ def test_parse_llm_selection_rejects_talk_without_target_even_with_people_presen
     packet = _make_packet(visible_agent_ids=["agent-2"])
     content = json.dumps(
         {"selected_index": 0, "person_indices": [],
-         "action_description": "我开口说话。", "inner_monologue": "想说点什么。", "estimated_steps": 1},
+         "action_description": "我开口说话。", "inner_monologue": "想说点什么。", "estimated_hours": 1},
         ensure_ascii=False,
     )
 
@@ -1034,7 +1034,7 @@ def test_parse_llm_selection_accepts_talk_to_visible_agent(container: object) ->
     packet = _make_packet(visible_agent_ids=["agent-2"])  # roster=[agent-2 (present)]
     content = json.dumps(
         {"selected_index": 0, "person_indices": [1],
-         "action_description": "找他说话。", "inner_monologue": "需要了解。", "estimated_steps": 1},
+         "action_description": "找他说话。", "inner_monologue": "需要了解。", "estimated_hours": 1},
         ensure_ascii=False,
     )
 
@@ -1051,7 +1051,7 @@ def test_parse_llm_selection_accepts_move_to_reachable_location(container: objec
     packet = _make_packet(reachable_location_ids=["garden"])
     content = json.dumps(
         {"selected_index": 2, "destination_index": 1,
-         "action_description": "前往花园。", "inner_monologue": "换个环境。", "estimated_steps": 1},
+         "action_description": "前往花园。", "inner_monologue": "换个环境。", "estimated_hours": 1},
         ensure_ascii=False,
     )
 
@@ -1142,8 +1142,8 @@ def test_decision_prompt_omits_long_term_line_when_empty(container: object) -> N
     assert "我的长期目标" not in prompt
 
 
-def test_parse_llm_selection_preserves_large_estimated_steps(container: object) -> None:
-    """LLM-returned estimated_steps is preserved verbatim — no upper cap.
+def test_parse_llm_selection_preserves_a_long_estimate(container: object) -> None:
+    """A long estimated duration converts in full, with no upper cap.
 
     An engine-wide cap would be an arbitrary speed limiter. World-physics constraints (e.g. MOVE
     distance) live in WorldConfig; semantic constraints (PHYSICAL/SEND_MESSAGE immediacy) live in
@@ -1156,7 +1156,7 @@ def test_parse_llm_selection_preserves_large_estimated_steps(container: object) 
             "selected_index": 0,
             "action_description": "着手处理积压事务。",
             "inner_monologue": "需要很长时间。",
-            "estimated_steps": 50,
+            "estimated_hours": 50,
         },
         ensure_ascii=False,
     )
@@ -1168,7 +1168,7 @@ def test_parse_llm_selection_preserves_large_estimated_steps(container: object) 
 
 
 def test_parse_llm_selection_accepts_steps_within_bounds(container: object) -> None:
-    """Reasonable estimated_steps values pass through unchanged."""
+    """A reasonable estimate converts into the same number of one-hour steps."""
     engine = _make_engine(container)
     candidates = [ActionCandidate(action_type=ActionType.REST, description="休息")]
     payload = json.dumps(
@@ -1176,7 +1176,7 @@ def test_parse_llm_selection_accepts_steps_within_bounds(container: object) -> N
             "selected_index": 0,
             "action_description": "稍作休息。",
             "inner_monologue": "需要恢复精力。",
-            "estimated_steps": 3,
+            "estimated_hours": 3,
         },
         ensure_ascii=False,
     )
@@ -1187,6 +1187,72 @@ def test_parse_llm_selection_accepts_steps_within_bounds(container: object) -> N
     assert result.estimated_steps == 3
 
 
+@pytest.mark.parametrize(("hours", "steps"), [(6, 3), (5, 3), (3, 2), (2.9, 1), (0.5, 1), (0, 1), (None, 1), ("3", 1)])
+def test_the_model_states_hours_and_code_counts_the_steps(container: object, hours: object, steps: int) -> None:
+    """The model estimates in hours; code divides by the step and rounds half up, at least one step. A
+    malformed estimate is one step."""
+    engine = DecisionEngine(container.llm_router, seconds_per_step=7200)  # type: ignore[attr-defined]
+    payload = {"selected_index": 0, "action_description": "稍作休息。", "inner_monologue": "歇一歇。"}
+    if hours is not None:
+        payload["estimated_hours"] = hours
+    result = engine._parse_llm_selection(  # noqa: SLF001
+        payload, [ActionCandidate(action_type=ActionType.REST, description="休息")],
+    )
+    assert result is not None and result.estimated_steps == steps
+
+
+def test_a_step_count_the_model_writes_is_ignored(container: object) -> None:
+    """The model never states steps: an ``estimated_steps`` it writes anyway doesn't count."""
+    engine = DecisionEngine(container.llm_router, seconds_per_step=7200)  # type: ignore[attr-defined]
+    result = engine._parse_llm_selection(  # noqa: SLF001
+        {"selected_index": 0, "action_description": "稍作休息。", "estimated_steps": 6, "estimated_hours": 2},
+        [ActionCandidate(action_type=ActionType.REST, description="休息")],
+    )
+    assert result is not None and result.estimated_steps == 1
+
+
+def test_the_duration_field_names_hours_and_the_step(container: object) -> None:
+    """Both readings ask for hours and state the step's length; neither asks for steps."""
+    engine = DecisionEngine(container.llm_router, seconds_per_step=7200)  # type: ignore[attr-defined]
+    from agent.decision import _ACTION_SPACE
+
+    decision = _decision_prompt(engine, _make_personality(), _make_packet(), _ACTION_SPACE)
+    intent = engine._intent_system_prompt()  # noqa: SLF001
+    for prompt in (decision, intent):
+        assert '"estimated_hours"' in prompt and '"estimated_steps"' not in prompt
+    assert "每步约2小时" in intent
+
+
+def test_the_decision_sees_the_step_before_it_plans_and_sizes_before_it_writes(container: object) -> None:
+    """The step's length comes in the task, ahead of the choice; the duration is set before the
+    description, which is written to fill it (§5b: content depends on how long it runs)."""
+    from agent.decision import _ACTION_SPACE
+
+    engine = DecisionEngine(container.llm_router, seconds_per_step=7200)  # type: ignore[attr-defined]
+    system, _user, _facts = engine._build_decision_prompt(  # noqa: SLF001
+        _make_personality(), _make_packet(), _ACTION_SPACE,
+    )
+    task = system[system.index("【我要做的】"):system.index("【我被约束的】")]
+    assert "时间每推进一步是约2小时" in task
+    assert "约约" not in system
+    schema = system[system.index("【输出】"):]
+    assert schema.index('"selected_index"') < schema.index('"estimated_hours"') < schema.index('"action_description"')
+
+
+def test_the_pacing_rule_holds_up_no_kind_of_act_as_the_way_to_fill_a_step(container: object) -> None:
+    """Filling a long step is a question of how long, not of what kind. An example that fills it
+    with a face-to-face talk reads as the answer, and the decision leans to TALK."""
+    from agent.decision import _ACTION_SPACE
+
+    engine = DecisionEngine(container.llm_router, seconds_per_step=21600)  # type: ignore[attr-defined]
+    system, _user, _facts = engine._build_decision_prompt(  # noqa: SLF001
+        _make_personality(), _make_packet(), _ACTION_SPACE,
+    )
+    pacing = next(line for line in system.splitlines() if line.startswith("- 时间每推进一步是"))
+    assert "我选持续做下去" in pacing
+    assert not any(word in pacing for word in ("交谈", "谈透", "问他"))
+
+
 # ---------------------------------------------------------------------------
 # MOVE forcibly takes people present along (separate field move_carry_indices)
 # ---------------------------------------------------------------------------
@@ -1194,7 +1260,7 @@ def test_parse_llm_selection_accepts_steps_within_bounds(container: object) -> N
 def _carry_move(indices: list[int] | None) -> str:
     payload = {"selected_index": 2, "destination_index": 1,
                "action_description": "拽着他去花园。", "inner_monologue": "带走。",
-               "estimated_steps": 1}
+               "estimated_hours": 1}
     if indices is not None:
         payload["move_carry_indices"] = indices
     return json.dumps(payload, ensure_ascii=False)
@@ -1258,7 +1324,7 @@ def test_move_carry_does_not_share_the_person_indices_channel(container: object)
     packet = _make_packet(visible_agent_ids=["agent-2"], reachable_location_ids=["garden"])
     content = json.dumps(
         {"selected_index": 2, "destination_index": 1, "person_indices": [1],
-         "action_description": "去花园。", "inner_monologue": "换个环境。", "estimated_steps": 1},
+         "action_description": "去花园。", "inner_monologue": "换个环境。", "estimated_hours": 1},
         ensure_ascii=False,
     )
 
@@ -1415,6 +1481,30 @@ def test_a_handover_needs_both_the_thing_and_the_hand(container: object) -> None
     assert ok.target.claims == []
 
 
+def test_a_handover_naming_the_person_too_is_retried_with_why(container: object) -> None:
+    """A hand-over that also fills the person slot acts on the person, so there is nothing to hand
+    over. The retry note has to name that slot: a note saying only "name the thing" reads as wrong
+    to a model that did name it, and it answers the same again."""
+    from agent.decision import _REJECTION_NOTES
+
+    engine = _make_engine(container)
+    packet = _make_packet(
+        visible_agent_ids=["agent-2"],
+        visible_entities=[VisibleEntity(
+            entity_id="seal", name="印玺", entity_type="item", holder_id="agent-1",
+        )],
+    )
+    body = {"action_description": "把印玺交到他手上", "inner_monologue": "…", "selected_index": 0,
+            "physical_person_index": 1, "physical_entity_index": 1, "physical_recipient_index": 1}
+    selection, rejection = engine._parse_selection(  # noqa: SLF001
+        json.dumps(body, ensure_ascii=False),
+        [ActionCandidate(action_type=ActionType.PHYSICAL, description="x")],
+        packet,
+    )
+
+    assert selection is None and rejection == "physical_recipient_without_entity"
+    assert "physical_person_index" in _REJECTION_NOTES[rejection]
+
 def test_only_what_i_hold_can_be_handed_over(container: object) -> None:
     """A recipient named for a thing lying here or in someone else's hands rejects the step: there
     is nothing of mine to hand over, and the executor reads reaches by whose hands it is in."""
@@ -1469,7 +1559,7 @@ def test_scalar_fields_take_the_conservative_reading(container: object) -> None:
     """Scalar fields quietly take a conservative value; they're never worth dropping the whole
     decision."""
     engine = _make_engine(container)
-    sel = _sel(engine, {"estimated_steps": 0, "inner_monologue": 5, "expected_outcome": None},
+    sel = _sel(engine, {"estimated_hours": 0, "inner_monologue": 5, "expected_outcome": None},
                ActionType.REST)
     assert sel is not None
     assert sel.estimated_steps == 1 and sel.inner_monologue == "" and sel.expected_outcome == ""
@@ -1710,3 +1800,38 @@ def test_a_hand_on_a_runner_is_not_a_way_to_send_him(container: object) -> None:
     block = prompt.split("【此刻够不着的行动】")[1].split("【")[0]
     assert "physical_npc_index" in block      # the path to stop him is still there
     assert "不是指派任务" in block                 # but it isn't a substitute for an errand
+
+
+def test_runners_are_numbered_on_from_the_people_i_can_reach(container: object) -> None:
+    """Both lists are people. Numbered from #1 each, a number taken from the wrong list binds
+    whoever holds it there: a talk meant for a runner lands on roster #1, and the talk is
+    written with him. Continued, the runner's number is out of range for ``person_indices`` and
+    a roster number is out of range for the runner slots, so the decision is rejected."""
+    from agent.decision import _ACTION_SPACE
+
+    engine = _make_engine(container)
+    packet = _make_packet(
+        visible_agent_ids=["a1"], reachable_location_ids=["gate"],
+        visible_npcs={"npc_a": _runner("东宫卫士")},
+    )
+    prompt = _decision_prompt(engine, _make_personality(), packet, _ACTION_SPACE)
+    assert "#2 东宫卫士" in prompt
+    assert "#1 东宫卫士" not in prompt
+
+    def _parse(action_type: ActionType, **slots: object):
+        payload = {
+            "selected_index": next(i for i, c in enumerate(_ACTION_SPACE) if c.action_type is action_type),
+            "action_description": "我叫住他问话", "inner_monologue": "先问清楚", "estimated_hours": 1,
+            **slots,
+        }
+        return engine._parse_llm_selection(payload, _ACTION_SPACE, packet)  # noqa: SLF001
+
+    assert _parse(ActionType.TALK, person_indices=[2]) is None       # the runner's number
+    talk = _parse(ActionType.TALK, person_indices=[1])
+    assert talk is not None and talk.target.acts_on == [Ref.agent("a1")]
+
+    errand = _parse(ActionType.ERRAND, errand_npc_index=2, errand_destination_index=1)
+    assert errand is not None and errand.target.acts_on == [Ref.npc("npc_a")]
+    assert _parse(ActionType.ERRAND, errand_npc_index=1, errand_destination_index=1) is None
+    held = _parse(ActionType.PHYSICAL, physical_npc_index=2)
+    assert held is not None and held.target.acts_on == [Ref.npc("npc_a")]

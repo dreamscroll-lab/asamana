@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from agent.goals import GoalEntity
+from agent.goals import GoalEntity, GoalStatus
 from agent.personality import parse_emotion_type
 from config.models import Config
 from core.container import Container
@@ -69,10 +69,22 @@ async def run_long_term_goal(
         agent.personality.set_long_term_goals(list(before_goals))
     before_goals = [e.text for e in agent.personality.state.long_term_goal_entities]
     short_term = [str(g) for g in scenario.get("short_term", []) if str(g).strip()]
-    if short_term:
+    # Short-term goals that already ended FAILED, oldest first, one step apart up to the step before
+    # this run: the revision lists them as what didn't get done.
+    failed_short_term = [str(g) for g in scenario.get("failed_short_term", []) if str(g).strip()]
+    if short_term or failed_short_term:
+        closed_from = run_step - len(failed_short_term)
         agent.personality.set_short_term_goal_entities([
-            GoalEntity(id=f"stg-ltg-{i}", text=t, goal_type="short_term", created_step=run_step)
-            for i, t in enumerate(short_term)
+            *(
+                GoalEntity(id=f"stg-ltg-f{i}", text=t, goal_type="short_term",
+                           status=GoalStatus.FAILED, created_step=max(closed_from + i - 6, 0),
+                           last_evaluated_step=closed_from + i)
+                for i, t in enumerate(failed_short_term)
+            ),
+            *(
+                GoalEntity(id=f"stg-ltg-{i}", text=t, goal_type="short_term", created_step=run_step)
+                for i, t in enumerate(short_term)
+            ),
         ])
     life_goal_before = str(getattr(agent.personality.soul, "life_goal", "") or "")
     recent = [str(t) for t in scenario.get("recent", []) if str(t).strip()]
@@ -86,6 +98,7 @@ async def run_long_term_goal(
             personality=agent.personality,
             recent_memory_texts=recent,
             is_main_character=agent.is_main_character,
+            now_step=run_step,
         )
     except Exception as exc:  # noqa: BLE001 — one scenario's failure must not abort the run
         logger.warning("long_term_goal_dryrun_failed",
@@ -115,6 +128,7 @@ async def run_long_term_goal(
             "emotion": emotion_view(agent.personality.state.emotion),
             "before_long_term": before_goals,
             "short_term": short_term,
+            "failed_short_term": failed_short_term,
             "recent": recent,
         },
         outputs={

@@ -567,7 +567,7 @@ function Act({
       <div className="mt-1.5 flex items-center gap-2">
         <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-800">
           <div
-            className={`h-full rounded-full ${item.ended ? "bg-teal-500/70" : "bg-indigo-500/80"}`}
+            className={`h-full rounded-full ${!item.ended ? "bg-indigo-500/80" : item.void ? "bg-slate-600" : "bg-teal-500/70"}`}
             style={{ width: `${Math.round(ratio * 100)}%` }}
           />
         </div>

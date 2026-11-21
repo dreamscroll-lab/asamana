@@ -53,6 +53,7 @@ def _stub_agent(
     is_active: bool = True,
     reads_world_pressure: bool = True,
     recent_past: tuple[str, ...] = (),
+    failed_goals: tuple[str, ...] = (),
 ) -> SimpleNamespace:
     cues_seen: list[list[str]] = []
     present_seen: list[list[str]] = []
@@ -69,6 +70,7 @@ def _stub_agent(
         reads_world_pressure=reads_world_pressure,
         relation_system=_StubRelations(),
         pressure_recent_past=pressure_recent_past,
+        recently_failed_goal_lines=lambda step: list(failed_goals),
         cues_seen=cues_seen,
         present_seen=present_seen,
         personality=SimpleNamespace(
@@ -129,14 +131,15 @@ def _ev() -> WorldPressureEvaluator:
 def _prompt(
     ev: WorldPressureEvaluator, agent, *, inbox=(), broadcasts=(), ambient=(), acted_upon=(),  # noqa: ANN001
     co_located=(), sender_relations=None, situation_header="", recent_past=(), doing="",
-    visible_ids=frozenset(),
+    visible_ids=frozenset(), failed_goals=(),
 ) -> str:
     signals = ev._signals(
         inbox=list(inbox), broadcasts=list(broadcasts), ambient=list(ambient),
         acted_upon=list(acted_upon), sender_relations=sender_relations or {}, visible_ids=set(visible_ids),
     )
     return ev._build_agent_prompt(
-        agent, signals=signals, co_located=list(co_located), recent_past=recent_past, doing=doing,
+        agent, signals=signals, co_located=list(co_located), recent_past=recent_past,
+        failed_goals=failed_goals, doing=doing,
         situation_header=situation_header,
     )
 
@@ -204,6 +207,31 @@ def test_agent_prompt_carries_his_own_memories_and_what_he_is_doing_as_reference
     # Memories are reference: unnumbered, before the signals, never citable as a source.
     assert prompt.index("近来的经历") < prompt.index("【此刻感知到的信号")
     assert "#1 收到来自尉迟恭的消息" in prompt and "#2" not in prompt
+
+
+def test_agent_prompt_shows_his_recently_failed_goals_as_reference() -> None:
+    """A goal he just failed must not come straight back as pressure when someone presses the
+    same matter again, so the prompt shows what he already tried, as reference only."""
+    ev = _ev()
+    agent = _stub_agent(name="甲", role="无", location="hall")
+    prompt = _prompt(
+        ev, agent, inbox=[_msg("那件事请速作计较", sender_name="乙")],
+        failed_goals=["  - （昨日）查清丙的下落"],
+    )
+    assert "【该角色近来没做成的目标（按发生先后排列，越靠后越近；仅供对照，不是压力来源）】" in prompt
+    assert "  - （昨日）查清丙的下落" in prompt
+    assert prompt.index("近来没做成的目标") < prompt.index("【此刻感知到的信号")
+    assert "#1 收到来自乙的消息" in prompt and "#2" not in prompt
+
+
+def test_agent_prompt_drops_the_failed_goals_block_when_there_are_none() -> None:
+    prompt = _prompt(_ev(), _stub_agent(name="甲", role="无", location="hall"), inbox=[_msg("速来")])
+    assert "近来没做成的目标" not in prompt
+
+
+def test_the_system_prompt_keeps_a_failed_goal_from_returning_unless_a_signal_reopens_it() -> None:
+    assert "所给「近来没做成的目标」" in _SYSTEM_PROMPT
+    assert "单是有人再催一遍、再提一次，不算新条件" in _SYSTEM_PROMPT
 
 
 def test_agent_prompt_renders_remote_sender_relation_inline() -> None:
@@ -684,7 +712,10 @@ async def test_his_memories_are_recalled_by_the_signals_and_his_action_reaches_t
 
     llm = _FactsLLM()
     ev = WorldPressureEvaluator(llm_router=llm)
-    agent = _stub_agent(name="甲", role="无", location="hall", recent_past=("（昨日）我给乙送去一封信",))
+    agent = _stub_agent(
+        name="甲", role="无", location="hall", recent_past=("（昨日）我给乙送去一封信",),
+        failed_goals=("  - （前日）劝乙收手",),
+    )
     await ev.evaluate(
         agents={"a1": agent},
         signals={"a1": perceived_signals(
@@ -704,6 +735,7 @@ async def test_his_memories_are_recalled_by_the_signals_and_his_action_reaches_t
         "此刻感知到的信号：收到来自乙的消息：信收到了（该角色对乙的关系：关系未明确）",
         "此刻感知到的信号：落到该角色身上的事（该角色自己的记忆，「我」即该角色）：乙一把将我推开",
         "近来的经历：（昨日）我给乙送去一封信",
+        "近来没做成的目标：（前日）劝乙收手",
         "正在做的事：赶往城门",
     ]]
 

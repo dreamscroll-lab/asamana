@@ -53,16 +53,25 @@ class IndexedRef:
         # the prompt renders each item with its index (`#1 ... #N`); the caller picks the format
         # the LLM returns `{"indices": [1, 3]}`
         ids = ref.resolve([1, 3])    # → [candidates[0].id, candidates[2].id]
+
+    ``start`` is the first item's number, for a list whose numbers continue another list's in
+    the same prompt (so a number taken from the wrong list falls out of range instead of
+    landing on whoever shares it).
     """
 
-    __slots__ = ("_ids",)
+    __slots__ = ("_ids", "_start")
 
-    def __init__(self, ids: Iterable[str]) -> None:
+    def __init__(self, ids: Iterable[str], *, start: int = 1) -> None:
         self._ids: list[str] = list(ids)
+        self._start = start
+
+    def number(self, item_id: str) -> int:
+        """The number an id is listed under. Raises ``ValueError`` when it isn't listed."""
+        return self._ids.index(item_id) + self._start
 
     def resolve(self, indices: Iterable[Any]) -> list[str]:
-        """Map LLM-returned 1-based indices back to ids, skipping out-of-range, duplicate or
-        unreadable values.
+        """Map LLM-returned indices (numbered from ``start``) back to ids, skipping out-of-range,
+        duplicate or unreadable values.
 
         Accepts decorated indices (``"#3"`` / ``"第3"`` / ``"3号"``): models copy the prompt's ``#3``
         back, and a dropped ``location_scope`` means "broadcast to the whole world". Decoration
@@ -77,9 +86,9 @@ class IndexedRef:
                 continue
             if n in seen:
                 continue
-            if 1 <= n <= len(self._ids):
+            if self._start <= n < self._start + len(self._ids):
                 seen.add(n)
-                out.append(self._ids[n - 1])
+                out.append(self._ids[n - self._start])
         return out
 
 

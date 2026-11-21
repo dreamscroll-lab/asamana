@@ -15,7 +15,7 @@ import type { Announcer } from "./announce";
 import type { PostLayer } from "./post";
 import type { HoverTip } from "./hoverTip";
 import { LIN, MO, SHI, WANG, aimAgents, did, fixtureNpcs, mindless, step, walking, who } from "../lab/scenes/fixtures";
-import { ActionType, Deed } from "../lib/contract";
+import { ActionType, Deed, RefKind } from "../lib/contract";
 import type { StepView } from "../types";
 import { HIDDEN_ALPHA, HIDDEN_FADE_MS } from "./isoDepth";
 
@@ -63,7 +63,7 @@ function token(locationId: string): AgentToken {
     disableInteractive: vi.fn(), destroy: vi.fn(),
   };
   return {
-    container, locationId, baseAlpha: 1, presenceAlpha: 1, dead: false,
+    container, locationId, presenceAlpha: 1, dead: false,
     sprite: { anims: { isPlaying: false } }, px: NaN, py: NaN,
     plate: { setVisible: vi.fn() }, vitTrack: { setVisible: vi.fn() }, vitFill: { setVisible: vi.fn() },
   } as unknown as AgentToken;
@@ -255,17 +255,72 @@ describe("director rendering isolation", () => {
     expect(leave).not.toHaveBeenCalled();
   });
 
-  it.each([1, 0.3, 0.5])("preserves focus/death opacity %s and ground occlusion", async (baseAlpha) => {
+  it("closes a figure's pocket when he leaves his place, and keeps his result chip on him", async () => {
     const { scene, internal } = setup();
+    const close = vi.mocked(internal.pockets.close);
+    // A chip landed at the place he leaves, before the walk (see playsBeforeWalk).
+    const chip = { icon: "•", text: "在此做了一件事", tone: "ok" as const };
+    vi.mocked(internal.post.playDeliveries).mockImplementation(async () => {
+      const tok = scene.token(MO.id);
+      if (tok) tok.chipData = chip;
+    });
+    const chipOnWalk: unknown[] = [];
+    vi.spyOn(internal.walker, "groundRoute").mockReturnValue([{ x: 100, y: 0 }, { x: 300, y: 0 }]);
+    vi.spyOn(internal.walker, "walkAlong").mockImplementation(async (tok) => { chipOnWalk.push(tok.chipData); });
+    vi.spyOn(internal.walker, "walkTransit").mockResolvedValue(undefined);
     await scene.renderStep(step({ at: 1, states: [who(MO, near)] }));
+    await scene.renderStep(step({ at: 2, states: [who(MO, near)] }));
+    expect(close).not.toHaveBeenCalledWith(MO.id);
+    expect(scene.token(MO.id)!.chipData).toBeDefined();
+    await scene.renderStep(step({ at: 3, states: [who(MO, far)] }));
+    expect(chipOnWalk).toEqual([chip]);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenLastCalledWith(MO.id);
+    await scene.renderStep(step({ at: 4, states: [who(MO, far, { transit: walking([far, near], 1, 2) })] }));
+    await scene.renderStep(step({ at: 5, states: [who(MO, near, { displaced: true })] }));
+    expect(close.mock.calls.filter(([id]) => id === MO.id)).toHaveLength(3);
+  });
+
+  // [focus on, focused, dead, hidden ground, expected solidity]
+  it.each([
+    [false, false, false, false, 1],
+    [false, false, true, false, 0.5],
+    [true, true, false, false, 1],
+    [true, true, true, false, 0.5],
+    [true, false, false, false, 0.3],
+    [true, false, true, false, 0.3],
+    [false, false, false, true, HIDDEN_ALPHA],
+    [true, false, false, true, 0.3],
+  ])("draws focus %s / focused %s / dead %s / hidden %s at %s", async (focusOn, focused, dead, hidden, expected) => {
+    const { scene } = setup();
+    await scene.renderStep(step({ at: 1, states: [who(MO, near), who(SHI, near)] }));
+    if (focusOn) scene.setFocus({ agents: [focused ? MO.id : SHI.id], place: null, follow: false });
     const tok = scene.token(MO.id)!;
-    tok.baseAlpha = baseAlpha;
+    tok.dead = dead;
     Object.assign(scene, { cameras: { main: { zoom: 1 } }, time: { now: 0 } });
-    vi.spyOn(scene.map, "hiddenGround").mockReturnValue(true);
+    vi.spyOn(scene.map, "hiddenGround").mockReturnValue(hidden);
     scene.update(0, 16);
     const fade = 1 - Math.exp((-0.016 * 3000) / HIDDEN_FADE_MS);
-    expect(tok.container.setAlpha).toHaveBeenCalledWith(0.8 + (Math.min(baseAlpha, HIDDEN_ALPHA) - 0.8) * fade);
-    expect(internal.presence.departing.size).toBe(0);
+    expect(tok.container.setAlpha).toHaveBeenCalledWith(0.8 + (expected - 0.8) * fade);
+  });
+
+  it("keeps the focus dim on a figure whose body lands after its beat", async () => {
+    const { scene, internal } = setup();
+    vi.mocked(internal.body.bodyChanged).mockReturnValue(true);
+    vi.spyOn(internal.body, "playDeed").mockImplementation(() => {});
+    scene.setFocus({ agents: [SHI.id], place: null, follow: false });
+    await scene.renderStep(step({ at: 1, states: [who(MO, near), who(SHI, near)] }));
+    await scene.renderStep(step({
+      at: 2, states: [who(MO, near), who(SHI, near)],
+      actions: [did(MO, { action_type: ActionType.work, deed: Deed.work })],
+    }));
+    const tok = scene.token(MO.id)!;
+    Object.assign(scene, { cameras: { main: { zoom: 1 } }, time: { now: 0 } });
+    vi.spyOn(scene.map, "hiddenGround").mockReturnValue(false);
+    scene.update(0, 16);
+    const fade = 1 - Math.exp((-0.016 * 3000) / HIDDEN_FADE_MS);
+    expect(internal.body.applyBodyState).toHaveBeenCalledWith(tok, expect.anything(), false);
+    expect(tok.container.setAlpha).toHaveBeenLastCalledWith(0.8 + (0.3 - 0.8) * fade);
   });
 
   it("restores a pending actor figure's opacity when a director render starts", async () => {
@@ -410,6 +465,30 @@ describe("a body is drawn only on the step it falls", () => {
     await scene.renderStep(step({ at: 4, states: [who(MO, far)] }));
     await scene.renderStep(diedAt(step({ at: 5, states: [who(MO, near), who(SHI, near, dead)] }), SHI.id, 2));
     expect(scene.token(SHI.id)).toBeUndefined();
+  });
+});
+
+describe("a focus plays what is done to its subjects", () => {
+  const errand = () => did(MO, {
+    action_type: ActionType.errand,
+    deed: Deed.errand,
+    target: { acts_on: [{ kind: RefKind.npc, id: WANG.npc_id }], claims: [], reaches: [] },
+  });
+
+  it.each([
+    ["the runner", WANG.npc_id, true],
+    ["someone else", SHI.id, false],
+  ])("plays an errand under a focus on %s: %s", async (_, subject, plays) => {
+    const { scene, internal } = setup();
+    const deed = vi.spyOn(internal.body, "playDeed").mockImplementation(() => {});
+    vi.spyOn(scene, "reface").mockImplementation(() => {}); // the teller turns to the runner
+    scene.setFocus({ agents: [subject], place: null, follow: false });
+    await scene.renderStep(step({ at: 1, states: [who(MO, near), who(SHI, far)], npcs: [mindless(WANG, near)] }));
+    await scene.renderStep(step({
+      at: 2, states: [who(MO, near), who(SHI, far)], npcs: [mindless(WANG, near)], actions: [errand()],
+    }));
+    if (plays) expect(deed).toHaveBeenCalledWith(scene.token(MO.id), expect.objectContaining({ deed: Deed.errand }), expect.anything());
+    else expect(deed).not.toHaveBeenCalled();
   });
 });
 

@@ -3,7 +3,7 @@
  * focus is matched against. No JSX: this file is about the wire, not pixels.
  */
 
-import { actedOnAgents } from "../../lib/contract";
+import { actedOnAgents, actedOnNpcs } from "../../lib/contract";
 import { type Placed, type Scoped, indexStep } from "../../lib/step";
 import { type Viewer, actionDescriptionOf, partsOf, sharedOf } from "../../lib/viewer";
 import type {
@@ -74,13 +74,16 @@ export function itemKey(item: FeedItem): string {
   return `${item.kind}-${item.seq}`;
 }
 
-// Every agent a focus can match this beat against (ids, a join key, never rendered). A deed
-// counts its whole cast plus who it was AIMED at and who CUT it.
+// Every body a focus can match this beat against (ids, a join key, never rendered). A deed
+// counts its whole cast plus who it was AIMED at, NPCs included (an errand is the only beat
+// about its runner), and who CUT it. The map plays a deed under the same test.
 function itemCast(item: FeedItem): string[] {
   if (item.kind === "action") {
     const act = item.data;
-    return [...act.participant_ids, act.initiator_id, ...actedOnAgents(act.target), act.interrupted_by]
-      .filter(Boolean);
+    return [
+      ...act.participant_ids, act.initiator_id,
+      ...actedOnAgents(act.target), ...actedOnNpcs(act.target), act.interrupted_by,
+    ].filter(Boolean);
   }
   if (item.kind === "observation") return [item.data.initiator_id, ...item.data.participant_ids].filter(Boolean);
   if (item.kind === "message") return [...(item.data.sender_id ? [item.data.sender_id] : []), ...item.data.receiver_ids];

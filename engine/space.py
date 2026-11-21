@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from heapq import heappop, heappush
 
 from core.interfaces.perception import LocationView
-from core.interfaces.place import Place
+from core.interfaces.place import Place, SubPlace
 
 
 class SpaceManager:
@@ -26,6 +27,8 @@ class SpaceManager:
     def __init__(self) -> None:
         # ``register_place`` is the only way in: a second entry point couldn't share its guard.
         self._places: dict[str, Place] = {}
+        # place id → its sub-places' names, in setup order (see ``register_sub_places``).
+        self._sub_places: dict[str, tuple[str, ...]] = {}
         # source_id → {node: (shortest_dist, predecessor_on_path)}
         self._path_cache: dict[str, dict[str, tuple[int, str | None]]] = {}
 
@@ -37,6 +40,14 @@ class SpaceManager:
         """
         self._places[place.place_id] = place
         self._path_cache.clear()
+
+    def register_sub_places(self, sub_places: Iterable[SubPlace]) -> None:
+        """Build-time entry for the setup's sub-places, after the places. They only extend a place's
+        view: no node, no path, so the graph and the "我可前往" index stay as they were."""
+        grouped: dict[str, list[str]] = {}
+        for sub_place in sub_places:
+            grouped.setdefault(sub_place.location_id, []).append(sub_place.name)
+        self._sub_places = {place_id: tuple(names) for place_id, names in grouped.items()}
 
     def has(self, place_id: str) -> bool:
         return place_id in self._places
@@ -80,6 +91,7 @@ class SpaceManager:
             return None
         return LocationView(
             name=place.name, description=place.description, is_public=place.is_public,
+            sub_places=self._sub_places.get(place_id, ()),
         )
 
     # ---- graph --------------------------------------------------------------

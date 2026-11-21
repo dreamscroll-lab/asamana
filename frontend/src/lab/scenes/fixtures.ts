@@ -12,6 +12,8 @@
  *
  * Every field the renderer reads must carry the engine's shape. Load-bearing:
  *
+ *   - An act is filed under the room its record names (`location_id`), as the read model files it,
+ *     not under where its doer ends the step. The two differ only for an act done before a walk.
  *   - `world_time.hour` is the MACHINE clock the day/night wash reads; the narrative
  *     `world_time.label` is never parsed for it.
  *   - `emotion` is the canonical EmotionType value ("trust", "anger", …), never prose.
@@ -108,6 +110,10 @@ export interface ActRecord {
   dialogue: DialogueTurn[];
   // The route walked, on the beat a MOVE ended.
   route?: Transit | null;
+  // The room the record is filed under. Absent: where the initiator ends the step, which is where
+  // nearly every act happens. A momentary act stays where it was issued even if its doer then
+  // leaves (`merge_completion_into_records`), so it can lie behind a walk.
+  location_id?: string;
   seq: number;
 }
 
@@ -542,7 +548,7 @@ export function step({
           agent_id: r.agent_id, action_description: r.action_description, inner_monologue: r.inner_monologue,
         })),
     };
-    scopeOf(where.get(initiator) ?? "").events.push(event);
+    scopeOf(lead.location_id ?? where.get(initiator) ?? "").events.push(event);
   }
 
   const edges = new Map<string, GraphEdge[]>();
@@ -683,7 +689,7 @@ export const crate = (where: string, over: Partial<PlacedEntity> = {}): Record<s
     presence_ref: where,
     description: "",
     is_public: true,
-    private: { content: "" },
+    content: "", private: { content: "" },
     created_step: 0,
     ...over,
   },
@@ -709,7 +715,7 @@ export const carried = (holder: string, items: [string, string][]): Record<strin
         presence_ref: holder,
         description: "",
         is_public: true,
-        private: { content: "" },
+        content: "", private: { content: "" },
         created_step: 0,
       },
     ]),
@@ -724,7 +730,7 @@ export const gate = (where: string, over: Partial<PlacedEntity> = {}): Record<st
     presence_ref: where,
     description: "",
     is_public: true,
-    private: { content: "" },
+    content: "", private: { content: "" },
     created_step: 0,
     ...over,
   },

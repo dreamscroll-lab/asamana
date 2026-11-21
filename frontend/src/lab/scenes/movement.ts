@@ -1,6 +1,6 @@
 import { ActionType, Deed, Phase } from "../../lib/contract";
 import type { LabPlaces } from "../places";
-import { MO, Need, SHI, aimPlace, did, execId, seenBy, step, type LabScene, type Room, walking, who } from "./fixtures";
+import { Emotion, LIN, MO, Need, SHI, aimPlace, aimTalk, did, execId, nextSeq, seenBy, step, type LabCharacter, type LabScene, type Room, walking, who } from "./fixtures";
 
 function headingScene(id: string, dir: string, from: Room, to: Room, watch: string): LabScene {
   return {
@@ -165,6 +165,157 @@ export function buildMovementScenes({ pivot: HUB, ne: NE, se: SE, far: FAR, tigh
       ],
     },
     carriedScene(HUB, FAR),
+    ...beforeWalkScenes(TIGHT, NEXT),
+  ];
+}
+
+/**
+ * A momentary act and a walk in one step: the letter or the word goes out where he stood, then he
+ * leaves. The engine files the act under the room it was issued in and the walk under where it
+ * ends, so the map plays the act there first (playsBeforeWalk).
+ *
+ * The walk is one step between rooms the map's graph joins, as the wire carries one: no transit,
+ * location already the destination, the route on the MOVE's closing beat. The letter is
+ * delivered the step after, as in the send_message scenes.
+ */
+function beforeWalkScenes(from: Room, to: Room): LabScene[] {
+  const moveTo = (claims: string[] = []) => ({
+    action_type: ActionType.move,
+    deed: Deed.move,
+    target: aimPlace(to.id, claims),
+    route: walking([from, to], 1, 1),
+    location_id: to.id,
+  });
+  const letter = (id: string, content: string, scope: "direct" | "place", receivers: LabCharacter[]) => ({
+    message_id: id,
+    sender_id: MO.id,
+    anonymous: false,
+    sender_name: MO.name,
+    receiver_ids: receivers.map((r) => r.id),
+    content,
+    spoken: content,
+    scope,
+    ...(scope === "place" ? { location_id: from.id } : {}),
+    seq: nextSeq(),
+  });
+  const carryId = execId("move", SHI, 1);
+  const carryIntent = `拽着${MO.name}去${to.name}`;
+  return [
+    {
+      id: "walk-after-letter",
+      group: "移动",
+      title: "移动 · 先发信再走",
+      watch:
+        `同一步里阿墨在${from.name}发信给阿霖，然后走去${to.name}。` +
+        `应先在${from.name}原地做递信的姿势、信封飞向阿霖，**做完才起步**；` +
+        `不能边走边递，也不能走到${to.name}之后才递。` +
+        "下一拍信在阿霖头上打开。",
+      steps: [
+        step({ states: [who(MO, from), who(LIN, from)] }),
+        step({
+          states: [who(MO, to, { dominant_need: Need.social }), who(LIN, from)],
+          actions: [
+            did(MO, {
+              action_type: ActionType.send_message,
+              deed: Deed.send_message,
+              target: aimTalk(LIN.id),
+              location_id: from.id,
+              action_description: "写一封短笺留给阿霖，约他明日再见。",
+              outcome: `在${from.name}，阿墨遣人把书信送往阿霖处。`,
+            }),
+            did(MO, {
+              ...moveTo(),
+              action_description: `从${from.name}前往${to.name}`,
+              outcome: `在${to.name}，${MO.name}自${from.name}行至${to.name}。`,
+            }),
+          ],
+        }),
+        step({
+          states: [who(MO, to), who(LIN, from, { emotion: Emotion.anticipation })],
+          messages: [letter("6f5a7182-93a4-4b5c-8d7e-f9a0b1c2d3e4", "阿墨约你明日辰时在坊门相见。", "direct", [LIN])],
+        }),
+        step({ states: [who(MO, to), who(LIN, from)] }),
+      ],
+    },
+    {
+      id: "walk-after-announce",
+      group: "移动",
+      title: "移动 · 当众传话后离开",
+      watch:
+        `阿墨在${from.name}当众传话，同一步走去${to.name}。` +
+        `传话的涟漪应在${from.name}、从他原地站的位置扩散开，**扩散完才起步**；` +
+        `涟漪不能跟着他走，也不能出现在${to.name}。` +
+        `下一拍告示绑在${from.name}上，阿墨已经不在那里，牌子照常出现。`,
+      steps: [
+        step({ states: [who(MO, from), who(SHI, from), who(LIN, from)] }),
+        step({
+          states: [who(MO, to), who(SHI, from), who(LIN, from)],
+          actions: [
+            did(MO, {
+              action_type: ActionType.send_message,
+              deed: Deed.send_message,
+              location_id: from.id,
+              action_description: "临走前高声传话，让众人都听见。",
+              outcome: `在${from.name}，阿墨当众传话。`,
+            }),
+            did(MO, {
+              ...moveTo(),
+              action_description: `从${from.name}前往${to.name}`,
+              outcome: `在${to.name}，${MO.name}自${from.name}行至${to.name}。`,
+            }),
+          ],
+        }),
+        step({
+          states: [who(MO, to), who(SHI, from), who(LIN, from)],
+          messages: [letter("7a6b8293-a4b5-4c6d-9e8f-a0b1c2d3e4f5", "今夜坊门提前落锁，各家早些回去。", "place", [SHI, LIN])],
+        }),
+        step({ states: [who(MO, to), who(SHI, from), who(LIN, from)] }),
+      ],
+    },
+    {
+      id: "walk-carried-after-letter",
+      group: "移动",
+      title: "移动 · 发信时被人拽走",
+      watch:
+        `同一步里阿墨在${from.name}发信给阿霖，阿石拽着他去${to.name}。` +
+        "信没有被拽走打断：应先看到阿墨原地递信、信封飞出，**然后两人一起起步**。" +
+        "阿石要等阿墨递完才走，不能先走开再让阿墨隔空追上。",
+      steps: [
+        step({ states: [who(MO, from), who(SHI, from), who(LIN, from)] }),
+        step({
+          states: [who(MO, to), who(SHI, to), who(LIN, from)],
+          actions: [
+            did(MO, {
+              action_type: ActionType.send_message,
+              deed: Deed.send_message,
+              target: aimTalk(LIN.id),
+              location_id: from.id,
+              action_description: "匆匆写下几句，托人送给阿霖。",
+              outcome: `在${from.name}，阿墨遣人把书信送往阿霖处。`,
+            }),
+            did(SHI, {
+              ...moveTo([MO.id]),
+              execution_id: carryId,
+              initiator_id: SHI.id,
+              action_description: carryIntent,
+              outcome: `在${to.name}，${SHI.name}拽着${MO.name}自${from.name}行至${to.name}。`,
+            }),
+            did(MO, {
+              ...moveTo([MO.id]),
+              execution_id: carryId,
+              initiator_id: SHI.id,
+              action_description: `参与${SHI.name}发起的行动，行动意图：${carryIntent}`,
+              outcome: `${MO.name}被${SHI.name}强制拉入「${carryIntent}」`,
+            }),
+          ],
+        }),
+        step({
+          states: [who(MO, to), who(SHI, to), who(LIN, from, { emotion: Emotion.fear })],
+          messages: [letter("8b7c93a4-b5c6-4d7e-8f9a-b1c2d3e4f5a6", "有人逼我离开，速去报官。", "direct", [LIN])],
+        }),
+        step({ states: [who(MO, to), who(SHI, to), who(LIN, from)] }),
+      ],
+    },
   ];
 }
 

@@ -60,11 +60,15 @@ class LocationView:
     ``is_public`` is a perceived fact, NOT a gate: whether THIS person may enter turns on who he
     is and what he's doing, a judgment (CLAUDE.md §5). A boolean bar would shut a palace against
     the emperor who lives in it.
+
+    ``sub_places`` names this place's sub-places (``core.interfaces.place.SubPlace``), public
+    knowledge like the place itself.
     """
 
     name:        str
     description: str = ""
     is_public:   bool = True
+    sub_places:  tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -90,10 +94,14 @@ class Situation:
 
     location_view: LocationView | None = None
     time_label: str = ""
+    arrival: str = ""   # one's own arrival here (core.prompts.own_arrival_mark); empty = omitted
 
     @classmethod
     def from_spatial(cls, spatial: "SpatialPerception") -> "Situation":
-        return cls(location_view=spatial.location_view, time_label=spatial.world_time_label)
+        return cls(
+            location_view=spatial.location_view, time_label=spatial.world_time_label,
+            arrival=spatial.arrival,
+        )
 
 
 @dataclass(frozen=True)
@@ -148,17 +156,20 @@ class PerceivedIdentity:
 
 @dataclass(frozen=True)
 class PerceivedPresence:
-    """Everything I see of someone present: what I can call them, and their current state.
+    """Everything I see of someone present: what I can call them, their current state, and their
+    arrival as far as I saw it.
 
     Nested because the halves have different lifetimes: ``identity`` is fixed and may enter the
-    persistent name cache (``Agent.remember_agent``); ``condition`` is derived each step and must
-    never be cached, or he would stay bound long after being untied. The type enforces it.
+    persistent name cache (``Agent.remember_agent``); ``condition`` and ``arrival`` are derived
+    each step and must never be cached, or he would stay bound long after being untied. The type
+    enforces it.
 
-    Both may be empty; presence itself is the key existing.
+    All may be empty; presence itself is the key existing.
     """
 
     identity: "PerceivedIdentity" = field(default_factory=lambda: PerceivedIdentity())
     condition: str = ""
+    arrival: str = ""   # rendered mark (core.prompts.arrival_mark); empty = omitted
 
 
 @dataclass(frozen=True)
@@ -197,6 +208,7 @@ class SpatialPerception:
     world_time_label: str
     current_step: int
     world_time_hour: int = -1  # hour-of-day [0,23] from the clock; -1 = unknown
+    arrival: str = ""          # my own arrival here (core.prompts.own_arrival_mark); empty = omitted
     # agent_id → PerceivedPresence: the single source of truth for who is here and how they appear.
     # Don't split it into parallel structures keyed by the same ids: they drift. Assembled only by
     # ``engine.presence.attach_presence``. Key order is contract: the roster's #N binds to it.

@@ -12,6 +12,12 @@ describe("place hover card", () => {
     ]);
   });
 
+  it("names the sub-places after the description", () => {
+    expect(placeTipLines("东宫", "", ["显德殿", "崇教殿"])).toEqual([
+      { text: "东宫", tone: "head" }, { text: "显德殿、崇教殿都在此地", tone: "background" },
+    ]);
+  });
+
   it("is the name alone for a place without a description", () => {
     expect(placeTipLines("内院", "")).toEqual([{ text: "内院", tone: "head" }]);
   });
@@ -21,11 +27,11 @@ describe("place hover card", () => {
 describe("world place identities", () => {
   it("replaces cached draft places with the confirmed identities", async () => {
     vi.mocked(api.places).mockResolvedValueOnce([
-      { location_id: "hall", name: "草稿大殿", description: "待定" },
+      { location_id: "hall", name: "草稿大殿", description: "待定", sub_places: [] },
     ]);
     const draft = await loadPlaces("confirmed-places");
     vi.mocked(api.places).mockResolvedValueOnce([
-      { location_id: "hall", name: "正殿", description: "议事之所" },
+      { location_id: "hall", name: "正殿", description: "议事之所", sub_places: [] },
     ]);
     const confirmed = await reloadPlaces("confirmed-places");
     expect(confirmed).not.toBe(draft);

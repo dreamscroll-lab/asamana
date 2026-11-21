@@ -10,17 +10,20 @@ from typing import Any, Dict, Iterable, List, Sequence
 
 _PERCEPTION_MEMORY_TOP_K = 5  # memories per stream (factual + experiential) entering LLM context
 
+from agent.action_cooldown import ActionCooldown
 from agent.actor import Actor
 from agent.actor_briefing import build_actor_briefing
 from agent.actor_mind import build_actor_mind
 from agent.actor_perception import build_perceived_entry
 from agent.decision import DecisionEngine, DecisionStatus
-from agent.memory import MemorySystem
+from agent.memory import RECENT_EVENT_FLOOR, MemorySystem
 from agent.memory_types import Memory, MemoryImportance, MemoryStream
 from agent.reflection import INSIGHT_BASE_IMPORTANCE, ReflectionEngine
 from agent.relation_evolution import RelationEvolution
 from agent.state_codec import decode_agent_state, encode_agent_state
-from agent.goals import GoalEntity, GoalStatus, is_live_goal, amend_short_term_goals
+from agent.goals import (
+    FAILED_GOALS_PER_REVISION, GoalEntity, GoalStatus, amend_short_term_goals, is_live_goal,
+)
 from agent.need import NeedEngine, NeedEvaluation, NeedType
 from agent.perception import InternalContext, PerceptionPacket, RetrievalQuery
 from agent.perception_emotion import (
@@ -64,7 +67,7 @@ from core.interfaces.actor import (
     PerceivedEntry,
 )
 from core.interfaces.relation import AgentRelation
-from core.interfaces.message import Message
+from core.interfaces.message import ERRAND_REPORT_SOURCE, Message, message_from_dict
 from core.interfaces.snapshot import AgentState
 from core.interfaces.perception import (
     Broadcast, PerceivedIdentity, PerceivedSignals, Situation, SpatialPerception, VisibleEntity,
@@ -80,6 +83,7 @@ from core.prompts import (
     order_memories_chrono,
     condition_line,
     person_referent,
+    recency_prefix,
     render_memory,
     render_memory_lines,
     render_perceived_signals,
@@ -105,7 +109,10 @@ _FEEDBACK_EMOTION_RECENT_FACTUAL_K = 6
 _PERCEPTION_EMOTION_RECENT_FACTUAL_K = 6
 # Recent-memory supplement for decide: vector recall misses just-happened events unrelated to the scene
 # (see _supplement_recent). More factual (objective anchors), fewer experiential (feelings make decide drift).
-_DECIDE_RECENT_FACTUAL_SUPPLEMENT_K = 5
+# The factual supplement samples on its own, with a larger floor than the shared pool: decide is where
+# a lost "what I just did" breaks the action chain.
+_DECIDE_RECENT_FACTUAL_SUPPLEMENT_K = 7
+_DECIDE_RECENT_FACTUAL_FLOOR = 3
 _DECIDE_RECENT_EXPERIENTIAL_SUPPLEMENT_K = 2
 # Reading an intent: his latest doings let "go on" read as going on with them, and memories the
 # intent brings up let a goal resolve into a first step he knows how to take.
@@ -213,6 +220,14 @@ class Agent:
     # the subsystems receive, injected directly rather than borrowed from a subordinate component.
     llm_router: LLMRouter
     pending_external_goals: List[ExternalGoal] = field(default_factory=list)
+    # Errand reports not yet through a decision. Memory keeps only what the runner said, not the
+    # scene he brought back, so without these neither a later decision nor the goal judge would
+    # see it. The next decision shows them once; every goal judgement while they are held sees
+    # them too. External pressure weighed them the step they arrived and doesn't see them again.
+    # A decision only marks them (``_errand_reports_decided``): that step's judgements run after
+    # it, so they are dropped once the step is over, at the next perceive.
+    pending_errand_reports: List[Message] = field(default_factory=list)
+    _errand_reports_decided: bool = field(default=False, init=False, repr=False)
     # Narrative tier, not a cognition-mode switch: every agent's cognition gates use the LLM
     # (CLAUDE.md §5).
     is_main_character: bool = False
@@ -263,6 +278,7 @@ class Agent:
         # decidable N. Not committed, like that buffer: a restore restarts the count, and the
         # window is a few steps.
         self._foiled_misses: Dict[tuple[str, str], tuple[int, int]] = {}
+        self._cooldown = ActionCooldown()
 
     def remember_agent(self, agent_id: str, identity: PerceivedIdentity) -> None:
         """Cache an agent's perceived name + gender.
@@ -358,6 +374,12 @@ class Agent:
         """
         if self.actor is not None:
             self.actor.perceived(self, step=step, inbox=inbox, broadcasts=broadcasts)
+        if self._errand_reports_decided:
+            self.pending_errand_reports.clear()
+            self._errand_reports_decided = False
+        self.pending_errand_reports.extend(
+            msg for msg in inbox if msg.metadata.get("source") == ERRAND_REPORT_SOURCE
+        )
         # What landed on him reached him now, with this step's signals.
         self.personality.clear_acted_upon()
         for vid, presence in spatial.visible_agents.items():
@@ -409,12 +431,20 @@ class Agent:
         """
 
         if self.actor is not None:
+            # An actor sees every message in its thread as it arrives; nothing is left to carry.
+            self._errand_reports_decided = True
             return await self._plan_with_actor(
                 self.actor, step=step, spatial=spatial, inbox=inbox, broadcasts=broadcasts,
             )
         plan_start = time.perf_counter()
         current_step = step
         inbox_list = list(inbox)
+        # Only the decision sees the carried reports: the plan's inbox stays this step's real one,
+        # which arbitration records as the step's message ids.
+        arrived = {msg.id for msg in inbox_list}
+        decision_inbox = [
+            msg for msg in self.pending_errand_reports if msg.id not in arrived
+        ] + inbox_list
         broadcasts_list = list(broadcasts)
         consumed_external_goals = list(self.pending_external_goals)
         awareness_start = time.perf_counter()
@@ -430,7 +460,7 @@ class Agent:
             agent_id=self.agent_id,
             step=current_step,
             spatial=spatial,
-            inbox=inbox_list,
+            inbox=decision_inbox,
             broadcasts=broadcasts_list,
             internal_context=internal_context,
         )
@@ -439,7 +469,11 @@ class Agent:
             decision = await self.decision_engine.decide(
                 personality=self.personality,
                 packet=packet,
+                held_back=self._cooldown.held_back(),
             )
+        self._cooldown.note_decided()
+        if decision.status is not DecisionStatus.FAILED:
+            self._errand_reports_decided = True
         decide_ms = round((time.perf_counter() - decide_start) * 1000.0, 2)
         action = decision.action
         if action is not None:
@@ -754,15 +788,17 @@ class Agent:
                     rel.deceased = True
         return perceived
 
-    def _recent_factuals(self, step: int, *, top_k: int, before_step: bool = False) -> list[Memory]:
+    def _recent_factuals(
+        self, step: int, *, top_k: int, floor: int = RECENT_EVENT_FLOOR, before_step: bool = False,
+    ) -> list[Memory]:
         """Recent factual memories, by importance; the one fetch shared by the cognition prompts.
 
-        ``before_step`` drops this step's entries (already in the signal block) and those lacking a
-        factual; 8 extra are fetched so top_k survives the filter.
+        ``before_step`` drops this step's entries (already in the signal block).
         """
-        fetched = self.memory_system.sample_recent_events(step, top_k=top_k + 8 if before_step else top_k)
-        if before_step:
-            fetched = [pair for pair in fetched if pair[0] is not None and pair[0].created_step < step][:top_k]
+        fetched = self.memory_system.sample_recent_events(
+            step, top_k=top_k, floor=floor, before_step=step if before_step else None,
+            require_factual=True,
+        )
         return [fact for fact, _exp in fetched if fact is not None]
 
     def _recent_factual_lines(self, step: int, *, top_k: int, before_step: bool = False) -> list[str]:
@@ -824,6 +860,12 @@ class Agent:
             ])
         ]
 
+    def recently_failed_goal_lines(self, step: int) -> list[str]:
+        """His latest failed short-term goals as dated lines, oldest first."""
+        return self.need_engine.recently_failed_goal_lines(
+            self.personality.state.short_term_goal_entities, now_step=step,
+        )
+
     def _render_recent_event(
         self, fact: "Memory | None", exp: "Memory | None", *, current_step: int
     ) -> str:
@@ -863,9 +905,11 @@ class Agent:
         # Recent first-hand memories (in-memory scan) for goal generation, kept as their own prompt
         # section rather than mixed into the retrieval query. Both streams: feelings alone make
         # short-term goals repeat/drift. sample_recent_events returns importance order, so sort
-        # chronologically for MEMORY_ORDER_HINT; always via order_memories_chrono.
+        # chronologically for MEMORY_ORDER_HINT; always via order_memories_chrono. Before this step:
+        # perceive_step already wrote this step's perceptions, which reach goal generation and
+        # decide as signals and would otherwise take the floor slots meant for what came before.
         recent_events = order_memories_chrono(
-            self.memory_system.sample_recent_events(current_step, top_k=10),
+            self.memory_system.sample_recent_events(current_step, top_k=10, before_step=current_step),
             key=lambda pair: pair[0] or pair[1],
         )
         recent_memory_texts = [
@@ -952,10 +996,16 @@ class Agent:
         )
         factual_memories = [m for m in retrieval_result.events if m.stream == MemoryStream.FACTUAL]
         experiential_memories = [m for m in retrieval_result.events if m.stream == MemoryStream.EXPERIENTIAL]
-        # Add recent anchors recall missed (see _supplement_recent), reusing recent_events.
+        # Add recent anchors recall missed (see _supplement_recent). Experiential reuses recent_events.
+        decide_recent_factuals = order_memories_chrono(self._recent_factuals(
+            current_step,
+            top_k=_DECIDE_RECENT_FACTUAL_SUPPLEMENT_K,
+            floor=_DECIDE_RECENT_FACTUAL_FLOOR,
+            before_step=True,
+        ))
         factual_memories = _supplement_recent(
             factual_memories,
-            (fact for fact, _exp in recent_events),
+            decide_recent_factuals,
             limit=_DECIDE_RECENT_FACTUAL_SUPPLEMENT_K,
         )
         experiential_memories = _supplement_recent(
@@ -1033,6 +1083,7 @@ class Agent:
         result: ActionResult,
         dominant_need: NeedType | None,
         emotion: EmotionState | None,
+        releases_body: bool,
     ) -> None:
         """Write the already-appraised emotion (from _appraise_outcome) and the action's declared
         effects into agent state.
@@ -1060,6 +1111,7 @@ class Agent:
             result_summary=result.outcome,
             succeeded=result.succeeded,
             emotion=emotion,
+            releases_body=releases_body,
         )
         # personality.state.need_intensities is the only source of truth for need intensity.
         new_intensities = self.need_engine.evolve_intensities(
@@ -1138,10 +1190,12 @@ class Agent:
             self.personality.clear_condition()
 
     async def _record_completion(
-        self, *, result: ActionResult, dominant_need: NeedType | None, step: int,
+        self, *, result: ActionResult, dominant_need: NeedType | None, step: int, releases_body: bool,
     ) -> None:
-        """The single feedback sink for every action, reached only via finalize_ongoing_action:
-        appraise → apply → judge goal progress. The runtime persists the result at step end.
+        """The single feedback sink for every action, reached only via finalize_ongoing_action or
+        finalize_momentary_act: appraise → apply → judge goal progress. The runtime persists the
+        result at step end. ``releases_body``: False for a momentary act (see
+        ``Personality.complete_action``); the actor is then told of it in one entry.
 
         Logs exactly one "agent_feedback_recorded" line per feedback, so "decisions == feedbacks"
         is auditable.
@@ -1159,20 +1213,30 @@ class Agent:
         if result.adjudication_failed:
             # Infra failure, not an in-world outcome → null step: skip all writeback, only reset to
             # idle. A genuine in-world failure has adjudication_failed=False and is remembered.
-            self.personality.update_action_result(
+            if not releases_body:
+                self.void_momentary_act(step=step, description=result.action.action_description)
+                return
+            self.personality.record_action_result(
                 step=step,
                 action=result.action.action_description,
                 result="",
                 succeeded=False,
             )
+            self.personality.end_action(succeeded=False)
             if self.actor is not None:
                 self.actor.ended(step=step, fact="", succeeded=False, happened=True)
             return
         if self.actor is not None:
-            self.actor.ended(
-                step=step, fact=(result.factual_memory or "").strip(), succeeded=result.succeeded,
-                happened=not result.not_executed,
-            )
+            fact = (result.factual_memory or "").strip()
+            if releases_body:
+                self.actor.ended(
+                    step=step, fact=fact, succeeded=result.succeeded, happened=not result.not_executed,
+                )
+            else:
+                self.actor.acted(
+                    step=step, description=result.action.action_description, fact=fact,
+                    succeeded=result.succeeded, happened=not result.not_executed,
+                )
         # appraise → apply_feedback and the goal judge run concurrently (the judge only reads).
         # Goals are written back only after the join: apply_feedback's importance prompt reads
         # goals, and an early write-back would make it see pre- or post-action goals unpredictably.
@@ -1181,7 +1245,8 @@ class Agent:
         async def _appraise_and_apply() -> None:
             emotion = await self._appraise_outcome(result, dominant_need)
             await self._apply_feedback(
-                result=result, dominant_need=dominant_need, emotion=emotion
+                result=result, dominant_need=dominant_need, emotion=emotion,
+                releases_body=releases_body,
             )
 
         slots: list[tuple[str, Awaitable[Any]]] = [("apply_feedback", _appraise_and_apply())]
@@ -1227,6 +1292,20 @@ class Agent:
             return
         await self.reflection_engine.reflect(step)
 
+    def long_term_revision_due(self, step: int, *, interval: int) -> bool:
+        """Whether long-term goals are due for revision: ``interval`` steps since the last one, or
+        FAILED_GOALS_PER_REVISION short-term goals failed since then.
+
+        Both count from the same last revision, so a failure-driven revision also restarts the
+        period and the two never run back to back. Without the failure condition the long-term
+        goal behind a blocked pursuit keeps spawning it until the period comes round.
+        """
+        state = self.personality.state
+        return (
+            step - state.long_term_revised_step >= interval
+            or state.failed_goals_since_revision >= FAILED_GOALS_PER_REVISION
+        )
+
     async def revise_long_term_goals(self, *, step: int) -> None:
         """Re-examine long-term goals from the agent's own recent memories (both streams) and sync
         the result to personality. Skips with no recent memories: no change for its own sake.
@@ -1234,6 +1313,8 @@ class Agent:
         NeedEngine doesn't touch personality and MemorySystem doesn't enter NeedEngine; Agent
         assembles the memory text and owns need → personality consistency.
         """
+        # Whatever comes of it, this was the revision that fell due; the next counts from here.
+        self.personality.mark_long_term_revised(step)
         if self.actor is not None:
             # The actor owns this character's motivation.
             return
@@ -1247,6 +1328,7 @@ class Agent:
                 world_start_second_of_day=self.world_start_second_of_day,
             ),
             is_main_character=self.is_main_character,
+            now_step=step,
             situation=self._situation,
         )
         # Record what was actually adopted: otherwise an audit reads goals the engine discarded
@@ -1344,7 +1426,8 @@ class Agent:
  4.禁止揣测没有发生过的客观事实。
  5.我需要结合【我刚刚的经历】的所有内容综合判断，不要仅仅依靠单一局部内容，不要捏造和揣测客观事实。
  6.先在 reason 里把"我是被这件事的哪一点触动、为什么是这种情绪"点清楚，再据此给后面三项——情绪由这个触点推出，不是先挑个戏剧化的情绪再补理由。
- 7.严格输出以下 JSON，不要任何多余内容（reason 必须排在最前）：
+ 7. 行动结果成功并不代表一定符合 “我原本期望”，具体要根据“实际发生判定”。
+ 8.严格输出以下 JSON，不要任何多余内容（reason 必须排在最前）：
 {{"reason": "<第一人称，我是被这件事的哪一点触动、是否与我预期有落差、为什么会是这种情绪，先点清再给下面三项，20-40字>", "emotion": "从以下选一：{emotion_types}", "intensity": 0.0~1.0, "valence": -1.0~1.0}}"""
         user_prompt = f"""\
 {situation_block}【我是谁】（我固有的身份、性格、价值观；这是我这个人）
@@ -1570,14 +1653,50 @@ class Agent:
         )
 
     async def begin_ongoing_step(
-        self, *, plan: AgentStepPlan, estimated_steps: int | None = None, total_steps: int | None = None,
+        self, *, plan: AgentStepPlan, executed: bool,
+        estimated_steps: int | None = None, total_steps: int | None = None,
     ) -> None:
         """Begin half of the begin→finalize path: mark the action started, writing no memory.
 
         ``estimated_steps`` overrides the LLM's estimate with the executor-authoritative duration
         (e.g. MOVE distance); ``total_steps`` is that whole duration, the start step included,
-        for the actor's record of the act.
+        for the actor's record of the act. ``executed``: the act really began, rather than being
+        refused or ruled infeasible; only such a start counts toward a cooldown.
         """
+        self._land_motivation(plan)
+        if executed:
+            self._cooldown.record_start(plan.action.action_type, step=plan.step, agent_id=self.agent_id)
+        self.personality.begin_action(
+            step=plan.step,
+            description=plan.action.action_description,
+            activity_status=activity_status_for(plan.action.action_type),
+            target=plan.action.target.single_acted_on_agent,
+            estimated_steps=estimated_steps if estimated_steps is not None else plan.action.estimated_steps,
+        )
+        if self.actor is not None:
+            self.actor.began(
+                step=plan.step,
+                description=plan.action.action_description,
+                total_steps=total_steps if total_steps is not None else plan.action.estimated_steps,
+            )
+
+    def begin_momentary_act(self, *, plan: AgentStepPlan, executed: bool) -> None:
+        """Begin half of a momentary act (begin → ``finalize_momentary_act``): the decision's
+        motivation lands, the body is left free. It may still be drawn into someone else's act
+        this step, which then begins through ``join_ongoing_action``. ``executed`` as for
+        ``begin_ongoing_step``."""
+        self._land_motivation(plan)
+        if executed:
+            self._cooldown.record_start(plan.action.action_type, step=plan.step, agent_id=self.agent_id)
+
+    def void_momentary_act(self, *, step: int, description: str) -> None:
+        """The momentary act started and came to nothing adjudicated (a null step): nothing is
+        written, and the body was never held. One that never started is ``drop_unstarted_intent``'s."""
+        if self.actor is not None:
+            self.actor.acted(step=step, description=description, fact="", succeeded=False, happened=True)
+
+    def _land_motivation(self, plan: AgentStepPlan) -> None:
+        """Where the character decided from, and the needs and goals behind the decision."""
         self.personality.update_location(step=plan.step, location=plan.spatial.location_id)
         # Don't write need_intensities here: active_needs[].intensity is this step's salience
         # score, not the stored intensity, and would hand the survival check values in the wrong unit.
@@ -1592,19 +1711,6 @@ class Agent:
             long_term_goals=plan.need_evaluation.long_term_goals,
             short_term_goal_entities=list(plan.need_evaluation.short_term_goal_entities),
         )
-        self.personality.begin_action(
-            step=plan.step,
-            description=plan.action.action_description,
-            activity_status=activity_status_for(plan.action.action_type),
-            target=plan.action.target.single_acted_on_agent,
-            estimated_steps=estimated_steps if estimated_steps is not None else plan.action.estimated_steps,
-        )
-        if self.actor is not None:
-            self.actor.began(
-                step=plan.step,
-                description=plan.action.action_description,
-                total_steps=total_steps if total_steps is not None else plan.action.estimated_steps,
-            )
 
     async def join_ongoing_action(
         self,
@@ -1729,11 +1835,13 @@ class Agent:
 
     def drop_unstarted_intent(self, action: "AgentAction", step: int) -> None:
         """The action decided this step never started: the engine failed to start it, so nothing
-        was adjudicated and nothing is remembered; the character decides afresh next step. The
-        actor is told the act came to nothing, or they would wait on it."""
+        was adjudicated and nothing is remembered. The actor is told the act came to nothing, or
+        they would wait on it, in one entry: it never began, so it has nothing to end."""
         if self.actor is not None:
-            self.actor.began(step=step, description=action.action_description, total_steps=1)
-            self.actor.ended(step=step, fact="", succeeded=False, happened=False)
+            self.actor.acted(
+                step=step, description=action.action_description, fact="", succeeded=False,
+                happened=False,
+            )
 
     async def accepts_invitation(
         self, plan: AgentStepPlan, *, inviter_id: str, action_type: ActionType, talk_topic: str = "",
@@ -1976,6 +2084,17 @@ class Agent:
             result=result,
             dominant_need=self._resolve_dominant_need_from_state(),
             step=step,
+            releases_body=True,
+        )
+
+    async def finalize_momentary_act(self, *, result: ActionResult, step: int) -> None:
+        """Feedback for a momentary act: the same writeback as ``finalize_ongoing_action``, but the
+        body is left as it is, since the act never held it."""
+        await self._record_completion(
+            result=result,
+            dominant_need=self._resolve_dominant_need_from_state(),
+            step=step,
+            releases_body=False,
         )
 
     async def _judge_goal_progress(
@@ -1986,6 +2105,15 @@ class Agent:
         # Trajectory evidence for multi-step completion. Read before any await, so this step's
         # action memory isn't in it; the action reaches the judge explicitly.
         recent_factuals = self._recent_factual_lines(step, top_k=_GOAL_EVAL_RECENT_FACTUAL_K)
+        # Dated like memory lines: a report answers an earlier errand and reached him before this
+        # action, so it sits on the trajectory, never in this action's result.
+        errand_reports = [
+            recency_prefix(
+                now_step=step, ref_step=msg.deliver_step, seconds_per_step=self.seconds_per_step,
+                world_start_second_of_day=self.world_start_second_of_day,
+            ) + f"来自{msg.sender_name}：{msg.content}"
+            for msg in self.pending_errand_reports
+        ]
         succeeded_str = "成功" if result.succeeded else "失败"
         action_result = f"{result.outcome}({succeeded_str})"
         with observe_stage(Stage.FEEDBACK, agent_id=self.agent_id):
@@ -1996,6 +2124,7 @@ class Agent:
                 personality=self.personality,
                 situation=self._situation,
                 recent_factuals=recent_factuals,
+                errand_reports=errand_reports,
                 # For a MOVE, the errand at the destination lives here; the description only says he set off.
                 expected_outcome=result.expected_outcome,
                 held=self._held,
@@ -2014,7 +2143,18 @@ class Agent:
             for goal in self.personality.state.short_term_goal_entities
             if goal.status == GoalStatus.INTERRUPTED
         }
+        already_failed = {
+            goal.id
+            for goal in self.personality.state.short_term_goal_entities
+            if goal.status == GoalStatus.FAILED
+        }
         self.personality.set_short_term_goal_entities(updated)
+        # Counts the judge's verdict and the time-allowance reaping, plus the rare goal pushed out
+        # by residue enqueued in this same judgment. Eviction at motivation time never lands here:
+        # a new plan displacing an old one is no sign a direction is blocked.
+        self.personality.count_failed_goals(sum(
+            1 for g in updated if g.status == GoalStatus.FAILED and g.id not in already_failed
+        ))
         # The returned table still holds terminal goals from the FIFO.
         for goal in updated:
             if goal.status == GoalStatus.INTERRUPTED and goal.id not in already_interrupted:
@@ -2031,10 +2171,16 @@ class Agent:
 
     def committed_state(self) -> AgentState:
         """What a restore needs to bring this agent back, for the step's snapshot: its
-        ``StateLayer`` through the codec plus its memory's id counter."""
+        ``StateLayer`` through the codec plus its memory's id counter and the errand reports it
+        hasn't yet decided with."""
         return replace(
             encode_agent_state(self.world_id, self.agent_id, self.personality.state),
             memory_seq=self.memory_system.id_seq,
+            # Taken at the step's end: reports a decision already used are dropped, as the next
+            # perceive would drop them.
+            pending_errand_reports=[] if self._errand_reports_decided else [
+                asdict(msg) for msg in self.pending_errand_reports
+            ],
         )
 
     def apply_stored_state(self, stored: AgentState, *, in_resumed_execution: bool) -> None:
@@ -2043,6 +2189,8 @@ class Agent:
         orphaned = stored.action_status == ActionStatus.IN_PROGRESS.value and not in_resumed_execution
         self.personality.restore_state(decode_agent_state(self.agent_id, stored, orphaned=orphaned))
         self.memory_system.restore_id_seq(stored.memory_seq)
+        self.pending_errand_reports = [message_from_dict(m) for m in stored.pending_errand_reports]
+        self._errand_reports_decided = False
         # vitality is the single source of truth for alive/dead and is_active isn't persisted: a
         # dead character left active (the default) would die again next step, announced twice.
         self.set_active(stored.vitality > 0.0)

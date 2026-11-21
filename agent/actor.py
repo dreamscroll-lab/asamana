@@ -94,3 +94,9 @@ class Actor(Protocol):
         """The act in progress ended, as the character remembers it (``fact``; empty when it was
         never adjudicated). ``happened`` is False for an act that never engaged the world."""
         ...
+
+    def acted(self, *, step: int, description: str, fact: str, succeeded: bool, happened: bool) -> None:
+        """An act of the character's with no inside, told whole (``fact`` etc. as in ``ended``):
+        one that never held the body, which leaves the act in progress, if any, untouched, or one
+        that never started."""
+        ...

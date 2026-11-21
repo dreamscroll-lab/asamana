@@ -120,8 +120,8 @@ def activity_status_for(action_type: ActionType) -> AgentActivityStatus:
         return AgentActivityStatus.MOVING
     if action_type == ActionType.COVERT:
         return AgentActivityStatus.COVERT
-    # ERRAND lands here: status says what he is doing right now, just saying a few words; someone
-    # else does the running. Don't give it its own status.
+    # Momentary acts (SEND_MESSAGE, ERRAND) never come here: they don't occupy the body, so they
+    # never show as what it is doing. Don't give them a status of their own.
     return AgentActivityStatus.WORKING
 
 
@@ -231,9 +231,9 @@ class SoulLayer:
         return "、".join(self.core_values) or "无"
 
     def constraints_text(self) -> str:
-        """Render hard constraints as canonical prompt text. ``无`` when empty."""
+        """Render hard constraints as canonical prompt text; callers leave the line out when empty."""
 
-        return "、".join(self.hard_constraints) or "无"
+        return "、".join(self.hard_constraints)
 
     def identity_text(self) -> str:
         """The one renderer for an identity header: ``名字，N岁，性别`` (empty fields omitted).
@@ -284,6 +284,10 @@ class StateLayer:
     # Others' acts that landed on him since he last perceived, as he remembers each (first
     # person); they reach him with his next perception (PerceivedSignals.acted_upon).
     acted_upon: list[str] = field(default_factory=list)
+    # When long-term goals were last revised and how many short-term goals have failed since:
+    # together they decide when the next revision is due (Agent.long_term_revision_due).
+    long_term_revised_step: int = 0
+    failed_goals_since_revision: int = 0
 
 
 class PersonalityLayer:
@@ -421,6 +425,15 @@ class PersonalityLayer:
         got a stub plan."""
         self._state.last_decision_step = step
 
+    def count_failed_goals(self, count: int) -> None:
+        """Add short-term goals that just failed to the count since the last long-term revision."""
+        self._state.failed_goals_since_revision += count
+
+    def mark_long_term_revised(self, step: int) -> None:
+        """Record a long-term revision; the period and the failure count both restart from it."""
+        self._state.long_term_revised_step = step
+        self._state.failed_goals_since_revision = 0
+
     def set_short_term_goal_entities(self, entities: "Sequence[GoalEntity]", *, step: int | None = None) -> None:
         """Replace the short-term goal queue, the single source of truth. The ``short_term_goals``
         text view is derived from the live entities so the two never drift."""
@@ -463,19 +476,25 @@ class PersonalityLayer:
         result_summary: str,
         succeeded: bool,
         emotion: EmotionState | None,
+        releases_body: bool,
     ) -> None:
         """Apply the post-action state transition.
 
         ``emotion=None`` means the appraisal failed: keep the current mood, don't synthesize one
         (fallback tier 1). The action result is a known fact and is recorded as usual.
+
+        ``releases_body``: False for a momentary act, which never held the body; ending it would
+        reset the body-occupying act in progress (one it was drawn into the same step).
         """
 
-        self.update_action_result(
+        self.record_action_result(
             step=step,
             action=description,
             result=result_summary,
             succeeded=succeeded,
         )
+        if releases_body:
+            self.end_action(succeeded=succeeded)
         if emotion is not None:
             self._state.emotion = _copy_emotion(emotion)
 
@@ -569,7 +588,7 @@ class PersonalityLayer:
         self._state.current_action = current_action
         self._state.action_remaining_steps = max(0, remaining_steps)
 
-    def update_action_result(
+    def record_action_result(
         self,
         *,
         step: int,
@@ -577,12 +596,16 @@ class PersonalityLayer:
         result: str,
         succeeded: bool,
     ) -> None:
-        """Apply the last action's result."""
+        """Record the last action's result; the latest one recorded is kept."""
 
         self._state.step = step
         self._state.last_action = action
         self._state.last_action_result = result
         self._state.last_action_succeeded = succeeded
+
+    def end_action(self, *, succeeded: bool) -> None:
+        """The body-occupying act ended: the body is free again."""
+
         self._state.current_action = None
         self._state.action_remaining_steps = 0
         self._state.action_status = ActionStatus.COMPLETED if succeeded else ActionStatus.FAILED
@@ -685,6 +708,8 @@ def _copy_state(state: StateLayer) -> StateLayer:
         condition=state.condition,
         last_decision_step=state.last_decision_step,
         acted_upon=list(state.acted_upon),
+        long_term_revised_step=state.long_term_revised_step,
+        failed_goals_since_revision=state.failed_goals_since_revision,
     )
 
 

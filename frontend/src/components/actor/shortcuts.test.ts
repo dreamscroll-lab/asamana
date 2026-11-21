@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ActorOperationCapability } from "../../types";
-import { missingParameters } from "./shortcuts";
+import { missingParameters, OPERATION_LABEL } from "./shortcuts";
 const capability = (operation: ActorOperationCapability["operation"], required_parameters: string[]): ActorOperationCapability => ({ operation, required_parameters, available: true, reason: null });
 describe("shortcut form requirements", () => {
   it("lets complete actions submit without additional description", () => {
@@ -26,5 +26,11 @@ describe("shortcut form requirements", () => {
   it("requires a concrete description for the custom physical operation", () => {
     expect(missingParameters(capability("physical", ["description"]), {}, " ")).toBe(true);
     expect(missingParameters(capability("physical", ["description"]), {}, "轻轻敲三下门")).toBe(false);
+  });
+});
+describe("operation labels", () => {
+  it("gives take, use and destroy the physical action's icon", () => {
+    expect([OPERATION_LABEL.take, OPERATION_LABEL.use, OPERATION_LABEL.destroy]).toEqual(["💪 拿起", "💪 使用", "💪 毁坏"]);
+    expect(OPERATION_LABEL.physical).toBe("💪 动手");
   });
 });

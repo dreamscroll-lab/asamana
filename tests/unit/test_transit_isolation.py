@@ -147,10 +147,16 @@ def test_transit_origin_lifecycle_and_snapshot_roundtrip() -> None:
     assert env.transit_origin("agent-a") is None
     assert env.engine_state()["transit_origins"] == {}
 
-    # restore round-trip
+    # restore round-trip: the caller places bodies first (world.initializer), then the origin
+    # lands on the one still in transit. An origin with no placed body has nothing to land on.
     fresh = _make_env()
-    fresh.restore_state(npcs={}, entities={}, engine={"transit_origins": {"agent-b": "garden"}})
+    fresh.place_agent(agent_id="agent-b", location_id=IN_TRANSIT)
+    fresh.restore_state(
+        npcs={}, entities={},
+        engine={"transit_origins": {"agent-b": "garden", "ghost": "hall"}},
+    )
     assert fresh.transit_origin("agent-b") == "garden"
+    assert fresh.transit_origin("ghost") is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
