@@ -101,12 +101,15 @@ _EMPTY_CTX: dict[str, Any] = {"relation": None, "about_other": [], "about_topic"
 # Recent factual memories injected per side, picked as for the goal judge and interrupt evaluation.
 _TALK_RECENT_FACTUAL_K = 5
 
-def _talk_target(other_id: str | None) -> ActionTarget:
-    """A talk's target: the other party is acted on and claimed, filed exactly as the decision
-    layer does, since this rebuilds the action for feedback."""
+def _talk_target(other_id: str | None, listeners: "list[Ref]") -> ActionTarget:
+    """A talk's target: the other party is acted on and claimed, the named listeners reached,
+    filed exactly as the decision layer does, since this rebuilds the action for feedback.
+
+    ``listeners`` are the ones named (``state.target.reaches``), not those still there to hear
+    it: who heard is the result, ``overheard_by``."""
     if not other_id:
-        return ActionTarget()
-    return ActionTarget(acts_on=[Ref.agent(other_id)], claims=[Ref.agent(other_id)])
+        return ActionTarget(reaches=list(listeners))
+    return ActionTarget(acts_on=[Ref.agent(other_id)], claims=[Ref.agent(other_id)], reaches=list(listeners))
 
 
 def _present_listeners(
@@ -639,6 +642,7 @@ class SocialExecutor(ActionExecutor):
             dialogue=dialogue,
             # Don't fall back to purpose: it's intent, not expectation.
             summary=summary_i, expected_outcome=state.expected_outcome,
+            listeners=state.target.reaches,
             # Attached to the initiator's result only (attaching to both → listeners get it twice,
             # items change twice).
             target_effects=listener_effects,
@@ -653,6 +657,7 @@ class SocialExecutor(ActionExecutor):
                 observations=observations,
                 dialogue=dialogue,
                 summary=summary_t, expected_outcome="",
+                listeners=state.target.reaches,
             ))
 
         return results
@@ -672,6 +677,7 @@ class SocialExecutor(ActionExecutor):
         dialogue: list[dict],
         summary: "tuple[str, bool, str, str] | None",
         expected_outcome: str,
+        listeners: "list[Ref]",
         target_effects: "list[TargetAgentEffect] | None" = None,
         entity_changes: TalkEntityChanges = TalkEntityChanges(),
     ) -> ActionResult:
@@ -686,7 +692,7 @@ class SocialExecutor(ActionExecutor):
         stub = AgentAction(
             agent_id=agent_id, step=step, action_type=ActionType.TALK,
             action_description=action_description,
-            target=_talk_target(rel_other_id),
+            target=_talk_target(rel_other_id, listeners),
             estimated_steps=estimated_steps,
         )
         if summary is None:
@@ -790,7 +796,7 @@ class SocialExecutor(ActionExecutor):
             stub = AgentAction(
                 agent_id=pid, step=step, action_type=ActionType.TALK,
                 action_description=participant_action_desc(self._directory, pid, state),
-                target=_talk_target(other_id),
+                target=_talk_target(other_id, state.target.reaches),
                 estimated_steps=state.estimated_steps,
             )
             # An interrupted conversation moves no relation.

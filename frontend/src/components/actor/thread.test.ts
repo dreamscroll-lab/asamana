@@ -8,7 +8,7 @@ import type {
 const briefing: ActorBriefing = { location: null, people: [], npcs: [], places: [], entities: [] };
 
 const act = (description: string): ActorDecisionSummary => ({
-  decision_summary_id: `decision_summary-${description}`, description, operation: "work", target: null, parameters: {}, estimated_duration_seconds: 7200,
+  decision_summary_id: `decision_summary-${description}`, description, operation: "work", target: { acts_on: [], claims: [], reaches: [] }, parameters: {}, estimated_duration_seconds: 7200,
 });
 const IDLE: ActorPublicAnswer = { idle: true };
 

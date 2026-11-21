@@ -594,7 +594,8 @@ async def test_self_operations_use_turn_identity_and_follow_description_requirem
         assert said["decision_summary"]["estimated_duration_seconds"] == step_seconds * (1 if operation == "rest" else 3)
         answered = next(entry for entry in thread if entry["kind"] == "answered")
         assert said["intent"]["operation"] == said["decision_summary"]["operation"] == operation
-        assert said["intent"]["target"] == said["decision_summary"]["target"] == target
+        assert said["intent"]["target"] == target
+        assert said["decision_summary"]["target"] == {"acts_on": [], "claims": [], "reaches": []}
         assert answered["answer"] == {"decision_summary_id": said["decision_summary"]["decision_summary_id"]}
         assert "action_description" not in json.dumps(thread)
     snapshot = await mock_build_container.snapshot.load(world_id, 1)

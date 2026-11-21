@@ -1158,7 +1158,7 @@ def test_item_list_marks_who_holds_what(main_engine) -> None:
 
     for text in (prompt, actor_prompt):    # the actor's interpretation reads the same lists
         mine = text.index("我手上的东西：")
-        not_mine = text.index("不在我手上的东西（放在此处，或在别人手上）：")
+        not_mine = text.index("不在我手上的东西（放在此处，或在别人手上；")
         assert text.index("眼前的东西（两组的序号连着数）：") < mine < text.index("#1 短刀") < not_mine
         assert "#1 短刀（由我持有；可交出）" in text     # in my hands: what I can do is hand it over
         assert not_mine < text.index("#2 灯笼") < text.index("#3 虎符")

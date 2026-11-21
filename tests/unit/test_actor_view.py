@@ -94,6 +94,15 @@ def test_in_the_place_it_ends_in_the_character_sees_bodies_and_things_as_they_sh
     assert view.locations["hall"].entities["letter"].private.content == ""
 
 
+def test_what_is_written_for_all_to_read_stays_readable_to_the_character() -> None:
+    stele = EntityView(name="石碑", entity_type="landmark", state="", content="敢有擅入者斩")
+    view = step_view_for(_step(locations={"hall": LocationScope(
+        location_id="hall", agents=[_body(ME)], entities={"stele": stele},
+    )}), ME)
+
+    assert view.locations["hall"].entities["stele"].content == "敢有擅入者斩"
+
+
 def test_own_belongings_keep_what_is_written_on_them() -> None:
     view = step_view_for(_step(locations={"hall": LocationScope(
         location_id="hall", agents=[_body(ME)],

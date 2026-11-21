@@ -12,9 +12,9 @@ import pytest
 from agent.actor_operations import actor_operations, build_actor_decision_summary, build_actor_operation, requires_actor_interpretation
 from agent.decision import DecisionEngine, candidate_lists
 from agent.personality import ActionStatus
-from core.interfaces.action import ActionType, Ref
+from core.interfaces.action import ActionTarget, ActionType, Ref
 from core.interfaces.actor import (
-    ActorAction, ActorAnswerRejected, ActorConfirmation, ActorDecision, ActorIntent, ActorIdleAnswer,
+    ActorAction, ActorAnswerRejected, ActorConfirmation, ActorDecision, ActorDecisionSummary, ActorIntent, ActorIdleAnswer,
     ActorInterruptAnswer,
     ActorOperation, ActorOperationParameters,
 )
@@ -128,7 +128,7 @@ async def test_description_only_errand_reaches_confirmation_after_full_binding(c
         runtime.answer_actor(ActorIdleAnswer())
     else:
         assert result.status == "needs_confirmation" and not task.done()
-        assert result.decision_summary.target == Ref.npc(npc_id)
+        assert result.decision_summary.target == ActionTarget(acts_on=[Ref.npc(npc_id)])
         assert result.decision_summary.parameters["destination_id"] == turn.briefing.places[0].location_id
         runtime.answer_actor(ActorConfirmation(result.decision_summary.decision_summary_id))
     await task
@@ -145,7 +145,7 @@ async def test_description_only_errand_reaches_confirmation_after_full_binding(c
 @pytest.mark.parametrize("seconds_per_step", [1800, 7200])
 def test_summary_duration_uses_execution_authority(action_type: ActionType, expected_steps: int, seconds_per_step: int) -> None:
     action = ActorAction(action_type, "我按计划行动", estimated_steps=7)
-    summary = build_actor_decision_summary(ActorDecision(action=action), _packet(), seconds_per_step=seconds_per_step)
+    summary = build_actor_decision_summary(ActorDecision(action=action), ActionTarget(), _packet(), seconds_per_step=seconds_per_step)
     assert summary.estimated_duration_seconds == expected_steps * seconds_per_step
 
 
@@ -154,7 +154,7 @@ def test_move_summary_duration_uses_scheduled_travel_time(travel_seconds: int, e
     packet = _packet()
     packet.spatial.reachable_locations[0] = replace(packet.spatial.reachable_locations[0], travel_seconds=travel_seconds)
     action = ActorAction(ActionType.MOVE, "我前往门口", estimated_steps=99, destination_id="xuanwu_gate")
-    summary = build_actor_decision_summary(ActorDecision(action=action), packet, seconds_per_step=7200)
+    summary = build_actor_decision_summary(ActorDecision(action=action), ActionTarget(), packet, seconds_per_step=7200)
     assert summary.estimated_duration_seconds == expected_steps * 7200
 
 
@@ -209,8 +209,8 @@ def test_explicit_operations_bind_through_existing_action_rules(container, opera
     bound = DecisionEngine(container.llm_router).bind_actor_action(action, personality=_make_personality(), packet=packet)
     assert bound.action_type is expected
     assert bound.target.acts_on == [target]
-    decision_summary = build_actor_decision_summary(ActorDecision(action=action), packet, seconds_per_step=3600, intent=intent)
-    assert decision_summary.operation == operation and decision_summary.target == target
+    decision_summary = build_actor_decision_summary(ActorDecision(action=action), bound.target, packet, seconds_per_step=3600, intent=intent)
+    assert decision_summary.operation == operation and decision_summary.target.acts_on == [target]
     assert "action" not in vars(decision_summary)
 
 
@@ -305,17 +305,38 @@ def test_interrupt_answer_decodes_optional_thought() -> None:
             _decode_answer({"interrupt": True, "thought": thought})
 
 
-def test_move_summary_preserves_the_carried_people_concept() -> None:
+def _bound_summary(container, action: ActorAction) -> ActorDecisionSummary:
+    packet = _packet()
+    bound = DecisionEngine(container.llm_router).bind_actor_action(action, personality=_make_personality(), packet=packet)
+    summary = build_actor_decision_summary(ActorDecision(action=action), bound.target, packet, seconds_per_step=3600)
+    assert summary.target == bound.target
+    return summary
+
+
+def test_move_summary_names_the_destination_and_the_carried(container) -> None:
     action = ActorAction(ActionType.MOVE, "我带他离开", destination_id="xuanwu_gate", move_carry_ids=(HERE,))
-    summary = build_actor_decision_summary(ActorDecision(action=action), _packet(), seconds_per_step=3600)
-    assert summary.target == Ref.place("xuanwu_gate")
-    assert summary.parameters == {"move_carry_ids": [HERE]}
+    summary = _bound_summary(container, action)
+    assert summary.target == ActionTarget(acts_on=[Ref.place("xuanwu_gate")], claims=[Ref.agent(HERE)])
+    assert summary.parameters == {}
 
 
-def test_summary_preserves_the_item_name_concept() -> None:
+def test_message_summary_acts_on_every_recipient(container) -> None:
+    action = ActorAction(ActionType.SEND_MESSAGE, "我给他们发消息", person_ids=(HERE, AWAY), message_content="你在哪？")
+    summary = _bound_summary(container, action)
+    assert summary.target == ActionTarget(acts_on=[Ref.agent(HERE), Ref.agent(AWAY)])
+    assert "person_ids" not in summary.parameters
+
+
+def test_talk_summary_acts_on_the_addressee_and_reaches_the_listeners(container) -> None:
+    action = ActorAction(ActionType.TALK, "我和他们谈谈", person_ids=(HERE, AWAY))
+    summary = _bound_summary(container, action)
+    assert summary.target == ActionTarget(acts_on=[Ref.agent(HERE)], claims=[Ref.agent(HERE)], reaches=[Ref.agent(AWAY)])
+    assert summary.parameters == {}
+
+
+def test_summary_preserves_the_item_name_concept(container) -> None:
     action = ActorAction(ActionType.PHYSICAL, "我检查门闩", item_name="门闩")
-    summary = build_actor_decision_summary(ActorDecision(action=action), _packet(), seconds_per_step=3600)
-    assert summary.target is None
+    summary = _bound_summary(container, action)
     assert summary.parameters == {"item_name": "门闩"}
 
 
@@ -518,7 +539,7 @@ async def test_helping_a_person_with_redundant_person_indices_reaches_confirmati
         turn.turn_id, operation=ActorOperation.PHYSICAL, target=Ref.agent(agents[1].agent_id), description="搀扶他坐下",
     ))
     assert result.status == "needs_confirmation"
-    assert result.decision_summary.target == Ref.agent(agents[1].agent_id)
+    assert result.decision_summary.target == ActionTarget(acts_on=[Ref.agent(agents[1].agent_id)])
     assert result.decision_summary.operation == "physical" and result.decision_summary.parameters == {}
     runtime.answer_actor(ActorIdleAnswer())
     await task
@@ -565,7 +586,7 @@ async def test_constrained_interpretation_preserves_parameters_and_requires_conf
         target=Ref.agent(agents[0].agent_id), description="整理账册"))
     assert result.status == "needs_confirmation" and not task.done()
     assert result.decision_summary.operation == "work"
-    assert result.decision_summary.target == Ref.agent(agents[0].agent_id)
+    assert result.decision_summary.target == ActionTarget()
     runtime.answer_actor(ActorConfirmation(result.decision_summary.decision_summary_id))
     with pytest.raises(ActorAnswerRejected, match="decision_summary_not_pending"):
         runtime.answer_actor(ActorConfirmation(result.decision_summary.decision_summary_id))
@@ -641,7 +662,7 @@ async def test_words_read_as_idling_are_confirmed_like_any_reading(container) ->
 
     assert result.status == "needs_confirmation" and not task.done()
     summary = result.decision_summary
-    assert (summary.operation, summary.description, summary.target) == (IDLE_OPERATION, "", None)
+    assert (summary.operation, summary.description, summary.target) == (IDLE_OPERATION, "", ActionTarget())
     runtime.answer_actor(ActorConfirmation(summary.decision_summary_id))
     await task
     assert agents[0].personality.state.action_status != ActionStatus.IN_PROGRESS
@@ -810,8 +831,8 @@ def test_self_operations_preserve_targetless_execution_and_public_identity(conta
     bound = DecisionEngine(container.llm_router).bind_actor_action(action, personality=_make_personality(), packet=packet)
     assert bound.action_type is action_type
     assert not bound.target.acts_on and not bound.target.claims and not bound.target.reaches
-    decision_summary = build_actor_decision_summary(ActorDecision(action=action), packet, seconds_per_step=3600, intent=intent)
-    assert decision_summary.target == Ref.agent(packet.agent_id) and decision_summary.operation == operation
+    decision_summary = build_actor_decision_summary(ActorDecision(action=action), bound.target, packet, seconds_per_step=3600, intent=intent)
+    assert decision_summary.target == ActionTarget() and decision_summary.operation == operation
     assert "某人" not in decision_summary.description
     if operation == "covert":
         assert decision_summary.description == "我打算暗中探查"
@@ -838,7 +859,8 @@ async def test_direct_self_operations_bypass_parser_and_persist_request(containe
     said = next(e for e in thread if e["kind"] == "said")
     answered = next(e for e in thread if e["kind"] == "answered")
     assert said["intent"]["operation"] == said["decision_summary"]["operation"] == operation
-    assert said["intent"]["target"] == said["decision_summary"]["target"] == {"kind": "agent", "id": target.id}
+    assert said["intent"]["target"] == {"kind": "agent", "id": target.id}
+    assert said["decision_summary"]["target"] == {"acts_on": [], "claims": [], "reaches": []}
     assert answered["answer"] == {"decision_summary_id": said["decision_summary"]["decision_summary_id"]}
     assert "action_type" not in json.dumps(thread)
 
@@ -905,9 +927,9 @@ async def test_self_send_message_reads_recipients_words_and_an_unset_signature(c
     assert bound.action_type is ActionType.SEND_MESSAGE
     assert bound.target.acts_on == [Ref.agent(AWAY)]
     assert bound.content == "今晚别出门" and bound.anonymous is anonymous
-    summary = build_actor_decision_summary(decision, packet, seconds_per_step=3600, intent=intent)
-    assert summary.operation == "send_message" and summary.target == Ref.agent(packet.agent_id)
-    assert summary.parameters["person_ids"] == [AWAY] and summary.parameters["anonymous"] is anonymous
+    summary = build_actor_decision_summary(decision, bound.target, packet, seconds_per_step=3600, intent=intent)
+    assert summary.operation == "send_message" and summary.target == ActionTarget(acts_on=[Ref.agent(AWAY)])
+    assert summary.parameters["anonymous"] is anonymous
 
 
 @pytest.mark.asyncio

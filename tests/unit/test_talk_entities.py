@@ -300,6 +300,11 @@ async def test_a_thing_on_the_ground_can_be_picked_up(container) -> None:
     assert "林峰拿起了钥匙" in change.perception
 
 
+def test_a_past_deed_claimed_in_the_dialogue_is_not_a_change_now() -> None:
+    """"I already took it" says nothing about this talk; the thing stays where it is given."""
+    assert "只认这场对话里当场做的" in _ENTITY_SYSTEM
+
+
 @pytest.mark.asyncio
 async def test_a_thing_on_the_ground_can_change_where_it_lies(container) -> None:
     env = _env(_lying("w", "涂鸦墙", WorldEntityType.LANDMARK))

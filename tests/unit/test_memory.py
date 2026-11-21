@@ -513,6 +513,8 @@ async def test_experiential_prompt_injects_recent_factual_continuity_block(conta
     # The system prompt has the matching hard rule ("if 【此前近来发生的事】 is given ... only
     # 【刚发生的事】 is ...").
     assert "此前近来发生的事" in system_prompt and "刚发生" in system_prompt
+    # An earlier state may have changed since; the monologue must not restate it as the present.
+    assert "不能把此前的事里的状态、情形当成此刻的状态、情形" in system_prompt
     from core.prompts import MEMORY_ORDER_HINT
     assert MEMORY_ORDER_HINT in user_prompt
 

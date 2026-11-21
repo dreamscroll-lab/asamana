@@ -5,12 +5,12 @@ import type { PlacedEntity } from "../lib/step";
 import type { EntityHost } from "./entities";
 
 vi.mock("phaser", () => ({ default: {} }));
-vi.mock("./effects", () => ({ flyMessageArc: vi.fn() }));
+vi.mock("./effects", () => ({ flyThing: vi.fn(), ITEM_GOLD: 0xd9a441 }));
 vi.mock("./hud", () => ({ inkOn: vi.fn() }));
 
 Object.assign(globalThis, { window: { devicePixelRatio: 2 } });
 const { EntityLayer } = await import("./entities");
-const { flyMessageArc } = await import("./effects");
+const { flyThing } = await import("./effects");
 
 function setup(entityType: string) {
   const floatNote = vi.fn();
@@ -36,7 +36,7 @@ function setup(entityType: string) {
   vi.spyOn(layer, "flashFixture").mockImplementation(() => {});
   const entity: PlacedEntity = {
     name: "Letter", entity_type: entityType, state: "sealed", description: "",
-    is_public: true, created_step: 0, private: { content: "" },
+    is_public: true, created_step: 0, content: "", private: { content: "" },
     presence: "at_location", presence_ref: "hall",
   };
   return { layer, floatNote, entity };
@@ -118,7 +118,7 @@ describe("a cut holds nothing back against another step's view", () => {
 });
 
 describe("a thing changing hands", () => {
-  it("flies as a gold star from the old holder to the new, never as a letter", () => {
+  function handing() {
     const { layer, entity } = setup("item");
     const tokens: Record<string, unknown> = {
       a: { container: { x: 10, y: 20 } },
@@ -128,10 +128,19 @@ describe("a thing changing hands", () => {
     layer.entityMarkers.delete("letter"); // held things have no marker
     const held = (by: string): PlacedEntity => ({ ...entity, presence: "held", presence_ref: by });
     layer.applyEntities(layer.beginStep({ letter: held("a") }, new Set(), new Set(), true));
-    layer.applyEntities(layer.beginStep({ letter: held("b") }, new Set(), new Set(), false));
+    vi.mocked(flyThing).mockClear();
+    return { layer, held, tokens };
+  }
 
-    expect(flyMessageArc).toHaveBeenCalledExactlyOnceWith(
-      expect.anything(), 10, 20, 70, 80, { color: 0xd9a441, glyph: "✦", ripple: 0xd9a441 },
-    );
+  it("flies from the old holder to the new when no hand-off deed accounts for it", () => {
+    const { layer, held, tokens } = handing();
+    layer.applyEntities(layer.beginStep({ letter: held("b") }, new Set(), new Set(), false));
+    expect(flyThing).toHaveBeenCalledExactlyOnceWith(expect.anything(), tokens.a, tokens.b);
+  });
+
+  it("leaves a thing a hand-off deed moved to that deed, so it never flies twice", () => {
+    const { layer, held } = handing();
+    layer.applyEntities(layer.beginStep({ letter: held("b") }, new Set(), new Set(), false, true, new Set(["letter"])));
+    expect(flyThing).not.toHaveBeenCalled();
   });
 });

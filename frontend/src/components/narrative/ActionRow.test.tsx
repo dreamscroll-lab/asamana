@@ -14,7 +14,7 @@ const cast: StepCast = {
 
 const entity = (over: Partial<PlacedEntity> = {}): PlacedEntity => ({
   name: "密诏副本", entity_type: "item", state: "intact", description: "",
-  is_public: true, created_step: 13, private: { content: "" },
+  is_public: true, created_step: 13, content: "", private: { content: "" },
   presence: "held", presence_ref: "maker", ...over,
 });
 

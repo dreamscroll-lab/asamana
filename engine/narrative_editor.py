@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Collection, Iterable, Mapping, Sequence
 from agent.personality import SECRET_LABEL
 from core.context import note_active_call_adoption
 from core.interfaces.directory import WorldDirectory
+from core.interfaces.entity import content_is_public
 from core.interfaces.llm import IndexedRef, LLMMessage, LLMRouter, LLMScene, coerce_bool, extract_json, output_budget
 from core.interfaces.phenomenon import Phenomenon
 from core.interfaces.severity import Severity
@@ -92,6 +93,7 @@ _INJECTION_AIMS = """\
 - 打破僵局:打破当下叙事原地打转、反复循环，无实质进展的局面。比如某些角色一直在反复做一类事情并且没有有效推进的情况。
 - 校正与实情不符的认定:有人认定了一件与世界实情不符的事,据此一再去找、去问、去等,怎么做都不会有结果,
   只会让叙事原地打转。让相关的人物得知实情,他们才能放下或改道。比如有人一直在找一个这个世界里并不存在的人。
+  也包括对自己做过的事，认定的事实出现前后矛盾:比如早已把某件东西交了出去,却仍以为它在自己手上、还没交。
   但是需要注意的是，如果这个错误是因为叙事需要或者角色为了达到某种目的故意设计的，那不必校正。
 以上只是几种典型情况,不限于此。
 推进指事情真的变了:有人得到或失去了东西、知道了新的事、关系或处境变了。约定、答应、「到时候再说」本身不是推进;
@@ -1120,9 +1122,9 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
         )
 
     def _entity_text(self, entity: "WorldEntity") -> str:
-        """One entity on the ground in the menu. Written content is shown only for fixed entities
-        (as ``WorldEntity.readable_by``): otherwise the editor could broadcast words nobody
-        present can read."""
+        """One entity on the ground in the menu. Written content is shown only when it is public
+        (``content_is_public``): otherwise the editor could broadcast words nobody present can
+        read."""
         facts = [f for f in (
             f"此刻状态：{entity.state}" if entity.state else "",
             f"现于{self.directory.location_name(entity.location_id)}" if entity.location_id else "",
@@ -1130,6 +1132,6 @@ observation 只写这件东西本身看得见的变化，不写哪些人看到;
         lines = [entity.name + (f"（{'，'.join(facts)}）" if facts else "")]
         if entity.description:
             lines.append(f"    {entity.description}")
-        if entity.content and not entity.is_takeable:
+        if entity.content and content_is_public(entity.presence, entity.entity_type):
             lines.append(f"    上面写着：{entity.content}")
         return "\n".join(lines)

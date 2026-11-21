@@ -11,7 +11,7 @@
 import Phaser from "phaser";
 
 import type { PlacedEntity } from "../lib/step";
-import { type FxHost, flyMessageArc } from "./effects";
+import { type FxHost, ITEM_GOLD, flyThing } from "./effects";
 import { inkOn } from "./hud";
 import { mix, shade } from "../lib/color";
 import { type CarriedItem, FONT, TEXT_RES, drawPlate } from "./types";
@@ -24,8 +24,6 @@ const STONE_CAP = 0x9aa2b6;     // cap: lightest, it catches the most sky
 const STONE_EDGE = 0x2b2f3a;
 const LANDMARK_ACCENT = 0x8f9bb0;
 const HALO_FLASH = 0.5;         // one-shot peak when a landmark's state changes
-// An item's gold: its marker, its state notes, and its flight when it changes hands.
-const ITEM_GOLD = 0xd9a441;
 
 /**
  * Did anything the map DRAWS about this thing change? Only the fields markers read: a change
@@ -90,6 +88,9 @@ export class EntityLayer {
   private caused: Set<string> = new Set();
   // Whether the step in hand is the whole world (see lib/viewer isWholeWorld).
   private wholeWorld = true;
+  // Things a deed this step hands between people: that deed flies them (handOff), so the change
+  // of holder must not fly them again.
+  private handed: ReadonlySet<string> = new Set();
 
   /** Which things are still holding a change back; read by the beat scheduler. */
   get withheld(): ReadonlySet<string> {
@@ -105,9 +106,10 @@ export class EntityLayer {
    */
   beginStep(
     entities: Record<string, PlacedEntity>, causedIds: Set<string>, createdIds: Set<string>,
-    cut: boolean, wholeWorld = true,
+    cut: boolean, wholeWorld = true, handedIds: ReadonlySet<string> = new Set(),
   ): Record<string, PlacedEntity> {
     this.stepEntities = entities;
+    this.handed = handedIds;
     this.cut = cut;
     this.caused = causedIds;
     this.wholeWorld = wholeWorld;
@@ -223,21 +225,15 @@ export class EntityLayer {
         this.entityMarkers.get(eid)?.destroy();
         this.entityMarkers.delete(eid);
         const holderId = e.presence_ref;
-        // Changing hands is the only part of a hand-off the map can show; without this the
-        // thing just blinks between pockets. Reuses the letter's arc (one gesture, one
-        // vocabulary) but flies the thing as itself, the gold star it is on the ground and in
-        // the pocket: as a ✉ it would read as a letter. Fire and forget: a step that ends first
-        // just cuts it.
+        // A change of holder no hand-off deed this step accounts for flies here, so the thing
+        // doesn't just blink between pockets. A hand-off deed flies its own things: only
+        // it can, since the view may not show the thing in its new hands. Fire and forget: a
+        // step that ends first just cuts it.
         const wasHeldBy = prevOf(eid)?.presence === "held" ? prevOf(eid)?.presence_ref : "";
-        if (holderId && wasHeldBy && wasHeldBy !== holderId) {
+        if (holderId && wasHeldBy && wasHeldBy !== holderId && !this.handed.has(eid)) {
           const from = this.host.token(wasHeldBy);
           const to = this.host.token(holderId);
-          if (from && to) {
-            void flyMessageArc(
-              this.host, from.container.x, from.container.y,
-              to.container.x, to.container.y, { color: ITEM_GOLD, glyph: "✦", ripple: ITEM_GOLD },
-            );
-          }
+          if (from && to) void flyThing(this.host, from, to);
         }
         if (holderId) {
           this.carriedBy.set(holderId, [

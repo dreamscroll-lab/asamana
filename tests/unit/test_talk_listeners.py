@@ -307,6 +307,33 @@ class TestSocialExecutorListeners:
         assert "agent-c" not in record["participant_ids"]
 
     @pytest.mark.asyncio
+    async def test_the_record_keeps_the_named_listener_apart_from_who_heard(self, container) -> None:
+        """``target.reaches`` is the aim and survives his leaving; ``overheard_by`` is the result."""
+        from engine.execution_processor import ExecutionProcessor
+        from engine.executors.registry import ActionExecutorRegistry
+
+        executor, env, agents = self._setup(container)
+        state = await executor.start(
+            _talk("agent-a", "agent-b", ["agent-c"], steps=3), 1,
+            agents=agents, environment=env, message_system=None,
+        )
+        env.place_agent(agent_id="agent-c", location_id="garden")
+        results = await executor.complete(
+            state, 4, agents=agents, environment=env, message_system=None,
+        )
+        assert all(r.action.target.reached_agents == ["agent-c"] for r in results)
+        processor = ExecutionProcessor(
+            executor_registry=ActionExecutorRegistry(),
+            environment=env,
+            message_system=None,  # type: ignore[arg-type]
+            directory=LiveWorldDirectory.from_agents(agents, env),
+        )
+        initiator_result = next(r for r in results if r.action.agent_id == "agent-a")
+        record = processor.completion_record(state, initiator_result, agents)
+        assert record["target"]["reaches"] == [{"kind": "agent", "id": "agent-c"}]
+        assert record["overheard_by"] == []
+
+    @pytest.mark.asyncio
     async def test_an_unusable_listener_memory_writes_nothing(self, container) -> None:
         """No conservative filler: a line stripped of what was heard carries no information."""
         executor, env, agents = self._setup(container, listener_fact=None)

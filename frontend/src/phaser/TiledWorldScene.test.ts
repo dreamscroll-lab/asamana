@@ -255,6 +255,32 @@ describe("director rendering isolation", () => {
     expect(leave).not.toHaveBeenCalled();
   });
 
+  it("closes a figure's pocket when he leaves his place, and keeps his result chip on him", async () => {
+    const { scene, internal } = setup();
+    const close = vi.mocked(internal.pockets.close);
+    // A chip landed at the place he leaves, before the walk (see playsBeforeWalk).
+    const chip = { icon: "•", text: "在此做了一件事", tone: "ok" as const };
+    vi.mocked(internal.post.playDeliveries).mockImplementation(async () => {
+      const tok = scene.token(MO.id);
+      if (tok) tok.chipData = chip;
+    });
+    const chipOnWalk: unknown[] = [];
+    vi.spyOn(internal.walker, "groundRoute").mockReturnValue([{ x: 100, y: 0 }, { x: 300, y: 0 }]);
+    vi.spyOn(internal.walker, "walkAlong").mockImplementation(async (tok) => { chipOnWalk.push(tok.chipData); });
+    vi.spyOn(internal.walker, "walkTransit").mockResolvedValue(undefined);
+    await scene.renderStep(step({ at: 1, states: [who(MO, near)] }));
+    await scene.renderStep(step({ at: 2, states: [who(MO, near)] }));
+    expect(close).not.toHaveBeenCalledWith(MO.id);
+    expect(scene.token(MO.id)!.chipData).toBeDefined();
+    await scene.renderStep(step({ at: 3, states: [who(MO, far)] }));
+    expect(chipOnWalk).toEqual([chip]);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(close).toHaveBeenLastCalledWith(MO.id);
+    await scene.renderStep(step({ at: 4, states: [who(MO, far, { transit: walking([far, near], 1, 2) })] }));
+    await scene.renderStep(step({ at: 5, states: [who(MO, near, { displaced: true })] }));
+    expect(close.mock.calls.filter(([id]) => id === MO.id)).toHaveLength(3);
+  });
+
   // [focus on, focused, dead, hidden ground, expected solidity]
   it.each([
     [false, false, false, false, 1],

@@ -2716,6 +2716,24 @@ class TestWorkExecutor:
         assert "m1" not in prompt          # ids never cross the LLM boundary
 
     @pytest.mark.asyncio
+    async def test_work_judge_forbids_carrying_recalled_state_into_the_fact(self, container) -> None:
+        """Recall can miss a later memory, so a recalled state may be stale. The fact must not
+        restate it as the present, or the stale state is persisted again as a new memory."""
+        from core.interfaces.llm import LLMScene
+        agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="A")
+        agents = {"agent-a": agent_a}
+        executor = WorkExecutor(container.llm_router, _directory(agents))
+        env = _make_environment()
+        action = _make_action(
+            agent_id="agent-a", action_type=ActionType.WORK, description="整理账本", estimated_steps=1,
+        )
+        state = await executor.start(action, 1, agents=agents, environment=env, message_system=None)
+        await executor.complete(state, 1, agents=agents, environment=env, message_system=None)
+        call = container.llm_router.get(LLMScene.AGENT_ACTION_NARRATION).call_history[-1]
+        system = next(m.content for m in call if m.role == "system")
+        assert "不能把旧事里的状态、情形当成此刻的状态、情形" in system
+
+    @pytest.mark.asyncio
     async def test_work_recall_failure_still_judges(self, container, monkeypatch) -> None:
         """A failed memory read only empties the recall (Rule 6); the verdict still happens."""
         agent_a = _make_agent(container, world_id="w", agent_id="agent-a", name="A")

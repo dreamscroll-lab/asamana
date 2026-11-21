@@ -16,7 +16,7 @@ from engine.environment import EnvironmentSystem
 from engine.scene import SceneVisibility, SituationVoice, assemble_scene_context
 from providers.llm.mock import MockLLMProvider
 from world.models import WorldEntitySeed
-from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType
+from core.interfaces.entity import EntityPresence, WorldEntity, WorldEntityType, content_is_public
 from core.interfaces.place import Place
 from tests.unit.env_state import restore, saved
 
@@ -75,6 +75,13 @@ def test_a_landmark_is_read_by_anyone_there() -> None:
 def test_a_destroyed_thing_is_read_by_nobody() -> None:
     gone = _letter(presence=EntityPresence.DESTROYED, presence_ref=None)
     assert not gone.readable_by("a1")
+
+
+def test_content_is_public_only_on_a_thing_fixed_at_a_place() -> None:
+    assert content_is_public(EntityPresence.AT_LOCATION, WorldEntityType.LANDMARK)
+    assert not content_is_public(EntityPresence.AT_LOCATION, WorldEntityType.ITEM)
+    assert not content_is_public(EntityPresence.HELD, WorldEntityType.ITEM)
+    assert not content_is_public(EntityPresence.DESTROYED, WorldEntityType.LANDMARK)
 
 
 # --------------------------------------------------------------------------- #

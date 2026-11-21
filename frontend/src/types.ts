@@ -197,7 +197,8 @@ export interface ActionSummary {
   affected_entity_ids: string[];
   // Accepted creations by this beat; a subset of affected_entity_ids.
   created_entity_ids: string[];
-  // Listeners the initiator named, standing there. Not in participant_ids: they spent no turn on it.
+  // Who actually heard it, as against the listeners `target.reaches` names. Not in participant_ids:
+  // they spent no turn on it.
   overheard_by: string[];
   // Who cut short an in-progress action (phase "interrupt"); "" otherwise.
   interrupted_by: string;
@@ -286,8 +287,10 @@ export interface EntityView {
   // The step it came into the world on, so new things are read off the step's own table
   // rather than by diffing (impossible for the feed's earliest step).
   created_step: number;
+  // What it carries when everyone present can read it: a stele's inscription, a notice.
+  content: string;
   // What only its holder can read — the words in a letter, the figures in a ledger. Seeing a
-  // thing is not reading it.
+  // thing is not reading it. A thing's content is in exactly one of the two.
   private: { content: string };
 }
 
@@ -853,7 +856,8 @@ export interface ActorDecisionSummary {
   decision_summary_id: string;
   description: string;
   operation: string;
-  target: ActorTarget | null;
+  // The bound action's own target; the card renders it under labels the operation picks.
+  target: ActionTarget;
   estimated_duration_seconds: number;
   parameters: Record<string, string | boolean | string[]>;
 }

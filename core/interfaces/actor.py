@@ -38,7 +38,7 @@ from enum import Enum
 from typing import Literal
 
 from core.interfaces.action import (
-    KIND_AGENT, KIND_ITEM, KIND_LANDMARK, KIND_LOCATION, KIND_NPC, ActionType, DialogueTurn, Ref,
+    KIND_AGENT, KIND_ITEM, KIND_LANDMARK, KIND_LOCATION, KIND_NPC, ActionTarget, ActionType, DialogueTurn, Ref,
 )
 from core.interfaces.urgency import Urgency
 from core.prompts import AFFECTION_RANGE, EMOTION_INTENSITY_RANGE, EMOTION_VALENCE_RANGE, TRUST_RANGE
@@ -311,12 +311,16 @@ class ActorIntent:
 class ActorDecisionSummary:
     """A public decision summary, without executor slots or executable authority: an action, or
     ``operation`` ``IDLE_OPERATION`` for doing nothing this step (no description, target or
-    duration)."""
+    duration).
+
+    ``target`` is the bound action's own, so the summary names exactly whom and what the act
+    will touch; ``parameters`` carry only what is not a relation to the world (the words, the
+    errand's order, the expected outcome)."""
 
     decision_summary_id: str
     description: str
     operation: str
-    target: Ref | None
+    target: ActionTarget
     estimated_duration_seconds: int
     parameters: dict[str, str | bool | list[str]] = field(default_factory=dict)
 

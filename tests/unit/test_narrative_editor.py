@@ -2106,6 +2106,9 @@ async def test_correcting_a_belief_at_odds_with_the_world_is_an_aim_with_its_bou
 
     (_, gate), (_, plan) = router.calls
     assert "校正与实情不符的认定" in _INJECTION_AIMS
+    # A stale belief about one's own past deed is a mismatch too, not only a search for what
+    # doesn't exist.
+    assert "认定的事实出现前后矛盾" in _INJECTION_AIMS
     assert _INVENTORY_LEGEND in gate[0].content and _INVENTORY_LEGEND in plan[0].content
     section = plan[0].content.split("【校正与实情不符的认定】")[1].split("【引导前往】")[0]
     assert "名单中没有、近况里也推不出来的,才算世界里没有" in section

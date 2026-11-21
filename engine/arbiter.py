@@ -646,12 +646,12 @@ class ExecutionArbiter:
                         extra={"agent_id": pid, "initiator": agent_id, "step": step},
                     )
                     continue
-                # dropped_own: his own decision was deferred at commit.
+                # dropped_own: his own body act was deferred at commit; a momentary act stands.
                 logger.debug(
                     "initiative_conscripted",
                     extra={
                         "step": step, "agent_id": pid, "initiator": agent_id,
-                        "dropped_own": pid_plan.action is not None,
+                        "dropped_own": self._body_plan(pid_plan).action is not None,
                     },
                 )
                 arbitration[pid] = self._passive_join_arbitrated(pid_plan, exec_state)

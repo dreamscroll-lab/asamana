@@ -8,15 +8,15 @@ import type { TipLine } from "./tip";
 export const DEFAULT_ENTITY_STATE = "intact";
 
 /**
- * The map is the god's-eye view, so content (the holder's private layer) is printed as-is: who
- * can read it in the world is settled by where the backend puts it, and the observer reads
- * everything. Content is quoted as a whole and kept apart from the description: one says what it
- * looks like, the other what is written on it.
+ * Content is printed from whichever tier holds it: who can read it in the world is settled by
+ * where the backend puts it (public or the holder's private tier), and a view prints what it was
+ * given. Content is quoted as a whole and kept apart from the description: one says what it looks
+ * like, the other what is written on it.
  */
-export function entityTipLines(e: Pick<EntityView, "name" | "state" | "description" | "private">): TipLine[] {
+export function entityTipLines(e: Pick<EntityView, "name" | "state" | "description" | "content" | "private">): TipLine[] {
   const state = (e.state ?? "").trim();
   const head = state && state !== DEFAULT_ENTITY_STATE ? `${e.name} · ${state}` : e.name;
-  const content = e.private.content.trim();
+  const content = (e.content || e.private.content).trim();
   return ([
     { text: head, tone: "head" },
     { text: (e.description ?? "").trim(), tone: "background" },

@@ -44,6 +44,7 @@ import {
   stealthVeil,
   footDust,
   localAnnounce,
+  handOff,
   physicalEffect,
 } from "./effects";
 
@@ -1007,7 +1008,10 @@ export class TiledWorldScene
     const createdEntityIds = new Set<string>();
     for (const a of actions) for (const eid of a.affected_entity_ids ?? []) causedEntityIds.add(eid);
     for (const a of actions) for (const eid of a.created_entity_ids) createdEntityIds.add(eid);
-    const shownEntities = this.entities.beginStep(entities, causedEntityIds, createdEntityIds, cut, isWholeWorld(this.viewer));
+    const handedEntityIds = new Set(actions.flatMap((a) => (handOff(a) ? a.affected_entity_ids : [])));
+    const shownEntities = this.entities.beginStep(
+      entities, causedEntityIds, createdEntityIds, cut, isWholeWorld(this.viewer), handedEntityIds,
+    );
 
     // Clear corpses shown dead in a prior step, and anyone a seek carried past his death, still
     // standing as last drawn. Only one dying this step gets a token below (see gone()), so a
@@ -1483,11 +1487,16 @@ export class TiledWorldScene
       this.placed.add(state.agent_id);
       return this.presence.enter(tok, at);
     }
+    // Whoever leaves his place closes his open pocket: a panel trailing a walker covers the
+    // ground and the people he passes. A shuffle within the room keeps it. His result chip goes
+    // with him: it is what he did this step, and its words name the place.
     if (state.transit && state.transit.total_steps > 0) {
+      this.pockets.close(state.agent_id);
       return this.walker.walkTransit(tok, state.agent_id, state.transit);
     }
     const pos = this.staging.positionFor(state, states);
     if (state.arrival && state.arrival.total_steps > 0) {
+      this.pockets.close(state.agent_id);
       // Walk the engine's route (through the waypoints it reported him passing) into his place in
       // the room. A ground route here could miss those waypoints.
       const walked = this.walker.walkTransit(tok, state.agent_id, state.arrival, pos);
@@ -1505,6 +1514,7 @@ export class TiledWorldScene
     // Displaced by the director, not walked: a cut. Don't route him on foot — that would show a
     // teleport as a stroll through the palace and tell a story that isn't true.
     if (state.displaced) {
+      this.pockets.close(state.agent_id);
       // A puff at each end, as a walk leaves; otherwise the cut looks like a dropped frame.
       const leftFrom = { x: tok.container.x, y: tok.container.y };
       tok.container.setPosition(pos.x, pos.y);
@@ -1520,6 +1530,7 @@ export class TiledWorldScene
     if (Phaser.Math.Distance.Between(from.x, from.y, pos.x, pos.y) < WALK_ROUTE_MIN_PX) {
       return this.tweenP({ targets: tok.container, x: pos.x, y: pos.y, duration: 500, ease: "Sine.easeInOut" });
     }
+    this.pockets.close(state.agent_id);
     const route = this.walker.groundRoute(from, pos);
     if (!route) {
       // No route: place him as a cut. Don't slide him through the wall instead.
